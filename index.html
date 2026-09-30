@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PHD Billing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;550;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="mk">P</div>
+      <div class="wm"><b>PHD Billing</b><span>Owner billing console</span></div>
+    </div>
+    <div class="mode-sw" id="modeSw" role="group" aria-label="Workspace"></div>
+    <div class="switch-wrap">
+      <button class="switcher" id="switcher" aria-haspopup="true">
+        <span class="txt"><span class="nm" id="swName">—</span><span class="sub" id="swSub"></span></span>
+        <span class="car">▼</span>
+      </button>
+      <div class="menu" id="propMenu"></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="rail-foot">
+      <button class="save-chip" id="saveChip"><i class="dot"></i><span id="saveLbl">Saved in browser</span></button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar" id="topbar">
+      <button class="cmd-trigger" id="cmdTrigger">
+        <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
+        <span>Search amounts, vendors, properties…</span><kbd id="cmdKey">⌘K</kbd>
+      </button>
+      <div class="quick">
+        <div class="presence" id="presence"></div>
+        <button class="btn" id="qReconcile">Reconcile</button>
+        <button class="btn primary" id="qAdd">New transaction <kbd>N</kbd></button>
+      </div>
+    </header>
+    <div class="pagehead">
+      <div>
+        <div class="crumb" id="pgCrumb"></div>
+        <h1 class="page-title" id="pgTitle"></h1>
+        <div class="page-sub" id="pgSub"></div>
+      </div>
+      <div class="grow" id="pgActions"></div>
+    </div>
+    <div class="content" id="view"></div>
+  </div>
+</div>
+
+<div class="cmdk" id="cmdk" aria-hidden="true">
+  <div class="cmdk-box" role="dialog" aria-label="Search">
+    <div class="cmdk-top">
+      <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
+      <input class="cmdk-in" id="cmdkIn" type="text" placeholder="Type an amount, vendor, property, or command…" autocomplete="off">
+    </div>
+    <div class="cmdk-list" id="cmdkList"></div>
+    <div class="cmdk-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
+  </div>
+</div>
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" aria-hidden="true"></aside>
+<div class="toast" id="toast"></div>
+<input type="file" id="filePick" accept="application/json" style="display:none">
+
+<script src="config.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
