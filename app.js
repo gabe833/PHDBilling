@@ -4835,7 +4835,12 @@ setInterval(() => {
 /* ---------- boot ---------- */
 Cloud.boot = async function(){
   const cfg = window.PHD_CONFIG;
-  Cloud.sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:"pkce"}});
+  /* Accept the URL however it was copied: "https://ref.supabase.co", with a trailing slash,
+     or the REST address ("…/rest/v1/"). Anything after the domain would send sign-in to the
+     wrong service, which answers "No API key found in request". */
+  let base = String(cfg.supabaseUrl || "").trim();
+  try{ base = new URL(base).origin; }catch(e){}
+  Cloud.sb = window.supabase.createClient(base, String(cfg.supabaseAnonKey || "").trim(), {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:"pkce"}});
   const {data:{session}} = await Cloud.sb.auth.getSession();
   if(!session) return cloudLogin();
   Cloud.email = String(session.user.email || "").toLowerCase();
