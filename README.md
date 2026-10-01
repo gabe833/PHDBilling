@@ -68,7 +68,7 @@ Then:
 This uses the same Google Apps Script as the receipt inbox. Its nightly backup call also counts as activity, so the database doesn't get paused.
 1. In the Supabase SQL editor, run this and copy the result:
    `select value from public.private_settings where key = 'backup_token';`
-2. In the Apps Script, replace the code with the new **Code.gs** and save.
+2. In the Apps Script, replace the code with `apps-script/Code.gs` and save.
 3. Under **Project Settings → Script Properties**, add:
    - `SUPABASE_URL`
    - `SUPABASE_ANON_KEY` (the same values as `config.js`)
@@ -96,6 +96,12 @@ To change when rent counts as late, the renewal heads-up and other thresholds, g
 6. Receipt inbox: open **Receipt inbox** and paste the Apps Script URL and key once. The whole office shares them.
 
 From then on, use only the website. The single-file version still works offline, but its data is separate, and editing both would split your records.
+
+### 6. MagicDoor connection (step 1: field report)
+1. Store the MagicDoor key in Supabase under **Edge Functions → Secrets** as `MAGICDOOR_API_KEY`.
+2. Go to **Edge Functions → Deploy a new function → Via Editor**. Name it `magicdoor` exactly, replace the sample code with everything in `supabase/magicdoor/index.ts`, and deploy.
+3. In the function's **Details** (or settings), turn **Verify JWT / Enforce JWT verification** off. The function checks the Team list itself.
+4. In the console, go to **Team → MagicDoor connection**. Click **Test connection**, then **Build field report**, then **Copy report**.
 
 ---
 
