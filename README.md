@@ -78,6 +78,15 @@ This uses the same Google Apps Script as the receipt inbox. Its nightly backup c
 
 The backup token can only read the database. It can't change or delete anything.
 
+### 4b. Morning email of what needs action (property management)
+The same Apps Script emails the team a list each weekday between 7 and 8 AM: late or short rent, payouts not marked sent, owners who owe, leases ending, deposit-return deadlines, long vacancies, months not started or closed, and receipts waiting. It uses exactly the same rules as the **Action center**, so snoozed or dismissed items stay out. On a day with nothing to do, no email is sent.
+1. In **Project Settings**, set the time zone to **(GMT-05:00) Eastern Time**.
+2. Under **Script Properties**, add `CONSOLE_URL` with your site address (e.g. `https://phd-billing.vercel.app`). Each item in the email links straight to that property or month.
+3. Optional: add `DIGEST_TO` with a comma-separated list of addresses if it should go to specific people. Otherwise it goes to everyone active on the Team page.
+4. Run **setupDigest** once. It schedules the email and sends you a preview right away. Run **previewDigest** any time to see today's list.
+
+To change when rent counts as late, the renewal heads-up and other thresholds, go to **Property mgmt → Alert rules**.
+
 ### 5. First sign-in and moving your data in
 1. In the **current** console on your computer, download a backup: Projects, then Settings, then **Download backup**.
 2. Open the new site and choose **Continue with Google**. You'll land on **Team** with a welcome panel.
@@ -103,5 +112,5 @@ From then on, use only the website. The single-file version still works offline,
 ## Maintenance
 - **Add or remove people:** Team page.
 - **See who changed what:** Team page, under Recent activity.
-- **Update the app:** replace the files in the repo (or run `npx vercel deploy --prod` again). Keep your `config.js`.
+- **Update the app:** replace `index.html`, `app.js`, `engine.js` and `app.css` in the repo (or run `npx vercel deploy --prod` again). Keep your `config.js`.
 - **Activity log:** the nightly backup trims it to the last 180 days automatically.

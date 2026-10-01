@@ -32,6 +32,10 @@ function render(){
     inbox:    ["", "Receipt inbox", "Receipts read for you — nothing is added until you approve it"],
     team:     ["", "Team", "Who has access, and who changed what"],
     pmMonth:  ["Property management", "Month close", ""],
+    pmHome:   ["Property management", "Overview", ""],
+    pmAlerts: ["Property management", "Action center", ""],
+    pmProperty:["Property management", "Property", ""],
+    pmSettings:["Property management", "Alert rules", "When rent counts as late, payouts as due, leases as ending"],
     pmProps:  ["Property management", "Properties", "Every rental PHD manages — rent, fee rule and owner"],
     pmDeposits:["Property management", "Security deposits", "What PHD is holding, for whom"],
     pmIncome: ["Property management", "Income", "PHD's management income, month by month"],
@@ -40,7 +44,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, settings:pgSettings})[S.ui.view] || pgOverview)();
   chip();
 }
 function actions(list){
@@ -3766,6 +3770,180 @@ async function inboxApprovePm(it, openAfter){
 }
 
 /* =====================================================================
+   PMCore — the property-management math and the alert rules.
+   Pure functions with no screen code, so the console and the Google
+   Apps Script morning digest run exactly the same logic.
+   ===================================================================== */
+const PMCore = (function(){
+  const cents = n => Math.round((Number(n) || 0) * 100);
+  const has = v => v != null && v !== "";
+  const nz = v => has(v) ? cents(v) : 0;
+  const usd = c => (c < 0 ? "−" : "") + "$" + (Math.abs(c) / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const usd0 = c => (c < 0 ? "−" : "") + "$" + Math.round(Math.abs(c) / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const EXTRA = ["applications", "lateFee", "reimbursement", "filters"];
+  const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthLabel = m => { const [y, mm] = String(m).split("-").map(Number); return `${MONTHS[mm - 1]} ${y}`; };
+  const monthAdd = (m, n) => { const [y, mm] = m.split("-").map(Number); const d = new Date(Date.UTC(y, mm - 1 + n, 1)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
+  const dayNum = iso => Math.floor(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5);
+  const isoOf = n => new Date(n * 864e5).toISOString().slice(0, 10);
+  const endOfMonth = m => { const [y, mm] = m.split("-").map(Number); return isoOf(Math.floor(Date.UTC(y, mm, 0) / 864e5)); };
+  const shortDate = iso => { const [y, m, d] = iso.split("-").map(Number); return `${MONTHS[m - 1].slice(0, 3)} ${d}`; };
+
+  const DEFAULTS = {
+    lateAfterDay: 5,        // rent counts as late after this day of the month
+    payoutDays: 0,          // owner payouts due this many days after month end (0 = by the last day)
+    startByDay: 2,          // remind to start the month after this day
+    closeByDay: 15,         // previous month should be closed by this day
+    renewalDays: 60,        // lease-renewal heads-up window
+    depositDays: 30,        // SC: deposit returned (with itemized list) within 30 days of move-out
+    vacancyDays: 30,        // vacant / marketing longer than this
+    inboxStaleDays: 2       // receipts waiting for review longer than this
+  };
+
+  function feeRuleText(r){ if(!r) return "10%"; return r.type === "flat" ? `${usd(cents(r.amount))} flat` : `${Number(r.rate)}%`; }
+  function itemFee(it, prop){
+    if(it.feeMode === "none") return 0;
+    if(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) return cents(it.fee);
+    return Math.round(cents(it.amount) * Number(prop && prop.adminRate != null ? prop.adminRate : 10) / 100);
+  }
+
+  /* one row's numbers, all in cents */
+  function calc(row, prop, today){
+    const items = row.repairItems || [];
+    const itemsC = items.reduce((a, it) => a + cents(it.amount), 0);
+    const itemsFeeC = items.reduce((a, it) => a + itemFee(it, prop), 0);
+    const recv = nz(row.rentReceived);
+    const repairsC = has(row.repairs) ? cents(row.repairs) : itemsC;
+    const adminC = has(row.adminFee) ? cents(row.adminFee) : itemsFeeC;
+    const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
+    const ruleFeeC = rule.type === "flat" ? (recv > 0 ? cents(rule.amount) : 0) : Math.round(recv * Number(rule.rate || 0) / 100);
+    const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : ruleFeeC;
+    const leasingC = nz(row.leasingFee), otherC = nz(row.otherIncome);
+    const adjC = (row.adjustments || []).reduce((a, x) => a + cents(x.amount), 0);
+    const calcC = recv - repairsC - adminC - pmFeeC - leasingC + otherC + adjC;
+    const recordedC = has(row.ownerPayout) ? cents(row.ownerPayout) : null;
+    const payoutC = recordedC != null ? recordedC : calcC;
+    const extrasC = EXTRA.reduce((a, k) => a + nz(row[k]), 0);
+    const phdC = pmFeeC + adminC + leasingC + extrasC;
+    const dueC = nz(row.rentDue);
+    const thisM = (today || new Date().toISOString().slice(0, 10)).slice(0, 7);
+    const flags = [];
+    if(recordedC != null && Math.abs(recordedC - calcC) > 1)
+      flags.push({level:"warn", text:`Recorded payout ${usd(recordedC)} is ${usd(Math.abs(recordedC - calcC))} ${recordedC > calcC ? "more" : "less"} than the formula (${usd(calcC)})`});
+    if(dueC > 0 && recv > 0 && recv < dueC && !row.locked) flags.push({level:"warn", text:`${usd(dueC - recv)} short of rent due`});
+    if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
+    if(payoutC < 0) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
+    if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
+    if(has(row.pmFee) && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
+    const [y, mo] = String(row.month).split("-").map(Number);
+    items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
+      if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
+    return {dueC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+  }
+
+  /* where a property stands for one month: used for colours and filters everywhere */
+  function rentStatus(row, prop, today){
+    if(!prop || prop.status === "inactive") return "inactive";
+    if(!row || row.detailOnly){ return prop.status === "active" ? "none" : "vacant"; }
+    const c = calc(row, prop, today);
+    if(c.dueC <= 0 && !c.recv) return prop.status === "active" ? "nodue" : "vacant";
+    if(c.recv >= c.dueC && c.recv > 0) return "paid";
+    if(c.recv > 0) return "partial";
+    const m = row.month, t = today.slice(0, 7), day = +today.slice(8, 10);
+    if(m < t) return "late";
+    if(m > t) return "upcoming";
+    return day > (row._lateAfter || DEFAULTS.lateAfterDay) ? "late" : "due";
+  }
+
+  /* every alert that needs a person, newest rules first in severity */
+  function alerts(o){
+    const pm = o.pm || {}, props = (pm.properties || []).filter(p => !p.deleted), rows = pm.rows || {}, meta = pm.meta || {}, deps = pm.deposits || {};
+    const S = Object.assign({}, DEFAULTS, o.settings || {});
+    const today = o.today, curM = today.slice(0, 7), prevM = monthAdd(curM, -1), day = +today.slice(8, 10), tn = dayNum(today);
+    const state = o.state || {}, owners = o.owners || [];
+    const out = [];
+    const add = a => { const st = state[a.key]; if(st && (st.state === "dismissed" || (st.state === "snoozed" && st.until > today))) return; out.push(a); };
+    const live = props.filter(p => p.status !== "inactive");
+    const monthRows = m => Object.values(rows).filter(r => r.month === m && !r.deleted && !r.detailOnly);
+    const ownerName = id => { const w = owners.find(x => x.id === id); return w ? (w.name || w.company || "") : ""; };
+
+    // month housekeeping
+    if(live.length && day > S.startByDay && !monthRows(curM).length)
+      add({key:`start|${curM}`, type:"start", level:"warn", title:`${monthLabel(curM)} hasn't been started`, detail:"Rent due, recurring charges and carried balances are filled in when it starts.", month:curM, action:"startMonth"});
+    if(monthRows(prevM).length && !(meta[prevM] || {}).closed && day > S.closeByDay)
+      add({key:`close|${prevM}`, type:"close", level:"warn", title:`${monthLabel(prevM)} is still open`, detail:`Months should be closed by the ${S.closeByDay}th of the next month.`, month:prevM, action:"openMonth"});
+
+    // rent, payouts, owners owing — open months only
+    [prevM, curM].forEach(m => {
+      if((meta[m] || {}).closed) return;
+      const payDue = isoOf(dayNum(endOfMonth(m)) + Number(S.payoutDays || 0));
+      monthRows(m).forEach(r => {
+        const p = props.find(x => x.id === r.propertyId); if(!p || p.status === "inactive") return;
+        const c = calc(r, p, today);
+        const late = m < curM || day > S.lateAfterDay;
+        const own = ownerName(p.ownerId);
+        if(c.dueC > 0 && !c.recv && late){
+          const days = tn - dayNum(m + "-01");
+          add({key:`late|${p.id}|${m}`, type:"late", level:"urgent", propId:p.id, month:m, title:`Rent late · ${p.name}`,
+               detail:`${usd(c.dueC)} due ${shortDate(m + "-01")} — nothing recorded (${days} day${days === 1 ? "" : "s"})${p.tenants ? " · " + p.tenants : ""}`, action:"openRow"});
+        } else if(c.dueC > 0 && c.recv > 0 && c.recv < c.dueC && late && !r.shortOk){
+          add({key:`short|${p.id}|${m}`, type:"short", level:"warn", propId:p.id, month:m, title:`Rent short · ${p.name}`,
+               detail:`${usd(c.recv)} of ${usd(c.dueC)} received — ${usd(c.dueC - c.recv)} outstanding`, action:"openRow"});
+        }
+        if(c.recv > 0 && !r.paidOut && today > payDue && c.payoutC > 0)
+          add({key:`payout|${p.id}|${m}`, type:"payout", level:"warn", propId:p.id, month:m, title:`Owner payout not marked paid · ${p.name}`,
+               detail:`${usd(c.payoutC)} to ${own || "the owner"} for ${monthLabel(m)} was due by ${shortDate(payDue)}`, action:"markPaid"});
+        if(c.payoutC < 0)
+          add({key:`owes|${p.id}|${m}`, type:"owes", level:"warn", propId:p.id, month:m, title:`Owner owes ${usd(-c.payoutC)} · ${p.name}`,
+               detail:`Repairs and fees exceeded rent in ${monthLabel(m)}. It carries into next month automatically, or bill ${own || "the owner"} directly.`, action:"openRow"});
+        c.flags.filter(f => f.level === "warn" && /Recorded payout/.test(f.text)).forEach(f =>
+          add({key:`mismatch|${p.id}|${m}`, type:"mismatch", level:"info", propId:p.id, month:m, title:`Payout doesn't match the formula · ${p.name}`, detail:f.text, action:"openRow"}));
+      });
+    });
+
+    // leases, vacancy, setup gaps
+    const noOwner = [];
+    live.forEach(p => {
+      if(p.status === "active" && p.leaseEnd){
+        const left = dayNum(p.leaseEnd) - tn;
+        if(left < 0 && left > -400) add({key:`expired|${p.id}|${p.leaseEnd}`, type:"lease", level:"warn", propId:p.id, title:`Lease ended ${shortDate(p.leaseEnd)} · ${p.name}`, detail:"Renew, confirm month-to-month, or record the move-out.", action:"openProp"});
+        else if(left >= 0 && left <= S.renewalDays) add({key:`renew|${p.id}|${p.leaseEnd}`, type:"lease", level:left <= 30 ? "warn" : "info", propId:p.id, title:`Lease ends in ${left} day${left === 1 ? "" : "s"} · ${p.name}`, detail:`Ends ${shortDate(p.leaseEnd)}${p.tenants ? " · " + p.tenants : ""} — start the renewal conversation.`, action:"openProp"});
+      }
+      if((p.status === "marketing" || p.status === "vacant") && p.statusSince){
+        const d = tn - dayNum(p.statusSince);
+        if(d > S.vacancyDays) add({key:`vacant|${p.id}|${p.statusSince}`, type:"vacant", level:"info", propId:p.id, title:`Vacant ${d} days · ${p.name}`, detail:`${p.status === "marketing" ? "Marketing" : "Vacant"} since ${shortDate(p.statusSince)}${p.rent ? " · " + usd0(cents(p.rent)) + "/mo of rent" : ""}`, action:"openProp"});
+      }
+      if(p.status === "active" && !p.ownerId) noOwner.push(p);
+      if(p.feeRule && p.feeRule.check) add({key:`fee|${p.id}`, type:"setup", level:"info", propId:p.id, title:`Confirm the PM fee · ${p.name}`, detail:`${feeRuleText(p.feeRule)} was worked out from the workbook.`, action:"openProp"});
+    });
+
+    // one line for missing owners, not one per property
+    if(noOwner.length === 1) add({key:`owner|${noOwner[0].id}`, type:"setup", level:"info", propId:noOwner[0].id, title:`No owner on file · ${noOwner[0].name}`, detail:"Statements and the owner page need one.", action:"openProp"});
+    else if(noOwner.length > 1) add({key:`owners|missing`, type:"setup", level:"info", title:`${noOwner.length} properties have no owner on file`,
+      detail:noOwner.slice(0, 4).map(p => p.name).join(", ") + (noOwner.length > 4 ? ` and ${noOwner.length - 4} more` : "") + " — owner statements need one.", action:"openProps"});
+
+    // deposits after move-out
+    Object.entries(deps).forEach(([pid, d]) => {
+      const f = d && d.former; if(!f || !f.names || !f.moveOut || String(f.returned || "").trim()) return;
+      const p = props.find(x => x.id === pid); if(!p) return;
+      const due = isoOf(dayNum(f.moveOut) + S.depositDays), left = dayNum(due) - tn;
+      if(left <= 10) add({key:`deposit|${pid}|${f.moveOut}`, type:"deposit", level:left < 0 ? "urgent" : "warn", propId:pid,
+        title:left < 0 ? `Deposit return overdue · ${p.name}` : `Deposit return due in ${left} day${left === 1 ? "" : "s"} · ${p.name}`,
+        detail:`${f.names}${f.amount ? " · " + usd(cents(f.amount)) : ""} — moved out ${shortDate(f.moveOut)}; itemized return due ${shortDate(due)}.`, action:"openDeposit"});
+    });
+
+    // receipts waiting
+    const waiting = (o.inbox || []).filter(x => x.status === "pending" && x.received_at && tn - dayNum(String(x.received_at).slice(0, 10)) >= S.inboxStaleDays);
+    if(waiting.length) add({key:`inbox|${today}`, type:"inbox", level:"info", title:`${waiting.length} receipt${waiting.length === 1 ? "" : "s"} waiting over ${S.inboxStaleDays} days`, detail:"Approve or dismiss them in the Receipt inbox.", action:"openInbox"});
+
+    const rank = {urgent:0, warn:1, info:2};
+    return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
+  }
+
+  return {cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+})();
+
+/* =====================================================================
    PROPERTY MANAGEMENT — monthly rent, repairs, fees and owner payouts.
    Replaces the "TOTAL MONTHLY PM INCOME REPORTING" workbook.
 
@@ -3802,48 +3980,19 @@ const pmLiveProps = () => pmState().properties.filter(p => p.status !== "inactiv
 const nz = v => v == null || v === "" ? 0 : cents(v);
 const has = v => v != null && v !== "";
 
-function feeRuleText(r){
-  if(!r) return "10%";
-  return r.type === "flat" ? `${usd(cents(r.amount))} flat` : `${Number(r.rate)}%`;
+const feeRuleText = r => PMCore.feeRuleText(r);
+const itemFeeC = (it, prop) => PMCore.itemFee(it, prop);
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+/* one row's numbers, all in cents — the math lives in PMCore so the email digest uses the same rules */
+function pmCalc(row, prop){ return PMCore.calc(row, prop, todayISO()); }
+function pmSettings(){ return Object.assign({}, PMCore.DEFAULTS, S.pmSettings || {}); }
+function pmAlertState(){ if(!S.pmAlerts || typeof S.pmAlerts !== "object") S.pmAlerts = {}; return S.pmAlerts; }
+function pmAlerts(){
+  if(!pmState().properties.length) return [];
+  return PMCore.alerts({pm:pmState(), owners:S.owners || [], settings:pmSettings(), today:todayISO(), state:pmAlertState(),
+                        inbox:(typeof INBOX !== "undefined" ? INBOX.items : [])});
 }
-function itemFeeC(it, prop){
-  if(it.feeMode === "none") return 0;
-  if(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) return cents(it.fee);
-  return Math.round(cents(it.amount) * (Number(prop && prop.adminRate != null ? prop.adminRate : 10)) / 100);
-}
-
-/* one row's numbers, all in cents */
-function pmCalc(row, prop){
-  const items = row.repairItems || [];
-  const itemsC = items.reduce((a, it) => a + cents(it.amount), 0);
-  const itemsFeeC = items.reduce((a, it) => a + itemFeeC(it, prop), 0);
-  const recv = nz(row.rentReceived);
-  const repairsC = has(row.repairs) ? cents(row.repairs) : itemsC;
-  const adminC = has(row.adminFee) ? cents(row.adminFee) : itemsFeeC;
-  const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
-  const ruleFeeC = rule.type === "flat" ? (recv > 0 ? cents(rule.amount) : 0) : Math.round(recv * Number(rule.rate || 0) / 100);
-  const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : ruleFeeC;
-  const leasingC = nz(row.leasingFee), otherC = nz(row.otherIncome);
-  const adjC = (row.adjustments || []).reduce((a, x) => a + cents(x.amount), 0);
-  const calcC = recv - repairsC - adminC - pmFeeC - leasingC + otherC + adjC;
-  const recordedC = has(row.ownerPayout) ? cents(row.ownerPayout) : null;
-  const payoutC = recordedC != null ? recordedC : calcC;
-  const extrasC = PM_EXTRA.reduce((a, [k]) => a + nz(row[k]), 0);
-  const phdC = pmFeeC + adminC + leasingC + extrasC;
-  const dueC = nz(row.rentDue);
-  const flags = [];
-  if(recordedC != null && Math.abs(recordedC - calcC) > 1)
-    flags.push({level:"warn", text:`Recorded payout ${usd(recordedC)} is ${usd(Math.abs(recordedC - calcC))} ${recordedC > calcC ? "more" : "less"} than the formula (${usd(calcC)})`});
-  if(dueC > 0 && recv > 0 && recv < dueC && !row.locked) flags.push({level:"warn", text:`${usd(dueC - recv)} short of rent due`});
-  if(dueC > 0 && !recv && !row.locked && row.month <= thisMonth()) flags.push({level:"info", text:"Rent not recorded yet"});
-  if(payoutC < 0) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
-  if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
-  if(has(row.pmFee) && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
-  const [y, m] = String(row.month).split("-").map(Number);
-  items.forEach(it => { if(it.date){ const d = new Date(it.date + "T00:00:00"); const months = (y - d.getFullYear()) * 12 + (m - 1 - d.getMonth());
-    if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-  return {dueC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
-}
+function pmRentStatus(m, p){ const r = pmRow(m, p.id); if(r) r._lateAfter = pmSettings().lateAfterDay; return PMCore.rentStatus(r, p, todayISO()); }
 
 function pmMonthRows(m){
   const P2 = pmState();
@@ -3925,6 +4074,8 @@ function pgPmMonth(){
     acts.push(["Export CSV", () => pmExportCsv(m)]);
     acts.push(["Owner statements", () => pmStatementSheet(m)]);
     if(!closed) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
+    const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0).map(x => x.prop.id);
+    if(!closed && unpaid.length) acts.push([`Mark payouts sent (${unpaid.length})`, () => pmMarkPaidSheet(m, unpaid)]);
     acts.push(closed ? ["Reopen month", () => pmCloseMonth(m, false)] : ["Close month", () => pmCloseMonth(m, true), "primary"]);
   } else acts.push([`Start ${monthLabel(m)}`, () => pmStartMonth(m), "primary"]);
   actions(acts);
@@ -3954,10 +4105,11 @@ function pgPmMonth(){
   /* ---- filters ---- */
   const f = S.ui.pmFilter || "all", q = (S.ui.pmQ || "").toLowerCase();
   const bar = elm("div","sc-bar"); bar.style.marginTop = "16px";
-  const counts = {all:rows.filter(x => !x.row.detailOnly).length, attn:0, short:0, repairs:0};
+  const counts = {all:rows.filter(x => !x.row.detailOnly).length, attn:0, short:0, repairs:0, payout:0};
   rows.forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop);
-    if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueC > 0 && c.recv < c.dueC) counts.short++; if(c.repairsC) counts.repairs++; });
-  bar.innerHTML = `<div class="sc-seg">${[["all","All"],["attn","Needs a look"],["short","Unpaid / short"],["repairs","Has repairs"]]
+    if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueC > 0 && c.recv < c.dueC) counts.short++; if(c.repairsC) counts.repairs++;
+    if(!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0) counts.payout++; });
+  bar.innerHTML = `<div class="sc-seg">${[["all","All"],["attn","Needs a look"],["short","Unpaid / short"],["payout","Payout to send"],["repairs","Has repairs"]]
       .map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${counts[k]}</span></button>`).join("")}</div>
     <div class="sc-q"><input type="text" id="pmQ" placeholder="Find a property…" value="${esc(S.ui.pmQ || "")}"></div>`;
   v.appendChild(bar);
@@ -3969,14 +4121,15 @@ function pgPmMonth(){
   const card = elm("div","card");
   const wrap = elm("div","tbl-wrap"), t = elm("table","tbl pm-tbl");
   t.innerHTML = `<thead><tr><th>Property</th><th class="r">Rent due</th><th class="r">Received</th><th class="r">Repairs</th><th class="r">Admin fee</th>
-    <th class="r">PM fee</th><th class="r">Leasing</th><th class="r">Other</th><th class="r">Owner payout</th><th class="r">PHD extras</th><th></th></tr></thead>`;
+    <th class="r">PM fee</th><th class="r">Leasing</th><th class="r">Other</th><th class="r">Owner payout</th><th>Paid out</th><th></th></tr></thead>`;
   const tb = elm("tbody");
   const vis = rows.filter(({row, prop}) => {
     if(row.detailOnly) return false;
     if(q && !`${prop.name} ${prop.address} ${ownerLabel(ownerById(prop.ownerId))}`.toLowerCase().includes(q)) return false;
     if(f === "all") return true;
     const c = pmCalc(row, prop);
-    return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueC > 0 && c.recv < c.dueC) : f === "repairs" ? c.repairsC > 0 : true;
+    return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueC > 0 && c.recv < c.dueC) : f === "repairs" ? c.repairsC > 0
+      : f === "payout" ? (!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0) : true;
   });
   vis.forEach(({row, prop}) => {
     const c = pmCalc(row, prop), locked = row.locked || closed;
@@ -3993,7 +4146,8 @@ function pgPmMonth(){
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}</td>
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
-      ${cell(c.extrasC)}
+      <td class="pm-po">${row.paidOut ? `<button class="po-done" data-unpay="${prop.id}" title="Sent ${esc(row.paidOut.date)}${row.paidOut.method ? " by " + esc(row.paidOut.method) : ""}${row.paidOut.by ? " · marked by " + esc(row.paidOut.by) : ""} — click to undo">✓ ${esc(fdateS(row.paidOut.date))}</button>`
+          : locked ? `<span class="muted">—</span>` : c.recv > 0 && c.payoutC > 0 ? `<button class="btn sm" data-pay="${prop.id}">Mark sent</button>` : `<span class="muted">—</span>`}</td>
       <td class="act">${warn.length ? `<span class="pm-dot warn" title="${esc(warn.map(x => x.text).join("\n"))}"></span>` : info.length ? `<span class="pm-dot" title="${esc(info.map(x => x.text).join("\n"))}"></span>` : ""}<span class="sc-go">›</span></td>`;
     tr.onclick = e => { if(e.target.closest("input,button")) return; pmRowSheet(m, prop.id); };
     tb.appendChild(tr);
@@ -4001,7 +4155,7 @@ function pgPmMonth(){
   const foot = elm("tr","ow-tot");
   foot.innerHTML = `<td><b>${vis.length === counts.all ? "All properties" : vis.length + " shown"}</b></td><td class="r num"><b>${usd(R.dueC)}</b></td><td class="r num"><b>${usd(R.recv)}</b></td>
     <td class="r num"><b>${usd(R.repairsC)}</b></td><td class="r num"><b>${usd(R.adminC)}</b></td><td class="r num"><b>${usd(R.pmFeeC)}</b></td>
-    <td class="r num"><b>${usd(R.leasingC)}</b></td><td class="r num"><b>${usd(R.otherC)}</b></td><td class="r num"><b>${usd(R.payoutC)}</b></td><td class="r num"><b>${usd(R.extrasC)}</b></td><td></td>`;
+    <td class="r num"><b>${usd(R.leasingC)}</b></td><td class="r num"><b>${usd(R.otherC)}</b></td><td class="r num"><b>${usd(R.payoutC)}</b></td><td></td><td></td>`;
   tb.appendChild(foot);
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
   if(!vis.length) card.appendChild(elm("div","empty",`<b>Nothing here</b><p>No properties match this filter.</p>`));
@@ -4028,6 +4182,9 @@ function pgPmMonth(){
     inp.addEventListener("change", () => { if(save()){ const y = window.scrollY; commit(); window.scrollTo(0, y); } });
   });
   t.querySelectorAll("[data-rep]").forEach(b => b.onclick = e => { e.stopPropagation(); pmRowSheet(m, b.dataset.rep, "repairs"); });
+  t.querySelectorAll("[data-pay]").forEach(b => b.onclick = e => { e.stopPropagation(); pmMarkPaidSheet(m, [b.dataset.pay]); });
+  t.querySelectorAll("[data-unpay]").forEach(b => b.onclick = e => { e.stopPropagation();
+    if(!confirm("Undo the payout record for this property?")) return; snapshot(); const r = pmRow(m, b.dataset.unpay); delete r.paidOut; pmTouch(r); commit(); });
 
   /* ---- PHD income + money movement ---- */
   const inc = elm("div","pm-grid2");
@@ -4068,18 +4225,68 @@ function pmEnsureRow(m, pid){
 }
 function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = (typeof Cloud !== "undefined" && Cloud.email) || ""; }
 
-function pmStartMonth(m){
+/* Starting a month does the assistant's set-up work:
+   rent due from each lease, recurring vendor charges (pest control, lawn care…),
+   the monthly filter fee, and any balance an owner still owes from last month. */
+function pmStartMonth(m, quiet){
   const props = pmLiveProps();
   if(!props.length) return toast("Add properties first");
   snapshot();
-  const P2 = pmState();
+  const P2 = pmState(), prevM = monthAdd(m, -1);
+  let recurring = 0, carried = 0;
   props.forEach(p => {
     const k = pmKey(m, p.id); if(P2.rows[k]) return;
-    P2.rows[k] = {propertyId:p.id, month:m, rentDue:p.status === "active" ? p.rent : null,
-                  status:p.status === "active" ? "" : PM_STATUS[p.status] || "", repairItems:[], adjustments:[]};
+    const row = {propertyId:p.id, month:m, rentDue:p.status === "active" ? p.rent : null,
+                 status:p.status === "active" ? "" : PM_STATUS[p.status] || "", repairItems:[], adjustments:[], auto:true};
+    if(p.status === "active"){
+      (p.recurring || []).filter(x => x && Number(x.amount) > 0).forEach(x => {
+        row.repairItems.push({id:uid(), date:m + "-01", vendor:x.vendor || "", memo:x.memo || "Monthly service", amount:Number(x.amount), feeMode:x.feeMode || "auto", recurring:true});
+        recurring++;
+      });
+      if(Number(p.monthlyFilters) > 0) row.filters = Number(p.monthlyFilters);
+    }
+    const prev = P2.rows[pmKey(prevM, p.id)];
+    if(prev && !prev.detailOnly){
+      const c = pmCalc(prev, p);
+      if(c.payoutC < 0 && !prev.ownerBilled){ row.adjustments.push({amount:c.payoutC / 100, note:`Balance owed from ${monthLabel(prevM)}`, carried:true}); carried++; }
+    }
+    P2.rows[k] = row;
   });
   P2.meta[m] = Object.assign({month:m, deductions:[], withdrawals:[]}, P2.meta[m] || {});
-  S.ui.pmMonth = m; commit(); toast(`${monthLabel(m)} started — ${props.length} properties`, true);
+  P2.meta[m].startedAt = new Date().toISOString(); P2.meta[m].startedBy = (typeof Cloud !== "undefined" && Cloud.email) || "";
+  S.ui.pmMonth = m; commit();
+  toast(`${monthLabel(m)} started — ${props.length} properties${recurring ? ` · ${recurring} recurring charge${recurring === 1 ? "" : "s"} added` : ""}${carried ? ` · ${carried} balance${carried === 1 ? "" : "s"} carried` : ""}`, !quiet);
+}
+/* the first person to open the console in a new month starts it, so nobody has to remember */
+function pmAutoStart(){
+  const m = thisMonth(), P2 = pmState();
+  if(!P2.properties.length || pmMonthRows(m).length || S.ui._autoTried === m) return false;
+  S.ui._autoTried = m;
+  if(!pmMonths().includes(monthAdd(m, -1))) return false;        // only continue an existing run of months
+  pmStartMonth(m, true); return true;
+}
+/* owner payouts: mark one or many as sent */
+function pmMarkPaid(m, pids, date, method){
+  snapshot();
+  const by = (typeof Cloud !== "undefined" && Cloud.email) || "";
+  pids.forEach(pid => { const r = pmEnsureRow(m, pid); r.paidOut = {date, method:method || "", by}; pmTouch(r); });
+  commit(); toast(`${pids.length} payout${pids.length === 1 ? "" : "s"} marked sent ${fdateS(date)}`, true);
+}
+function pmMarkPaidSheet(m, pids){
+  const rows = pids.map(pid => ({p:pmProp(pid), c:pmCalc(pmRow(m, pid), pmProp(pid))}));
+  const total = rows.reduce((a, x) => a + x.c.payoutC, 0);
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><h3>Mark owner payouts sent</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <p class="muted" style="font-size:13.3px;margin-top:0">${rows.length} payout${rows.length === 1 ? "" : "s"} for ${monthLabel(m)} totaling <b class="num">${usd(total)}</b>.</p>
+      <div class="f2"><label class="fld"><span>Date sent</span><input type="date" id="mpD" value="${todayISO()}"></label>
+        <label class="fld"><span>How</span><select id="mpM"><option>ACH</option><option>Nickel</option><option>Check</option><option>Zelle</option><option>Other</option></select></label></div>
+      <div class="md-list">${rows.map(x => `<div class="md-r" style="grid-template-columns:1fr auto"><span>${esc(x.p.name)}<span class="muted"> · ${esc(ownerLabel(ownerById(x.p.ownerId)) || "no owner")}</span></span><b class="num">${usd(x.c.payoutC)}</b></div>`).join("")}</div>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="mpGo">Mark ${rows.length} sent</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#mpGo").onclick = () => { const d = $("#mpD").value; if(!d) return toast("Pick a date"); closeSheet(); pmMarkPaid(m, pids, d, $("#mpM").value); };
+  openPanel();
 }
 function pmCloseMonth(m, close){
   const R = pmMonthRoll(m);
@@ -4133,6 +4340,10 @@ function pmRowSheet(m, pid, focus){
         <div class="f2"><label class="fld"><span>PM fee</span><input type="number" step="0.01" data-k="pmFee" value="${has(row.pmFee) ? row.pmFee : ""}" placeholder="${(c.ruleFeeC / 100).toFixed(2)}" ${ro ? "disabled" : ""}>
           <span class="help">Blank uses the rule: ${feeRuleText(prop.feeRule)} of rent received = ${usd(c.ruleFeeC)}</span></label>
           <label class="fld"><span>Notes</span><input type="text" data-k="notes" value="${esc(row.notes || "")}" ${ro ? "disabled" : ""}></label></div>
+        <div class="sectl" style="margin-top:6px">Owner payout</div>
+        <div class="f2"><label class="fld"><span>Sent on</span><input type="date" id="poD" value="${esc((row.paidOut || {}).date || "")}" ${ro ? "disabled" : ""}></label>
+          <label class="fld"><span>How</span><select id="poM" ${ro ? "disabled" : ""}>${["","ACH","Nickel","Check","Zelle","Other"].map(x => `<option ${((row.paidOut || {}).method || "") === x ? "selected" : ""} value="${x}">${x || "—"}</option>`).join("")}</select></label></div>
+        <label class="switchbox"><input type="checkbox" id="shortOk" ${row.shortOk ? "checked" : ""} ${ro ? "disabled" : ""}> Partial rent is expected this month — don't raise a "rent short" alert</label>
         ${(row.payments || []).length ? `<div class="sectl">Payments received</div><div class="ib-lines">${row.payments.map(p => `<div><span>${esc([p.date ? fdateS(p.date) : "", p.name, p.via, p.type && p.type !== "rent" ? p.type : ""].filter(Boolean).join(" · "))}</span><span class="num">${usd(cents(p.amount))}</span></div>`).join("")}</div>` : ""}
         <div class="sectl" style="margin-top:14px">Owner statement</div>
         <table class="pm-sum wf">
@@ -4159,6 +4370,9 @@ function pmRowSheet(m, pid, focus){
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#pmStmt").onclick = () => { pmCommitRow(m, pid, row, ro); printDoc(pmStatementHTML(m, [pid])); };
     if(ro) return;
+    const poD = $("#poD"), poM = $("#poM"), so = $("#shortOk");
+    if(poD) poD.onchange = poM.onchange = () => { row.paidOut = poD.value ? {date:poD.value, method:poM.value, by:(typeof Cloud !== "undefined" && Cloud.email) || ""} : undefined; if(!poD.value) delete row.paidOut; };
+    if(so) so.onchange = () => { row.shortOk = so.checked || undefined; if(!so.checked) delete row.shortOk; };
     sh.querySelectorAll("[data-k]").forEach(inp => inp.onchange = () => {
       const k = inp.dataset.k;
       row[k] = k === "notes" ? inp.value : (inp.value.trim() === "" ? null : Math.round(Number(inp.value) * 100) / 100);
@@ -4241,7 +4455,7 @@ function pgPmProps(){
       <td><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status] || "grey"}">${PM_STATUS[p.status] || p.status}</span></td>
       <td class="r num">${p.rent ? usd(cents(p.rent)) : "—"}</td><td class="r num">${feeRuleText(p.feeRule)}</td>
       <td class="r num">${c ? usd(c.payoutC) : "—"}</td><td class="r num">${held ? usd(held) : "—"}</td><td class="act"><span class="sc-go">›</span></td>`;
-    tr.onclick = () => pmPropSheet(p.id);
+    tr.onclick = () => pmOpenProperty(p.id);
     tb.appendChild(tr);
   });
   t.appendChild(tb);
@@ -4252,53 +4466,104 @@ function pgPmProps(){
 
 function pmPropSheet(id){
   const isNew = !id;
-  const p = isNew ? {id:"pm_" + uid(), name:"", address:"", aliases:[], rent:null, feeRule:{type:"pct", rate:10}, adminRate:10, status:"active", ownerId:null, tenants:"", notes:""}
+  const p = isNew ? {id:"pm_" + uid(), name:"", address:"", aliases:[], rent:null, feeRule:{type:"pct", rate:10}, adminRate:10, status:"active", ownerId:null, tenants:"", notes:"", recurring:[]}
                   : JSON.parse(JSON.stringify(pmProp(id)));
+  p.recurring = p.recurring || [];
   const sh = $("#sheet");
   const owners = (S.owners || []).filter(ownerLabel).sort((a, b) => ownerLabel(a).localeCompare(ownerLabel(b)));
-  sh.innerHTML = `
+  // the filter fee most often charged over the last three months, offered as a default
+  const hist = pmMonths().slice(-3).map(m => pmRow(m, p.id)).filter(r => r && Number(r.filters) > 0).map(r => Number(r.filters));
+  const usual = hist.length >= 2 && hist.every(x => x === hist[0]) ? hist[0] : null;
+  const recRow = (x, i) => `<div class="pm-rec" data-ri="${i}"><input type="text" data-rk="vendor" value="${esc(x.vendor || "")}" placeholder="Vendor (e.g. Stark Exterminators)">
+      <input type="text" data-rk="memo" value="${esc(x.memo || "")}" placeholder="What (e.g. Monthly pest control)"><input type="number" step="0.01" data-rk="amount" value="${x.amount ?? ""}" placeholder="0.00">
+      <select data-rk="feeMode"><option value="auto" ${x.feeMode !== "none" ? "selected" : ""}>+ admin fee</option><option value="none" ${x.feeMode === "none" ? "selected" : ""}>No fee</option></select>
+      <button class="btn sm ghost" data-rdel="${i}">✕</button></div>`;
+  const draw = () => {
+    sh.innerHTML = `
     <div class="sheet-h"><h3>${isNew ? "New property" : esc(p.name)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <label class="fld"><span>Short name</span><input type="text" id="pp_name" value="${esc(p.name)}" placeholder="342 King St #A"></label>
       <label class="fld"><span>Full address</span><input type="text" id="pp_addr" value="${esc(p.address)}" placeholder="342 King St, A, Charleston, SC 29401"><span class="help">Used to match Magicdoor payments and receipts.</span></label>
       <div class="f2">
         <label class="fld"><span>Owner</span><select id="pp_owner"><option value="">— None yet —</option>${owners.map(o => `<option value="${o.id}" ${o.id === p.ownerId ? "selected" : ""}>${esc(ownerLabel(o))}</option>`).join("")}<option value="__new">+ New owner…</option></select></label>
-        <label class="fld"><span>Status</span><select id="pp_status">${Object.entries(PM_STATUS).map(([k, l]) => `<option value="${k}" ${p.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="fld"><span>Status</span><select id="pp_status">${Object.entries(PM_STATUS).map(([k, l]) => `<option value="${k}" ${(p._statusDraft || p.status) === k ? "selected" : ""}>${l}</option>`).join("")}</select>${p.statusSince ? `<span class="help">Since ${esc(fdateS(p.statusSince))}</span>` : ""}</label>
       </div>
+      <div class="sectl">Lease</div>
       <div class="f2">
         <label class="fld"><span>Monthly rent</span><input type="number" step="0.01" id="pp_rent" value="${p.rent ?? ""}"></label>
         <label class="fld"><span>Tenants</span><input type="text" id="pp_ten" value="${esc(p.tenants || "")}" placeholder="Names on the lease"></label>
+      </div>
+      <div class="f2">
+        <label class="fld"><span>Lease start</span><input type="date" id="pp_ls" value="${esc(p.leaseStart || "")}"></label>
+        <label class="fld"><span>Lease end</span><input type="date" id="pp_le" value="${esc(p.leaseEnd || "")}"><span class="help">You'll get a renewal alert ${pmSettings().renewalDays} days ahead.</span></label>
+      </div>
+      <div class="f2">
+        <label class="fld"><span>Tenant email</span><input type="email" id="pp_te" value="${esc(p.tenantEmail || "")}"></label>
+        <label class="fld"><span>Tenant phone</span><input type="tel" id="pp_tp" value="${esc(p.tenantPhone || "")}"></label>
       </div>
       <div class="sectl">Fees</div>
       <div class="f2">
         <label class="fld"><span>PM fee</span><select id="pp_ft"><option value="pct" ${p.feeRule.type !== "flat" ? "selected" : ""}>Percent of rent received</option><option value="flat" ${p.feeRule.type === "flat" ? "selected" : ""}>Flat amount</option></select></label>
         <label class="fld"><span id="pp_fvL">${p.feeRule.type === "flat" ? "Amount ($)" : "Rate (%)"}</span><input type="number" step="0.01" id="pp_fv" value="${p.feeRule.type === "flat" ? p.feeRule.amount : p.feeRule.rate}"></label>
       </div>
-      <label class="fld"><span>Admin fee on repairs (%)</span><input type="number" step="0.01" id="pp_ar" value="${p.adminRate ?? 10}"></label>
-      ${p.feeRule.check ? `<p class="pm-banner">This fee rule was worked out from the workbook (${feeRuleText(p.feeRule)} of rent received). Confirm the rate and save to clear the warning.</p>` : ""}
-      <label class="fld"><span>Notes</span><textarea id="pp_notes" rows="3">${esc(p.notes || "")}</textarea></label>
+      <div class="f2">
+        <label class="fld"><span>Admin fee on repairs (%)</span><input type="number" step="0.01" id="pp_ar" value="${p.adminRate ?? 10}"></label>
+        <label class="fld"><span>Monthly filter fee (tenant)</span><input type="number" step="0.01" id="pp_mf" value="${p.monthlyFilters ?? ""}" placeholder="${usual ? usual.toFixed(2) : "0.00"}"><span class="help">${usual ? `Charged ${usd(cents(usual))} each of the last months — leave blank to skip.` : "Added to PHD income every month."}</span></label>
+      </div>
+      ${p.feeRule.check ? `<p class="pm-banner">This fee rule was worked out from the workbook (${feeRuleText(p.feeRule)} of rent received). Confirm the rate and save to clear the alert.</p>` : ""}
+      <div class="sectl">Recurring charges</div>
+      <p class="help" style="margin-top:0">Added to this property automatically when each month starts — pest control, lawn care, utilities you pay for the owner.</p>
+      <div class="pm-recs">${p.recurring.map(recRow).join("")}</div>
+      <button class="btn sm" id="pp_addRec">${icon("plus")} Add a recurring charge</button>
+      <label class="fld" style="margin-top:14px"><span>Notes</span><textarea id="pp_notes" rows="3">${esc(p.notes || "")}</textarea></label>
     </div>
-    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="ppSave">${isNew ? "Add property" : "Save"}</button></div>`;
-  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
-  $("#pp_ft").onchange = e => { $("#pp_fvL").textContent = e.target.value === "flat" ? "Amount ($)" : "Rate (%)"; };
-  $("#pp_owner").onchange = e => {
-    if(e.target.value !== "__new") return;
-    const nm = prompt("Owner name"); if(!nm){ e.target.value = p.ownerId || ""; return; }
-    const o = cleanOwner(Object.assign(blankOwner(), {id:uid(), name:nm.trim()})); S.owners = S.owners || []; S.owners.push(o);
-    const opt = document.createElement("option"); opt.value = o.id; opt.textContent = nm.trim(); e.target.insertBefore(opt, e.target.lastChild); e.target.value = o.id;
+    <div class="sheet-f">${isNew ? "" : `<button class="btn" id="pp_page">Open property page</button>`}<span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="ppSave">${isNew ? "Add property" : "Save"}</button></div>`;
+    wire();
   };
-  $("#ppSave").onclick = () => {
-    const name = $("#pp_name").value.trim(); if(!name) return toast("Give the property a name");
-    const fv = Number($("#pp_fv").value);
-    snapshot();
-    Object.assign(p, {name, address:$("#pp_addr").value.trim() || name, ownerId:$("#pp_owner").value || null, status:$("#pp_status").value,
-      rent:$("#pp_rent").value === "" ? null : Number($("#pp_rent").value), tenants:$("#pp_ten").value.trim(), notes:$("#pp_notes").value.trim(),
-      adminRate:Number($("#pp_ar").value) || 0,
-      feeRule:$("#pp_ft").value === "flat" ? {type:"flat", amount:fv || 0} : {type:"pct", rate:fv || 0}});
-    const L = pmState().properties;
-    if(isNew) L.push(p); else L[L.findIndex(x => x.id === p.id)] = p;
-    closeSheet(); commit(); toast(isNew ? `${name} added` : "Saved", true);
+  const grab = () => {
+    p.recurring = [...sh.querySelectorAll(".pm-rec")].map(el => ({vendor:el.querySelector('[data-rk="vendor"]').value.trim(), memo:el.querySelector('[data-rk="memo"]').value.trim(),
+      amount:el.querySelector('[data-rk="amount"]').value === "" ? null : Number(el.querySelector('[data-rk="amount"]').value), feeMode:el.querySelector('[data-rk="feeMode"]').value}));
   };
+  const wire = () => {
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const pg = $("#pp_page"); if(pg) pg.onclick = () => { closeSheet(); pmOpenProperty(p.id); };
+    $("#pp_ft").onchange = e => { $("#pp_fvL").textContent = e.target.value === "flat" ? "Amount ($)" : "Rate (%)"; };
+    $("#pp_addRec").onclick = () => { snap(); grab(); p.recurring.push({vendor:"", memo:"", amount:null, feeMode:"auto"}); draw(); };
+    sh.querySelectorAll("[data-rdel]").forEach(b => b.onclick = () => { snap(); grab(); p.recurring.splice(+b.dataset.rdel, 1); draw(); });
+    $("#pp_owner").onchange = e => {
+      if(e.target.value !== "__new") return;
+      const nm = prompt("Owner name"); if(!nm){ e.target.value = p.ownerId || ""; return; }
+      const o = cleanOwner(Object.assign(blankOwner(), {id:uid(), name:nm.trim()})); S.owners = S.owners || []; S.owners.push(o);
+      const opt = document.createElement("option"); opt.value = o.id; opt.textContent = nm.trim(); e.target.insertBefore(opt, e.target.lastChild); e.target.value = o.id;
+    };
+    $("#ppSave").onclick = () => {
+      const name = $("#pp_name").value.trim(); if(!name) return toast("Give the property a name");
+      grab();
+      const fv = Number($("#pp_fv").value), status = $("#pp_status").value;
+      const newRule = $("#pp_ft").value === "flat" ? {type:"flat", amount:fv || 0} : {type:"pct", rate:fv || 0};
+      snapshot();
+      if(status !== p.status) p.statusSince = todayISO();
+      Object.assign(p, {name, address:$("#pp_addr").value.trim() || name, ownerId:$("#pp_owner").value || null, status,
+        rent:$("#pp_rent").value === "" ? null : Number($("#pp_rent").value), tenants:$("#pp_ten").value.trim(), notes:$("#pp_notes").value.trim(),
+        leaseStart:$("#pp_ls").value || null, leaseEnd:$("#pp_le").value || null, tenantEmail:$("#pp_te").value.trim(), tenantPhone:$("#pp_tp").value.trim(),
+        monthlyFilters:$("#pp_mf").value === "" ? null : Number($("#pp_mf").value),
+        adminRate:Number($("#pp_ar").value) || 0, recurring:p.recurring.filter(x => x.amount > 0 && (x.vendor || x.memo)),
+        feeRule:newRule});
+      delete p.feeRule.check; delete p._statusDraft;          // saving confirms the rule
+      const L = pmState().properties;
+      if(isNew) L.push(p); else L[L.findIndex(x => x.id === p.id)] = p;
+      closeSheet(); commit(); toast(isNew ? `${name} added` : "Saved", true);
+    };
+  };
+  // keep the visible field values when the recurring list redraws
+  const snap = () => { ["name","addr","rent","ten","ls","le","te","tp","fv","ar","mf","notes"].forEach(k => { const el = $("#pp_" + k); if(el) p["_f_" + k] = el.value; });
+    p.name = p._f_name; p.address = p._f_addr; p.rent = p._f_rent === "" ? null : Number(p._f_rent); p.tenants = p._f_ten; p.leaseStart = p._f_ls; p.leaseEnd = p._f_le;
+    p.tenantEmail = p._f_te; p.tenantPhone = p._f_tp; p.adminRate = Number(p._f_ar); p.monthlyFilters = p._f_mf === "" ? null : Number(p._f_mf); p.notes = p._f_notes;
+    p.ownerId = $("#pp_owner").value === "__new" ? p.ownerId : ($("#pp_owner").value || null);
+    p._statusDraft = $("#pp_status").value;
+    const ck = p.feeRule.check; p.feeRule = $("#pp_ft").value === "flat" ? {type:"flat", amount:Number(p._f_fv) || 0} : {type:"pct", rate:Number(p._f_fv) || 0}; if(ck) p.feeRule.check = ck;
+    Object.keys(p).filter(k => k.startsWith("_f_")).forEach(k => delete p[k]); };
+  draw();
   openPanel();
 }
 
@@ -4338,7 +4603,8 @@ function pmDepositSheet(pid){
     return `<div class="sectl">${label}</div>
       <div class="f2"><label class="fld"><span>Names</span><input type="text" data-s="${k}" data-f="names" value="${esc(x.names || "")}"></label>
       <label class="fld"><span>Amount</span><input type="number" step="0.01" data-s="${k}" data-f="amount" value="${x.amount ?? ""}" placeholder="${esc(x.amountText || "")}"></label></div>
-      ${withRet ? `<label class="fld"><span>Returned</span><input type="text" data-s="${k}" data-f="returned" value="${esc(x.returned || "")}" placeholder="e.g. Returned 9/12 — $2,450 less $150 cleaning"></label>` : ""}
+      ${withRet ? `<label class="fld"><span>Moved out</span><input type="date" data-s="${k}" data-f="moveOut" value="${esc(x.moveOut || "")}"><span class="help">South Carolina requires the deposit (with an itemized list of deductions) back within ${pmSettings().depositDays} days — you'll be alerted before it's due.</span></label>
+      <label class="fld"><span>Returned</span><input type="text" data-s="${k}" data-f="returned" value="${esc(x.returned || "")}" placeholder="e.g. Returned 9/12 — $2,450 less $150 cleaning"></label>` : ""}
       <label class="fld"><span>Notes</span><textarea rows="2" data-s="${k}" data-f="notes">${esc(x.notes || "")}</textarea></label>`; };
   const sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><h3>Deposits · ${esc(p.name)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
@@ -4610,13 +4876,330 @@ function pmStatementHTML(m, ids, groupsList){
 }
 
 /* =====================================================================
+   PROPERTY MANAGEMENT — overview board, action center, property page,
+   and settings. Everything here reads from pmState() and PMCore.
+   ===================================================================== */
+const PM_STAT = {
+  paid:{label:"Paid", cls:"green"}, partial:{label:"Partial", cls:"gold"}, late:{label:"Late", cls:"red"},
+  due:{label:"Due", cls:"acc"}, upcoming:{label:"Upcoming", cls:"grey"}, none:{label:"Not started", cls:"grey"},
+  nodue:{label:"No rent due", cls:"grey"}, vacant:{label:"Vacant", cls:"grey"}, inactive:{label:"—", cls:"grey"}
+};
+const PM_LEVEL = {urgent:{label:"Urgent", cls:"red"}, warn:{label:"Needs action", cls:"gold"}, info:{label:"Heads-up", cls:"acc"}};
+
+function pmOpenProperty(id){ S.ui.pmPropId = id; go("pmProperty"); }
+
+/* ---------- alert actions, snooze, dismiss ---------- */
+function pmAlertAct(a){
+  if(a.action === "startMonth") return pmStartMonth(a.month);
+  if(a.action === "openMonth"){ S.ui.pmMonth = a.month; return go("pmMonth"); }
+  if(a.action === "openRow"){ S.ui.pmMonth = a.month; go("pmMonth"); return setTimeout(() => pmRowSheet(a.month, a.propId), 30); }
+  if(a.action === "markPaid") return pmMarkPaidSheet(a.month, [a.propId]);
+  if(a.action === "openProp") return pmOpenProperty(a.propId);
+  if(a.action === "openDeposit"){ go("pmDeposits"); return setTimeout(() => pmDepositSheet(a.propId), 30); }
+  if(a.action === "openInbox"){ go("inbox"); return inboxRefresh(); }
+  if(a.action === "openProps"){ S.ui.pmPropF = "active"; return go("pmProps"); }
+}
+const PM_ACT_LABEL = {openProps:"Assign owners", startMonth:"Start month", openMonth:"Open month", openRow:"Open", markPaid:"Mark sent", openProp:"Open property", openDeposit:"Open deposit", openInbox:"Review"};
+function pmAlertSet(key, st){
+  snapshot();
+  const A = pmAlertState(), today = todayISO();
+  // tidy: forget decisions older than 4 months
+  Object.keys(A).forEach(k => { if(A[k].at && PMCore.dayNum(today) - PMCore.dayNum(A[k].at.slice(0, 10)) > 120) delete A[k]; });
+  if(st) A[key] = Object.assign({at:new Date().toISOString(), by:(typeof Cloud !== "undefined" && Cloud.email) || ""}, st); else delete A[key];
+  commit();
+}
+function pmAlertRowHTML(a){
+  const lv = PM_LEVEL[a.level];
+  return `<div class="al-r al-${a.level}" data-ak="${esc(a.key)}">
+    <span class="al-dot"></span>
+    <div class="al-txt"><b>${esc(a.title)}</b><span>${esc(a.detail || "")}</span></div>
+    <div class="al-btns">
+      <button class="btn sm ${a.level === "info" ? "" : "primary"}" data-aact="${esc(a.key)}">${PM_ACT_LABEL[a.action] || "Open"}</button>
+      <div class="al-more"><button class="btn sm ghost" data-amenu="${esc(a.key)}" title="Snooze or dismiss">⋯</button>
+        <div class="al-menu"><button data-asnz="1">Snooze until tomorrow</button><button data-asnz="3">Snooze 3 days</button><button data-asnz="7">Snooze a week</button><button data-adis>Dismiss</button></div></div>
+    </div></div>`;
+}
+function pmWireAlerts(root, list){
+  const find = k => list.find(a => a.key === k);
+  root.querySelectorAll("[data-aact]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.aact); if(a) pmAlertAct(a); });
+  root.querySelectorAll("[data-amenu]").forEach(b => b.onclick = e => { e.stopPropagation(); const m = b.nextElementSibling;
+    root.querySelectorAll(".al-menu.on").forEach(x => { if(x !== m) x.classList.remove("on"); }); m.classList.toggle("on"); });
+  root.querySelectorAll(".al-menu [data-asnz]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
+    const until = PMCore.isoOf(PMCore.dayNum(todayISO()) + Number(b.dataset.asnz)); pmAlertSet(key, {state:"snoozed", until}); toast(`Snoozed until ${fdateS(until)}`, true); });
+  root.querySelectorAll(".al-menu [data-adis]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
+    const note = prompt("Dismiss this alert — add a short reason (optional)") ; if(note === null) return; pmAlertSet(key, {state:"dismissed", note:note.trim()}); toast("Dismissed", true); });
+}
+document.addEventListener("click", () => document.querySelectorAll(".al-menu.on").forEach(x => x.classList.remove("on")));
+
+/* ====================================================================
+   OVERVIEW — every property at a glance, and what needs doing
+   ==================================================================== */
+function pgPmHome(){
+  const P2 = pmState();
+  if(!P2.properties.length) return pmEmpty();
+  if(pmAutoStart()) return;                       // started the new month; commit() re-renders
+  const today = todayISO(), m = thisMonth(), set = pmSettings();
+  const rowsM = pmMonthRows(m).filter(x => !x.row.detailOnly);
+  const monthOn = rowsM.length ? m : (pmMonths().slice(-1)[0] || m);
+  const props = pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const alerts = pmAlerts();
+  $("#pgCrumb").textContent = "Property management";
+  $("#pgTitle").textContent = "Overview";
+  $("#pgSub").textContent = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric"}) + (alerts.length ? ` · ${alerts.filter(a => a.level !== "info").length} things need action` : " · nothing needs action");
+  actions([["Add property", () => pmPropSheet(null), "ghost"], ["Open " + monthLabel(monthOn), () => { S.ui.pmMonth = monthOn; go("pmMonth"); }], ["Record rent", () => pmQuick(), "primary"]]);
+  const v = $("#view");
+
+  /* ---- numbers that matter today ---- */
+  const leased = props.filter(p => p.status === "active");
+  const st = {}; props.forEach(p => st[p.id] = pmRentStatus(monthOn, p));
+  let dueC = 0, recvC = 0, lateC = 0, lateN = 0, payN = 0, payC = 0, sentN = 0, payTot = 0;
+  props.forEach(p => { const r = pmRow(monthOn, p.id); if(!r || r.detailOnly) return; const c = pmCalc(r, p);
+    dueC += c.dueC; recvC += Math.min(c.recv, c.dueC || c.recv);
+    if(st[p.id] === "late"){ lateN++; lateC += c.dueC - c.recv; }
+    if(c.recv > 0 && c.payoutC > 0){ payTot++; if(r.paidOut || r.locked) sentN++; else { payN++; payC += c.payoutC; } } });
+  const ending = leased.filter(p => p.leaseEnd && PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) <= set.renewalDays && PMCore.dayNum(p.leaseEnd) >= PMCore.dayNum(today) - 31).length;
+  const vac = props.filter(p => p.status === "marketing" || p.status === "vacant").length;
+  const pct = dueC ? Math.round(recvC / dueC * 100) : 0;
+  const tiles = elm("div","card pf-hero pm-kpi");
+  tiles.innerHTML = `
+    <div class="pf-cell"><div class="label">Doors</div><div class="pf-v">${leased.length}<span class="pm-of"> leased</span></div><div class="pf-note">${vac ? `${vac} vacant or marketing` : "Fully leased"}</div></div>
+    <div class="pf-cell"><div class="label">Rent · ${monthLabel(monthOn).split(" ")[0]}</div><div class="pf-v">${pct}%</div><div class="pm-meter"><i style="width:${pct}%"></i></div><div class="pf-note">${usd(recvC)} of ${usd(dueC)}</div></div>
+    <div class="pf-cell" data-goto="late"><div class="label">Late</div><div class="pf-v"${lateN ? ' style="color:var(--red)"' : ""}>${lateN}</div><div class="pf-note">${lateN ? usd(lateC) + " outstanding" : "Nobody late"}</div></div>
+    <div class="pf-cell" data-goto="payout"><div class="label">Payouts to send</div><div class="pf-v"${payN ? ' style="color:var(--gold)"' : ""}>${payN}</div><div class="pf-note">${payN ? usd(payC) : payTot ? `All ${sentN} sent` : "None yet"}</div></div>
+    <div class="pf-cell" data-goto="lease"><div class="label">Leases ending</div><div class="pf-v">${ending}</div><div class="pf-note">next ${set.renewalDays} days</div></div>`;
+  v.appendChild(tiles);
+  tiles.querySelectorAll("[data-goto]").forEach(c => { c.style.cursor = "pointer"; c.onclick = () => { S.ui.pmBoardF = c.dataset.goto; render(); setTimeout(() => { const b = $("#pmBoard"); if(b) b.scrollIntoView({behavior:"smooth", block:"start"}); }, 30); }; });
+
+  /* ---- needs action + month progress ---- */
+  const two = elm("div","pm-home2");
+  const ac = elm("div","card");
+  const top = alerts.slice(0, 7);
+  ac.innerHTML = `<div class="card-h"><h3>Needs action</h3>${alerts.length ? `<span class="tag ${alerts.some(a => a.level === "urgent") ? "red" : "gold"}" style="margin-left:6px">${alerts.length}</span>` : ""}
+      <button class="btn sm ghost" id="seeAll" style="margin-left:auto">Action center ${icon("arrow")}</button></div>
+    <div class="al-list">${top.length ? top.map(pmAlertRowHTML).join("") : `<div class="al-zero">${icon("check")}<b>You're all caught up</b><span>New alerts appear here as soon as something needs a person.</span></div>`}
+    ${alerts.length > top.length ? `<button class="al-moreall" id="seeAll2">See all ${alerts.length} →</button>` : ""}</div>`;
+  two.appendChild(ac);
+  const meta = P2.meta[monthOn] || {};
+  const steps = [
+    ["Month started", rowsM.length > 0 || pmMonthRows(monthOn).length > 0, meta.startedAt ? fdateS(meta.startedAt.slice(0, 10)) : ""],
+    ["Rent collected", dueC > 0 && recvC >= dueC, `${pct}%`],
+    ["Payouts sent", payTot > 0 && payN === 0, payTot ? `${sentN} of ${payTot}` : "—"],
+    ["Month closed", !!meta.closed, meta.closed && meta.closedAt ? fdateS(meta.closedAt.slice(0, 10)) : ""]];
+  const mp = elm("div","card");
+  mp.innerHTML = `<div class="card-h"><h3>${monthLabel(monthOn)}</h3><button class="btn sm ghost" id="openM" style="margin-left:auto">Month close ${icon("arrow")}</button></div>
+    <div class="card-b"><div class="pm-steps">${steps.map(([l, done, sub], i) => `<div class="pm-step${done ? " done" : ""}"><span class="n">${done ? "✓" : i + 1}</span><div><b>${l}</b><span>${esc(sub || "")}</span></div></div>`).join("")}</div>
+      <table class="pm-sum" style="margin-top:14px">
+        <tr><td>PHD income so far</td><td class="r num">${usd(pmMonthRoll(monthOn).netC)}</td></tr>
+        <tr><td>Repairs billed to owners</td><td class="r num">${usd(pmMonthRoll(monthOn).repairsC)}</td></tr>
+        <tr><td>Paid / to pay owners</td><td class="r num">${usd(pmMonthRoll(monthOn).payoutC)}</td></tr></table></div>`;
+  two.appendChild(mp);
+  v.appendChild(two);
+  pmWireAlerts(ac, alerts);
+  [ac.querySelector("#seeAll"), ac.querySelector("#seeAll2")].forEach(b => b && (b.onclick = () => go("pmAlerts")));
+  mp.querySelector("#openM").onclick = () => { S.ui.pmMonth = monthOn; go("pmMonth"); };
+
+  /* ---- the board ---- */
+  const alertBy = {}; alerts.forEach(a => { if(a.propId) (alertBy[a.propId] = alertBy[a.propId] || []).push(a); });
+  const f = S.ui.pmBoardF || "all", q = (S.ui.pmBoardQ || "").toLowerCase(), view = S.ui.pmBoardV || "cards";
+  const leaseSoon = p => p.leaseEnd && PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) <= set.renewalDays && PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) >= -31;
+  const payDue = p => { const r = pmRow(monthOn, p.id); if(!r || r.locked || r.paidOut) return false; const c = pmCalc(r, p); return c.recv > 0 && c.payoutC > 0; };
+  const FILT = [["all","All", () => true], ["late","Late", p => st[p.id] === "late"], ["partial","Partial", p => st[p.id] === "partial"],
+    ["payout","Payout to send", payDue], ["lease","Lease ending", leaseSoon], ["vacant","Vacant / marketing", p => p.status !== "active"], ["alerts","With alerts", p => (alertBy[p.id] || []).length]];
+  const shown = props.filter(p => (FILT.find(x => x[0] === f) || FILT[0])[2](p) && (!q || `${p.name} ${p.address} ${p.tenants || ""} ${ownerLabel(ownerById(p.ownerId))}`.toLowerCase().includes(q)));
+  const board = elm("div"); board.id = "pmBoard"; board.style.marginTop = "18px";
+  board.innerHTML = `<div class="sc-bar">
+      <div class="sc-seg">${FILT.map(([k, l, fn]) => { const n = props.filter(fn).length; return k === "all" || n ? `<button data-bf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>` : ""; }).join("")}</div>
+      <div class="sc-q" style="display:flex;gap:8px"><input type="text" id="pbQ" placeholder="Find a property, tenant or owner…" value="${esc(S.ui.pmBoardQ || "")}">
+        <div class="seg-ctl">${[["cards","Cards"],["table","Table"],["history","Rent history"]].map(([k, l]) => `<button data-bv="${k}" aria-pressed="${view === k}">${l}</button>`).join("")}</div></div></div>`;
+  v.appendChild(board);
+  board.querySelectorAll("[data-bf]").forEach(b => b.onclick = () => { S.ui.pmBoardF = b.dataset.bf; render(); setTimeout(() => $("#pmBoard") && $("#pmBoard").scrollIntoView({block:"start"}), 0); });
+  board.querySelectorAll("[data-bv]").forEach(b => b.onclick = () => { S.ui.pmBoardV = b.dataset.bv; persistUi(); render(); setTimeout(() => $("#pmBoard") && $("#pmBoard").scrollIntoView({block:"start"}), 0); });
+  const qi = board.querySelector("#pbQ");
+  qi.oninput = () => { S.ui.pmBoardQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#pbQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); n.scrollIntoView({block:"center"}); } }, 160); };
+
+  if(!shown.length){ board.appendChild(elm("div","card",`<div class="empty"><b>Nothing here</b><p>No properties match.</p></div>`)); return; }
+
+  if(view === "cards"){
+    const grid = elm("div","pm-cards");
+    shown.forEach(p => {
+      const r = pmRow(monthOn, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null, s1 = PM_STAT[st[p.id]] || PM_STAT.none;
+      const al = alertBy[p.id] || [], own = ownerLabel(ownerById(p.ownerId));
+      const left = p.leaseEnd ? PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) : null;
+      const po = r && (r.paidOut || r.locked) ? `<span class="tag green">Paid out</span>` : c && c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout ${usd0(c.payoutC)}</span>` : "";
+      const card = elm("button","card pm-card st-" + st[p.id]);
+      card.innerHTML = `<div class="pmc-h"><b>${esc(p.name)}</b>${al.length ? `<span class="pmc-al ${al.some(a => a.level === "urgent") ? "u" : al.some(a => a.level === "warn") ? "w" : ""}" title="${esc(al.map(a => a.title).join("\n"))}">${al.length}</span>` : ""}</div>
+        <div class="pmc-s">${esc(own || "No owner on file")}${p.tenants ? " · " + esc(p.tenants) : ""}</div>
+        <div class="pmc-m"><span class="num">${p.rent ? usd0(cents(p.rent)) : "—"}<small>/mo</small></span><span class="tag ${s1.cls}">${s1.label}${st[p.id] === "partial" && c ? " " + usd0(c.recv) : ""}</span>${po}</div>
+        <div class="pmc-f">${p.status !== "active" ? esc(PM_STATUS[p.status]) + (p.statusSince ? ` since ${esc(fdateS(p.statusSince))}` : "") : left == null ? `<span class="muted">No lease end on file</span>` : left < 0 ? `<span style="color:var(--gold)">Lease ended ${esc(fdateS(p.leaseEnd))}</span>` : `Lease ends ${esc(fdateS(p.leaseEnd))}${left <= set.renewalDays ? ` <span style="color:var(--gold)">· ${left}d</span>` : ""}`}</div>`;
+      card.onclick = () => pmOpenProperty(p.id);
+      grid.appendChild(card);
+    });
+    board.appendChild(grid);
+  } else if(view === "table"){
+    const card = elm("div","card"), t = elm("table","tbl");
+    t.innerHTML = `<thead><tr><th>Property</th><th>Owner</th><th>Tenants</th><th class="r">Rent</th><th>${monthShort(monthOn)}</th><th class="r">Received</th><th class="r">Payout</th><th>Paid out</th><th>Lease ends</th><th>Alerts</th></tr></thead>
+      <tbody>${shown.map(p => { const r = pmRow(monthOn, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null, s1 = PM_STAT[st[p.id]] || PM_STAT.none, al = alertBy[p.id] || [];
+        return `<tr data-pp="${p.id}" style="cursor:pointer"><td><div class="item-t">${esc(p.name)}</div></td><td>${esc(ownerLabel(ownerById(p.ownerId)) || "—")}</td><td class="muted" style="font-size:12.5px">${esc(p.tenants || "—")}</td>
+          <td class="r num">${p.rent ? usd(cents(p.rent)) : "—"}</td><td><span class="tag ${s1.cls}">${s1.label}</span></td><td class="r num">${c && c.recv ? usd(c.recv) : "—"}</td><td class="r num">${c && c.recv ? usd(c.payoutC) : "—"}</td>
+          <td>${r && r.paidOut ? `<span class="tag green">${esc(fdateS(r.paidOut.date))}</span>` : r && r.locked ? `<span class="muted">—</span>` : c && c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">To send</span>` : "—"}</td>
+          <td>${p.leaseEnd ? esc(fdateS(p.leaseEnd)) + " '" + p.leaseEnd.slice(2, 4) : "—"}</td><td>${al.length ? `<span class="tag ${al.some(a => a.level === "urgent") ? "red" : "gold"}">${al.length}</span>` : ""}</td></tr>`; }).join("")}</tbody>`;
+    t.querySelectorAll("[data-pp]").forEach(tr => tr.onclick = () => pmOpenProperty(tr.dataset.pp));
+    const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w); board.appendChild(card);
+  } else {
+    const months = []; for(let i = 11; i >= 0; i--) months.push(monthAdd(thisMonth(), -i));
+    const card = elm("div","card pm-heat"), t = elm("table","tbl");
+    t.innerHTML = `<thead><tr><th>Property</th>${months.map(mm => `<th class="hm-h">${monthShort(mm)}</th>`).join("")}</tr></thead>
+      <tbody>${shown.map(p => `<tr><td><button class="linkish" data-pp="${p.id}">${esc(p.name)}</button></td>${months.map(mm => {
+          const s2 = pmRentStatus(mm, p), r = pmRow(mm, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
+          return `<td class="hm hm-${s2}" data-hm="${mm}|${p.id}" title="${esc(monthLabel(mm))}: ${esc((PM_STAT[s2] || PM_STAT.none).label)}${c && c.recv ? " · " + usd(c.recv) + " received · payout " + usd(c.payoutC) : ""}"><i></i></td>`; }).join("")}</tr>`).join("")}</tbody>`;
+    t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmOpenProperty(b.dataset.pp));
+    t.querySelectorAll("[data-hm]").forEach(td => td.onclick = () => { const [mm, pid] = td.dataset.hm.split("|"); if(pmRow(mm, pid)) pmRowSheet(mm, pid); });
+    const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w);
+    card.appendChild(elm("div","hm-legend", ["paid","partial","late","due","vacant","none"].map(k => `<span><i class="hm-${k}"></i>${PM_STAT[k].label}</span>`).join("")));
+    board.appendChild(card);
+  }
+}
+
+/* ====================================================================
+   ACTION CENTER
+   ==================================================================== */
+function pgPmAlerts(){
+  const P2 = pmState(); if(!P2.properties.length) return pmEmpty();
+  const all = pmAlerts();
+  const f = S.ui.pmAlF || "all";
+  const types = [["all","All"],["late","Rent late"],["short","Rent short"],["payout","Payouts"],["owes","Owner owes"],["lease","Leases"],["deposit","Deposits"],["vacant","Vacancy"],["start","Month-end"],["mismatch","Payout check"],["setup","Setup"],["inbox","Receipts"]];
+  const typeOf = a => (a.type === "start" || a.type === "close") ? "start" : a.type;
+  actions([["Settings", () => go("pmSettings"), "ghost"]]);
+  $("#pgSub").textContent = all.length ? `${all.filter(a => a.level === "urgent").length} urgent · ${all.filter(a => a.level === "warn").length} need action · ${all.filter(a => a.level === "info").length} heads-up — also emailed to the team each morning` : "Nothing needs attention right now";
+  const v = $("#view");
+  const bar = elm("div","sc-bar");
+  bar.innerHTML = `<div class="sc-seg">${types.map(([k, l]) => { const n = k === "all" ? all.length : all.filter(a => typeOf(a) === k).length; return k === "all" || n ? `<button data-af="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>` : ""; }).join("")}</div>`;
+  v.appendChild(bar);
+  bar.querySelectorAll("[data-af]").forEach(b => b.onclick = () => { S.ui.pmAlF = b.dataset.af; render(); });
+  const list = all.filter(a => f === "all" || typeOf(a) === f);
+  ["urgent","warn","info"].forEach(lv => {
+    const L = list.filter(a => a.level === lv); if(!L.length) return;
+    const c = elm("div","card"); c.style.marginBottom = "14px";
+    c.innerHTML = `<div class="card-h"><span class="al-dot al-${lv}" style="position:static"></span><h3>${PM_LEVEL[lv].label}</h3><span class="muted" style="margin-left:auto;font-size:12px">${L.length}</span></div><div class="al-list">${L.map(pmAlertRowHTML).join("")}</div>`;
+    pmWireAlerts(c, L); v.appendChild(c);
+  });
+  if(!list.length) v.appendChild(elm("div","card",`<div class="empty"><b>All caught up</b><p>Rent, payouts, leases, deposits and month-end are all on track.</p></div>`));
+  // snoozed & dismissed
+  const A = pmAlertState(), held = Object.entries(A).filter(([, s]) => s.state === "dismissed" || (s.state === "snoozed" && s.until > todayISO()));
+  if(held.length){
+    const c = elm("details","card pm-held");
+    c.innerHTML = `<summary class="card-h"><h3>Snoozed &amp; dismissed</h3><span class="muted" style="margin-left:auto;font-size:12px">${held.length}</span></summary>
+      <div class="al-list">${held.map(([k, s]) => `<div class="al-r"><div class="al-txt"><b>${esc(pmAlertLabel(k))}</b><span>${s.state === "snoozed" ? "Snoozed until " + esc(fdateS(s.until)) : "Dismissed"}${s.by ? " by " + esc(cloudWhoSafe(s.by)) : ""}${s.note ? " — " + esc(s.note) : ""}</span></div>
+        <div class="al-btns"><button class="btn sm ghost" data-unhold="${esc(k)}">Restore</button></div></div>`).join("")}</div>`;
+    c.querySelectorAll("[data-unhold]").forEach(b => b.onclick = () => pmAlertSet(b.dataset.unhold, null));
+    v.appendChild(c);
+  }
+}
+const cloudWhoSafe = e => (typeof cloudWho === "function" && typeof Cloud !== "undefined" && Cloud.ready) ? cloudWho(e) : e;
+function pmAlertLabel(k){
+  const [t, pid, m] = k.split("|"), p = pmProp(pid);
+  const what = {late:"Rent late", short:"Rent short", payout:"Owner payout", owes:"Owner owes", renew:"Lease renewal", expired:"Lease ended", vacant:"Vacancy", owner:"No owner", fee:"Fee rule", deposit:"Deposit return", start:"Start month", close:"Close month", mismatch:"Payout check", inbox:"Receipts waiting"}[t] || t;
+  return `${what}${p ? " · " + p.name : ""}${m && /^\d{4}-\d{2}$/.test(m) ? " · " + monthLabel(m) : (t === "start" || t === "close") && pid ? " · " + monthLabel(pid) : ""}`;
+}
+
+/* ====================================================================
+   ONE PROPERTY — everything about it on one page
+   ==================================================================== */
+function pgPmProperty(){
+  const p = pmProp(S.ui.pmPropId);
+  if(!p) return go("pmProps");
+  const today = todayISO(), set = pmSettings(), o = ownerById(p.ownerId);
+  const months = pmMonths().filter(m => pmRow(m, p.id) && !pmRow(m, p.id).detailOnly).reverse();
+  const curM = months[0] || thisMonth();
+  $("#pgCrumb").textContent = "Properties"; $("#pgTitle").textContent = p.name; $("#pgSub").textContent = p.address || "";
+  actions([["All properties", () => go("pmProps"), "ghost"], ["Statement", () => printDoc(pmStatementHTML(curM, [p.id]))], ["Edit", () => pmPropSheet(p.id)],
+           ["Open " + monthLabel(thisMonth()).split(" ")[0], () => { S.ui.pmMonth = thisMonth(); go("pmMonth"); if(pmRow(thisMonth(), p.id)) setTimeout(() => pmRowSheet(thisMonth(), p.id), 30); }, "primary"]]);
+  const v = $("#view");
+  const dep = pmState().deposits[p.id] || {}, left = p.leaseEnd ? PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) : null;
+  const ytd = months.filter(m => m.slice(0, 4) === today.slice(0, 4)).map(m => pmCalc(pmRow(m, p.id), p));
+  const sum = k => ytd.reduce((a, c) => a + c[k], 0);
+  const head = elm("div","pm-ph");
+  head.innerHTML = `
+    <div class="card pm-ph-main">
+      <div class="pm-ph-top"><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status]}">${PM_STATUS[p.status]}</span>${p.statusSince ? `<span class="muted" style="font-size:12px">since ${esc(fdateS(p.statusSince))}</span>` : ""}</div>
+      <dl class="kv" style="padding:6px 0 0">
+        <dt>Owner</dt><dd>${o ? `<a href="#" id="phOwner">${esc(ownerLabel(o))}</a>${o.email ? ` · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>` : ""}` : `<span class="muted">None on file</span>`}</dd>
+        <dt>Tenants</dt><dd>${esc(p.tenants || "—")}${p.tenantEmail ? ` · <a href="mailto:${esc(p.tenantEmail)}">${esc(p.tenantEmail)}</a>` : ""}${p.tenantPhone ? ` · <a href="tel:${esc(p.tenantPhone.replace(/[^\d+]/g, ""))}">${esc(p.tenantPhone)}</a>` : ""}</dd>
+        <dt>Lease</dt><dd>${p.leaseStart || p.leaseEnd ? `${p.leaseStart ? esc(fdateS(p.leaseStart)) + " '" + p.leaseStart.slice(2, 4) : "?"} → ${p.leaseEnd ? esc(fdateS(p.leaseEnd)) + " '" + p.leaseEnd.slice(2, 4) : "?"}${left != null ? ` <span class="${left < 0 || left <= set.renewalDays ? "tag gold" : "muted"}">${left < 0 ? "ended" : left + " days left"}</span>` : ""}` : `<span class="muted">Add lease dates to get renewal alerts</span>`}</dd>
+        <dt>Rent</dt><dd class="num">${p.rent ? usd(cents(p.rent)) : "—"} <span class="muted" style="font-family:var(--sans)">· ${esc(feeRuleText(p.feeRule))} PM fee · ${p.adminRate ?? 10}% admin on repairs${p.monthlyFilters ? ` · ${usd(cents(p.monthlyFilters))} filters` : ""}</span></dd>
+        <dt>Deposit</dt><dd>${dep.current && dep.current.amount ? usd(cents(dep.current.amount)) + " held" : `<span class="muted">—</span>`}${dep.former && dep.former.names && !dep.former.returned ? ` · <span style="color:var(--gold)">former tenant not settled</span>` : ""}</dd>
+        ${(p.recurring || []).length ? `<dt>Recurring</dt><dd>${p.recurring.map(x => `${esc(x.vendor || x.memo)} ${usd(cents(x.amount))}`).join(" · ")}</dd>` : ""}
+        ${p.notes ? `<dt>Notes</dt><dd>${esc(p.notes)}</dd>` : ""}
+      </dl></div>
+    <div class="card pm-ph-side"><div class="label">${today.slice(0, 4)} so far</div>
+      <table class="pm-sum" style="margin-top:8px"><tr><td>Rent collected</td><td class="r num">${usd(sum("recv"))}</td></tr><tr><td>Repairs</td><td class="r num">${usd(sum("repairsC"))}</td></tr>
+        <tr><td>PM + admin fees</td><td class="r num">${usd(sum("pmFeeC") + sum("adminC"))}</td></tr><tr class="due"><td>Paid to owner</td><td class="r num">${usd(sum("payoutC"))}</td></tr></table></div>`;
+  v.appendChild(head);
+  const oL = head.querySelector("#phOwner"); if(oL) oL.onclick = e => { e.preventDefault(); openOwner(o.id); };
+  const al = pmAlerts().filter(a => a.propId === p.id);
+  if(al.length){ const c = elm("div","card"); c.style.marginTop = "14px"; c.innerHTML = `<div class="card-h"><h3>Needs action</h3></div><div class="al-list">${al.map(pmAlertRowHTML).join("")}</div>`; pmWireAlerts(c, al); v.appendChild(c); }
+  // 12-month strip
+  const strip = []; for(let i = 11; i >= 0; i--) strip.push(monthAdd(thisMonth(), -i));
+  const sc = elm("div","card pm-strip");
+  sc.innerHTML = `<div class="card-h"><h3>Last 12 months</h3></div><div class="pm-strip-row">${strip.map(mm => { const s2 = pmRentStatus(mm, p), r = pmRow(mm, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
+    return `<button class="pm-sm hm-${s2}" data-sm="${mm}" ${r ? "" : "disabled"}><span class="l">${monthShort(mm)}</span><span class="v num">${c && c.recv ? usd0(c.recv) : "—"}</span><span class="s">${(PM_STAT[s2] || PM_STAT.none).label}</span></button>`; }).join("")}</div>`;
+  sc.querySelectorAll("[data-sm]").forEach(b => b.onclick = () => pmRowSheet(b.dataset.sm, p.id));
+  v.appendChild(sc);
+  // ledger
+  const lc = elm("div","card"), t = elm("table","tbl");
+  t.innerHTML = `<thead><tr><th>Month</th><th class="r">Rent due</th><th class="r">Received</th><th class="r">Repairs</th><th class="r">Admin fee</th><th class="r">PM fee</th><th class="r">Owner payout</th><th>Paid out</th><th></th></tr></thead>
+    <tbody>${months.map(mm => { const r = pmRow(mm, p.id), c = pmCalc(r, p);
+      return `<tr data-lm="${mm}" style="cursor:pointer"><td><b>${monthLabel(mm)}</b></td><td class="r num">${c.dueC ? usd(c.dueC) : "—"}</td><td class="r num">${c.recv ? usd(c.recv) : "—"}</td><td class="r num">${c.repairsC ? usd(c.repairsC) : "—"}</td>
+        <td class="r num">${c.adminC ? usd(c.adminC) : "—"}</td><td class="r num">${usd(c.pmFeeC)}</td><td class="r num"><b>${usd(c.payoutC)}</b></td>
+        <td>${r.paidOut ? `<span class="tag green">${esc(fdateS(r.paidOut.date))}</span>` : r.locked ? `<span class="muted">imported</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">To send</span>` : "—"}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
+  t.querySelectorAll("[data-lm]").forEach(tr => tr.onclick = () => pmRowSheet(tr.dataset.lm, p.id));
+  lc.innerHTML = `<div class="card-h"><h3>Ledger</h3><span class="muted" style="margin-left:auto;font-size:12px">${months.length} months</span></div>`;
+  const w = elm("div","tbl-wrap"); w.appendChild(t); lc.appendChild(w); lc.style.marginTop = "14px"; v.appendChild(lc);
+  // repairs history
+  const items = []; months.forEach(mm => (pmRow(mm, p.id).repairItems || []).forEach(it => items.push(Object.assign({month:mm}, it))));
+  if(items.length){
+    const vend = {}; items.forEach(it => { const k = it.vendor || "Other"; vend[k] = (vend[k] || 0) + cents(it.amount); });
+    const rc = elm("div","card"); rc.style.marginTop = "14px";
+    rc.innerHTML = `<div class="card-h"><h3>Repairs</h3><span class="muted" style="margin-left:auto;font-size:12px">${items.length} items · ${usd(items.reduce((a, it) => a + cents(it.amount), 0))}</span></div>
+      <div class="card-b" style="padding-bottom:6px"><div class="pm-vend">${Object.entries(vend).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => `<span>${esc(k)} <b class="num">${usd0(c)}</b></span>`).join("")}</div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Vendor</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
+      ${items.slice(0, 60).map(it => `<tr><td class="muted">${it.date ? esc(fdateS(it.date)) + " '" + it.date.slice(2, 4) : esc(monthShort(it.month))}</td><td>${esc(it.vendor || "—")}</td><td>${esc(it.memo || "")}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
+        <td>${it.link ? `<a class="btn sm ghost" href="${esc(it.link)}" target="_blank" rel="noopener">Receipt</a>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
+    v.appendChild(rc);
+  }
+}
+
+/* ====================================================================
+   SETTINGS — when things count as late, due, ending
+   ==================================================================== */
+function pgPmSettings(){
+  actions([["Action center", () => go("pmAlerts"), "ghost"]]);
+  const s = pmSettings(), v = $("#view");
+  const F = [["lateAfterDay","Rent is late after day","of the month"], ["payoutDays","Owner payouts due","days after month end (0 = by the last day)"],
+             ["startByDay","Remind to start the month after day",""], ["closeByDay","Last month should be closed by day","of the next month"],
+             ["renewalDays","Lease renewal heads-up","days before the lease ends"], ["depositDays","Deposit return deadline","days after move-out (South Carolina: 30)"],
+             ["vacancyDays","Flag a vacancy after","days"], ["inboxStaleDays","Flag receipts waiting longer than","days"]];
+  const c = elm("div","card");
+  c.innerHTML = `<div class="card-h"><h3>Alert rules</h3><span class="muted" style="margin-left:auto;font-size:12px">Shared by everyone, and used by the morning email</span></div>
+    <div class="card-b" style="max-width:720px">${F.map(([k, l, h]) => `<div class="pm-set"><span>${l}</span><input type="number" min="0" max="120" data-sk="${k}" value="${s[k]}"><span class="muted">${h}</span></div>`).join("")}
+      <p class="help" style="margin-top:14px">The morning email goes to everyone on the Team list on weekdays between 7 and 8 AM, only on days something needs action. It's sent by the receipt-inbox Google script — see <b>setupDigest</b> in its instructions.</p>
+      <button class="btn primary" id="psSave" style="margin-top:6px">Save</button></div>`;
+  v.appendChild(c);
+  c.querySelector("#psSave").onclick = () => {
+    const next = Object.assign({}, S.pmSettings || {});
+    c.querySelectorAll("[data-sk]").forEach(i => { const n = Number(i.value); if(i.value !== "" && n >= 0) next[i.dataset.sk] = n; });
+    snapshot(); S.pmSettings = next; commit(); toast("Alert rules saved", true);
+  };
+}
+
+/* =====================================================================
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
-const PM_VIEWS = new Set(["pmMonth","pmProps","pmDeposits","pmIncome"]);
+const PM_VIEWS = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings"]);
 function setMode(mode){
   S.ui.mode = mode;
-  go(mode === "pm" ? (S.ui.pmLastView && PM_VIEWS.has(S.ui.pmLastView) ? S.ui.pmLastView : "pmMonth") : (S.ui.pjLastView || "portfolio"));
+  go(mode === "pm" ? (S.ui.pmLastView && PM_VIEWS.has(S.ui.pmLastView) ? S.ui.pmLastView : "pmHome") : (S.ui.pjLastView || "portfolio"));
 }
 function renderModeSwitch(){
   const box = $("#modeSw"); if(!box) return;
@@ -4636,12 +5219,16 @@ function renderNavPM(){
     b.setAttribute("aria-current", S.ui.view === k);
     b.onclick = fn || (() => go(k)); n.appendChild(b);
   };
-  const P2 = pmState(), m = pmCurrentMonth(), R = P2.properties.length ? pmMonthRoll(m) : null;
+  const P2 = pmState(), m = pmCurrentMonth(), al = P2.properties.length ? pmAlerts() : [];
+  const urgent = al.filter(a => a.level === "urgent").length, act = al.filter(a => a.level !== "info").length;
   n.appendChild(elm("div","nav-head","Property management"));
-  mk("pmMonth", "Month close", "check", R && R.flags ? `<i class="badge alert">${R.flags}</i>` : `<i class="badge">${monthShort(m)}</i>`);
+  mk("pmHome", "Overview", "home");
+  mk("pmAlerts", "Action center", "bolt", act ? `<i class="badge alert"${urgent ? "" : ' style="background:var(--gold)"'}>${act}</i>` : al.length ? `<i class="badge">${al.length}</i>` : null);
+  mk("pmMonth", "Month close", "check", `<i class="badge">${monthShort(m)}</i>`);
   mk("pmProps", "Properties", "building", `<i class="badge">${pmLiveProps().length}</i>`);
   mk("pmDeposits", "Deposits", "receipt");
   mk("pmIncome", "Income", "grid");
+  mk("pmSettings", "Alert rules", "gear");
   n.appendChild(elm("div","nav-gap"));
   n.appendChild(elm("div","nav-head","Shared"));
   mk("owners", "Owners", "user", `<i class="badge">${(S.owners||[]).filter(ownerLabel).length}</i>`, () => { S.ui.ownerId = null; go("owners"); });
@@ -4685,9 +5272,11 @@ document.addEventListener("change", e => {
 });
 document.addEventListener("click", e => {
   const tr = e.target.closest && e.target.closest("[data-pmp]");
-  if(tr){ S.ui.mode = "pm"; S.ui.pmPropF = "all"; go("pmProps"); setTimeout(() => pmPropSheet(tr.dataset.pmp), 30); }
+  if(tr){ pmOpenProperty(tr.dataset.pmp); }
 });
 
+(function(){ try{ const q = new URLSearchParams(location.search), v = q.get("view");
+  if(v){ sessionStorage.setItem("phd-want", JSON.stringify({view:v, p:q.get("p"), m:q.get("m")})); history.replaceState(null, "", location.pathname); } }catch(e){} })();
 /* =====================================================================
    CLOUD — Google sign-in, one shared database for the whole office,
    live updates between people, an activity log, and the team list.
@@ -4711,6 +5300,8 @@ function cloudDocs(){
   S.properties.forEach(p => out.set("pj_property/" + p.id, p));
   out.set("shared/main", {owners:S.owners || [], order:S.properties.map(p => p.id), inboxDone:S.inboxDone || {}});
   if(S.inboxConn) out.set("shared/inbox", S.inboxConn);
+  if(S.pmSettings) out.set("shared/pmsettings", S.pmSettings);
+  if(S.pmAlerts) out.set("shared/alerts", S.pmAlerts);
   if(S.pm){
     (S.pm.properties || []).forEach(p => out.set("pm_property/" + p.id, p));
     Object.entries(S.pm.rows || {}).forEach(([k, r]) => out.set("pm_row/" + k, r));
@@ -4729,6 +5320,8 @@ function cloudApply(kind, id, data, deleted){
     S.owners = data.owners || []; S.inboxDone = data.inboxDone || {};
     if(Array.isArray(data.order)){ const pos = new Map(data.order.map((x, i) => [x, i])); S.properties.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9)); }
   } else if(kind === "shared" && id === "inbox"){ S.inboxConn = deleted ? null : data; }
+  else if(kind === "shared" && id === "pmsettings"){ S.pmSettings = deleted ? null : data; }
+  else if(kind === "shared" && id === "alerts"){ S.pmAlerts = deleted ? {} : data; }
   else if(kind === "pm_property"){
     const L = pm().properties, i = L.findIndex(p => p.id === id);
     if(deleted){ if(i >= 0) L.splice(i, 1); } else if(i >= 0) L[i] = data; else L.push(data);
@@ -4742,7 +5335,7 @@ function cloudLabel(kind, id, data){
   if(kind === "pm_row"){ const [m, pid] = id.split("|"); const p = pmProp(pid); return `${p ? p.name : "a property"} · ${monthLabel(m)}`; }
   if(kind === "pm_meta") return monthLabel(id);
   if(kind === "pm_deposit"){ const p = pmProp(id); return `deposits for ${p ? p.name : "a property"}`; }
-  if(kind === "shared") return id === "main" ? "owners" : "inbox settings";
+  if(kind === "shared") return {main:"owners", inbox:"inbox settings", pmsettings:"alert rules", alerts:"alerts (snoozed/dismissed)"}[id] || id;
   return kind;
 }
 
@@ -4866,6 +5459,15 @@ Cloud.boot = async function(){
   S.version = 3;
   S.ui = Object.assign({view:"portfolio", unit:null, query:"", showExcluded:true, open:{}}, cloudLoadUi());
   if(S.ui.activeId) S.activeId = S.ui.activeId;
+  // links from the morning email: ?view=pmAlerts / ?view=pmProperty&p=<id> (kept across the Google sign-in hop)
+  try{
+    const want = JSON.parse(sessionStorage.getItem("phd-want") || "null"); sessionStorage.removeItem("phd-want");
+    if(want && typeof PM_VIEWS !== "undefined" && PM_VIEWS.has(want.view)){
+      S.ui.mode = "pm"; S.ui.view = want.view;
+      if(want.view === "pmProperty" && want.p) S.ui.pmPropId = want.p;
+      if(want.view === "pmMonth" && /^\d{4}-\d{2}$/.test(want.m || "")) S.ui.pmMonth = want.m;
+    }
+  }catch(e){}
   Cloud.staff = (await Cloud.sb.from("staff").select("email,name,active")).data || [];
   // Store.save now means "sync": documents go to the database, screen state stays in this browser
   Store.save = async () => { cloudSaveUi(); if(Cloud.ready) Cloud.queue(); };
@@ -4952,6 +5554,41 @@ async function pgTeam(){
   bk.querySelector("#bkRestore").onclick = () => bk.querySelector("#bkPick").click();
   bk.querySelector("#bkPick").onchange = e => { const f = e.target.files[0]; if(!f) return; const r = new FileReader();
     r.onload = () => { let d; try{ d = JSON.parse(r.result); }catch(err){ return alert("That isn't a backup file."); } cloudRestore(d, f.name); }; r.readAsText(f); e.target.value = ""; };
+  // MagicDoor connection: test the key and produce a field report (no tenant data) for building the sync
+  const md = elm("div","card"); md.style.marginBottom = "16px";
+  md.innerHTML = `<div class="card-h"><h3>MagicDoor connection</h3><span class="muted" style="margin-left:auto;font-size:12px" id="mdState">Not checked yet</span></div>
+    <div class="card-b"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="muted" style="font-size:13px;flex:1;min-width:260px">Checks the MagicDoor key saved in Supabase and lists which MagicDoor data it can read: field names and types only, with no names, addresses or amounts.</span>
+      <button class="btn" id="mdTest">Test connection</button><button class="btn primary" id="mdDisc">Build field report</button></div>
+      <div id="mdOut"></div></div>`;
+  v.appendChild(md);
+  const mdCall = async (mode) => {
+    const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode}});
+    if(error){ let msg = error.message; try{ const b = await error.context.json(); if(b && b.error) msg = b.error; }catch(e){} throw new Error(msg); }
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  };
+  md.querySelector("#mdTest").onclick = async () => {
+    const st = md.querySelector("#mdState"); st.textContent = "Checking…";
+    try{ await mdCall("ping"); st.innerHTML = `<span style="color:var(--green)">Connected</span>`; }
+    catch(e){ st.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+  };
+  md.querySelector("#mdDisc").onclick = async () => {
+    const out = md.querySelector("#mdOut"), st = md.querySelector("#mdState");
+    out.innerHTML = `<p class="muted" style="font-size:13px">Reading MagicDoor… this takes up to a minute.</p>`; st.textContent = "Working…";
+    try{
+      const d = await mdCall("discover");
+      const rows = Object.entries(d.endpoints || {});
+      const okN = rows.filter(([, x]) => x && x.status === 200).length;
+      st.innerHTML = `<span style="color:var(--green)">Connected</span> · ${okN} of ${rows.length} readable`;
+      const txt = JSON.stringify(d, null, 1);
+      out.innerHTML = `<div style="margin-top:12px;font-size:13px">${d.spec ? `<p><b>Full API list found</b> — ${d.spec.endpoints.length} endpoints.</p>` : ""}
+        ${rows.map(([p, x]) => `<div style="display:flex;gap:10px;padding:3px 0;border-top:1px solid var(--line)"><span class="num" style="width:54px;color:${x && x.status === 200 ? "var(--green)" : "var(--muted)"}">${esc(String(x && x.status))}</span><span style="flex:1">${esc(p)}</span><span class="muted">${x && x.status === 200 ? (x.count != null ? x.count + " rows" : "") : ""}</span></div>`).join("")}
+        <p class="help" style="margin-top:10px">Copy the report and paste it to Claude. It has field names and types only.</p>
+        <button class="btn sm" id="mdCopy">Copy report</button></div>`;
+      out.querySelector("#mdCopy").onclick = async () => { try{ await navigator.clipboard.writeText(txt); toast("Report copied"); }catch(e){ const ta = elm("textarea"); ta.value = txt; ta.style.cssText = "width:100%;height:200px;margin-top:8px"; out.appendChild(ta); ta.select(); } };
+    }catch(e){ st.innerHTML = `<span style="color:var(--red)">Failed</span>`; out.innerHTML = `<p style="color:var(--red);font-size:13px;margin-top:10px">${esc(e.message)}</p>`; }
+  };
   const grid = elm("div","pm-grid2");
   const team = elm("div","card");
   const {data:staff} = await Cloud.sb.from("staff").select("email,name,active,added_at,added_by").order("added_at");
@@ -5009,7 +5646,7 @@ function cloudRestore(d, name){
   if(typed !== "RESTORE") return;
   snapshot();
   const keepUi = S.ui, keepActive = S.activeId;
-  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
+  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.pmSettings = null; S.pmAlerts = {}; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
   const main = d.docs.find(r => r.kind === "shared" && r.id === "main");
   d.docs.filter(r => !r.deleted && !(r.kind === "shared" && r.id === "main")).forEach(r => cloudApply(r.kind, r.id, r.data, false));
   if(main && !main.deleted) cloudApply("shared", "main", main.data, false);
