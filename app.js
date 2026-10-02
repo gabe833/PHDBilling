@@ -3906,40 +3906,53 @@ const PMCore = (function(){
   const mdLinkVal = v => String(v || "");
   // links: {pmPropId: mdUnitId | "p:" + mdPropertyId | "none"} chosen by people; everything else is matched by address.
   // A property here can be one MagicDoor unit, or a whole MagicDoor property (a building with several units).
-  function mdIndex(md, pmProps, links){
-    links = links || {};
-    const props = {}; (md.properties || []).forEach(x => props[x.id] = x);
+  // MagicDoor properties that are only for testing or templates never become properties here
+  const MD_SKIP = /\b(test address|test property|application template|template property)\b/i;
+  // opts: {ignore: {unitId|"p:"+propId: true}, score: pid => number (history; the higher one is kept when two rows are the same unit)}
+  function mdIndex(md, pmProps, links, opts){
+    links = links || {}; opts = opts || {};
+    const ignore = opts.ignore || {}, score = opts.score || (() => 0);
     const uniq = list => { const m = new Map(); (list || []).forEach(x => m.set(x.id, x)); return [...m.values()]; };
-    const units = uniq(md.units).filter(u => u.active !== false);
+    const props = {}; uniq(md.properties).forEach(x => props[x.id] = x);
+    const skipProp = mp => !mp || mp.active === false || MD_SKIP.test(mp.name || "") || ignore["p:" + mp.id];
+    const units = uniq(md.units).filter(u => u.active !== false && !skipProp(props[u.propertyId]) && !ignore[u.id]);
     const unitById = {}; units.forEach(u => unitById[u.id] = u);
     const unitsOf = pid => units.filter(u => u.propertyId === pid);
     const byKey = {}, propByKey = {};
     units.forEach(u => unitKeys(u, props[u.propertyId]).forEach(k => (byKey[k] = byKey[k] || []).push(u)));
-    (md.properties || []).filter(x => x.active !== false).forEach(x => new Set([normAddr(x.addr && x.addr.street), normAddr(x.name)]).forEach(k => { if(k) (propByKey[k] = propByKey[k] || []).push(x); }));
+    Object.values(props).filter(x => !skipProp(x)).forEach(x => new Set([normAddr(x.addr && x.addr.street), normAddr(x.name)]).forEach(k => { if(k) (propByKey[k] = propByKey[k] || []).push(x); }));
     const leases = uniq(md.leases);
     const leaseFor = uid => {
       const mine = leases.filter(l => l.unitId === uid);
       return {active:mine.find(l => !l.ended) || null, ended:mine.filter(l => l.ended).sort((a, b) => String(b.end).localeCompare(String(a.end)))[0] || null};
     };
     const pick = {};
-    const live = pmProps.filter(p => !p.deleted && p.status !== "inactive");
-    live.forEach(p => {
+    const all = pmProps.filter(p => !p.deleted);
+    all.forEach(p => {
       const l = mdLinkVal(links[p.id]);
       if(l === "none") return;
-      if(l.startsWith("p:") && props[l.slice(2)]){ pick[p.id] = {propId:l.slice(2), how:"manual"}; return; }
+      if(l.startsWith("p:") && props[l.slice(2)] && !skipProp(props[l.slice(2)])){ pick[p.id] = {propId:l.slice(2), how:"manual"}; return; }
       if(l && unitById[l]){ pick[p.id] = {unitId:l, how:"manual"}; return; }
       const keys = [...new Set([p.address, p.name].concat(p.aliases || []).map(normAddr).filter(Boolean).flatMap(addrVariants))].sort((a, b) => b.length - a.length);
       for(const k of keys){ const h = byKey[k] || []; if(h.length === 1){ pick[p.id] = {unitId:h[0].id, how:"auto"}; return; } }
       for(const k of keys){ const h = propByKey[k] || []; if(h.length === 1){ pick[p.id] = {propId:h[0].id, how:"auto"}; return; } }
     });
-    // one unit (or building) per property here: keep a manual link, drop clashing automatic guesses
+    // the same MagicDoor unit (or building) claimed by more than one property here: keep one, report the rest as duplicates
     const claims = {};
-    Object.entries(pick).forEach(([pid, x]) => {
-      const owned = x.unitId ? [x.unitId] : unitsOf(x.propId).map(u => u.id).concat(["p:" + x.propId]);
-      owned.forEach(u => (claims[u] = claims[u] || []).push(pid));
-      if(x.unitId && unitById[x.unitId]) (claims["p:" + unitById[x.unitId].propertyId] = claims["p:" + unitById[x.unitId].propertyId] || []);
+    const owns = x => x.unitId ? [x.unitId, "p:" + (unitById[x.unitId] ? unitById[x.unitId].propertyId : "")] : unitsOf(x.propId).map(u => u.id).concat(["p:" + x.propId]);
+    Object.entries(pick).forEach(([pid, x]) => owns(x).forEach(k => (claims[k] = claims[k] || []).push(pid)));
+    const byId = {}; all.forEach(p => byId[p.id] = p);
+    const rank = pid => [score(pid), pick[pid].how === "manual" ? 1 : 0, byId[pid].status !== "inactive" ? 1 : 0];   // the row with history wins
+    const better = (a, b) => { const A = rank(a), B = rank(b); for(let i = 0; i < A.length; i++) if(A[i] !== B[i]) return A[i] > B[i] ? a : b; return a < b ? a : b; };
+    const dupes = [], seenDup = new Set();
+    Object.entries(claims).forEach(([k, pids]) => {
+      const live2 = [...new Set(pids)].filter(pid => pick[pid]);
+      if(live2.length < 2) return;
+      // a unit link and a whole-building link on different units of one building aren't duplicates
+      if(k.startsWith("p:") && live2.every(pid => pick[pid].unitId) && new Set(live2.map(pid => pick[pid].unitId)).size === live2.length) return;
+      const keep = live2.reduce(better);
+      live2.filter(pid => pid !== keep).forEach(pid => { if(!seenDup.has(pid)){ seenDup.add(pid); dupes.push({keep, drop:pid, unitId:pick[pid].unitId || null, propId:pick[pid].propId || null}); } delete pick[pid]; });
     });
-    Object.values(claims).forEach(pids => { if(pids.length > 1) pids.forEach(pid => { if(pick[pid] && pick[pid].how === "auto") delete pick[pid]; }); });
     const byProp = {}, taken = new Set();
     Object.entries(pick).forEach(([pid, x]) => {
       if(x.unitId){
@@ -3955,9 +3968,10 @@ const PMCore = (function(){
     const linkedPerMdProp = {};
     Object.values(byProp).forEach(x => { if(x.property) linkedPerMdProp[x.property.id] = (linkedPerMdProp[x.property.id] || 0) + 1; });
     const manualUnits = new Set(Object.values(links).map(String));
-    return {byProp, linkedPerMdProp, syncedAt:md.syncedAt,
+    const live = all.filter(p => p.status !== "inactive");
+    return {byProp, linkedPerMdProp, syncedAt:md.syncedAt, dupes, props,
       unmatchedUnits:units.filter(u => !taken.has(u.id) && !manualUnits.has(u.id)),
-      unmatchedProps:live.filter(p => !byProp[p.id] && links[p.id] !== "none")};
+      unmatchedProps:live.filter(p => !byProp[p.id] && links[p.id] !== "none" && !dupes.some(d => d.drop === p.id))};
   }
   // several leases in one building, read as one: totals, the worst lateness, the latest payment
   function mdCombine(ls){
@@ -4622,7 +4636,19 @@ function pgPmProps(){
   const t = elm("table","tbl");
   t.innerHTML = `<thead><tr><th>Property</th><th>Owner</th><th>Status</th><th class="r">Rent</th><th class="r">PM fee</th><th class="r">${lastM ? "Payout · " + monthShort(lastM) : "Last payout"}</th><th class="r">Deposit held</th><th></th></tr></thead>`;
   const tb = elm("tbody");
+  // grouped by MagicDoor portfolio when properties have one
+  const grouped = list.some(p => p.portfolio);
+  if(grouped){
+    const order = [...new Set(list.map(p => p.portfolio || ""))].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b));
+    list.sort((a, b) => order.indexOf(a.portfolio || "") - order.indexOf(b.portfolio || "") || a.name.localeCompare(b.name, undefined, {numeric:true}));
+  }
+  let lastGroup = null;
   list.forEach(p => {
+    if(grouped && (p.portfolio || "") !== lastGroup){
+      lastGroup = p.portfolio || "";
+      const n = list.filter(x => (x.portfolio || "") === lastGroup).length;
+      const g = elm("tr","pm-grp"); g.innerHTML = `<td colspan="8">${esc(lastGroup || "Not in MagicDoor")} <span class="muted">· ${n}</span></td>`; tb.appendChild(g);
+    }
     const r = lastM && pmRow(lastM, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
     const d = P2.deposits[p.id], held = d && d.current && d.current.amount ? cents(d.current.amount) : 0;
     const own = ownerLabel(ownerById(p.ownerId));
@@ -4720,6 +4746,11 @@ function pmPropSheet(id){
       const newRule = $("#pp_ft").value === "flat" ? {type:"flat", amount:fv || 0} : {type:"pct", rate:fv || 0};
       snapshot();
       if(status !== p.status) p.statusSince = todayISO();
+      if(status !== p.status && typeof mdFor === "function" && mdReady()){
+        const mm = mdFor(p.id), key = mm ? (mm.unit ? mm.unit.id : "p:" + mm.property.id) : null, L = mdLinks();
+        if(status === "inactive" && key){ L.ignore[key] = true; p.mdIgnored = key; toast("Marked no longer managed — the MagicDoor sync will leave this unit out"); }
+        if(p.status === "inactive" && status !== "inactive" && p.mdIgnored){ delete L.ignore[p.mdIgnored]; delete p.mdIgnored; }
+      }
       Object.assign(p, {name, address:$("#pp_addr").value.trim() || name, ownerId:$("#pp_owner").value || null, status,
         rent:$("#pp_rent").value === "" ? null : Number($("#pp_rent").value), tenants:$("#pp_ten").value.trim(), notes:$("#pp_notes").value.trim(),
         leaseStart:$("#pp_ls").value || null, leaseEnd:$("#pp_le").value || null, tenantEmail:$("#pp_te").value.trim(), tenantPhone:$("#pp_tp").value.trim(),
@@ -5386,14 +5417,17 @@ function pgPmSettings(){
    ===================================================================== */
 ICON_PATHS.sync = '<path d="M13 5.6A5.3 5.3 0 0 0 3.4 4.6L2.4 5.8"/><path d="M2.4 2.6v3.2h3.2"/><path d="M3 10.4a5.3 5.3 0 0 0 9.6 1l1-1.2"/><path d="M13.6 13.4v-3.2h-3.2"/>';
 
-function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.log = S.mdLinks.log || []; return S.mdLinks; }
+function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; return S.mdLinks; }
+function mdRowCount(pid){ let n = 0; for(const r of Object.values(pmState().rows)) if(r.propertyId === pid && !r.deleted) n++; return n; }
 function mdReady(){ return !!(S.md && Array.isArray(S.md.units)); }
 let _mdxCache = null;
 function mdx(){
   if(!mdReady()) return null;
-  const sig = S.md.syncedAt + "|" + JSON.stringify(mdLinks().links) + "|" + pmState().properties.length + "|" + pmState().properties.map(p => p.address + p.name + p.status).join("");
+  const L = mdLinks();
+  const sig = S.md.syncedAt + "|" + JSON.stringify(L.links) + "|" + JSON.stringify(L.ignore) + "|" + pmState().properties.length + "|" + Object.keys(pmState().rows).length + "|" + pmState().properties.map(p => p.address + p.name + p.status + (p.deleted ? "x" : "")).join("");
   if(_mdxCache && _mdxCache.sig === sig) return _mdxCache.v;
-  const v = PMCore.mdIndex(S.md, pmState().properties, mdLinks().links);
+  const counts = {}; Object.values(pmState().rows).forEach(r => { if(!r.deleted) counts[r.propertyId] = (counts[r.propertyId] || 0) + 1; });
+  const v = PMCore.mdIndex(S.md, pmState().properties, L.links, {ignore:L.ignore, score:pid => counts[pid] || 0});
   _mdxCache = {sig, v}; return v;
 }
 function mdFor(pid){ const x = mdx(); return x ? x.byProp[pid] || null : null; }
@@ -5496,11 +5530,97 @@ function mdPlan(){
   return out;
 }
 
+/* ---------- keep the property list a mirror of MagicDoor ----------
+   one property here for every active MagicDoor unit (a building counts once when it's tracked as one),
+   no duplicates, clean names, the MagicDoor portfolio on each, test entries left out. */
+function mdCleanName(u, mp){
+  const segs = String(u.line || "").split(",").map(z => z.trim()).filter(Boolean);
+  let base = (segs[0] || (mp && mp.addr && mp.addr.street) || u.name || "").replace(/[,\s]+$/, "");
+  const nm = String(u.name || "").trim();
+  let unit = "";
+  if(nm && !/^home$/i.test(nm) && PMCore.normAddr(nm) !== PMCore.normAddr(base)){
+    const m = nm.match(/^(?:unit|apt|apartment|#)\s*([a-z0-9-]+)/i) || nm.match(/^([a-z0-9]{1,4})\b(?:\s*-\s*.*)?$/i);
+    unit = /^suite\b/i.test(nm) ? " " + nm : m ? " #" + m[1].toUpperCase() : " · " + nm;
+  } else if(segs.length >= 3 && /^((unit|apt|suite|#)\s*[a-z0-9-]{1,6}|[a-z0-9]{1,4})$/i.test(segs[1])){
+    unit = /^suite/i.test(segs[1]) ? " " + segs[1] : " #" + segs[1].replace(/^(unit|apt|#)\s*/i, "").toUpperCase();
+  }
+  const address = segs.length ? segs.join(", ").replace(/,\s*,/g, ",") : base;
+  return {name:(base + unit).replace(/\s+/g, " ").trim(), address};
+}
+function mdFeeGuess(mpId, rent){
+  const f = (S.md.fees || []).filter(x => x.propertyId === mpId).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 3);
+  if(!f.length || !rent) return null;
+  const pct = Math.round(f.reduce((a, x) => a + x.amount, 0) / f.length / rent * 200) / 2;
+  return pct >= 3 && pct <= 15 ? pct : null;
+}
+function mdOrganizePlan(){
+  const x = mdx(), L = mdLinks(), out = {merge:[], create:[], rename:[], reactivate:[], retire:[], remove:[], portfolio:[], conflicts:[]};
+  if(!x) return out;
+  const P = pmState().properties.filter(p => !p.deleted), rowsOf = pid => Object.values(pmState().rows).filter(r => r.propertyId === pid && !r.deleted);
+  // duplicates: merge the newer copy into the one with the history
+  x.dupes.forEach(d => {
+    const keep = P.find(p => p.id === d.keep), drop = P.find(p => p.id === d.drop);
+    if(!keep || !drop) return;
+    const km = new Set(rowsOf(keep.id).map(r => r.month)), clash = rowsOf(drop.id).filter(r => km.has(r.month));
+    (clash.length ? out.conflicts : out.merge).push({keep, drop, months:clash.map(r => r.month)});
+  });
+  const dropped = new Set(out.merge.map(m => m.drop.id).concat(out.conflicts.map(m => m.drop.id)));
+  // MagicDoor units with no property here (buildings tracked whole are already covered)
+  x.unmatchedUnits.forEach(u => out.create.push({u, mp:x.props[u.propertyId]}));
+  // tidy names on the ones this console created, set portfolios, bring back or retire
+  P.forEach(p => {
+    if(dropped.has(p.id)) return;
+    const m = x.byProp[p.id];
+    if(m){
+      if(m.unit && (p.mdCreated || /Added from MagicDoor/.test(p.notes || "")) ){ const c = mdCleanName(m.unit, m.property); if(c.name && (c.name !== p.name || c.address !== p.address)) out.rename.push({p, ...c}); }
+      const pf = m.property && m.property.portfolio; if(pf && p.portfolio !== pf) out.portfolio.push({p, portfolio:pf});
+      if(p.status === "inactive") out.reactivate.push({p, m});
+    } else if(p.mdCreated || /Added from MagicDoor/.test(p.notes || "")){
+      // made from MagicDoor, but MagicDoor no longer has it (or it's a test entry): remove it if nothing was ever recorded, otherwise retire it
+      if(L.links[p.id] === "none") return;
+      if(!rowsOf(p.id).length) out.remove.push({p}); else if(p.status !== "inactive") out.retire.push({p});
+    }
+  });
+  return out;
+}
+function mdOrganize(lines){
+  const plan = mdOrganizePlan(), L = mdLinks(), P2 = pmState(), today = todayISO();
+  plan.merge.forEach(({keep, drop}) => {
+    Object.entries(P2.rows).forEach(([k, r]) => { if(r.propertyId === drop.id && !r.deleted){ const nk = r.month + "|" + keep.id; if(!P2.rows[nk]){ r.propertyId = keep.id; P2.rows[nk] = r; } delete P2.rows[k]; } });
+    if(P2.deposits[drop.id] && !P2.deposits[keep.id]) P2.deposits[keep.id] = P2.deposits[drop.id];
+    delete P2.deposits[drop.id];
+    ["ownerId", "tenants", "tenantEmail", "tenantPhone", "leaseStart", "leaseEnd", "rent", "portfolio"].forEach(f => { if(!keep[f] && drop[f]) keep[f] = drop[f]; });
+    if(L.links[drop.id] && !L.links[keep.id] && L.links[drop.id] !== "none") L.links[keep.id] = L.links[drop.id];
+    delete L.links[drop.id];
+    P2.properties.splice(P2.properties.indexOf(drop), 1);
+    lines.push({prop:keep.name, pid:keep.id, what:`duplicate "${drop.name}" merged in — one row per MagicDoor unit`});
+  });
+  plan.remove.forEach(({p}) => { P2.properties.splice(P2.properties.indexOf(p), 1); delete L.links[p.id]; lines.push({prop:p.name, pid:"", what:"removed — not an active unit in MagicDoor (test or deleted)"}); });
+  plan.retire.forEach(({p}) => { p.status = "inactive"; p.statusSince = today; lines.push({prop:p.name, pid:p.id, what:"marked no longer managed — no longer in MagicDoor"}); });
+  plan.reactivate.forEach(({p, m}) => { p.status = m.lease ? "active" : "vacant"; p.statusSince = today; lines.push({prop:p.name, pid:p.id, what:`back from "No longer managed" — it's an active unit in MagicDoor (${m.lease ? "leased" : "vacant"})`}); });
+  plan.rename.forEach(({p, name, address}) => { lines.push({prop:name, pid:p.id, what:`renamed from "${p.name}"`}); p.name = name; p.address = address; });
+  plan.portfolio.forEach(({p, portfolio}) => { p.portfolio = portfolio; });
+  plan.create.forEach(({u, mp}) => {
+    const c = mdCleanName(u, mp), l = (S.md.leases || []).find(z => z.unitId === u.id && !z.ended);
+    const rent = l && l.rent ? l.rent : u.marketRent || null, pct = mp ? mdFeeGuess(mp.id, rent) : null;
+    const p = {id:"pm_" + uid(), name:c.name, address:c.address, aliases:[], rent, feeRule:{type:"pct", rate:pct || 10}, adminRate:10,
+      status:l ? "active" : "vacant", statusSince:today, ownerId:null, tenants:"", notes:"Added from MagicDoor", recurring:[], mdCreated:true, portfolio:(mp && mp.portfolio) || ""};
+    P2.properties.push(p);
+    lines.push({prop:p.name, pid:p.id, what:`added — in MagicDoor${p.portfolio ? " (" + p.portfolio + ")" : ""}${pct ? `, ${pct}% fee from MagicDoor's management fees` : ""}`});
+  });
+  _mdxCache = null;
+  return plan;
+}
+
+function mdOrganizeCount(){ if(mdLinks().organize === false) return 0; const o = mdOrganizePlan(); return o.merge.length + o.create.length + o.rename.length + o.reactivate.length + o.retire.length + o.remove.length + o.portfolio.length; }
+
 /* ---------- apply it ---------- */
 function mdApply(opts){
   opts = opts || {};
+  const lines = [];
+  if(!opts.rowsOnly && mdLinks().organize !== false) mdOrganize(lines);
   const plan = mdPlan(), L = mdLinks(), who = (typeof Cloud !== "undefined" && Cloud.name) || "You";
-  const today = todayISO(), lines = [];
+  const today = todayISO();
   if(!opts.rowsOnly){
     plan.owners.forEach(o => { delete o._new; const n = cleanOwner(Object.assign(blankOwner(), o, {id:uid(), notes:"Added from MagicDoor"})); n.mdId = o.mdId; Object.assign(o, n); S.owners.push(o); });
     plan.props.forEach(({p, ch}) => {
@@ -5545,10 +5665,12 @@ let _mdApplyTimer = null;
 function mdAfterSnapshot(){
   _mdxCache = null;
   const L = mdLinks();
-  if(!mdReady() || L.auto === false || (L.appliedAt || "") >= S.md.syncedAt) return;
+  if(!mdReady() || L.auto === false) return;
+  const due = () => (mdLinks().appliedAt || "") < S.md.syncedAt || mdOrganizeCount() > 0;
+  if(!due()) return;
   clearTimeout(_mdApplyTimer);
   _mdApplyTimer = setTimeout(() => {
-    if((mdLinks().appliedAt || "") >= S.md.syncedAt) return;
+    if(!due()) return;
     const n = mdApply({auto:true, quiet:true});
     if(n) toast(`MagicDoor: ${n} update${n === 1 ? "" : "s"} applied — see MagicDoor → Recent updates`);
     render();
@@ -5579,19 +5701,23 @@ function pgPmMd(){
   v.appendChild(k);
 
   // automatic updates + log
-  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length;
+  const org = mdOrganizePlan(), orgN = mdOrganizeCount();
+  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
     <div class="card-b">
       <p class="muted" style="margin:0 0 10px;font-size:13px">Each sync updates linked properties from MagicDoor: tenants and their contact details, lease dates, rent, leased or vacant, and the owner when none is set. In Month close it records rent MagicDoor shows as paid in full, adds vendor bills as repairs (with your admin fee), and marks owner payouts sent when MagicDoor shows the distribution. Closed months, fee rules and notes are never changed.</p>
-      ${pend ? `<div class="md-pend"><b>${pend} update${pend === 1 ? "" : "s"} waiting</b> <span class="muted">${plan.props.length} propert${plan.props.length === 1 ? "y" : "ies"}${plan.owners.length ? `, ${plan.owners.length} new owner${plan.owners.length === 1 ? "" : "s"}` : ""}${plan.rows.length ? `, ${plan.rows.length} rent payment${plan.rows.length === 1 ? "" : "s"}` : ""}${plan.bills.length ? `, ${plan.bills.length} bill${plan.bills.length === 1 ? "" : "s"}` : ""}${plan.payouts.length ? `, ${plan.payouts.length} payout${plan.payouts.length === 1 ? "" : "s"} sent` : ""}</span>
+      ${pend ? `<div class="md-pend"><b>${pend} update${pend === 1 ? "" : "s"} waiting</b> <span class="muted">${[org.merge.length && `${org.merge.length} duplicate${org.merge.length === 1 ? "" : "s"} to merge`, org.create.length && `${org.create.length} to add`, org.rename.length && `${org.rename.length} to rename`, org.reactivate.length && `${org.reactivate.length} back from no longer managed`, (org.remove.length + org.retire.length) && `${org.remove.length + org.retire.length} no longer in MagicDoor`].filter(Boolean).map(t => t + ", ").join("")}${plan.props.length} propert${plan.props.length === 1 ? "y" : "ies"}${plan.owners.length ? `, ${plan.owners.length} new owner${plan.owners.length === 1 ? "" : "s"}` : ""}${plan.rows.length ? `, ${plan.rows.length} rent payment${plan.rows.length === 1 ? "" : "s"}` : ""}${plan.bills.length ? `, ${plan.bills.length} bill${plan.bills.length === 1 ? "" : "s"}` : ""}${plan.payouts.length ? `, ${plan.payouts.length} payout${plan.payouts.length === 1 ? "" : "s"} sent` : ""}</span>
         <button class="btn sm" id="mdPreview">Preview</button><button class="btn primary sm" id="mdApplyNow">Apply now</button></div>` : `<div class="md-pend ok">Everything matches MagicDoor.</div>`}
+      ${org.conflicts.length ? `<div class="md-pend" style="margin-top:10px;border-color:var(--red-line);background:var(--red-soft)"><b>Needs a look</b> <span class="muted">${org.conflicts.map(c => `"${esc(c.drop.name)}" and "${esc(c.keep.name)}" are the same MagicDoor unit and both have entries for ${c.months.map(monthShort).join(", ")}`).join("; ")}. Open one and move or delete its duplicate months, and the rest merges on its own.</span></div>` : ""}
+      <label class="md-tog" style="margin:10px 0 0;justify-content:flex-start"><input type="checkbox" id="mdOrg" ${L.organize !== false ? "checked" : ""}> Keep the property list matched to MagicDoor — one row per unit, duplicates merged, new units added, names tidied</label>
       <details class="md-log" ${L.log.length ? "" : "hidden"}><summary>Recent updates</summary>
         ${L.log.map(e => `<div class="md-log-e"><div class="md-log-h">${esc(fdateS(e.at.slice(0, 10)))} ${esc(new Date(e.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))} · ${esc(e.by)}</div>
           ${e.lines.map(l => `<div class="md-log-l"><a href="#" data-pmp="${esc(l.pid)}">${esc(l.prop)}</a> <span class="muted">${esc(l.what)}</span></div>`).join("")}${e.more ? `<div class="muted">…and ${e.more} more</div>` : ""}</div>`).join("")}
       </details></div>`;
   v.appendChild(au);
+  au.querySelector("#mdOrg").onchange = e => { L.organize = e.target.checked; commit(); if(L.organize) mdAfterSnapshot(); render(); };
   au.querySelector("#mdAuto").onchange = e => { L.auto = e.target.checked; commit(); toast(L.auto ? "Automatic updates on" : "Automatic updates off — use Apply now to update"); if(L.auto) mdAfterSnapshot(); };
   const ap = au.querySelector("#mdApplyNow"); if(ap) ap.onclick = () => { mdApply(); render(); };
   const pv = au.querySelector("#mdPreview"); if(pv) pv.onclick = () => mdPreviewSheet(plan);
@@ -5644,17 +5770,18 @@ function pgPmMd(){
   });
 
   // MagicDoor units with no property here
-  if(x.unmatchedUnits.length){
+  if(x.unmatchedUnits.length && L.organize === false){
     const un = elm("div","card"); un.style.marginTop = "16px";
     un.innerHTML = `<div class="card-h"><h3>In MagicDoor, not here</h3><span class="muted" style="margin-left:auto;font-size:12px">${x.unmatchedUnits.length} unit${x.unmatchedUnits.length === 1 ? "" : "s"}</span></div>
       <div class="card-b md-un">${x.unmatchedUnits.map(u => {
         const l = (S.md.leases || []).find(z => z.unitId === u.id && !z.ended);
         return `<div class="md-un-r"><div><b>${esc(uLabel(u))}</b><div class="item-s">${l ? esc(mdTenants(l)) + (l.rent ? " · " + usd(cents(l.rent)) + "/mo" : "") : "No active lease"}${props[u.propertyId] && props[u.propertyId].portfolio ? " · " + esc(props[u.propertyId].portfolio) : ""}</div></div>
-          <button class="btn sm" data-addu="${esc(u.id)}">Add as property</button></div>`;
+          <button class="btn ghost sm" data-ignu="${esc(u.id)}">Not PHD's</button><button class="btn sm" data-addu="${esc(u.id)}">Add as property</button></div>`;
       }).join("")}
       <p class="help">If one of these is a property you already have, pick it in the list above instead. Units PHD doesn't manage can stay here.</p></div>`;
     v.appendChild(un);
     un.querySelectorAll("[data-addu]").forEach(b => b.onclick = () => mdAddProperty(b.dataset.addu, uLabel));
+    un.querySelectorAll("[data-ignu]").forEach(b => b.onclick = () => { L.ignore[b.dataset.ignu] = true; _mdxCache = null; commit(); render(); });
   }
   if(S.md.notes && S.md.notes.length) v.appendChild(elm("p","help", esc(S.md.notes.join(" · "))));
 }
@@ -5664,8 +5791,9 @@ function mdAfterSnapshotForce(){ const L = mdLinks(); if(L.auto !== false && mdR
 function mdAddProperty(unitId, uLabel){
   const u = (S.md.units || []).find(z => z.id === unitId); if(!u) return;
   const l = (S.md.leases || []).find(z => z.unitId === u.id && !z.ended);
-  const p = {id:"pm_" + uid(), name:uLabel(u), address:[u.line || uLabel(u)].join(""), aliases:[], rent:l && l.rent ? l.rent : u.marketRent || null,
-    feeRule:{type:"pct", rate:10}, adminRate:10, status:l ? "active" : "vacant", statusSince:todayISO(), ownerId:null, tenants:"", notes:"Added from MagicDoor", recurring:[]};
+  const c = mdCleanName(u, (S.md.properties || []).find(z => z.id === u.propertyId));
+  const p = {id:"pm_" + uid(), name:c.name, address:c.address, aliases:[], rent:l && l.rent ? l.rent : u.marketRent || null,
+    feeRule:{type:"pct", rate:10}, adminRate:10, status:l ? "active" : "vacant", statusSince:todayISO(), ownerId:null, tenants:"", notes:"Added from MagicDoor", recurring:[], mdCreated:true};
   pmState().properties.push(p);
   mdLinks().links[p.id] = u.id; _mdxCache = null;
   commit(); mdAfterSnapshotForce();
@@ -5681,7 +5809,11 @@ function mdSheet(title, body, buttons){
   openPanel();
 }
 function mdPreviewSheet(plan){
+  const o = mdOrganizePlan();
+  const orgRows = [].concat(o.merge.map(m => [m.keep.name, `merge in duplicate "${m.drop.name}"`]), o.create.map(c => [mdCleanName(c.u, c.mp).name, `add${c.mp && c.mp.portfolio ? " · " + c.mp.portfolio : ""}`]),
+    o.rename.map(r => [r.p.name, `rename to "${r.name}"`]), o.reactivate.map(r => [r.p.name, "back from no longer managed"]), o.remove.map(r => [r.p.name, "remove (test or deleted in MagicDoor)"]), o.retire.map(r => [r.p.name, "mark no longer managed"]));
   mdSheet("Updates from MagicDoor", `<div class="md-prev">
+    ${orgRows.length ? `<div class="label">Property list</div>${orgRows.map(([a, b]) => `<div class="md-pv-r" style="grid-template-columns:1fr 1.4fr"><span>${esc(a)}</span><span class="muted">${esc(b)}</span></div>`).join("")}` : ""}
     ${plan.owners.length ? `<div class="label">New owners</div>${plan.owners.map(o => `<div class="md-log-l">${esc(o.name)} <span class="muted">${esc(o.email || "")}</span></div>`).join("")}` : ""}
     ${plan.props.length ? `<div class="label" style="margin-top:12px">Properties</div>${plan.props.map(({p, ch}) => `<div class="md-pv"><b>${esc(p.name)}</b>${Object.entries(ch).map(([k, c]) =>
       `<div class="md-pv-r"><span>${esc(c.label)}</span><span class="muted">${esc(k === "ownerId" ? "none" : k === "rent" ? usd(cents(c.from || 0)) : String(c.from || "—"))}</span><span>→ ${esc(k === "ownerId" ? (c.to.name || "") : k === "rent" ? usd(cents(c.to)) : String(c.to))}</span></div>`).join("")}</div>`).join("")}` : ""}
