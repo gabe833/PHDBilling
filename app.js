@@ -3860,57 +3860,107 @@ const PMCore = (function(){
   /* ---------- MagicDoor: match console properties to MagicDoor units ---------- */
   const SUFFIX = {street:"st", str:"st", avenue:"ave", av:"ave", drive:"dr", drv:"dr", road:"rd", circle:"cir", boulevard:"blvd", lane:"ln", court:"ct",
     place:"pl", parkway:"pkwy", terrace:"ter", trail:"trl", highway:"hwy", square:"sq", cove:"cv", point:"pt", crossing:"xing", north:"n", south:"s", east:"e", west:"w"};
+  // "342 King St, A, Charleston, SC 29401" → "342 king st a";  "120 Smith St Charleston. SC 29403" → "120 smith st"
+  const STREET_END = new Set(["st","ave","dr","rd","cir","blvd","ln","ct","pl","pkwy","ter","trl","hwy","sq","cv","pt","xing","way","row","loop","run","walk","aly","bnd","pass","path"]);
   function normAddr(x){
-    let t = String(x || "").toLowerCase().split(",")[0];
+    const segs = String(x || "").toLowerCase().split(",").map(z => z.trim()).filter(Boolean);
+    if(!segs.length) return "";
+    let t = segs[0];
+    // a short second part is the unit ("A", "Unit 1371", "Suite 100", "A - Downstairs") when a city follows it
+    const UNIT = /^((unit|apt|suite|ste|#)\s*[a-z0-9-]{1,6}|[a-z0-9]{1,4}(\s*-\s*[a-z ]{1,14})?)$/;
+    if(segs.length >= 3 && UNIT.test(segs[1])) t += " " + segs[1];
+    const cityFollows = segs.length > 1 && /^(sc|nc|ga)\b|^\d{5}/.test(segs[segs.length - 1]) && segs.length === 2;
     t = t.replace(/\b(unit|apt|apartment|suite|ste|no)\b\.?/g, " ").replace(/[#.]/g, " ").replace(/[^a-z0-9 ]/g, " ");
-    return t.split(/\s+/).filter(Boolean).map(w => SUFFIX[w] || w).join(" ");
+    let w = t.split(/\s+/).filter(Boolean).map(z => SUFFIX[z] || z);
+    // drop a city / state / zip run on the end ("... st charleston sc 29403")
+    let cut = w.findIndex((z, i) => i > 1 && (/^\d{5}$/.test(z) || (z === "sc" && i === w.length - 1) || (z === "sc" && /^\d{5}$/.test(w[i + 1] || ""))));
+    if(cut < 0 && cityFollows) cut = w.length;                       // "12 Bee St #D Charleston, SC 29403"
+    if(cut > 0){
+      w = w.slice(0, cut);
+      let last = -1; w.forEach((z, i) => { if(STREET_END.has(z)) last = i; });
+      if(last > 0){ const nx = w[last + 1]; w = w.slice(0, last + 1 + (nx && /^([a-z]|\d{1,5}|[a-z]\d{1,4})$/.test(nx) && !/^(n|s|e|w)$/.test(nx) ? 1 : 0)); }
+    }
+    return w.join(" ");
+  }
+  // extra spellings of one address: without a repeated house number ("1371 hopton cir 1371" → "hopton cir 1371")
+  function addrVariants(k){
+    const out = [k], w = k.split(" ");
+    if(/^\d+$/.test(w[0]) && w.slice(1).includes(w[0])) out.push(w.slice(1).join(" "));
+    return out;
   }
   function unitKeys(u, mp){
     const base = normAddr((mp && mp.addr && mp.addr.street) || (u.addr && u.addr.street) || u.line);
     const nm = normAddr(u.name), out = new Set();
-    if(!base) return out;
-    if(!nm || nm === base || base.endsWith(" " + nm) || (mp && mp.unitCount === 1)) out.add(base);
-    if(nm && nm !== base) out.add(nm.startsWith(base) ? nm : base + " " + nm);
+    if(base && (!nm || nm === base || base.endsWith(" " + nm) || nm === "home" || (mp && mp.unitCount === 1))) out.add(base);
+    if(base && nm && nm !== base && nm !== "home") out.add(nm.startsWith(base) ? nm : base + " " + nm.split(" ")[0]);
     if(u.line) out.add(normAddr(u.line));
     return out;
   }
-  // links: {pmPropId: mdUnitId | "none"} chosen by people; everything else is matched by address
+  const mdLinkVal = v => String(v || "");
+  // links: {pmPropId: mdUnitId | "p:" + mdPropertyId | "none"} chosen by people; everything else is matched by address.
+  // A property here can be one MagicDoor unit, or a whole MagicDoor property (a building with several units).
   function mdIndex(md, pmProps, links){
     links = links || {};
     const props = {}; (md.properties || []).forEach(x => props[x.id] = x);
-    const units = (md.units || []).filter(u => u.active !== false);
+    const uniq = list => { const m = new Map(); (list || []).forEach(x => m.set(x.id, x)); return [...m.values()]; };
+    const units = uniq(md.units).filter(u => u.active !== false);
     const unitById = {}; units.forEach(u => unitById[u.id] = u);
-    const byKey = {};
+    const unitsOf = pid => units.filter(u => u.propertyId === pid);
+    const byKey = {}, propByKey = {};
     units.forEach(u => unitKeys(u, props[u.propertyId]).forEach(k => (byKey[k] = byKey[k] || []).push(u)));
-    const leases = md.leases || [];
+    (md.properties || []).filter(x => x.active !== false).forEach(x => new Set([normAddr(x.addr && x.addr.street), normAddr(x.name)]).forEach(k => { if(k) (propByKey[k] = propByKey[k] || []).push(x); }));
+    const leases = uniq(md.leases);
     const leaseFor = uid => {
       const mine = leases.filter(l => l.unitId === uid);
       return {active:mine.find(l => !l.ended) || null, ended:mine.filter(l => l.ended).sort((a, b) => String(b.end).localeCompare(String(a.end)))[0] || null};
     };
-    const pick = {}, used = {};
+    const pick = {};
     const live = pmProps.filter(p => !p.deleted && p.status !== "inactive");
     live.forEach(p => {
-      const l = links[p.id];
+      const l = mdLinkVal(links[p.id]);
       if(l === "none") return;
+      if(l.startsWith("p:") && props[l.slice(2)]){ pick[p.id] = {propId:l.slice(2), how:"manual"}; return; }
       if(l && unitById[l]){ pick[p.id] = {unitId:l, how:"manual"}; return; }
-      const keys = [p.address, p.name].concat(p.aliases || []).map(normAddr).filter(Boolean);
-      const hits = new Set(); keys.forEach(k => (byKey[k] || []).forEach(u => hits.add(u.id)));
-      if(hits.size === 1) pick[p.id] = {unitId:[...hits][0], how:"auto"};
+      const keys = [...new Set([p.address, p.name].concat(p.aliases || []).map(normAddr).filter(Boolean).flatMap(addrVariants))].sort((a, b) => b.length - a.length);
+      for(const k of keys){ const h = byKey[k] || []; if(h.length === 1){ pick[p.id] = {unitId:h[0].id, how:"auto"}; return; } }
+      for(const k of keys){ const h = propByKey[k] || []; if(h.length === 1){ pick[p.id] = {propId:h[0].id, how:"auto"}; return; } }
     });
-    // a unit claimed by two properties: keep a manual link, drop the automatic guesses
-    Object.entries(pick).forEach(([pid, x]) => (used[x.unitId] = used[x.unitId] || []).push(pid));
-    Object.values(used).forEach(pids => { if(pids.length > 1) pids.forEach(pid => { if(pick[pid].how === "auto") delete pick[pid]; }); });
+    // one unit (or building) per property here: keep a manual link, drop clashing automatic guesses
+    const claims = {};
+    Object.entries(pick).forEach(([pid, x]) => {
+      const owned = x.unitId ? [x.unitId] : unitsOf(x.propId).map(u => u.id).concat(["p:" + x.propId]);
+      owned.forEach(u => (claims[u] = claims[u] || []).push(pid));
+      if(x.unitId && unitById[x.unitId]) (claims["p:" + unitById[x.unitId].propertyId] = claims["p:" + unitById[x.unitId].propertyId] || []);
+    });
+    Object.values(claims).forEach(pids => { if(pids.length > 1) pids.forEach(pid => { if(pick[pid] && pick[pid].how === "auto") delete pick[pid]; }); });
     const byProp = {}, taken = new Set();
     Object.entries(pick).forEach(([pid, x]) => {
-      const u = unitById[x.unitId]; taken.add(u.id);
-      const L = leaseFor(u.id);
-      byProp[pid] = {unit:u, property:props[u.propertyId] || null, lease:L.active, endedLease:L.ended, how:x.how};
+      if(x.unitId){
+        const u = unitById[x.unitId]; taken.add(u.id);
+        const L = leaseFor(u.id);
+        byProp[pid] = {unit:u, property:props[u.propertyId] || null, lease:L.active, endedLease:L.ended, how:x.how};
+      } else {
+        const mp = props[x.propId], us = unitsOf(x.propId); us.forEach(u => taken.add(u.id));
+        const act = leases.filter(l => l.propertyId === x.propId && !l.ended), ended = leases.filter(l => l.propertyId === x.propId && l.ended).sort((a, b) => String(b.end).localeCompare(String(a.end)));
+        byProp[pid] = {unit:null, units:us, property:mp, whole:true, leases:act, lease:act.length === 1 ? act[0] : act.length ? mdCombine(act) : null, endedLease:act.length ? null : ended[0] || null, how:x.how};
+      }
     });
     const linkedPerMdProp = {};
     Object.values(byProp).forEach(x => { if(x.property) linkedPerMdProp[x.property.id] = (linkedPerMdProp[x.property.id] || 0) + 1; });
+    const manualUnits = new Set(Object.values(links).map(String));
     return {byProp, linkedPerMdProp, syncedAt:md.syncedAt,
-      unmatchedUnits:units.filter(u => !taken.has(u.id) && !Object.values(links).includes(u.id)),
+      unmatchedUnits:units.filter(u => !taken.has(u.id) && !manualUnits.has(u.id)),
       unmatchedProps:live.filter(p => !byProp[p.id] && links[p.id] !== "none")};
+  }
+  // several leases in one building, read as one: totals, the worst lateness, the latest payment
+  function mdCombine(ls){
+    const max = (k) => ls.map(l => l[k]).filter(Boolean).sort().pop() || null, min = (k) => ls.map(l => l[k]).filter(Boolean).sort()[0] || null;
+    const sum = k => Math.round(ls.reduce((a, l) => a + (Number(l[k]) || 0), 0) * 100) / 100;
+    const owing = ls.filter(l => (l.balance || 0) > 0);
+    return {id:"all", combined:true, count:ls.length, rent:sum("rent"), balance:sum("balance"), depositPaid:sum("depositPaid"), depositDue:sum("depositDue"),
+      pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
+      start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
+      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut))};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
@@ -4001,10 +4051,10 @@ const PMCore = (function(){
       if(synced && tn - dayNum(synced) >= 2) add({key:`mdstale|${synced}`, type:"setup", level:"warn", title:`MagicDoor hasn't synced since ${shortDate(synced)}`, detail:"Rent balances may be out of date. Open MagicDoor and click Sync now; if it fails, the message says why.", action:"openMd"});
       live.forEach(p => {
         const x = mdOf(p.id); if(!x) return;
-        const L = x.lease, who = L && L.tenants && L.tenants.length ? " · " + L.tenants.filter(t => !t.movedOut).map(t => t.name).join(" / ") : "";
+        const L = x.lease, who = L && !L.combined && L.tenants && L.tenants.length ? " · " + L.tenants.filter(t => !t.movedOut).map(t => t.name).join(" / ") : "";
         if(L && (L.balance || 0) > 0 && (L.pastDueDays || 0) > 0 && (day > S.lateAfterDay || (L.pastDueDays || 0) > S.lateAfterDay)){
           add({key:`mdlate|${p.id}|${L.unpaidSince || curM}`, type:"late", level:"urgent", propId:p.id, month:curM, title:`Rent past due · ${p.name}`,
-               detail:`${usd(cents(L.balance))} owed · ${L.pastDueDays} day${L.pastDueDays === 1 ? "" : "s"} past due${L.unpaidSince ? " (since " + shortDate(L.unpaidSince) + ")" : ""}${L.lastPayment ? " · last payment " + shortDate(L.lastPayment) : ""}${who} — from MagicDoor`, action:"openProp"});
+               detail:`${usd(cents(L.balance))} owed${L.combined ? ` across ${L.owingCount} of ${L.count} units` : ""} · ${L.pastDueDays} day${L.pastDueDays === 1 ? "" : "s"} past due${L.unpaidSince ? " (since " + shortDate(L.unpaidSince) + ")" : ""}${L.lastPayment ? " · last payment " + shortDate(L.lastPayment) : ""}${who} — from MagicDoor`, action:"openProp"});
         }
         if(L && L.eviction) add({key:`evict|${p.id}|${L.id}`, type:"late", level:"warn", propId:p.id, title:`Eviction in progress · ${p.name}`, detail:`Marked as an eviction in MagicDoor${L.balance > 0 ? " · " + usd(cents(L.balance)) + " owed" : ""}.`, action:"openProp"});
         const E = x.endedLease;
@@ -4040,7 +4090,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {normAddr, mdIndex, mdCombine, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 
 /* =====================================================================
@@ -5365,9 +5415,11 @@ function mdPlan(){
   };
   pmState().properties.forEach(p => {
     const m = x.byProp[p.id]; if(!m || p.status === "inactive") return;
-    const L = m.lease, ch = {};
+    const L = m.lease, ch = {}, building = !!(L && L.combined);   // a whole building with several leases
     const put = (k, v, label) => { if(v == null || v === "") return; if(String(p[k] ?? "") !== String(v)) ch[k] = {from:p[k] ?? "", to:v, label}; };
-    if(L){
+    if(L && building){
+      if(p.status !== "active") ch.status = {from:p.status, to:"active", label:"status", since:today};
+    } else if(L){
       const live = L.tenants.filter(t => !t.movedOut);
       put("tenants", mdTenants(L), "tenants");
       put("tenantEmail", (live.find(t => t.email) || {}).email, "tenant email");
@@ -5381,8 +5433,10 @@ function mdPlan(){
       ch.status = {from:"active", to:"vacant", label:"status", since:(m.endedLease && m.endedLease.end) || today};
     }
     // owner: only when none is set — never replaces one a person chose
-    if(!p.ownerId && m.property && m.property.owners && m.property.owners.length){
-      const top = [...m.property.owners].sort((a, b) => (b.pct || 0) - (a.pct || 0))[0];
+    const mdOwners = m.property ? ((m.property.owners && m.property.owners.length) ? m.property.owners
+      : (S.md.owners || []).map(o => ({id:o.id, pct:((o.properties || []).find(x => x.propertyId === m.property.id) || {}).pct, hit:(o.properties || []).some(x => x.propertyId === m.property.id)})).filter(o => o.hit)) : [];
+    if(!p.ownerId && mdOwners.length){
+      const top = [...mdOwners].sort((a, b) => (b.pct || 0) - (a.pct || 0))[0];
       const mo = (S.md.owners || []).find(o => o.id === top.id);
       if(mo && mo.name){
         let o = ownerFor(mo);
@@ -5499,7 +5553,10 @@ function pgPmMd(){
   const units = (S.md.units || []).filter(u => u.active !== false);
   const props = {}; (S.md.properties || []).forEach(mp => props[mp.id] = mp);
   const uLabel = u => { const mp = props[u.propertyId]; const base = (mp && mp.addr.street) || u.line || ""; return u.name && PMCore.normAddr(u.name) !== PMCore.normAddr(base) ? `${base} · ${u.name}` : base || u.name; };
-  const opts = units.map(u => [u.id, uLabel(u)]).sort((a, b) => a[1].localeCompare(b[1], undefined, {numeric:true}));
+  const opts = units.map(u => [u.id, uLabel(u)])
+    .concat((S.md.properties || []).filter(mp => mp.active !== false && units.filter(u => u.propertyId === mp.id).length !== 1).map(mp => ["p:" + mp.id, `${mp.addr.street || mp.name} · whole property (${units.filter(u => u.propertyId === mp.id).length} units)`]))
+    .sort((a, b) => a[1].localeCompare(b[1], undefined, {numeric:true}));
+  const linkLabel = m => m.whole ? `${(m.property.addr && m.property.addr.street) || m.property.name} · whole property, ${m.leases.length} lease${m.leases.length === 1 ? "" : "s"}` : uLabel(m.unit);
   const card = elm("div","card"); card.style.marginTop = "16px";
   const cnt = {all:live.length, unlinked:x.unmatchedProps.length, owed:owed.length, manual:live.filter(p => (x.byProp[p.id] && x.byProp[p.id].how === "manual") || L.links[p.id] === "none").length};
   card.innerHTML = `<div class="card-h"><h3>Properties and their MagicDoor units</h3><span class="muted" style="margin-left:auto;font-size:12px">Matched by address; pick a unit to override</span></div>
@@ -5510,12 +5567,12 @@ function pgPmMd(){
       const m = x.byProp[p.id], l = m && m.lease, none = L.links[p.id] === "none";
       const sel = `<select class="md-sel" data-link="${esc(p.id)}"><option value="">${m && m.how === "auto" ? "Matched by address" : "— Not linked —"}</option>${opts.map(([id, lb]) => `<option value="${esc(id)}" ${L.links[p.id] === id ? "selected" : ""}>${esc(lb)}</option>`).join("")}<option value="none" ${none ? "selected" : ""}>Not in MagicDoor</option></select>`;
       return `<tr><td><a href="#" data-pmp="${esc(p.id)}">${esc(p.name)}</a>${m ? ` <span class="tag ${m.how === "auto" ? "grey" : "green"}" title="${m.how === "auto" ? "Matched by address" : "Linked by hand"}">${m.how === "auto" ? "auto" : "linked"}</span>` : none ? ` <span class="tag grey">not in MagicDoor</span>` : ` <span class="tag gold">not linked</span>`}
-          ${m ? `<div class="item-s">${esc(uLabel(m.unit))}</div>` : ""}</td>
+          ${m ? `<div class="item-s">${esc(linkLabel(m))}</div>` : ""}</td>
         <td>${sel}</td>
-        <td>${l ? esc(mdTenants(l)) || "—" : m ? `<span class="muted">Vacant in MagicDoor</span>` : ""}</td>
+        <td>${l && l.combined ? `${l.count} leases${l.owingCount ? ` <span class="muted">· ${l.owingCount} owe</span>` : ""}` : l ? esc(mdTenants(l)) || "—" : m ? `<span class="muted">Vacant in MagicDoor</span>` : ""}</td>
         <td class="r num">${l && l.rent ? usd(cents(l.rent)) : "—"}</td>
         <td class="r num">${l ? (l.balance > 0 ? `<span style="color:var(--red)">${usd(cents(l.balance))}</span>${l.pastDueDays > 0 ? `<div class="item-s">${l.pastDueDays} days late</div>` : ""}` : l.balance < 0 ? `<span class="muted">${usd(cents(l.balance))} credit</span>` : `<span style="color:var(--green)">Paid</span>`) : "—"}</td>
-        <td>${l ? `${l.start ? esc(fdateS(l.start)) : "?"} → ${l.monthToMonth ? "month-to-month" : l.end ? esc(fdateS(l.end)) : "?"}` : ""}</td></tr>`;
+        <td>${l && l.combined ? `<span class="muted">${l.count} separate leases</span>` : l ? `${l.start ? esc(fdateS(l.start)) : "?"} → ${l.monthToMonth ? "month-to-month" : l.end ? esc(fdateS(l.end)) : "?"}` : ""}</td></tr>`;
     }).join("") || `<tr><td colspan="6" class="muted" style="padding:18px">Nothing here.</td></tr>`}
     </tbody></table></div>`;
   v.appendChild(card);
@@ -5600,6 +5657,18 @@ function mdPropertyCard(p){
     return c;
   }
   const l = m.lease, e = m.endedLease;
+  if(l && l.combined){
+    const unitName = id => ((m.units || []).find(u => u.id === id) || {}).name || "";
+    c.innerHTML = `<div class="card-h"><h3>MagicDoor</h3><span class="muted" style="margin-left:auto;font-size:12px">whole property · ${l.count} leases · synced ${esc(mdAgo(S.md.syncedAt))}</span></div>
+      <div class="card-b"><div class="md-bal ${l.balance > 0 ? "owe" : ""}"><div class="label">Balance, all units</div><div class="v num">${l.balance > 0 ? usd(cents(l.balance)) : "Paid up"}</div>
+        <div class="s">${l.owingCount ? `${l.owingCount} of ${l.count} owe · up to ${l.pastDueDays} days past due` : l.lastPayment ? "Last payment " + esc(fdateS(l.lastPayment)) : ""}</div></div>
+      <table class="tbl" style="font-size:13px"><thead><tr><th>Unit</th><th>Tenants</th><th class="r">Rent</th><th class="r">Balance</th></tr></thead><tbody>
+      ${[...m.leases].sort((a, b) => String(unitName(a.unitId)).localeCompare(unitName(b.unitId), undefined, {numeric:true})).map(x => `<tr><td>${esc(unitName(x.unitId) || x.unitName || "")}</td><td>${esc(mdTenants(x)) || "—"}</td><td class="r num">${x.rent ? usd(cents(x.rent)) : "—"}</td>
+        <td class="r num">${x.balance > 0 ? `<span style="color:var(--red)">${usd(cents(x.balance))}</span>` : `<span style="color:var(--green)">Paid</span>`}</td></tr>`).join("")}</tbody></table>
+      <div class="item-s" style="margin-top:8px">Rent in MagicDoor totals ${usd(cents(l.rent))}/mo · ${esc(m.how === "auto" ? "matched by address" : "linked by hand")} · <a href="#" id="mdChange">change</a></div></div>`;
+    c.querySelector("#mdChange").onclick = ev => { ev.preventDefault(); S.ui.mdQ = p.name; S.ui.mdF = "all"; go("pmMd"); };
+    return c;
+  }
   c.innerHTML = `<div class="card-h"><h3>MagicDoor</h3><span class="muted" style="margin-left:auto;font-size:12px">synced ${esc(mdAgo(S.md.syncedAt))}</span></div>
     <div class="card-b">${l ? `<div class="md-bal ${l.balance > 0 ? "owe" : ""}"><div class="label">Balance</div><div class="v num">${l.balance > 0 ? usd(cents(l.balance)) : l.balance < 0 ? usd(cents(l.balance)) + " credit" : "Paid up"}</div>
         <div class="s">${l.balance > 0 && l.pastDueDays > 0 ? `${l.pastDueDays} days past due${l.unpaidSince ? " · since " + esc(fdateS(l.unpaidSince)) : ""}` : l.lastPayment ? "Last payment " + esc(fdateS(l.lastPayment)) : ""}</div></div>
@@ -5618,7 +5687,7 @@ function mdPropertyCard(p){
 function mdMonthTag(p){
   const m = mdFor(p.id); if(!m || !m.lease) return "";
   const l = m.lease;
-  if(l.balance > 0) return ` · <span class="md-chip owe" title="From MagicDoor">MagicDoor: owes ${usd(cents(l.balance))}${l.pastDueDays > 0 ? `, ${l.pastDueDays}d late` : ""}</span>`;
+  if(l.balance > 0) return ` · <span class="md-chip owe" title="From MagicDoor">MagicDoor: ${l.combined ? `${l.owingCount} of ${l.count} owe ` : "owes "}${usd(cents(l.balance))}${l.pastDueDays > 0 ? `, ${l.pastDueDays}d late` : ""}</span>`;
   if(l.lastPayment && l.lastPayment.slice(0, 7) >= todayISO().slice(0, 7)) return ` · <span class="md-chip" title="From MagicDoor">MagicDoor: paid ${esc(fdateS(l.lastPayment))}</span>`;
   return ` · <span class="md-chip" title="From MagicDoor">MagicDoor: paid up</span>`;
 }
