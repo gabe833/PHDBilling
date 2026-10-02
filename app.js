@@ -3862,13 +3862,14 @@ const PMCore = (function(){
     place:"pl", parkway:"pkwy", terrace:"ter", trail:"trl", highway:"hwy", square:"sq", cove:"cv", point:"pt", crossing:"xing", north:"n", south:"s", east:"e", west:"w"};
   // "342 King St, A, Charleston, SC 29401" → "342 king st a";  "120 Smith St Charleston. SC 29403" → "120 smith st"
   const STREET_END = new Set(["st","ave","dr","rd","cir","blvd","ln","ct","pl","pkwy","ter","trl","hwy","sq","cv","pt","xing","way","row","loop","run","walk","aly","bnd","pass","path"]);
+  const CITY_WORDS = new Set(["charleston","north","n","mount","mt","pleasant","summerville","johns","john","s","island","hanahan","ladson","goose","creek","moncks","corner","bonneau","isle","of","palms","folly","beach","james","daniel","ravenel","hollywood","awendaw","wando","west","ashley","ridgeville","walterboro"]);
   function normAddr(x){
     const segs = String(x || "").toLowerCase().split(",").map(z => z.trim()).filter(Boolean);
     if(!segs.length) return "";
     let t = segs[0];
     // a short second part is the unit ("A", "Unit 1371", "Suite 100", "A - Downstairs") when a city follows it
     const UNIT = /^((unit|apt|suite|ste|#)\s*[a-z0-9-]{1,6}|[a-z0-9]{1,4}(\s*-\s*[a-z ]{1,14})?)$/;
-    if(segs.length >= 3 && UNIT.test(segs[1])) t += " " + segs[1];
+    if(segs.length >= 2 && UNIT.test(segs[1])) t += " " + segs[1];                 // "342 King St, A" / "949 E Estates Blvd, #304"
     const cityFollows = segs.length > 1 && /^(sc|nc|ga)\b|^\d{5}/.test(segs[segs.length - 1]) && segs.length === 2;
     t = t.replace(/\b(unit|apt|apartment|suite|ste|no)\b\.?/g, " ").replace(/[#.]/g, " ").replace(/[^a-z0-9 ]/g, " ");
     let w = t.split(/\s+/).filter(Boolean).map(z => SUFFIX[z] || z);
@@ -3878,14 +3879,19 @@ const PMCore = (function(){
     if(cut > 0){
       w = w.slice(0, cut);
       let last = -1; w.forEach((z, i) => { if(STREET_END.has(z)) last = i; });
+      if(last < 0) while(w.length > 2 && CITY_WORDS.has(w[w.length - 1])) w.pop();   // "7633 Ireland Charleston SC" → "7633 ireland"
       if(last > 0){ const nx = w[last + 1]; w = w.slice(0, last + 1 + (nx && /^([a-z]|\d{1,5}|[a-z]\d{1,4})$/.test(nx) && !/^(n|s|e|w)$/.test(nx) ? 1 : 0)); }
     }
     return w.join(" ");
   }
   // extra spellings of one address: without a repeated house number ("1371 hopton cir 1371" → "hopton cir 1371")
+  // extra spellings of one address: without a repeated house number ("1371 hopton cir 1371" → "hopton cir 1371"),
+  // and without the street type ("1213 captain rivers dr" → "1213 captain rivers") as a last resort
   function addrVariants(k){
     const out = [k], w = k.split(" ");
     if(/^\d+$/.test(w[0]) && w.slice(1).includes(w[0])) out.push(w.slice(1).join(" "));
+    const noType = w.filter((z, i) => !(i > 1 && STREET_END.has(z))).join(" ");
+    if(noType !== k && noType.split(" ").length >= 2) out.push(noType);
     return out;
   }
   function unitKeys(u, mp){
@@ -3894,6 +3900,7 @@ const PMCore = (function(){
     if(base && (!nm || nm === base || base.endsWith(" " + nm) || nm === "home" || (mp && mp.unitCount === 1))) out.add(base);
     if(base && nm && nm !== base && nm !== "home") out.add(nm.startsWith(base) ? nm : base + " " + nm.split(" ")[0]);
     if(u.line) out.add(normAddr(u.line));
+    [...out].forEach(k => addrVariants(k).forEach(v => out.add(v)));
     return out;
   }
   const mdLinkVal = v => String(v || "");
