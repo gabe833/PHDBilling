@@ -21,6 +21,8 @@ const ANON = Deno.env.get("SUPABASE_ANON_KEY") || "";
 const NK_KEY = (Deno.env.get("NICKEL_API_KEY") || "").trim();
 const NK_ENV = /^(live|prod|production)$/i.test(Deno.env.get("NICKEL_ENV") || "") ? "live" : "sandbox";
 const NK_BASE = NK_ENV === "live" ? "https://rest.nickel.com" : "https://rest.staging.nickel.com";
+const NK_MCP_TOKEN = (Deno.env.get("NICKEL_MCP_TOKEN") || "").trim();
+const NK_MCP_URL = "https://mcp.nickel.com/mcp";
 const QBO_ID = (Deno.env.get("QBO_CLIENT_ID") || "").trim();
 const QBO_SECRET = (Deno.env.get("QBO_CLIENT_SECRET") || "").trim();
 const QBO_ENV = /^sandbox$/i.test(Deno.env.get("QBO_ENV") || "") ? "sandbox" : "production";
@@ -509,6 +511,45 @@ async function status(email: string) {
   } else out.nickel.error = "Add NICKEL_API_KEY in Supabase → Edge Functions → Secrets.";
   return out;
 }
+/* ---------- Nickel MCP (free plan). Read-only probe for now: lists the tools, never calls one that changes anything. ---------- */
+let mcpSession = "";
+async function mcpRpc(method: string, params: Obj = {}, notify = false): Promise<any> {
+  if (!NK_MCP_TOKEN) throw new Error("Add NICKEL_MCP_TOKEN in Supabase → Edge Functions → Secrets.");
+  const headers: Obj = { "Authorization": "Bearer " + NK_MCP_TOKEN, "Content-Type": "application/json", "Accept": "application/json, text/event-stream" };
+  if (mcpSession) headers["Mcp-Session-Id"] = mcpSession;
+  const msg: Obj = { jsonrpc: "2.0", method, params }; if (!notify) msg.id = crypto.randomUUID();
+  const r = await fetch(NK_MCP_URL, { method: "POST", headers, body: JSON.stringify(msg) });
+  const sid = r.headers.get("mcp-session-id"); if (sid) mcpSession = sid;
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Nickel MCP ${r.status}: ${text.slice(0, 300)}`);
+  if (notify || !text.trim()) return null;
+  let data: any = null;
+  if ((r.headers.get("content-type") || "").includes("event-stream")) {
+    for (const line of text.split(/\r?\n/)) if (line.startsWith("data:")) { try { const d = JSON.parse(line.slice(5)); if (d.id === msg.id) data = d; } catch { /* skip */ } }
+  } else data = JSON.parse(text);
+  if (!data) throw new Error("Nickel MCP sent no answer");
+  if (data.error) throw new Error("Nickel MCP: " + (data.error.message || JSON.stringify(data.error)));
+  return data.result;
+}
+async function mcpOpen() {
+  mcpSession = "";
+  const init = await mcpRpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "phd-billing-console", version: "1.0" } });
+  await mcpRpc("notifications/initialized", {}, true);
+  return init;
+}
+async function mcpProbe() {
+  const init = await mcpOpen();
+  const tools: Obj[] = [];
+  let cursor: string | undefined;
+  do { const r = await mcpRpc("tools/list", cursor ? { cursor } : {}); tools.push(...(r.tools || [])); cursor = r.nextCursor; } while (cursor);
+  const want = /^(propose_plan|pay_bill|create_bill|search_bills|get_bill_payment|check_bill_approval|create_invoice|send_invoice|search_invoices|get_invoice|create_vendor|search_vendors|create_customer|search_customers|get_plan|.*plan.*|.*approv.*)$/;
+  return {
+    server: init && init.serverInfo, protocol: init && init.protocolVersion, count: tools.length,
+    names: tools.map((t) => t.name).sort(),
+    detail: tools.filter((t) => want.test(t.name)).map((t) => ({ name: t.name, description: t.description, input: t.inputSchema, annotations: t.annotations })),
+  };
+}
+
 Deno.serve(async (req) => {
   touched.clear();
   const url = new URL(req.url);
@@ -522,6 +563,7 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({})) as Obj;
     const mode = S(body.mode);
     if (mode === "nickel.refresh" && await isSchedule(req)) return json(await nkRefresh());
+    if (mode === "nkmcp.probe" && await isSchedule(req)) return json(await mcpProbe());
     const who = await caller(req);
     if (!who.staff) return json({ error: "Not on the team list" }, 403);
     const done = (r: Obj) => json({ ...r, docs: [...touched] });
@@ -535,6 +577,7 @@ Deno.serve(async (req) => {
       case "nickel.external": return done(await nkExternal(S(body.id), S(body.paymentId)));
       case "nickel.voidInvoice": return done(await nkVoidInvoice(S(body.id)));
       case "nickel.refresh": return done(await nkRefresh());
+      case "nkmcp.probe": return json(await mcpProbe());
       case "qbo.connect": return json(await qboConnect(who.email));
       case "qbo.disconnect": return json(await qboDisconnect());
       case "qbo.push": return done(await qboPush(S(body.kind), S(body.id)));
