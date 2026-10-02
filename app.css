@@ -911,4 +911,8 @@ table.tbl.bl-tbl td{padding:8px 14px;font-size:13px} table.tbl.bl-tbl th{padding
 @media (max-width:1180px){ .bl-q{grid-template-columns:1fr 1fr 1fr} .bl-q #bqM{grid-column:span 2} }
 @media (max-width:900px){ .ps-grid,.f3{grid-template-columns:1fr} }
 @media (max-width:640px){ .bl-q{grid-template-columns:1fr 1fr} .bl-q #bqM,.bl-q #bqP{grid-column:span 2} .bl-tbl th:nth-child(5),.bl-tbl td:nth-child(5),.bl-tbl th:nth-child(7),.bl-tbl td:nth-child(7){display:none} }
+.bl-mlist{border:1px solid var(--line);border-radius:9px;margin:0 0 12px;max-height:180px;overflow:auto}
+.bl-mlist div{display:flex;justify-content:space-between;gap:10px;padding:7px 12px;font-size:13px;border-bottom:1px solid var(--line)} .bl-mlist div:last-child{border-bottom:0}
+.ps-more{margin-top:10px;font-size:13px} .ps-more summary{cursor:pointer;color:var(--muted);font-weight:500} .ps-more[open] summary{margin-bottom:8px}
+.bl-pay a.btn{text-decoration:none}
 
