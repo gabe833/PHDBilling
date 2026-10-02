@@ -3833,7 +3833,9 @@ const PMCore = (function(){
       flags.push({level:"warn", text:`Recorded payout ${usd(recordedC)} is ${usd(Math.abs(recordedC - calcC))} ${recordedC > calcC ? "more" : "less"} than the formula (${usd(calcC)})`});
     if(dueC > 0 && recv > 0 && recv < dueC && !row.locked) flags.push({level:"warn", text:`${usd(dueC - recv)} short of rent due`});
     if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
-    if(payoutC < 0) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
+    // rent still to come this month isn't a shortfall: only say the owner owes once rent is in (or the month is over)
+    const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
+    if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     if(has(row.pmFee) && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
     const [y, mo] = String(row.month).split("-").map(Number);
@@ -4046,7 +4048,7 @@ const PMCore = (function(){
         if(c.recv > 0 && !r.paidOut && today > payDue && c.payoutC > 0)
           add({key:`payout|${p.id}|${m}`, type:"payout", level:"warn", propId:p.id, month:m, title:`Owner payout not marked paid · ${p.name}`,
                detail:`${usd(c.payoutC)} to ${own || "the owner"} for ${monthLabel(m)} was due by ${shortDate(payDue)}`, action:"markPaid"});
-        if(c.payoutC < 0)
+        if(c.payoutC < 0 && !(c.dueC > 0 && !c.recv && m >= curM))
           add({key:`owes|${p.id}|${m}`, type:"owes", level:"warn", propId:p.id, month:m, title:`Owner owes ${usd(-c.payoutC)} · ${p.name}`,
                detail:`Repairs and fees exceeded rent in ${monthLabel(m)}. It carries into next month automatically, or bill ${own || "the owner"} directly.`, action:"openRow"});
         c.flags.filter(f => f.level === "warn" && /Recorded payout/.test(f.text)).forEach(f =>
@@ -4186,6 +4188,17 @@ function pmAlerts(){
                         inbox:(typeof INBOX !== "undefined" ? INBOX.items : [])});
 }
 function pmRentStatus(m, p){ const r = pmRow(m, p.id); if(r) r._lateAfter = pmSettings().lateAfterDay; return PMCore.rentStatus(r, p, todayISO()); }
+// this month's status, with MagicDoor's live balance deciding when rent isn't recorded here yet (same rule as the alerts)
+function pmMdLease(p){ const x = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null; return x && x.lease || null; }
+function pmLiveStatus(m, p){
+  const st = pmRentStatus(m, p);
+  if(m !== thisMonth() || !["due","late","none","upcoming"].includes(st)) return st;
+  const L = pmMdLease(p); if(!L) return st;
+  const late = pmSettings().lateAfterDay, day = +todayISO().slice(8, 10);
+  if(L.balance > 0 && L.pastDueDays > 0 && (day > late || L.pastDueDays > late)) return "late";
+  if(PMCore.mdPaidThisMonth(L, m)) return "paid";
+  return st === "late" ? "due" : st;
+}
 
 function pmMonthRows(m){
   const P2 = pmState();
@@ -4266,7 +4279,8 @@ function pgPmMonth(){
   if(rows.length){
     acts.push(["Export CSV", () => pmExportCsv(m)]);
     acts.push(["Owner statements", () => pmStatementSheet(m)]);
-    if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const nF = mdPlan().rows.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
+    { const nd = stmtCandidates(m).filter(x => !x.why && !x.done).length; acts.push([nd ? `Email statements (${nd})` : "Email statements", () => pmStatementMailSheet(m)]); }
+    if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
     if(!closed && !mdReady()) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
     const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0).map(x => x.prop.id);
     if(!closed && unpaid.length) acts.push([`Mark payouts sent (${unpaid.length})`, () => pmMarkPaidSheet(m, unpaid)]);
@@ -4334,7 +4348,7 @@ function pgPmMonth(){
     const cell = (vC, extra) => vC ? `<td class="r num"${extra || ""}>${usd(vC)}</td>` : `<td class="r num muted">—</td>`;
     tr.innerHTML = `
       <td><div class="item-t">${esc(prop.name)}${status}</div>
-        <div class="item-s">${own ? esc(own) + " · " : ""}${feeRuleText(prop.feeRule)} fee${(row.payments || []).length ? ` · ${row.payments.length} payment${row.payments.length === 1 ? "" : "s"}` : ""}${!closed && m === todayISO().slice(0, 7) && mdReady() ? mdMonthTag(prop) : ""}${row.mdFilled ? ` · <span class="md-chip">rent from MagicDoor</span>` : ""}${(row.repairItems || []).some(i => i.mdLine) ? ` · <span class="md-chip">bills from MagicDoor</span>` : ""}</div></td>
+        <div class="item-s">${own ? esc(own) + " · " : ""}${feeRuleText(prop.feeRule)} fee${(row.payments || []).length ? ` · ${row.payments.length} payment${row.payments.length === 1 ? "" : "s"}` : ""}${!closed && m === todayISO().slice(0, 7) && mdReady() ? mdMonthTag(prop) : ""}</div></td>
       ${cell(c.dueC)}
       <td class="r">${locked ? `<span class="num">${c.recv ? usd(c.recv) : "—"}</span>` : `<input class="pm-in num" type="number" step="0.01" data-recv="${prop.id}" value="${has(row.rentReceived) ? row.rentReceived : ""}" placeholder="${c.dueC ? (c.dueC / 100).toFixed(2) : "0.00"}">`}</td>
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}</td>
@@ -4490,6 +4504,7 @@ function pmCloseMonth(m, close){
   mm.closed = !!close; mm.closedAt = close ? new Date().toISOString() : null; mm.closedBy = close ? ((typeof Cloud !== "undefined" && Cloud.email) || "") : null;
   if(!close) pmMonthRows(m).forEach(({row}) => { if(row.locked) row.locked = false; });   // reopening an imported month makes it editable
   commit(); toast(close ? `${monthLabel(m)} closed` : `${monthLabel(m)} reopened`, true);
+  if(close) setTimeout(() => stmtAutoOnClose(m), 600);   // owner statement drafts in Gmail
 }
 
 /* ---------------- one property, one month ---------------- */
@@ -4637,7 +4652,18 @@ function pgPmProps(){
     .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
   const card = elm("div","card");
   const t = elm("table","tbl");
-  t.innerHTML = `<thead><tr><th>Property</th><th>Owner</th><th>Status</th><th class="r">Rent</th><th class="r">PM fee</th><th class="r">${lastM ? "Payout · " + monthShort(lastM) : "Last payout"}</th><th class="r">Deposit held</th><th></th></tr></thead>`;
+  const showStatus = f === "all", curM = thisMonth();
+  t.className = "tbl pm-plist";
+  t.innerHTML = `<thead><tr><th>Property</th><th>Owner</th>${showStatus ? "<th>Status</th>" : ""}<th>${esc(monthLabel(curM).split(" ")[0])} rent</th><th class="r">Rent</th><th class="r">${lastM ? "Payout · " + monthShort(lastM) : "Last payout"}</th><th class="r">Deposit</th><th></th></tr></thead>`;
+  // this month's rent: MagicDoor's live balance when linked, otherwise what's recorded here
+  const rentNow = p => {
+    if(p.status === "inactive") return "";
+    const m = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null, L = m && m.lease;
+    if(L && L.balance > 0) return `<span class="tag red" title="From MagicDoor">Owes ${usd0(cents(L.balance))}${L.pastDueDays > 0 ? ` · ${L.pastDueDays}d` : ""}</span>`;
+    if(L && PMCore.mdPaidThisMonth(L, curM)) return `<span class="tag green" title="From MagicDoor">Paid${L.lastPayment ? " " + esc(fdateS(L.lastPayment)) : ""}</span>`;
+    const st = pmLiveStatus(curM, p), x = PM_STAT[st] || PM_STAT.none;
+    return st === "vacant" || st === "nodue" ? `<span class="muted">${x.label}</span>` : `<span class="tag ${x.cls}">${x.label}</span>`;
+  };
   const tb = elm("tbody");
   // grouped by MagicDoor portfolio when properties have one
   const grouped = list.some(p => p.portfolio);
@@ -4650,17 +4676,19 @@ function pgPmProps(){
     if(grouped && (p.portfolio || "") !== lastGroup){
       lastGroup = p.portfolio || "";
       const n = list.filter(x => (x.portfolio || "") === lastGroup).length;
-      const g = elm("tr","pm-grp"); g.innerHTML = `<td colspan="8">${esc(lastGroup || "Not in MagicDoor")} <span class="muted">· ${n}</span></td>`; tb.appendChild(g);
+      const g = elm("tr","pm-grp"); g.innerHTML = `<td colspan="${showStatus ? 8 : 7}">${esc(lastGroup || "Not in MagicDoor")} <span class="muted">· ${n}</span></td>`; tb.appendChild(g);
     }
     const r = lastM && pmRow(lastM, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
     const d = P2.deposits[p.id], held = d && d.current && d.current.amount ? cents(d.current.amount) : 0;
     const own = ownerLabel(ownerById(p.ownerId));
     const tr = elm("tr");
-    tr.innerHTML = `<td><div class="item-t">${esc(p.name)}${p.feeRule && p.feeRule.check ? `<span class="mark gold" title="Fee rule came from the workbook and looks unusual">Check fee</span>` : ""}</div><div class="item-s">${esc(p.address)}</div></td>
-      <td>${own ? esc(own) : `<span class="muted">—</span>`}</td>
-      <td><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status] || "grey"}">${PM_STATUS[p.status] || p.status}</span></td>
-      <td class="r num">${p.rent ? usd(cents(p.rent)) : "—"}</td><td class="r num">${feeRuleText(p.feeRule)}</td>
-      <td class="r num">${c ? usd(c.payoutC) : "—"}</td><td class="r num">${held ? usd(held) : "—"}</td><td class="act"><span class="sc-go">›</span></td>`;
+    const sub = p.status === "active" && p.tenants ? p.tenants : p.status !== "active" && p.statusSince ? `${PM_STATUS[p.status]} since ${fdateS(p.statusSince)}` : "";
+    tr.innerHTML = `<td><div class="item-t">${esc(p.name)}${p.feeRule && p.feeRule.check ? `<span class="mark gold" title="Fee rule came from the workbook and looks unusual">Check fee</span>` : ""}</div>${sub ? `<div class="item-s">${esc(sub)}</div>` : ""}</td>
+      <td class="pm-own">${own ? esc(own) : `<span class="muted">—</span>`}</td>
+      ${showStatus ? `<td><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status] || "grey"}">${PM_STATUS[p.status] || p.status}</span></td>` : ""}
+      <td>${rentNow(p)}</td>
+      <td class="r num">${p.rent ? usd(cents(p.rent)) : "—"}</td>
+      <td class="r num">${c ? usd(c.payoutC) : `<span class="muted">—</span>`}</td><td class="r num">${held ? usd(held) : `<span class="muted">—</span>`}</td><td class="act"><span class="sc-go">›</span></td>`;
     tr.onclick = () => pmOpenProperty(p.id);
     tb.appendChild(tr);
   });
@@ -5035,10 +5063,11 @@ function pmStatementSheet(m){
       <div class="md-list">${Object.entries(groups).map(([k, ids]) => { const o = k.startsWith("p:") ? null : ownerById(k);
         const total = ids.reduce((a, id) => a + pmCalc(pmRow(m, id), pmProp(id)).payoutC, 0);
         return `<div class="md-r"><div><b>${esc(o ? ownerLabel(o) : pmProp(ids[0]).name)}</b><span class="muted"> ${o ? ids.map(id => esc(pmProp(id).name)).join(", ") : "no owner on file"}</span></div><span class="num">${usd(total)}</span><button class="btn sm" data-g="${esc(k)}">PDF</button></div>`; }).join("")}</div></div>
-    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn primary" id="stAll">All statements</button></div>`;
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn" id="stMail">Email as Gmail drafts</button><button class="btn primary" id="stAll">All statements</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
   sh.querySelectorAll("[data-g]").forEach(b => b.onclick = () => printDoc(pmStatementHTML(m, groups[b.dataset.g])));
   $("#stAll").onclick = () => printDoc(pmStatementHTML(m, null, Object.values(groups)));
+  $("#stMail").onclick = () => pmStatementMailSheet(m);
   openPanel();
 }
 function pmStatementHTML(m, ids, groupsList){
@@ -5126,7 +5155,7 @@ function pmAlertRowHTML(a){
     <span class="al-dot"></span>
     <div class="al-txt"><b>${esc(a.title)}</b><span>${esc(a.detail || "")}</span></div>
     <div class="al-btns">
-      <button class="btn sm ${a.level === "info" ? "" : "primary"}" data-aact="${esc(a.key)}">${PM_ACT_LABEL[a.action] || "Open"}</button>
+      <button class="btn sm ${a.action === "markPaid" || a.action === "startMonth" ? "primary" : ""}" data-aact="${esc(a.key)}">${PM_ACT_LABEL[a.action] || "Open"}</button>
       <div class="al-more"><button class="btn sm ghost" data-amenu="${esc(a.key)}" title="Snooze or dismiss">⋯</button>
         <div class="al-menu"><button data-asnz="1">Snooze until tomorrow</button><button data-asnz="3">Snooze 3 days</button><button data-asnz="7">Snooze a week</button><button data-adis>Dismiss</button></div></div>
     </div></div>`;
@@ -5158,16 +5187,16 @@ function pgPmHome(){
   $("#pgCrumb").textContent = "Property management";
   $("#pgTitle").textContent = "Overview";
   $("#pgSub").textContent = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric"}) + (alerts.length ? ` · ${alerts.filter(a => a.level !== "info").length} things need action` : " · nothing needs action");
-  actions([["Add property", () => pmPropSheet(null), "ghost"], ["Open " + monthLabel(monthOn), () => { S.ui.pmMonth = monthOn; go("pmMonth"); }], ["Record rent", () => pmQuick(), "primary"]]);
+  actions([["Add property", () => pmPropSheet(null), "ghost"], ["Open " + monthLabel(monthOn), () => { S.ui.pmMonth = monthOn; go("pmMonth"); }, "primary"]]);
   const v = $("#view");
 
   /* ---- numbers that matter today ---- */
   const leased = props.filter(p => p.status === "active");
-  const st = {}; props.forEach(p => st[p.id] = pmRentStatus(monthOn, p));
+  const st = {}; props.forEach(p => st[p.id] = pmLiveStatus(monthOn, p));
   let dueC = 0, recvC = 0, lateC = 0, lateN = 0, payN = 0, payC = 0, sentN = 0, payTot = 0;
   props.forEach(p => { const r = pmRow(monthOn, p.id); if(!r || r.detailOnly) return; const c = pmCalc(r, p);
     dueC += c.dueC; recvC += Math.min(c.recv, c.dueC || c.recv);
-    if(st[p.id] === "late"){ lateN++; lateC += c.dueC - c.recv; }
+    if(st[p.id] === "late"){ const L = monthOn === thisMonth() && !c.recv ? pmMdLease(p) : null; lateN++; lateC += L && L.balance > 0 ? cents(L.balance) : c.dueC - c.recv; }
     if(c.recv > 0 && c.payoutC > 0){ payTot++; if(r.paidOut || r.locked) sentN++; else { payN++; payC += c.payoutC; } } });
   const ending = leased.filter(p => p.leaseEnd && PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) <= set.renewalDays && PMCore.dayNum(p.leaseEnd) >= PMCore.dayNum(today) - 31).length;
   const vac = props.filter(p => p.status === "marketing" || p.status === "vacant").length;
@@ -5262,7 +5291,7 @@ function pgPmHome(){
     const card = elm("div","card pm-heat"), t = elm("table","tbl");
     t.innerHTML = `<thead><tr><th>Property</th>${months.map(mm => `<th class="hm-h">${monthShort(mm)}</th>`).join("")}</tr></thead>
       <tbody>${shown.map(p => `<tr><td><button class="linkish" data-pp="${p.id}">${esc(p.name)}</button></td>${months.map(mm => {
-          const s2 = pmRentStatus(mm, p), r = pmRow(mm, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
+          const s2 = pmLiveStatus(mm, p), r = pmRow(mm, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
           return `<td class="hm hm-${s2}" data-hm="${mm}|${p.id}" title="${esc(monthLabel(mm))}: ${esc((PM_STAT[s2] || PM_STAT.none).label)}${c && c.recv ? " · " + usd(c.recv) + " received · payout " + usd(c.payoutC) : ""}"><i></i></td>`; }).join("")}</tr>`).join("")}</tbody>`;
     t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmOpenProperty(b.dataset.pp));
     t.querySelectorAll("[data-hm]").forEach(td => td.onclick = () => { const [mm, pid] = td.dataset.hm.split("|"); if(pmRow(mm, pid)) pmRowSheet(mm, pid); });
@@ -5315,71 +5344,170 @@ function pmAlertLabel(k){
 }
 
 /* ====================================================================
-   ONE PROPERTY — everything about it on one page
+   ONE PROPERTY — opens on this month; facts once; history in tabs
    ==================================================================== */
+const pmDY = iso => iso ? fdateS(iso) + " '" + iso.slice(2, 4) : "?";
+const pmTel = ph => `<a href="tel:${esc(String(ph).replace(/[^\d+]/g, ""))}">${esc(ph)}</a>`;
+const pmMail = em => `<a href="mailto:${esc(em)}">${esc(em)}</a>`;
 function pgPmProperty(){
   const p = pmProp(S.ui.pmPropId);
   if(!p) return go("pmProps");
-  const today = todayISO(), set = pmSettings(), o = ownerById(p.ownerId);
+  const today = todayISO(), curM = thisMonth(), set = pmSettings(), o = ownerById(p.ownerId);
   const months = pmMonths().filter(m => pmRow(m, p.id) && !pmRow(m, p.id).detailOnly).reverse();
-  const curM = months[0] || thisMonth();
-  $("#pgCrumb").textContent = "Properties"; $("#pgTitle").textContent = p.name; $("#pgSub").textContent = p.address || "";
-  actions([["All properties", () => go("pmProps"), "ghost"], ["Statement", () => printDoc(pmStatementHTML(curM, [p.id]))], ["Edit", () => pmPropSheet(p.id)],
-           ["Open " + monthLabel(thisMonth()).split(" ")[0], () => { S.ui.pmMonth = thisMonth(); go("pmMonth"); if(pmRow(thisMonth(), p.id)) setTimeout(() => pmRowSheet(thisMonth(), p.id), 30); }, "primary"]]);
+  if(S.ui.pmPropMFor !== p.id){ S.ui.pmPropMFor = p.id; S.ui.pmPropM = pmRow(curM, p.id) || !months.length ? curM : months[0]; }
+  const selM = S.ui.pmPropM;
+  const md = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null, L = md && md.lease, bldg = !!(L && L.combined);
+  $("#pgCrumb").textContent = "Properties"; $("#pgTitle").textContent = p.name; $("#pgSub").textContent = p.address && p.address !== p.name ? p.address : "";
+  actions([["All properties", () => go("pmProps"), "ghost"], ["Statement", () => printDoc(pmStatementHTML(selM, [p.id]))], ["Edit property", () => pmPropSheet(p.id)]]);
   const v = $("#view");
-  const dep = pmState().deposits[p.id] || {}, left = p.leaseEnd ? PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) : null;
-  const ytd = months.filter(m => m.slice(0, 4) === today.slice(0, 4)).map(m => pmCalc(pmRow(m, p.id), p));
-  const sum = k => ytd.reduce((a, c) => a + c[k], 0);
-  const head = elm("div","pm-ph");
-  head.innerHTML = `
-    <div class="card pm-ph-main">
-      <div class="pm-ph-top"><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status]}">${PM_STATUS[p.status]}</span>${p.statusSince ? `<span class="muted" style="font-size:12px">since ${esc(fdateS(p.statusSince))}</span>` : ""}</div>
-      <dl class="kv" style="padding:6px 0 0">
-        <dt>Owner</dt><dd>${o ? `<a href="#" id="phOwner">${esc(ownerLabel(o))}</a>${o.email ? ` · <a href="mailto:${esc(o.email)}">${esc(o.email)}</a>` : ""}` : `<span class="muted">None on file</span>`}</dd>
-        <dt>Tenants</dt><dd>${esc(p.tenants || "—")}${p.tenantEmail ? ` · <a href="mailto:${esc(p.tenantEmail)}">${esc(p.tenantEmail)}</a>` : ""}${p.tenantPhone ? ` · <a href="tel:${esc(p.tenantPhone.replace(/[^\d+]/g, ""))}">${esc(p.tenantPhone)}</a>` : ""}</dd>
-        <dt>Lease</dt><dd>${p.leaseStart || p.leaseEnd ? `${p.leaseStart ? esc(fdateS(p.leaseStart)) + " '" + p.leaseStart.slice(2, 4) : "?"} → ${p.leaseEnd ? esc(fdateS(p.leaseEnd)) + " '" + p.leaseEnd.slice(2, 4) : "?"}${left != null ? ` <span class="${left < 0 || left <= set.renewalDays ? "tag gold" : "muted"}">${left < 0 ? "ended" : left + " days left"}</span>` : ""}` : `<span class="muted">Add lease dates to get renewal alerts</span>`}</dd>
-        <dt>Rent</dt><dd class="num">${p.rent ? usd(cents(p.rent)) : "—"} <span class="muted" style="font-family:var(--sans)">· ${esc(feeRuleText(p.feeRule))} PM fee · ${p.adminRate ?? 10}% admin on repairs${p.monthlyFilters ? ` · ${usd(cents(p.monthlyFilters))} filters` : ""}</span></dd>
-        <dt>Deposit</dt><dd>${dep.current && dep.current.amount ? usd(cents(dep.current.amount)) + " held" : `<span class="muted">—</span>`}${dep.former && dep.former.names && !dep.former.returned ? ` · <span style="color:var(--gold)">former tenant not settled</span>` : ""}</dd>
-        ${(p.recurring || []).length ? `<dt>Recurring</dt><dd>${p.recurring.map(x => `${esc(x.vendor || x.memo)} ${usd(cents(x.amount))}`).join(" · ")}</dd>` : ""}
-        ${p.notes ? `<dt>Notes</dt><dd>${esc(p.notes)}</dd>` : ""}
-      </dl></div>
-    <div class="card pm-ph-side"><div class="label">${today.slice(0, 4)} so far</div>
-      <table class="pm-sum" style="margin-top:8px"><tr><td>Rent collected</td><td class="r num">${usd(sum("recv"))}</td></tr><tr><td>Repairs</td><td class="r num">${usd(sum("repairsC"))}</td></tr>
-        <tr><td>PM + admin fees</td><td class="r num">${usd(sum("pmFeeC") + sum("adminC"))}</td></tr><tr class="due"><td>Paid to owner</td><td class="r num">${usd(sum("payoutC"))}</td></tr></table></div>`;
-  v.appendChild(head);
-  const oL = head.querySelector("#phOwner"); if(oL) oL.onclick = e => { e.preventDefault(); openOwner(o.id); };
-  const mdc = mdPropertyCard(p); if(mdc){ mdc.style.marginTop = "16px"; v.appendChild(mdc); }
+
+  // what needs doing, first
   const al = pmAlerts().filter(a => a.propId === p.id);
-  if(al.length){ const c = elm("div","card"); c.style.marginTop = "14px"; c.innerHTML = `<div class="card-h"><h3>Needs action</h3></div><div class="al-list">${al.map(pmAlertRowHTML).join("")}</div>`; pmWireAlerts(c, al); v.appendChild(c); }
-  // 12-month strip
-  const strip = []; for(let i = 11; i >= 0; i--) strip.push(monthAdd(thisMonth(), -i));
-  const sc = elm("div","card pm-strip");
-  sc.innerHTML = `<div class="card-h"><h3>Last 12 months</h3></div><div class="pm-strip-row">${strip.map(mm => { const s2 = pmRentStatus(mm, p), r = pmRow(mm, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null;
-    return `<button class="pm-sm hm-${s2}" data-sm="${mm}" ${r ? "" : "disabled"}><span class="l">${monthShort(mm)}</span><span class="v num">${c && c.recv ? usd0(c.recv) : "—"}</span><span class="s">${(PM_STAT[s2] || PM_STAT.none).label}</span></button>`; }).join("")}</div>`;
-  sc.querySelectorAll("[data-sm]").forEach(b => b.onclick = () => pmRowSheet(b.dataset.sm, p.id));
-  v.appendChild(sc);
-  // ledger
-  const lc = elm("div","card"), t = elm("table","tbl");
-  t.innerHTML = `<thead><tr><th>Month</th><th class="r">Rent due</th><th class="r">Received</th><th class="r">Repairs</th><th class="r">Admin fee</th><th class="r">PM fee</th><th class="r">Owner payout</th><th>Paid out</th><th></th></tr></thead>
-    <tbody>${months.map(mm => { const r = pmRow(mm, p.id), c = pmCalc(r, p);
-      return `<tr data-lm="${mm}" style="cursor:pointer"><td><b>${monthLabel(mm)}</b></td><td class="r num">${c.dueC ? usd(c.dueC) : "—"}</td><td class="r num">${c.recv ? usd(c.recv) : "—"}</td><td class="r num">${c.repairsC ? usd(c.repairsC) : "—"}</td>
-        <td class="r num">${c.adminC ? usd(c.adminC) : "—"}</td><td class="r num">${usd(c.pmFeeC)}</td><td class="r num"><b>${usd(c.payoutC)}</b></td>
-        <td>${r.paidOut ? `<span class="tag green">${esc(fdateS(r.paidOut.date))}</span>` : r.locked ? `<span class="muted">imported</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">To send</span>` : "—"}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
-  t.querySelectorAll("[data-lm]").forEach(tr => tr.onclick = () => pmRowSheet(tr.dataset.lm, p.id));
-  lc.innerHTML = `<div class="card-h"><h3>Ledger</h3><span class="muted" style="margin-left:auto;font-size:12px">${months.length} months</span></div>`;
-  const w = elm("div","tbl-wrap"); w.appendChild(t); lc.appendChild(w); lc.style.marginTop = "14px"; v.appendChild(lc);
-  // repairs history
-  const items = []; months.forEach(mm => (pmRow(mm, p.id).repairItems || []).forEach(it => items.push(Object.assign({month:mm}, it))));
-  if(items.length){
-    const vend = {}; items.forEach(it => { const k = it.vendor || "Other"; vend[k] = (vend[k] || 0) + cents(it.amount); });
-    const rc = elm("div","card"); rc.style.marginTop = "14px";
-    rc.innerHTML = `<div class="card-h"><h3>Repairs</h3><span class="muted" style="margin-left:auto;font-size:12px">${items.length} items · ${usd(items.reduce((a, it) => a + cents(it.amount), 0))}</span></div>
-      <div class="card-b" style="padding-bottom:6px"><div class="pm-vend">${Object.entries(vend).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => `<span>${esc(k)} <b class="num">${usd0(c)}</b></span>`).join("")}</div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Vendor</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
-      ${items.slice(0, 60).map(it => `<tr><td class="muted">${it.date ? esc(fdateS(it.date)) + " '" + it.date.slice(2, 4) : esc(monthShort(it.month))}</td><td>${esc(it.vendor || "—")}</td><td>${esc(it.memo || "")}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
-        <td>${it.link ? `<a class="btn sm ghost" href="${esc(it.link)}" target="_blank" rel="noopener">Receipt</a>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
-    v.appendChild(rc);
+  if(al.length){ const c = elm("div","card pp-alerts"); c.innerHTML = `<div class="al-list">${al.map(pmAlertRowHTML).join("")}</div>`; pmWireAlerts(c, al);
+    al.forEach(a => { if(a.action === "openProp"){ const b = c.querySelector(`[data-aact="${CSS.escape(a.key)}"]`); if(b) b.remove(); } });   // already on this page
+    v.appendChild(c); }
+
+  const grid = elm("div","pp-grid"); v.appendChild(grid);
+
+  /* ---------- the month (this month by default) ---------- */
+  const mc = elm("div","card pp-month"); grid.appendChild(mc);
+  const r = pmRow(selM, p.id), closed = !!(pmState().meta[selM] || {}).closed;
+  const stOf = mm => pmLiveStatus(mm, p);
+  const st = stOf(selM), stat = PM_STAT[st] === PM_STAT.paid && !(r && PMCore.has(r.rentReceived)) ? {label:"Paid in MagicDoor", cls:"green"} : PM_STAT[st] || PM_STAT.none;
+  const prevM = PMCore.monthAdd(selM, -1), nextM = PMCore.monthAdd(selM, 1);
+  const canPrev = months.some(m => m < selM), canNext = nextM <= curM || months.some(m => m > selM);
+  let body = "";
+  if(!r || r.detailOnly){
+    body = `<div class="pp-empty">${selM === curM ? `${monthLabel(selM)} hasn't been started for this property.` : `Nothing recorded for ${monthLabel(selM)}.`}
+      <button class="btn sm" id="ppStart">Open ${esc(monthLabel(selM).split(" ")[0])}</button></div>`;
+  } else {
+    const c = pmCalc(r, p), pending = c.dueC > 0 && !c.recv && selM >= curM && !r.locked;
+    const e = pending ? pmCalc(Object.assign({}, r, {rentReceived:r.rentDue}), p) : c;     // rent not in yet: show what it will be
+    const items = r.repairItems || [];
+    if(!c.dueC && !c.recv && !items.length && !c.otherC && !c.adjC && !c.extrasC && !r.paidOut){
+      body = `<div class="pp-empty">${p.status === "active" ? "No rent due recorded" : "Vacant"} — nothing to collect or pay out for ${esc(monthLabel(selM))}.<button class="btn sm" id="ppEdit" style="margin-left:auto">${r.locked || closed ? "View" : "Add a bill or rent"}</button></div>`;
+    } else {
+    const line = (label, val, cls, note) => `<div class="pp-l ${cls || ""}"><span>${label}${note ? ` <i>${note}</i>` : ""}</span><b class="num">${val}</b></div>`;
+    const neg = x => x ? "−" + usd(Math.abs(x)) : "—";
+    body = `
+      ${md && L && selM === curM ? `<div class="pp-live ${L.balance > 0 ? "owe" : "ok"}"><span class="d"></span>${L.balance > 0
+          ? `<b>${usd(cents(L.balance))} owed in MagicDoor</b><span>${L.pastDueDays > 0 ? `${L.pastDueDays} day${L.pastDueDays === 1 ? "" : "s"} past due` : "due"}${L.lastPayment ? " · last payment " + esc(fdateS(L.lastPayment)) : ""}${bldg ? ` · ${L.owingCount} of ${L.count} units` : ""}</span>`
+          : `<b>Paid up in MagicDoor</b><span>${L.lastPayment ? "last payment " + esc(pmDY(L.lastPayment)) : ""}</span>`}</div>` : ""}
+      <div class="pp-lines">
+        ${line(pending ? "Rent due" : "Rent received", usd(pending ? c.dueC : c.recv), "", pending ? "not received yet" : c.dueC && c.recv !== c.dueC ? `of ${usd(c.dueC)} due` : "")}
+        ${e.extrasC ? line(["filters", "lateFee", "applications", "reimbursement"].filter(k => Number(r[k])).map(k => ({filters:"Filter fee", lateFee:"Late fee", applications:"Application fees", reimbursement:"Reimbursement"})[k]).join(" + ") || "PHD charges", usd(e.extrasC), "phd", "kept by PHD, not paid to the owner") : ""}
+        ${line("Repairs", neg(e.repairsC), "ded", items.length ? `${items.length} item${items.length === 1 ? "" : "s"}` : "")}
+        ${items.length ? `<div class="pp-items">${items.map(it => `<div><span>${esc(it.vendor || "—")}<i>${esc(it.memo || "")}</i></span><b class="num">${usd(cents(it.amount))}</b></div>`).join("")}</div>` : ""}
+        ${e.adminC ? line("Admin fee", neg(e.adminC), "ded", `${p.adminRate ?? 10}% of repairs`) : ""}
+        ${line("PM fee", neg(e.pmFeeC), "ded", feeRuleText(p.feeRule))}
+        ${e.leasingC ? line("Leasing fee", neg(e.leasingC), "ded") : ""}
+        ${e.otherC ? line("Other income", usd(e.otherC)) : ""}
+        ${e.adjC ? line("Adjustments", usd(e.adjC)) : ""}
+        ${line(pending ? "Owner payout, once rent is in" : e.payoutC < 0 ? "Owner owes" : "Owner payout", usd(Math.abs(e.payoutC)), "tot" + (e.payoutC < 0 ? " neg" : ""))}
+      </div>
+      <div class="pp-foot">${r.paidOut ? `<span class="tag green">Paid out ${esc(fdateS(r.paidOut.date))}${r.paidOut.method ? " · " + esc(r.paidOut.method) : ""}</span>`
+          : r.locked ? `<span class="muted">Imported from the workbook</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout to send</span>` : ""}
+        ${closed ? `<span class="muted">Month closed</span>` : ""}
+        <button class="btn sm ${pending ? "primary" : ""}" id="ppEdit" style="margin-left:auto">${r.locked || closed ? "View details" : pending ? "Record rent & bills" : "Edit month"}</button></div>`;
+    }
   }
+  mc.innerHTML = `<div class="card-h pp-mh">
+      <button class="btn sm ghost pp-arw" id="ppPrev" ${canPrev ? "" : "disabled"} title="Previous month">‹</button>
+      <h3>${monthLabel(selM)}</h3>
+      <button class="btn sm ghost pp-arw" id="ppNext" ${canNext ? "" : "disabled"} title="Next month">›</button>
+      <span class="tag ${stat.cls}">${stat.label}</span>
+      ${selM !== curM ? `<button class="btn sm ghost" id="ppNow" style="margin-left:auto">Back to ${esc(monthLabel(curM).split(" ")[0])}</button>` : ""}</div>
+    <div class="card-b">${body}</div>`;
+  const pick = m => { S.ui.pmPropM = m; render(); };
+  mc.querySelector("#ppPrev").onclick = () => pick(months.filter(m => m < selM)[0] || prevM);
+  mc.querySelector("#ppNext").onclick = () => pick([...months].reverse().find(m => m > selM) || nextM);
+  const now = mc.querySelector("#ppNow"); if(now) now.onclick = () => pick(curM);
+  const ed = mc.querySelector("#ppEdit"); if(ed) ed.onclick = () => pmRowSheet(selM, p.id);
+  const sb = mc.querySelector("#ppStart"); if(sb) sb.onclick = () => { S.ui.pmMonth = selM; go("pmMonth"); };
+
+  /* ---------- the property, each fact once ---------- */
+  const dep = pmState().deposits[p.id] || {}, depC = dep.current && dep.current.amount ? cents(dep.current.amount) : 0;
+  const mdDep = L && !bldg && L.depositPaid ? cents(L.depositPaid) : 0;
+  const live = L && !bldg ? L.tenants.filter(t => !t.movedOut && t.name) : null;
+  const ls = L && !bldg ? L.start : p.leaseStart, le = L && !bldg ? (L.monthToMonth ? null : L.end) : p.leaseEnd, m2m = L && !bldg ? L.monthToMonth : p.monthToMonth;
+  const left = le ? PMCore.dayNum(le) - PMCore.dayNum(today) : null;
+  const rent = p.rent ? cents(p.rent) : L && L.rent > 0 ? cents(L.rent) : 0;
+  const ytd = months.filter(m => m.slice(0, 4) === today.slice(0, 4)).map(m => pmCalc(pmRow(m, p.id), p)), sum = k => ytd.reduce((a, c) => a + c[k], 0);
+  const sc = elm("div","card pp-side"); grid.appendChild(sc);
+  sc.innerHTML = `
+    <div class="pp-sh"><span class="tag ${{active:"green", marketing:"gold", vacant:"grey", inactive:"grey"}[p.status]}">${PM_STATUS[p.status]}</span>${p.statusSince ? `<span class="muted">since ${esc(pmDY(p.statusSince))}</span>` : ""}${p.portfolio ? `<span class="muted pp-pf">${esc(p.portfolio)}</span>` : ""}</div>
+    <dl class="pp-kv">
+      <dt>Owner</dt><dd>${o ? `<a href="#" id="ppOwner">${esc(ownerLabel(o))}</a>${o.email ? `<small>${pmMail(o.email)}</small>` : ""}` : `<span class="muted">None on file</span>`}</dd>
+      <dt>${bldg ? "Units" : "Tenants"}</dt><dd>${bldg ? `${L.count} leased` : live && live.length ? live.map(t => `<div class="pp-t">${esc(t.name)}${t.email || t.phone ? `<small>${[t.email && pmMail(t.email), t.phone && pmTel(t.phone)].filter(Boolean).join(" · ")}</small>` : ""}</div>`).join("")
+          : p.tenants ? `${esc(p.tenants)}${p.tenantEmail || p.tenantPhone ? `<small>${[p.tenantEmail && pmMail(p.tenantEmail), p.tenantPhone && pmTel(p.tenantPhone)].filter(Boolean).join(" · ")}</small>` : ""}` : `<span class="muted">—</span>`}</dd>
+      ${bldg ? "" : `<dt>Lease</dt><dd>${ls || le ? `${pmDY(ls)} → ${m2m ? "month-to-month" : pmDY(le)}${left != null ? `<small class="${left < 0 || left <= set.renewalDays ? "warn" : ""}">${left < 0 ? "ended " + (-left) + " days ago" : left + " days left"}</small>` : ""}` : `<span class="muted">No dates</span>`}${L && L.eviction ? ` <span class="tag red">eviction</span>` : ""}</dd>`}
+      <dt>Rent</dt><dd><span class="num">${rent ? usd(rent) : "—"}</span><small>${esc(feeRuleText(p.feeRule))} PM fee · ${p.adminRate ?? 10}% admin on repairs${p.monthlyFilters ? ` · ${usd(cents(p.monthlyFilters))} filter fee/mo` : ""}</small></dd>
+      <dt>Deposit</dt><dd><span class="num">${mdDep || depC ? usd(mdDep || depC) + " held" : "—"}</span>${mdDep && depC && mdDep !== depC ? `<small class="warn">Deposits page has ${usd(depC)} · <a href="#" id="ppDepFix">use ${usd(mdDep)}</a></small>` : ""}${dep.former && dep.former.names && !dep.former.returned ? `<small class="warn">Former tenant's deposit not settled</small>` : ""}</dd>
+      ${(p.recurring || []).length ? `<dt>Recurring</dt><dd>${p.recurring.map(x => `${esc(x.vendor || x.memo)} ${usd(cents(x.amount))}`).join("<br>")}</dd>` : ""}
+      ${p.notes && !/^Added from MagicDoor$/.test(p.notes) ? `<dt>Notes</dt><dd class="pp-note">${esc(p.notes)}</dd>` : ""}
+    </dl>
+    <div class="pp-ytd"><div class="label">${today.slice(0, 4)} so far</div>
+      <div class="pp-ytd-g"><div><span>Collected</span><b class="num">${usd0(sum("recv"))}</b></div><div><span>Repairs</span><b class="num">${usd0(sum("repairsC"))}</b></div>
+        <div><span>PHD fees</span><b class="num">${usd0(sum("phdC"))}</b></div><div><span>To owner</span><b class="num">${usd0(sum("payoutC"))}</b></div></div></div>
+    ${typeof mdReady === "function" && mdReady() ? `<div class="pp-md">${md ? `MagicDoor · synced ${esc(mdAgo(S.md.syncedAt))} · ${md.how === "auto" ? "matched by address" : "linked by hand"}` : mdLinks().links[p.id] === "none" ? "Not in MagicDoor" : "Not linked to MagicDoor"} · <a href="#" id="ppMdLink">${md ? "change" : "link"}</a></div>` : ""}`;
+  const ow = sc.querySelector("#ppOwner"); if(ow) ow.onclick = e => { e.preventDefault(); openOwner(o.id); };
+  const dfx = sc.querySelector("#ppDepFix"); if(dfx) dfx.onclick = e => { e.preventDefault(); snapshot(); const d = pmState().deposits[p.id]; d.current.amount = mdDep / 100; commit(); toast("Deposit updated from MagicDoor", true); };
+  const ml = sc.querySelector("#ppMdLink"); if(ml) ml.onclick = e => { e.preventDefault(); S.ui.mdQ = p.name; S.ui.mdF = "all"; go("pmMd"); };
+
+  /* ---------- history, in tabs ---------- */
+  const items = []; months.forEach(mm => (pmRow(mm, p.id).repairItems || []).forEach(it => items.push(Object.assign({month:mm}, it))));
+  const mdh = md && md.property ? mdActivity(md.property.id) : null;
+  const tabs = [["months", "Months", months.length]];
+  if(bldg) tabs.push(["units", "Units", L.count]);
+  if(items.length) tabs.push(["repairs", "Repairs", items.length]);
+  if(mdh && (mdh.bills.length || mdh.dists.length)) tabs.push(["md", "MagicDoor activity", ""]);
+  let tab = S.ui.pmPropTab; if(!tabs.some(t => t[0] === tab)) tab = "months";
+  const hc = elm("div","card pp-hist"); v.appendChild(hc);
+  let inner = "";
+  if(tab === "months"){
+    inner = `<table class="tbl pp-tbl"><thead><tr><th>Month</th><th class="r">Rent</th><th class="r">Repairs</th><th class="r">PHD fees</th><th class="r">Owner payout</th><th>Payout</th></tr></thead><tbody>
+      ${months.map(mm => { const rr = pmRow(mm, p.id), c = pmCalc(rr, p), s2 = stOf(mm), pend = c.dueC > 0 && !c.recv && mm >= curM && !rr.locked;
+        return `<tr data-lm="${mm}" class="${mm === selM ? "on" : ""}"><td><b>${monthLabel(mm)}</b></td>
+          <td class="r num">${c.recv ? usd(c.recv) : `<span class="tag ${(PM_STAT[s2] || PM_STAT.none).cls}">${(PM_STAT[s2] || PM_STAT.none).label}</span>`}</td>
+          <td class="r num">${c.repairsC ? usd(c.repairsC) : `<span class="muted">—</span>`}</td><td class="r num">${c.phdC ? usd(c.phdC) : `<span class="muted">—</span>`}</td>
+          <td class="r num">${pend ? `<span class="muted">pending</span>` : `<b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>`}</td>
+          <td>${rr.paidOut ? `<span class="muted">sent ${esc(fdateS(rr.paidOut.date))}</span>` : rr.locked ? `<span class="muted">imported</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">To send</span>` : `<span class="muted">—</span>`}</td></tr>`; }).join("")}</tbody></table>`;
+  } else if(tab === "units"){
+    const unitName = id => ((md.units || []).find(u => u.id === id) || {}).name || "";
+    inner = `<table class="tbl pp-tbl"><thead><tr><th>Unit</th><th>Tenants</th><th class="r">Rent</th><th class="r">Balance</th></tr></thead><tbody>
+      ${[...md.leases].sort((a, b) => String(unitName(a.unitId)).localeCompare(unitName(b.unitId), undefined, {numeric:true})).map(x => `<tr><td><b>${esc(unitName(x.unitId) || x.unitName || "")}</b></td><td>${esc(mdTenants(x)) || "—"}</td><td class="r num">${x.rent ? usd(cents(x.rent)) : "—"}</td>
+        <td class="r num">${x.balance > 0 ? `<span style="color:var(--red)">${usd(cents(x.balance))}</span>` : `<span class="muted">paid</span>`}</td></tr>`).join("")}</tbody></table>`;
+  } else if(tab === "repairs"){
+    const vend = {}; items.forEach(it => { const k = it.vendor || "Other"; vend[k] = (vend[k] || 0) + cents(it.amount); });
+    inner = `<div class="pp-vend">${Object.entries(vend).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => `<span>${esc(k)} <b class="num">${usd0(c)}</b></span>`).join("")}<span class="muted" style="margin-left:auto">Total <b class="num">${usd(items.reduce((a, it) => a + cents(it.amount), 0))}</b></span></div>
+      <table class="tbl pp-tbl"><thead><tr><th>Date</th><th>Vendor</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
+      ${items.slice(0, 80).map(it => `<tr><td class="muted nw">${it.date ? esc(pmDY(it.date)) : esc(monthShort(it.month))}</td><td class="nw">${esc(it.vendor || "—")}</td><td class="pp-what">${esc(it.memo || "")}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
+        <td class="r">${it.link ? `<a href="${esc(it.link)}" target="_blank" rel="noopener">Receipt</a>` : ""}</td></tr>`).join("")}</tbody></table>`;
+  } else {
+    inner = `<div class="pp-two">
+      <div><div class="label pp-sub">Vendor bills</div>${mdh.bills.length ? `<table class="tbl pp-tbl"><tbody>${mdh.bills.slice(0, 30).map(x => `<tr><td class="muted nw">${esc(pmDY(x.date))}</td><td><b>${esc(x.vendor || "—")}</b><div class="pp-what muted">${esc(x.memo || "")}</div></td>
+          <td class="r num">${usd(cents(x.amount))}${x.fee ? `<div class="muted pp-fee">+ ${usd(cents(x.fee))} admin fee</div>` : ""}${x.owed > 0 ? `<div><span class="tag gold">unpaid</span></div>` : ""}</td></tr>`).join("")}</tbody></table>` : `<p class="muted pp-pad">None in the last 15 months.</p>`}</div>
+      <div><div class="label pp-sub">Owner payouts</div>${mdh.dists.length ? `<table class="tbl pp-tbl"><tbody>${mdh.dists.slice(0, 15).map(x => `<tr><td class="muted nw">${esc(pmDY(x.date))}</td><td>for ${esc(monthLabel(PMCore.mdPayoutMonth(x.date)))}</td><td class="r num">${usd(cents(x.amount))}</td></tr>`).join("")}</tbody></table>` : `<p class="muted pp-pad">None in the last 15 months.</p>`}</div></div>
+      <div class="pp-md" style="border-top:1px solid var(--line-2)">MagicDoor's 10% admin-fee lines are shown next to the bill they belong to. The console adds that fee itself, so it is never counted twice.</div>`;
+  }
+  hc.innerHTML = `<div class="card-h pp-tabs">${tabs.map(([k, l, n]) => `<button data-pt="${k}" class="${k === tab ? "on" : ""}">${l}${n !== "" ? ` <span>${n}</span>` : ""}</button>`).join("")}</div>${inner}`;
+  hc.querySelectorAll("[data-pt]").forEach(b => b.onclick = () => { S.ui.pmPropTab = b.dataset.pt; render(); });
+  hc.querySelectorAll("[data-lm]").forEach(tr => tr.onclick = () => { S.ui.pmPropM = tr.dataset.lm; render(); window.scrollTo({top:0, behavior:"smooth"}); });
+}
+// MagicDoor bills for one MagicDoor property, with PHD's admin-fee lines folded into the bill they belong to
+function mdActivity(mpId){
+  const lines = [];
+  (S.md.bills || []).forEach(bl => { if(bl.company) return; (bl.lines || []).forEach(li => { if(li.propertyId === mpId && li.amount) lines.push({date:bl.date, vendor:bl.vendor, memo:li.text || bl.memo || "", amount:li.amount, owed:bl.owed, isFee:!PMCore.mdIsRepairLine(li, bl)}); }); });
+  const bills = lines.filter(x => !x.isFee), key = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24);
+  lines.filter(x => x.isFee).forEach(f => {
+    const k = key(String(f.memo).replace(/^.*?admin(istrative)?\s*fee\s*[-–:]?\s*/i, "").replace(/\s*-?\s*10%\s*admin fee.*$/i, ""));
+    const hit = bills.find(b => !b.fee && b.date === f.date && k && (key(b.memo).startsWith(k.slice(0, 12)) || k.startsWith(key(b.memo).slice(0, 12))))
+             || bills.find(b => !b.fee && b.date === f.date && Math.abs(b.amount * 0.1 - f.amount) < 0.02);
+    if(hit) hit.fee = f.amount;
+  });
+  bills.sort((a, b) => String(b.date).localeCompare(a.date));
+  const dists = PMCore.mdDistributions(S.md, mpId).sort((a, b) => String(b.date).localeCompare(a.date));
+  return {bills, dists};
 }
 
 /* ====================================================================
@@ -5473,10 +5601,17 @@ function mdLineById(id){
   return _mdLines.m.get(id) || null;
 }
 /* ---------- what an update would change (pure: nothing is saved here) ---------- */
+// PHD's monthly filter fee for a property: the one set on it, or the same amount on at least two of the last four months
+function mdFilterFee(p){
+  if(Number(p.monthlyFilters) > 0) return Number(p.monthlyFilters);
+  const cur = todayISO().slice(0, 7), seen = [];
+  for(let k = 0; k < 4; k++){ const r = pmRow(PMCore.monthAdd(cur, -k), p.id); if(r && !r.deleted && Number(r.filters) > 0) seen.push(cents(r.filters)); }
+  return seen.length >= 2 && seen.every(c => c === seen[0]) ? seen[0] / 100 : 0;
+}
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[]}, newOwners = {};
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     return (S.owners || []).find(o => (o.mdId && o.mdId === mo.id) || (em && String(o.email || "").toLowerCase() === em) || (nm && String(o.name || o.company || "").toLowerCase().replace(/\s+/g, " ").trim() === nm)) || newOwners[mo.id] || null;
@@ -5484,6 +5619,13 @@ function mdPlan(){
   pmState().properties.forEach(p => {
     const m = x.byProp[p.id]; if(!m || p.status === "inactive") return;
     const L = m.lease, ch = {}, building = !!(L && L.combined);   // a whole building with several leases
+    // MagicDoor's rent can include PHD's monthly HVAC filter fee (charged with the rent, kept by PHD, never paid to the owner)
+    let rentNet = L ? L.rent : null, fee = 0;
+    if(L && !building && L.rent > 0){
+      fee = mdFilterFee(p);
+      const lastDue = Number((pmRow(curM, p.id) || pmRow(PMCore.monthAdd(curM, -1), p.id) || {}).rentDue) || 0;
+      if(fee && L.rent > fee && !(lastDue && cents(L.rent) === cents(lastDue))) rentNet = Math.round((L.rent - fee) * 100) / 100; else fee = 0;
+    }
     const put = (k, v, label) => { if(v == null || v === "") return; if(String(p[k] ?? "") !== String(v)) ch[k] = {from:p[k] ?? "", to:v, label}; };
     if(L && building){
       if(p.status !== "active") ch.status = {from:p.status, to:"active", label:"status", since:today};
@@ -5495,7 +5637,8 @@ function mdPlan(){
       put("leaseStart", L.start, "lease start");
       put("leaseEnd", L.end, "lease end");
       if(!!p.monthToMonth !== !!L.monthToMonth) ch.monthToMonth = {from:!!p.monthToMonth, to:!!L.monthToMonth, label:"month-to-month"};
-      if(L.rent > 0) put("rent", L.rent, "rent");
+      if(L.rent > 0) put("rent", rentNet, "rent");
+      if(fee && !(Number(p.monthlyFilters) > 0)) ch.monthlyFilters = {from:"", to:fee, label:"monthly filter fee", mdRent:L.rent};
       if(p.status !== "active") ch.status = {from:p.status, to:"active", label:"status", since:L.start && L.start > (p.statusSince || "") ? L.start : today};
     } else if(p.status === "active"){
       ch.status = {from:"active", to:"vacant", label:"status", since:(m.endedLease && m.endedLease.end) || today};
@@ -5517,6 +5660,9 @@ function mdPlan(){
     const r = pmRow(curM, p.id);
     if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
       out.rows.push({p, row:r, amount:Number(r.rentDue), lastPayment:L.lastPayment});
+    // the filter fee paid with that rent (PHD income)
+    if(fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
+      out.filters.push({p, row:r, amount:fee});
     // vendor bills and owner distributions for open months (this one and last), when this property is the only one on that MagicDoor property
     if(!m.property || (x.linkedPerMdProp[m.property.id] || 0) > 1) return;
     [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
@@ -5638,6 +5784,7 @@ function mdApply(opts){
         if(k === "ownerId"){ p.ownerId = c.to.id; what.push("owner → " + (c.to.name || c.to.company)); return; }
         if(k === "status"){ p.status = c.to; p.statusSince = c.since || today; what.push(c.to === "active" ? "now leased" : "now vacant"); return; }
         p[k] = c.to;
+        if(k === "monthlyFilters"){ what.push(`filter fee ${usd(cents(c.to))}/mo — part of MagicDoor's ${usd(cents(c.mdRent))} rent, kept by PHD`); return; }
         what.push(k === "rent" ? `rent ${usd(cents(c.from || 0))} → ${usd(cents(c.to))}` : k === "leaseEnd" || k === "leaseStart" ? `${c.label} ${c.from ? fdateS(c.from) + " → " : ""}${fdateS(c.to)}` : k === "monthToMonth" ? (c.to ? "month-to-month" : "fixed term") : c.label + " updated");
       });
       lines.push({prop:p.name, pid:p.id, what:what.join(" · ")});
@@ -5646,6 +5793,11 @@ function mdApply(opts){
   plan.rows.forEach(({p, row, amount, lastPayment}) => {
     row.rentReceived = amount; row.mdFilled = lastPayment || today;
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
+  });
+  (plan.filters || []).forEach(({p, row, amount}) => {
+    row.filters = amount;
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} filter fee ${usd(cents(amount))} recorded (paid in MagicDoor with the rent)`});
   });
   plan.unbills.forEach(({p, row, it}) => {
     row.repairItems = row.repairItems.filter(i => i !== it);
@@ -5707,7 +5859,7 @@ function pgPmMd(){
 
   // automatic updates + log
   const org = mdOrganizePlan(), orgN = mdOrganizeCount();
-  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + orgN;
+  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
@@ -5905,6 +6057,217 @@ function mdMonthTag(p){
 }
 
 /* =====================================================================
+   OWNER STATEMENT EMAILS — one Gmail draft per property, with its
+   statement attached as a PDF. Made by a small Google script installed in
+   the pm@ account (apps-script/Statements.gs), so the drafts live in pm@'s
+   Gmail and nowhere else. Drafts only: nothing is ever sent.
+   ===================================================================== */
+const STMT_KEY = "phd-stmt-conn";
+function stmtConn(){
+  if(typeof Cloud !== "undefined" && Cloud.ready){ const v = S.stmtConn; return v && v.url && v.token ? v : null; }   // hosted: shared by the office
+  try{ const v = JSON.parse(localStorage.getItem(STMT_KEY) || "null"); if(v && v.url && v.token) return v; }catch(e){}
+  return null;
+}
+function setStmtConn(v){
+  if(typeof Cloud !== "undefined" && Cloud.ready){ snapshot(); S.stmtConn = v || null; commit(); return; }
+  try{ v ? localStorage.setItem(STMT_KEY, JSON.stringify(v)) : localStorage.removeItem(STMT_KEY); }catch(e){}
+}
+async function stmtCall(body, get){
+  const c = stmtConn(); if(!c) throw new Error("Connect the statements mailbox first");
+  const r = get ? await fetch(c.url + (c.url.includes("?") ? "&" : "?") + new URLSearchParams(Object.assign({token:c.token}, body)).toString(), {redirect:"follow"})
+                : await fetch(c.url, {method:"POST", redirect:"follow", body:JSON.stringify(Object.assign({token:c.token}, body))});
+  let j; try{ j = await r.json(); }catch(e){ throw new Error("The statements script didn't answer — check the web app URL and that it's deployed with access for Anyone"); }
+  if(!j.ok) throw new Error(j.error === "unauthorized" ? "The statements key wasn't accepted — paste it again from the script's log" : (j.error || "Statements script error"));
+  return j;
+}
+const STMT_SUBJECT = addr => `Owner Statement – ${addr}`;
+const STMT_BODY = (first, addr) => `Hello${first ? " " + first : ""},
+
+Attached is your latest owner statement for ${addr}. It includes the recent income, expenses, and activity for the property.
+
+Please let us know if you have any questions. Thank you for your continued business. 
+
+Sincerely,
+
+PHD Property Management`;
+const STMT_CO = /\b(llc|l\.l\.c|inc|corp|corporation|trust|properties|property|holdings|company|co|lp|llp|ltd|group|investments?|buyers|homes|realty|partners|capital|estate|enterprises|ventures|management)\b/i;
+// "Ford Smith / Brad Home Buyers LLC" → "Ford";  "Hayden Albert dba Carolina Quality Buyers" → "Hayden";  "Brad Home Buyers LLC" → ""
+function stmtFirstName(o){
+  if(!o) return "";
+  const person = String(o.name || "").split(/\s+(?:dba|d\/b\/a|c\/o)\s+|\s*[\/&,]\s*|\s+and\s+/i)[0].trim();
+  if(!person || STMT_CO.test(person)) return "";
+  const w = person.split(/\s+/).filter(x => !/^(mr|mrs|ms|dr)\.?$/i.test(x))[0] || "";
+  return /^[A-Za-z][A-Za-z'’-]+$/.test(w) ? w : "";
+}
+const stmtAddr = p => (p.address || p.name || "").replace(/\s+/g, " ").trim();
+function stmtFileName(p, m){ return `Owner Statement - ${(p.name || "Property").replace(/\s*#\s*/g, " Unit ").replace(/[\\/:*?"<>|%]+/g, "-")} - ${monthLabel(m)}.pdf`; }
+const stmtEmailOk = e => /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(String(e || "").trim());
+function stmtCcList(o){ return String((o && o.cc) || "").split(/[,;\s]+/).filter(stmtEmailOk); }
+function stmtDrafted(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.drafts = mm.drafts || {}; return mm.drafts; }
+// who gets one: every property with a statement line this month, and why one can't be made
+function stmtCandidates(m){
+  return pmMonthRows(m).filter(x => !x.row.detailOnly).map(({prop, row}) => {
+    const o = prop.ownerId ? ownerById(prop.ownerId) : null;
+    const to = o && String(o.email || "").trim();
+    const why = !o ? "No owner on file" : !to ? "Owner has no email" : !stmtEmailOk(to) ? `Owner email “${to}” doesn't look right` : "";
+    return {p:prop, row, o, to:to || "", cc:stmtCcList(o), first:stmtFirstName(o), why, done:(pmState().meta[m] || {}).drafts && pmState().meta[m].drafts[prop.id]};
+  }).sort((a, b) => a.p.name.localeCompare(b.p.name, undefined, {numeric:true}));
+}
+
+/* The statement as a PDF-safe page: plain tables and system fonts, so Google's converter lays it out exactly. */
+function pmStatementPdfHTML(m, pid){
+  const p = pmProp(pid), row = pmRow(m, pid), c = pmCalc(row, p), o = p.ownerId ? ownerById(p.ownerId) : null;
+  const items = row.repairItems || [], addr = o ? ownerAddressLines(o) : [];
+  const d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
+  const neg = x => "−" + usd(Math.abs(x));
+  const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;
+  const lines = [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))]
+    .concat(items.map(it => line(d(it.date), esc(it.memo || "Repair"), esc(it.vendor || ""), neg(cents(it.amount)))))
+    .concat(!items.length && c.repairsC ? [line("", "Repairs", "", neg(c.repairsC))] : [])
+    .concat(c.otherC ? [line("", "Other income", "", usd(c.otherC))] : [])
+    .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
+  const fees = [c.adminC ? line("", `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
+    line("", `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
+    c.leasingC ? line("", "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
+  const owe = c.payoutC < 0;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
+  @page{size:letter;margin:0.6in}
+  body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;color:#1A2322;margin:0}
+  table{border-collapse:collapse;width:100%}
+  .brand{font-size:9pt;letter-spacing:1.5px;text-transform:uppercase;color:#1D5C57;font-weight:bold}
+  h1{font-size:20pt;font-weight:normal;margin:4px 0 0}
+  .hd td{vertical-align:top;padding:0}
+  .hd .rt{text-align:right;font-size:10pt;color:#3A4745}
+  .rule{border-top:2px solid #1D5C57;margin:14px 0 16px}
+  .pt td{vertical-align:top;width:33%;padding:0 12px 0 0;font-size:10pt;line-height:1.45}
+  .k{font-size:8pt;letter-spacing:1px;text-transform:uppercase;color:#6B7775;margin-bottom:3px}
+  .big{font-size:16pt;font-weight:bold}
+  h2{font-size:8.5pt;letter-spacing:1px;text-transform:uppercase;color:#6B7775;margin:22px 0 6px;font-weight:bold}
+  .ac th{font-size:8pt;letter-spacing:.8px;text-transform:uppercase;color:#6B7775;text-align:left;border-bottom:1px solid #C9D1CE;padding:6px 6px;font-weight:bold}
+  .ac td{padding:6px 6px;border-bottom:1px solid #ECEFED;font-size:10pt;vertical-align:top}
+  .ac .r,.ac th.r{text-align:right;white-space:nowrap}
+  .ac .dt{width:78px;color:#6B7775;white-space:nowrap} .ac .vn{width:150px;color:#3A4745}
+  .ac tr.fee td{color:#3A4745}
+  .ac tr.tot td{border-top:2px solid #1A2322;border-bottom:0;font-weight:bold;font-size:11pt;padding-top:9px}
+  .m{color:#6B7775}
+  .ft{margin-top:26px;font-size:9pt;color:#6B7775;line-height:1.5}
+</style></head><body>
+  <table class="hd"><tr><td><div class="brand">PHD Property Management</div><h1>Owner Statement</h1></td>
+    <td class="rt"><b>${monthLabel(m)}</b><br>Prepared ${docLong(todayISO())}</td></tr></table>
+  <div class="rule"></div>
+  <table class="pt"><tr>
+    <td><div class="k">Owner</div>${o ? `<b>${esc(o.name || o.company)}</b>${o.name && o.company ? `<br>${esc(o.company)}` : ""}${addr.map(l => `<br>${esc(l)}`).join("")}` : `<span class="m">—</span>`}</td>
+    <td><div class="k">Property</div><b>${esc(p.name)}</b>${p.address && p.address !== p.name ? `<br>${esc(p.address)}` : ""}</td>
+    <td><div class="k">${owe ? "Balance due from owner" : "Paid to you"}</div><div class="big">${usd(Math.abs(c.payoutC))}</div><span class="m">for ${monthLabel(m)}${row.paidOut && row.paidOut.date ? ` · sent ${d(row.paidOut.date)}` : ""}</span></td>
+  </tr></table>
+  <h2>Activity</h2>
+  <table class="ac"><thead><tr><th>Date</th><th>Description</th><th>Vendor</th><th class="r">Amount</th></tr></thead>
+    <tbody>${lines.join("")}${fees}
+    <tr class="tot"><td></td><td colspan="2">${owe ? "Balance due from owner" : "Owner payout"}</td><td class="r">${owe ? usd(-c.payoutC) : usd(c.payoutC)}</td></tr></tbody></table>
+  <div class="ft">Questions about any line are welcome — receipts are on file for every repair.<br>PHD Property Management</div>
+</body></html>`;
+}
+
+/* Make the drafts, ten at a time (Apps Script has a 6-minute limit per call). */
+async function stmtMakeDrafts(m, list, opts){
+  opts = opts || {};
+  if(!stmtConn()) throw new Error("Connect the statements mailbox first (Month close → Email statements).");
+  const done = [], failed = [];
+  for(let i = 0; i < list.length; i += 10){
+    const batch = list.slice(i, i + 10);
+    if(opts.progress) opts.progress(i, list.length);
+    const items = batch.map(x => {
+      const addr = stmtAddr(x.p);
+      return {id:x.p.id, to:x.to, cc:x.cc.join(","), subject:STMT_SUBJECT(addr), body:STMT_BODY(x.first, addr), html:pmStatementPdfHTML(m, x.p.id), fileName:stmtFileName(x.p, m)};
+    });
+    let res;
+    try{ res = await stmtCall({action:"drafts", items}); }
+    catch(e){ batch.forEach(x => failed.push({x, error:e.message})); if(/Connect|key|answer/.test(e.message)) break; continue; }
+    (res.results || []).forEach(r => { const x = batch.find(b => b.p.id === r.id); if(!x) return; r.ok ? done.push({x, r}) : failed.push({x, error:r.error || "failed"}); });
+  }
+  if(done.length){
+    snapshot();
+    const D = stmtDrafted(m), by = (typeof Cloud !== "undefined" && Cloud.email) || "";
+    done.forEach(({x, r}) => D[x.p.id] = {at:new Date().toISOString(), to:x.to, by, from:r.from || ""});
+    commit();
+  }
+  return {done, failed};
+}
+
+function pmStatementMailSheet(m){
+  const sh = $("#sheet"), set = pmSettings();
+  let cands = stmtCandidates(m), sel = {};
+  cands.forEach(x => { if(!x.why && !x.done) sel[x.p.id] = true; });
+  const draw = (busy, note) => {
+    const ready = cands.filter(x => !x.why), n = ready.filter(x => sel[x.p.id]).length, blocked = cands.filter(x => x.why);
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Email statements · ${monthLabel(m)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">One Gmail draft per property, with its statement attached as a PDF. Nothing is sent — open Gmail, check each draft and press Send.</div></div>
+        <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${!stmtConn() ? `<div class="sm-setup"><b>Connect the statements mailbox</b>
+            <p>The drafts are made in pm@phdproperties.realestate's Gmail by a small Google script installed in that account (<code>apps-script/Statements.gs</code> — setup steps are at the top of the file). Paste its web app URL and console key:</p>
+            <label class="fld"><span>Web app URL</span><input type="url" id="smUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+            <label class="fld"><span>Console key</span><input type="password" id="smTok" placeholder="64 characters" autocomplete="off"></label>
+            <button class="btn primary sm" id="smConn" type="button">Connect</button> <span id="smMsg" class="muted" style="font-size:12.5px;margin-left:8px"></span></div>`
+          : `<div class="sm-box">Drafts go to <b>${esc(stmtConn().mailbox || "the statements mailbox")}</b> → Drafts · <a href="#" id="smChange">change</a></div>`}
+        ${note ? `<div class="pm-banner">${note}</div>` : ""}
+        <div class="sm-list">${ready.map(x => `<label class="sm-r">
+            <input type="checkbox" data-s="${x.p.id}" ${sel[x.p.id] ? "checked" : ""} ${busy ? "disabled" : ""}>
+            <div class="sm-t"><b>${esc(x.p.name)}</b><span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span></div>
+            <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" value="${esc(x.first)}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
+            ${x.done ? `<span class="tag green" title="${esc("Drafted " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Drafted ${esc(fdateS(x.done.at.slice(0, 10)))}</span>` : `<span></span>`}
+            <button class="btn sm ghost" data-pv="${x.p.id}" type="button">Preview</button></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
+        ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
+          <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
+        <label class="sm-auto"><input type="checkbox" id="smAuto" ${set.autoDrafts !== false ? "checked" : ""}> Make these drafts automatically when a month is closed</label>
+      </div>
+      <div class="sheet-f"><button class="btn ghost sm" id="smAll" ${busy ? "disabled" : ""}>${n === ready.length ? "Select none" : "Select all"}</button><span style="flex:1"></span>
+        <button class="btn" id="shCancel">Close</button><button class="btn primary" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Create ${n} Gmail draft${n === 1 ? "" : "s"}`}</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    sh.querySelectorAll("[data-s]").forEach(i => i.onchange = () => { sel[i.dataset.s] = i.checked; draw(); });
+    sh.querySelectorAll("[data-fn]").forEach(i => i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); });
+    sh.querySelectorAll("[data-pv]").forEach(b => b.onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, b.dataset.pv)); });
+    sh.querySelectorAll("[data-ow]").forEach(b => b.onclick = () => { closeSheet(); openOwner(b.dataset.ow); });
+    sh.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
+    $("#smAll").onclick = () => { const all = n !== ready.length; ready.forEach(x => sel[x.p.id] = all); draw(); };
+    const cn = $("#smConn"); if(cn) cn.onclick = async () => {
+      const url = $("#smUrl").value.trim(), token = $("#smTok").value.trim(), msg = $("#smMsg");
+      if(!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)){ msg.textContent = "That should be a script.google.com …/exec URL."; return; }
+      if(token.length < 32){ msg.textContent = "The key looks too short."; return; }
+      msg.textContent = "Checking…";
+      const prev = stmtConn(); setStmtConn({url, token});
+      try{ const j = await stmtCall({action:"ping"}, true); setStmtConn({url, token, mailbox:j.mailbox || ""}); toast(`Connected — drafts will be saved in ${j.mailbox}`, true); draw(); }
+      catch(e){ setStmtConn(prev); msg.textContent = e.message; }
+    };
+    const chg = $("#smChange"); if(chg) chg.onclick = e => { e.preventDefault(); if(confirm("Disconnect the statements mailbox? You can paste a new URL and key afterwards.")){ setStmtConn(null); draw(); } };
+    $("#smAuto").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {autoDrafts:e.target.checked}); commit(); };
+    $("#smGo").onclick = async () => {
+      const list = cands.filter(x => !x.why && sel[x.p.id]);
+      draw("Creating drafts…");
+      try{
+        const {done, failed} = await stmtMakeDrafts(m, list, {progress:(i, t) => { const b = $("#smGo"); if(b) b.textContent = `Creating ${i + 1}–${Math.min(i + 10, t)} of ${t}…`; }});
+        cands = stmtCandidates(m).map(x => Object.assign(x, {first:(list.find(l => l.p.id === x.p.id) || x).first})); sel = {};
+        failed.forEach(f => sel[f.x.p.id] = true);
+        draw(null, `${done.length ? `${done.length} draft${done.length === 1 ? "" : "s"} waiting in Gmail${done[0] && done[0].r.from ? " — " + esc(done[0].r.from) + " → Drafts" : ""}.` : ""}${failed.length ? ` ${failed.length} couldn't be made: ${esc(failed[0].error)}` : ""}`);
+        toast(done.length ? `${done.length} Gmail draft${done.length === 1 ? "" : "s"} created` : "No drafts were created", true);
+      }catch(e){ draw(null, esc(e.message)); }
+    };
+  };
+  draw(); openPanel();
+}
+
+/* closing a month makes the drafts that aren't made yet (unless switched off) */
+async function stmtAutoOnClose(m){
+  if(pmSettings().autoDrafts === false || !stmtConn()) return;
+  const list = stmtCandidates(m).filter(x => !x.why && !x.done);
+  if(!list.length) return;
+  toast(`Creating ${list.length} owner statement draft${list.length === 1 ? "" : "s"} in Gmail…`);
+  try{
+    const {done, failed} = await stmtMakeDrafts(m, list);
+    toast(`${done.length} owner statement draft${done.length === 1 ? "" : "s"} ready in Gmail${failed.length ? ` · ${failed.length} couldn't be made (Owner statements → Email shows why)` : ""}`, true);
+  }catch(e){ toast("Statement drafts: " + e.message); }
+}
+
+/* =====================================================================
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
@@ -6016,6 +6379,7 @@ function cloudDocs(){
   S.properties.forEach(p => out.set("pj_property/" + p.id, p));
   out.set("shared/main", {owners:S.owners || [], order:S.properties.map(p => p.id), inboxDone:S.inboxDone || {}});
   if(S.inboxConn) out.set("shared/inbox", S.inboxConn);
+  if(S.stmtConn) out.set("shared/stmtmail", S.stmtConn);
   if(S.pmSettings) out.set("shared/pmsettings", S.pmSettings);
   if(S.pmAlerts) out.set("shared/alerts", S.pmAlerts);
   if(S.mdLinks) out.set("shared/mdlinks", S.mdLinks);
@@ -6037,6 +6401,7 @@ function cloudApply(kind, id, data, deleted){
     S.owners = data.owners || []; S.inboxDone = data.inboxDone || {};
     if(Array.isArray(data.order)){ const pos = new Map(data.order.map((x, i) => [x, i])); S.properties.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9)); }
   } else if(kind === "shared" && id === "inbox"){ S.inboxConn = deleted ? null : data; }
+  else if(kind === "shared" && id === "stmtmail"){ S.stmtConn = deleted ? null : data; }
   else if(kind === "shared" && id === "pmsettings"){ S.pmSettings = deleted ? null : data; }
   else if(kind === "shared" && id === "alerts"){ S.pmAlerts = deleted ? {} : data; }
   else if(kind === "shared" && id === "magicdoor"){ S.md = deleted ? null : data; if(typeof mdAfterSnapshot === "function" && Cloud.ready) mdAfterSnapshot(); }
@@ -6376,7 +6741,7 @@ function cloudRestore(d, name){
   if(typed !== "RESTORE") return;
   snapshot();
   const keepUi = S.ui, keepActive = S.activeId;
-  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.pmSettings = null; S.pmAlerts = {}; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
+  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.stmtConn = null; S.pmSettings = null; S.pmAlerts = {}; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
   const main = d.docs.find(r => r.kind === "shared" && r.id === "main");
   d.docs.filter(r => !r.deleted && !(r.kind === "shared" && r.id === "main")).forEach(r => cloudApply(r.kind, r.id, r.data, false));
   if(main && !main.deleted) cloudApply("shared", "main", main.data, false);
