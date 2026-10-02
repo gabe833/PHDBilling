@@ -764,3 +764,32 @@ body.mode-pm #qReconcile{display:none}
 .pm-in{min-width:104px;flex:none}
 .pm-in::-webkit-outer-spin-button,.pm-in::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .pm-in[type=number]{-moz-appearance:textfield}
+/* ---------- MagicDoor ---------- */
+.md-tog{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink-2);cursor:pointer}
+.md-tog input{width:16px;height:16px;accent-color:var(--accent)}
+.md-pend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--gold-line);background:var(--gold-soft);border-radius:9px;font-size:13px}
+.md-pend .muted{flex:1;min-width:180px}
+.md-pend.ok{border-color:var(--line);background:var(--panel-2,#F7F6F2);color:var(--muted)}
+.md-log{margin-top:12px;font-size:13px}
+.md-log summary{cursor:pointer;color:var(--ink-2);font-weight:550}
+.md-log-e{padding:10px 0;border-top:1px solid var(--line)}
+.md-log-e:first-of-type{margin-top:8px}
+.md-log-h{font-size:12px;color:var(--muted);margin-bottom:4px}
+.md-log-l{padding:2px 0;line-height:1.45}
+.md-tbl td{vertical-align:top}
+.md-sel{max-width:240px;height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:12.5px;padding:0 6px}
+.md-un-r{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--line)}
+.md-un-r:first-child{border-top:0}
+.md-un-r>div{flex:1;min-width:0}
+.md-bal{padding:10px 12px;border-radius:9px;background:var(--green-soft,#EAF3EE);margin-bottom:10px}
+.md-bal.owe{background:var(--red-soft)}
+.md-bal .v{font-size:20px;font-weight:600;margin-top:2px}
+.md-bal.owe .v{color:var(--red)}
+.md-bal .s{font-size:12px;color:var(--muted)}
+.md-chip{display:inline-block;font-size:11px;padding:0 6px;border-radius:5px;background:var(--green-soft,#EAF3EE);color:var(--green);white-space:nowrap}
+.md-chip.owe{background:var(--red-soft);color:var(--red)}
+.md-pv{padding:8px 0;border-top:1px solid var(--line)}
+.md-pv-r{display:grid;grid-template-columns:minmax(110px,1fr) minmax(0,1fr) minmax(0,1.2fr);gap:10px;font-size:13px;padding:3px 0}
+.md-prev .label{margin-bottom:4px}
+.md-tbl a,.md-log-l a{color:var(--ink);text-decoration:none;font-weight:550}
+.md-tbl a:hover,.md-log-l a:hover{color:var(--accent);text-decoration:underline}
