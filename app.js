@@ -3986,11 +3986,14 @@ const PMCore = (function(){
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
   // vendor bill lines for one MagicDoor property in one month (by bill date); company bills and fee/owner accounts left out
-  const NOT_REPAIR = /management fee|distribution|owner contribution|security deposit|leasing fee|rent income/i;
+  // MagicDoor records PHD's 10% admin fee (and management fees) as bill lines of their own. The console works the
+  // admin fee out itself from the repairs, so those lines are never repairs — taking them in would charge 10% twice.
+  const NOT_REPAIR = /admin(istrative)?\s*fee|management fee|distribution|owner contribution|security deposit|leasing fee|rent income/i;
+  function mdIsRepairLine(li, b){ return !!(li && li.amount && !(b && b.company) && !NOT_REPAIR.test(li.account || "") && !/\badmin(istrative)?\s*fee\b/i.test(li.text || "")); }
   function mdBillLines(md, mdPropId, month){
     const out = [];
     (md.bills || []).forEach(b => { if(b.company || !b.date || b.date.slice(0, 7) !== month) return;
-      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && li.amount && !NOT_REPAIR.test(li.account || "")) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:li.text || b.memo, amount:li.amount, account:li.account, owed:b.owed}); }); });
+      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:li.text || b.memo, amount:li.amount, account:li.account, owed:b.owed}); }); });
     return out;
   }
   // which month an owner distribution pays: from the 20th of a month to the 19th of the next
@@ -4130,7 +4133,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdCombine, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 
 /* =====================================================================
@@ -5464,11 +5467,16 @@ async function mdFetchSnapshot(){
   if(data && data.data){ S.md = data.data; Cloud.synced.set("shared/magicdoor", {json:JSON.stringify(data.data), version:data.version, deleted:false}); mdAfterSnapshot(); }
 }
 
+let _mdLines = null;
+function mdLineById(id){
+  if(!_mdLines || _mdLines.at !== S.md.syncedAt){ const m = new Map(); (S.md.bills || []).forEach(b => (b.lines || []).forEach(li => m.set(li.id, {li, b}))); _mdLines = {at:S.md.syncedAt, m}; }
+  return _mdLines.m.get(id) || null;
+}
 /* ---------- what an update would change (pure: nothing is saved here) ---------- */
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[]}, newOwners = {};
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     return (S.owners || []).find(o => (o.mdId && o.mdId === mo.id) || (em && String(o.email || "").toLowerCase() === em) || (nm && String(o.name || o.company || "").toLowerCase().replace(/\s+/g, " ").trim() === nm)) || newOwners[mo.id] || null;
@@ -5514,6 +5522,7 @@ function mdPlan(){
     [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
       const rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
       if(!rr || rr.locked || rr.detailOnly || mt.closed) return;
+      (rr.repairItems || []).forEach(it => { if(!it.mdLine) return; const f = mdLineById(it.mdLine); if(f && !PMCore.mdIsRepairLine(f.li, f.b)) out.unbills.push({p, row:rr, it}); });
       const have = new Set((rr.repairItems || []).map(i => i.mdLine).filter(Boolean));
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
         if(have.has(li.id)) return;
@@ -5638,6 +5647,11 @@ function mdApply(opts){
     row.rentReceived = amount; row.mdFilled = lastPayment || today;
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
   });
+  plan.unbills.forEach(({p, row, it}) => {
+    row.repairItems = row.repairItems.filter(i => i !== it);
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: removed MagicDoor's admin-fee line ${usd(cents(it.amount))} — the console adds the 10% admin fee itself`});
+  });
   plan.bills.forEach(({p, row, li, twin}) => {
     if(twin){ twin.mdLine = li.id; if(!twin.vendor) twin.vendor = li.vendor; return; }
     row.repairItems = row.repairItems || [];
@@ -5653,7 +5667,7 @@ function mdApply(opts){
   });
   if(!opts.rowsOnly) L.appliedAt = (S.md && S.md.syncedAt) || L.appliedAt;
   if(lines.length){
-    L.log.unshift({at:new Date().toISOString(), by:opts.auto ? "Automatic update" : who, lines:lines.slice(0, 120), more:Math.max(0, lines.length - 120)});
+    L.log.unshift({at:new Date().toISOString(), by:opts.auto ? "MagicDoor sync" : who, lines:lines.slice(0, 120), more:Math.max(0, lines.length - 120)});
     L.log = L.log.slice(0, 25);
   }
   commit();
@@ -5663,18 +5677,9 @@ function mdApply(opts){
 // a new snapshot arrived: apply it once (a short random wait lets one open console do it for everyone)
 let _mdApplyTimer = null;
 function mdAfterSnapshot(){
+  // The MagicDoor function applies every update on the server right after each sync (hourly, and on Sync now),
+  // so the console only redraws here. Apply now on the MagicDoor page is still there for an immediate run.
   _mdxCache = null;
-  const L = mdLinks();
-  if(!mdReady() || L.auto === false) return;
-  const due = () => (mdLinks().appliedAt || "") < S.md.syncedAt || mdOrganizeCount() > 0;
-  if(!due()) return;
-  clearTimeout(_mdApplyTimer);
-  _mdApplyTimer = setTimeout(() => {
-    if(!due()) return;
-    const n = mdApply({auto:true, quiet:true});
-    if(n) toast(`MagicDoor: ${n} update${n === 1 ? "" : "s"} applied — see MagicDoor → Recent updates`);
-    render();
-  }, 600 + Math.random() * 2400);
 }
 
 /* ---------- MagicDoor page ---------- */
@@ -5702,12 +5707,12 @@ function pgPmMd(){
 
   // automatic updates + log
   const org = mdOrganizePlan(), orgN = mdOrganizeCount();
-  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + orgN;
+  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
     <div class="card-b">
-      <p class="muted" style="margin:0 0 10px;font-size:13px">Each sync updates linked properties from MagicDoor: tenants and their contact details, lease dates, rent, leased or vacant, and the owner when none is set. In Month close it records rent MagicDoor shows as paid in full, adds vendor bills as repairs (with your admin fee), and marks owner payouts sent when MagicDoor shows the distribution. Closed months, fee rules and notes are never changed.</p>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">Runs on the server after every sync — hourly, and when you click Sync now — even when nobody has the console open. Each sync updates linked properties from MagicDoor: tenants and their contact details, lease dates, rent, leased or vacant, and the owner when none is set. In Month close it records rent MagicDoor shows as paid in full, adds vendor bills as repairs (with your admin fee), and marks owner payouts sent when MagicDoor shows the distribution. Closed months, fee rules and notes are never changed.</p>
       ${pend ? `<div class="md-pend"><b>${pend} update${pend === 1 ? "" : "s"} waiting</b> <span class="muted">${[org.merge.length && `${org.merge.length} duplicate${org.merge.length === 1 ? "" : "s"} to merge`, org.create.length && `${org.create.length} to add`, org.rename.length && `${org.rename.length} to rename`, org.reactivate.length && `${org.reactivate.length} back from no longer managed`, (org.remove.length + org.retire.length) && `${org.remove.length + org.retire.length} no longer in MagicDoor`].filter(Boolean).map(t => t + ", ").join("")}${plan.props.length} propert${plan.props.length === 1 ? "y" : "ies"}${plan.owners.length ? `, ${plan.owners.length} new owner${plan.owners.length === 1 ? "" : "s"}` : ""}${plan.rows.length ? `, ${plan.rows.length} rent payment${plan.rows.length === 1 ? "" : "s"}` : ""}${plan.bills.length ? `, ${plan.bills.length} bill${plan.bills.length === 1 ? "" : "s"}` : ""}${plan.payouts.length ? `, ${plan.payouts.length} payout${plan.payouts.length === 1 ? "" : "s"} sent` : ""}</span>
         <button class="btn sm" id="mdPreview">Preview</button><button class="btn primary sm" id="mdApplyNow">Apply now</button></div>` : `<div class="md-pend ok">Everything matches MagicDoor.</div>`}
       ${org.conflicts.length ? `<div class="md-pend" style="margin-top:10px;border-color:var(--red-line);background:var(--red-soft)"><b>Needs a look</b> <span class="muted">${org.conflicts.map(c => `"${esc(c.drop.name)}" and "${esc(c.keep.name)}" are the same MagicDoor unit and both have entries for ${c.months.map(monthShort).join(", ")}`).join("; ")}. Open one and move or delete its duplicate months, and the rest merges on its own.</span></div>` : ""}
@@ -5786,7 +5791,8 @@ function pgPmMd(){
   if(S.md.notes && S.md.notes.length) v.appendChild(elm("p","help", esc(S.md.notes.join(" · "))));
 }
 // after a person changes a link, apply that property's details right away (if automatic)
-function mdAfterSnapshotForce(){ const L = mdLinks(); if(L.auto !== false && mdReady()){ L.appliedAt = ""; mdAfterSnapshot(); } }
+// after a person changes a link or adds a unit, apply it right away rather than waiting for the next sync
+function mdAfterSnapshotForce(){ const L = mdLinks(); if(L.auto !== false && mdReady()){ _mdxCache = null; const n = mdApply({quiet:true}); if(n) toast(`MagicDoor: ${n} update${n === 1 ? "" : "s"} applied`); render(); } }
 
 function mdAddProperty(unitId, uLabel){
   const u = (S.md.units || []).find(z => z.id === unitId); if(!u) return;
@@ -5878,13 +5884,13 @@ function mdPropertyCard(p){
 function mdHistoryHTML(m){
   if(!m || !m.property) return "";
   const bills = [];
-  (S.md.bills || []).forEach(bl => { if(bl.company) return; (bl.lines || []).forEach(li => { if(li.propertyId === m.property.id && li.amount) bills.push({date:bl.date, vendor:bl.vendor, memo:li.text || bl.memo, amount:li.amount, owed:bl.owed}); }); });
+  (S.md.bills || []).forEach(bl => { if(bl.company) return; (bl.lines || []).forEach(li => { if(li.propertyId === m.property.id && li.amount) bills.push({date:bl.date, vendor:bl.vendor, memo:li.text || bl.memo, amount:li.amount, owed:bl.owed, fee:!PMCore.mdIsRepairLine(li, bl)}); }); });
   bills.sort((a, b) => String(b.date).localeCompare(a.date));
   const ds = PMCore.mdDistributions(S.md, m.property.id).sort((a, b) => String(b.date).localeCompare(a.date));
   if(!bills.length && !ds.length) return "";
   return `<div class="md-hist">
     ${bills.length ? `<div class="label" style="margin:14px 0 4px">Vendor bills in MagicDoor <span class="muted">· ${bills.length}</span></div>
-      ${bills.slice(0, 6).map(x => `<div class="md-pv-r"><span>${esc(fdateS(x.date))} · ${esc(x.vendor || "—")}</span><span class="muted">${esc((x.memo || "").slice(0, 60))}</span><span class="num" style="text-align:right">${usd(cents(x.amount))}${x.owed > 0 ? ' <span class="tag gold">unpaid</span>' : ""}</span></div>`).join("")}` : ""}
+      ${bills.slice(0, 8).map(x => `<div class="md-pv-r"><span>${esc(fdateS(x.date))} · ${esc(x.vendor || "—")}</span><span class="muted">${esc((x.memo || "").slice(0, 60))}</span><span class="num" style="text-align:right">${x.fee ? '<span class="tag grey" title="PHD\'s admin fee — the console adds it from the repairs, so it isn\'t counted again">admin fee</span> ' : ""}${usd(cents(x.amount))}${x.owed > 0 && !x.fee ? ' <span class="tag gold">unpaid</span>' : ""}</span></div>`).join("")}` : ""}
     ${ds.length ? `<div class="label" style="margin:14px 0 4px">Owner distributions <span class="muted">· ${ds.length}</span></div>
       ${ds.slice(0, 4).map(x => `<div class="md-pv-r"><span>${esc(fdateS(x.date))}</span><span class="muted">for ${esc(monthLabel(PMCore.mdPayoutMonth(x.date)))}</span><span class="num" style="text-align:right">${usd(cents(x.amount))}</span></div>`).join("")}` : ""}</div>`;
 }
@@ -6111,7 +6117,7 @@ Cloud.conflict = async function(kind, id){
   recalc(); Cloud.remoteDirty = true;
   toast(`${cloudWho(data.updated_by)} changed ${cloudLabel(kind, id, data.data)} at the same moment — their version was kept. Please redo your last change there.`);
 };
-const cloudWho = email => { if(!email) return "Someone"; if(email === Cloud.email) return "You (another tab)"; const m = (Cloud.staff || []).find(s => s.email === email); return (m && m.name) || email.split("@")[0]; };
+const cloudWho = email => { if(!email || email === "MagicDoor sync") return "MagicDoor sync"; if(email === Cloud.email) return "You (another tab)"; const m = (Cloud.staff || []).find(s => s.email === email); return (m && m.name) || email.split("@")[0]; };
 
 /* ---------- live updates from everyone else ---------- */
 Cloud.onRemote = function(row){
