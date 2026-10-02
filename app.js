@@ -6091,13 +6091,25 @@ Sincerely,
 
 PHD Property Management`;
 const STMT_CO = /\b(llc|l\.l\.c|inc|corp|corporation|trust|properties|property|holdings|company|co|lp|llp|ltd|group|investments?|buyers|homes|realty|partners|capital|estate|enterprises|ventures|management)\b/i;
-// "Ford Smith / Brad Home Buyers LLC" → "Ford";  "Hayden Albert dba Carolina Quality Buyers" → "Hayden";  "Brad Home Buyers LLC" → ""
+// Owner name → the first name for "Hello ___". A name typed in the Email statements window is kept on the owner and wins.
+//   "Ford Smith / Brad Home Buyers LLC" → Ford · "Chris Murphy -Gallagher Holdings LLC" → Chris
+//   "WamplerCRE holdings LLC (Erik owner)" → Erik · "Hayden Albert dba Carolina Quality Buyers" → Hayden · "Brad Home Buyers LLC" → ""
+const STMT_ROLE = /^(owner|owners|manager|member|contact|attn|attention|president|ceo|mgr|managing|partner|trustee|c\/o)$/i;
+function stmtPersonFirst(seg){
+  seg = String(seg || "").replace(/^(attn|attention|c\/o)[:\s]+/i, "").trim();
+  if(!seg || STMT_CO.test(seg)) return "";
+  const w = seg.split(/\s+/).filter(x => !/^(mr|mrs|ms|miss|dr)\.?$/i.test(x) && !STMT_ROLE.test(x))[0] || "";
+  return /^[A-Za-z][A-Za-z'’-]+$/.test(w) && w.length > 1 ? w[0].toUpperCase() + w.slice(1) : "";
+}
 function stmtFirstName(o){
   if(!o) return "";
-  const person = String(o.name || "").split(/\s+(?:dba|d\/b\/a|c\/o)\s+|\s*[\/&,]\s*|\s+and\s+/i)[0].trim();
-  if(!person || STMT_CO.test(person)) return "";
-  const w = person.split(/\s+/).filter(x => !/^(mr|mrs|ms|dr)\.?$/i.test(x))[0] || "";
-  return /^[A-Za-z][A-Za-z'’-]+$/.test(w) ? w : "";
+  if(o.greeting != null && String(o.greeting).trim() !== "") return String(o.greeting).trim();
+  const raw = String(o.name || "").trim();
+  const paren = (raw.match(/\(([^)]*)\)/g) || []).map(x => x.slice(1, -1));
+  const main = raw.replace(/\([^)]*\)/g, " ");
+  const segs = main.split(/\s+(?:dba|d\/b\/a|c\/o|and)\s+|\s*[\/&,;]\s*|\s+[-–—]\s*|\s*[–—]\s*/i).concat(paren);
+  for(const seg of segs){ const f = stmtPersonFirst(seg); if(f) return f; }
+  return "";
 }
 const stmtAddr = p => (p.address || p.name || "").replace(/\s+/g, " ").trim();
 function stmtFileName(p, m){ return `Owner Statement - ${(p.name || "Property").replace(/\s*#\s*/g, " Unit ").replace(/[\\/:*?"<>|%]+/g, "-")} - ${monthLabel(m)}.pdf`; }
@@ -6188,12 +6200,26 @@ async function stmtMakeDrafts(m, list, opts){
   if(done.length){
     snapshot();
     const D = stmtDrafted(m), by = (typeof Cloud !== "undefined" && Cloud.email) || "";
-    done.forEach(({x, r}) => D[x.p.id] = {at:new Date().toISOString(), to:x.to, by, from:r.from || ""});
+    done.forEach(({x, r}) => D[x.p.id] = {at:new Date().toISOString(), to:x.to, by, from:r.from || "", draftId:r.draftId || "", threadId:r.threadId || "", state:"draft"});
     commit();
   }
   return {done, failed};
 }
 
+// ask pm@'s Gmail where each statement email stands; deleted drafts are forgotten so they can be made again
+async function stmtRefresh(m){
+  const D = ((pmState().meta[m] || {}).drafts) || {}, ids = Object.keys(D).filter(k => D[k] && D[k].state !== "sent");
+  if(!ids.length || !stmtConn()) return false;
+  const res = await stmtCall({action:"status", items:ids.map(id => ({id, draftId:D[id].draftId || "", threadId:D[id].threadId || ""}))});
+  let changed = false;
+  (res.results || []).forEach(x => {
+    const rec = D[x.id]; if(!rec) return;
+    if(x.state === "deleted" || x.state === "gone"){ if(!changed) snapshot(); delete D[x.id]; changed = true; }
+    else if(x.state === "sent" && rec.state !== "sent"){ if(!changed) snapshot(); rec.state = "sent"; rec.sentAt = x.at || new Date().toISOString(); changed = true; }
+  });
+  if(changed) commit();
+  return changed;
+}
 function pmStatementMailSheet(m){
   const sh = $("#sheet"), set = pmSettings();
   let cands = stmtCandidates(m), sel = {};
@@ -6214,7 +6240,8 @@ function pmStatementMailSheet(m){
             <input type="checkbox" data-s="${x.p.id}" ${sel[x.p.id] ? "checked" : ""} ${busy ? "disabled" : ""}>
             <div class="sm-t"><b>${esc(x.p.name)}</b><span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span></div>
             <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" value="${esc(x.first)}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
-            ${x.done ? `<span class="tag green" title="${esc("Drafted " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Drafted ${esc(fdateS(x.done.at.slice(0, 10)))}</span>` : `<span></span>`}
+            ${x.done ? (x.done.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
+                : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
             <button class="btn sm ghost" data-pv="${x.p.id}" type="button">Preview</button></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
           <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
@@ -6224,7 +6251,15 @@ function pmStatementMailSheet(m){
         <button class="btn" id="shCancel">Close</button><button class="btn primary" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Create ${n} Gmail draft${n === 1 ? "" : "s"}`}</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     sh.querySelectorAll("[data-s]").forEach(i => i.onchange = () => { sel[i.dataset.s] = i.checked; draw(); });
-    sh.querySelectorAll("[data-fn]").forEach(i => i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); });
+    sh.querySelectorAll("[data-fn]").forEach(i => {
+      i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); };
+      i.onchange = () => {   // keep it on the owner, so every statement to them uses it from now on
+        const x = cands.find(c => c.p.id === i.dataset.fn); if(!x || !x.o) return;
+        snapshot(); x.o.greeting = i.value.trim(); commit();
+        cands.filter(c => c.o && c.o.id === x.o.id).forEach(c => c.first = i.value.trim());
+        sh.querySelectorAll("[data-fn]").forEach(j => { const y = cands.find(c => c.p.id === j.dataset.fn); if(y && y.o && y.o.id === x.o.id && j !== i) j.value = y.first; });
+      };
+    });
     sh.querySelectorAll("[data-pv]").forEach(b => b.onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, b.dataset.pv)); });
     sh.querySelectorAll("[data-ow]").forEach(b => b.onclick = () => { closeSheet(); openOwner(b.dataset.ow); });
     sh.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
@@ -6253,6 +6288,9 @@ function pmStatementMailSheet(m){
     };
   };
   draw(); openPanel();
+  // check Gmail: drafts someone deleted are freed up, sent ones say "Sent"
+  stmtRefresh(m).then(changed => { if(changed && $("#smGo")){ const keep = sel; cands = stmtCandidates(m).map(x => Object.assign(x, {first:(cands.find(c => c.p.id === x.p.id) || x).first})); sel = keep; draw(); } })
+    .catch(e => { if(/unknown action/i.test(e.message) && $("#smGo")) draw(null, "To see which drafts were sent or deleted, update the pm@ script (apps-script/Statements.gs) and deploy a new version."); });
 }
 
 /* closing a month makes the drafts that aren't made yet (unless switched off) */
