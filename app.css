@@ -793,3 +793,5 @@ body.mode-pm #qReconcile{display:none}
 .md-prev .label{margin-bottom:4px}
 .md-tbl a,.md-log-l a{color:var(--ink);text-decoration:none;font-weight:550}
 .md-tbl a:hover,.md-log-l a:hover{color:var(--accent);text-decoration:underline}
+.tbl tr.pm-grp td{background:var(--panel-2,#F7F6F2);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2);padding:9px 14px;border-top:1px solid var(--line)}
+.tbl tr.pm-grp:hover td{background:var(--panel-2,#F7F6F2)}

@@ -3971,6 +3971,22 @@ const PMCore = (function(){
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
+  // vendor bill lines for one MagicDoor property in one month (by bill date); company bills and fee/owner accounts left out
+  const NOT_REPAIR = /management fee|distribution|owner contribution|security deposit|leasing fee|rent income/i;
+  function mdBillLines(md, mdPropId, month){
+    const out = [];
+    (md.bills || []).forEach(b => { if(b.company || !b.date || b.date.slice(0, 7) !== month) return;
+      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && li.amount && !NOT_REPAIR.test(li.account || "")) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:li.text || b.memo, amount:li.amount, account:li.account, owed:b.owed}); }); });
+    return out;
+  }
+  // which month an owner distribution pays: from the 20th of a month to the 19th of the next
+  function mdPayoutMonth(date){ const d = +date.slice(8, 10); return d >= 20 ? date.slice(0, 7) : monthAdd(date.slice(0, 7), -1); }
+  function mdDistributions(md, mdPropId, month){
+    const out = [];
+    (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId === mdPropId && x.date && (!month || mdPayoutMonth(x.date) === month)) out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId}); }));
+    return out;
+  }
+  function mdRenewal(md, leaseId){ return (md.renewals || []).find(r => r.leaseId === leaseId && !r.finalized && /offered|signing|draft|pending/i.test(r.status || "")) || null; }
   function mdFee(md, mdPropId, month){ const f = (md.fees || []).find(x => x.propertyId === mdPropId && x.month === month); return f ? f.amount : null; }
 
   function alerts(o){
@@ -4024,7 +4040,10 @@ const PMCore = (function(){
     // leases, vacancy, setup gaps
     const noOwner = [];
     live.forEach(p => {
-      if(p.status === "active" && p.leaseEnd && !p.monthToMonth){
+      const mdRen = mdx && mdOf(p.id) && mdOf(p.id).lease && !mdOf(p.id).lease.combined ? mdRenewal(md, mdOf(p.id).lease.id) : null;
+      if(mdRen) add({key:`mdren|${p.id}|${mdRen.id}|${mdRen.status}`, type:"lease", level:"info", propId:p.id, title:`Renewal ${/sign/i.test(mdRen.status) ? "out for signing" : "offered"} · ${p.name}`,
+                     detail:`In MagicDoor${mdRen.newEnd ? " · new end date " + shortDate(mdRen.newEnd) + " '" + mdRen.newEnd.slice(2, 4) : ""}${mdRen.newRent ? " · new rent " + usd(cents(mdRen.newRent)) : ""}.`, action:"openProp"});
+      else if(p.status === "active" && p.leaseEnd && !p.monthToMonth){
         const left = dayNum(p.leaseEnd) - tn;
         if(left < 0 && left > -400) add({key:`expired|${p.id}|${p.leaseEnd}`, type:"lease", level:"warn", propId:p.id, title:`Lease ended ${shortDate(p.leaseEnd)} · ${p.name}`, detail:"Renew, confirm month-to-month, or record the move-out.", action:"openProp"});
         else if(left >= 0 && left <= S.renewalDays) add({key:`renew|${p.id}|${p.leaseEnd}`, type:"lease", level:left <= 30 ? "warn" : "info", propId:p.id, title:`Lease ends in ${left} day${left === 1 ? "" : "s"} · ${p.name}`, detail:`Ends ${shortDate(p.leaseEnd)}${p.tenants ? " · " + p.tenants : ""} — start the renewal conversation.`, action:"openProp"});
@@ -4097,7 +4116,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdCombine, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {normAddr, mdIndex, mdCombine, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 
 /* =====================================================================
@@ -4298,7 +4317,7 @@ function pgPmMonth(){
     const cell = (vC, extra) => vC ? `<td class="r num"${extra || ""}>${usd(vC)}</td>` : `<td class="r num muted">—</td>`;
     tr.innerHTML = `
       <td><div class="item-t">${esc(prop.name)}${status}</div>
-        <div class="item-s">${own ? esc(own) + " · " : ""}${feeRuleText(prop.feeRule)} fee${(row.payments || []).length ? ` · ${row.payments.length} payment${row.payments.length === 1 ? "" : "s"}` : ""}${!closed && m === todayISO().slice(0, 7) && mdReady() ? mdMonthTag(prop) : ""}${row.mdFilled ? ` · <span class="md-chip">recorded from MagicDoor</span>` : ""}</div></td>
+        <div class="item-s">${own ? esc(own) + " · " : ""}${feeRuleText(prop.feeRule)} fee${(row.payments || []).length ? ` · ${row.payments.length} payment${row.payments.length === 1 ? "" : "s"}` : ""}${!closed && m === todayISO().slice(0, 7) && mdReady() ? mdMonthTag(prop) : ""}${row.mdFilled ? ` · <span class="md-chip">rent from MagicDoor</span>` : ""}${(row.repairItems || []).some(i => i.mdLine) ? ` · <span class="md-chip">bills from MagicDoor</span>` : ""}</div></td>
       ${cell(c.dueC)}
       <td class="r">${locked ? `<span class="num">${c.recv ? usd(c.recv) : "—"}</span>` : `<input class="pm-in num" type="number" step="0.01" data-recv="${prop.id}" value="${has(row.rentReceived) ? row.rentReceived : ""}" placeholder="${c.dueC ? (c.dueC / 100).toFixed(2) : "0.00"}">`}</td>
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}</td>
@@ -5415,7 +5434,7 @@ async function mdFetchSnapshot(){
 function mdPlan(){
   const x = mdx(); if(!x) return {props:[], owners:[], rows:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[]}, newOwners = {};
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     return (S.owners || []).find(o => (o.mdId && o.mdId === mo.id) || (em && String(o.email || "").toLowerCase() === em) || (nm && String(o.name || o.company || "").toLowerCase().replace(/\s+/g, " ").trim() === nm)) || newOwners[mo.id] || null;
@@ -5456,6 +5475,23 @@ function mdPlan(){
     const r = pmRow(curM, p.id);
     if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
       out.rows.push({p, row:r, amount:Number(r.rentDue), lastPayment:L.lastPayment});
+    // vendor bills and owner distributions for open months (this one and last), when this property is the only one on that MagicDoor property
+    if(!m.property || (x.linkedPerMdProp[m.property.id] || 0) > 1) return;
+    [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
+      const rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
+      if(!rr || rr.locked || rr.detailOnly || mt.closed) return;
+      const have = new Set((rr.repairItems || []).map(i => i.mdLine).filter(Boolean));
+      PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
+        if(have.has(li.id)) return;
+        // already typed in by hand (same amount)? link it instead of adding a second copy
+        const twin = (rr.repairItems || []).find(i => !i.mdLine && cents(i.amount) === cents(li.amount));
+        out.bills.push({p, row:rr, li, twin});
+      });
+      if(!rr.paidOut){
+        const ds = PMCore.mdDistributions(S.md, m.property.id, mm);
+        if(ds.length) out.payouts.push({p, row:rr, date:ds.map(d => d.date).sort().pop(), amount:Math.round(ds.reduce((a, d) => a + (d.amount || 0), 0) * 100) / 100});
+      }
+    });
   });
   return out;
 }
@@ -5481,6 +5517,19 @@ function mdApply(opts){
   plan.rows.forEach(({p, row, amount, lastPayment}) => {
     row.rentReceived = amount; row.mdFilled = lastPayment || today;
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
+  });
+  plan.bills.forEach(({p, row, li, twin}) => {
+    if(twin){ twin.mdLine = li.id; if(!twin.vendor) twin.vendor = li.vendor; return; }
+    row.repairItems = row.repairItems || [];
+    row.repairItems.push({id:uid(), date:li.date, vendor:li.vendor || "", memo:li.memo || li.account || "MagicDoor bill", amount:li.amount, feeMode:"auto", mdLine:li.id, source:"MagicDoor"});
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} bill added: ${li.vendor || "vendor"} ${usd(cents(li.amount))}${li.memo ? " — " + li.memo.slice(0, 60) : ""}`});
+  });
+  plan.payouts.forEach(({p, row, date, amount}) => {
+    row.paidOut = {date, method:"MagicDoor", by:"MagicDoor", amount};
+    if(typeof pmTouch === "function") pmTouch(row);
+    const c = pmCalc(row, p), diff = Math.abs(c.payoutC - cents(amount)) > 100;
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} payout marked sent ${fdateS(date)} (${usd(cents(amount))} in MagicDoor${diff ? `; the console shows ${usd(c.payoutC)}` : ""})`});
   });
   if(!opts.rowsOnly) L.appliedAt = (S.md && S.md.syncedAt) || L.appliedAt;
   if(lines.length){
@@ -5530,13 +5579,13 @@ function pgPmMd(){
   v.appendChild(k);
 
   // automatic updates + log
-  const plan = mdPlan(), pend = plan.props.length + plan.rows.length;
+  const plan = mdPlan(), pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
     <div class="card-b">
-      <p class="muted" style="margin:0 0 10px;font-size:13px">Each sync updates linked properties from MagicDoor: tenants and their contact details, lease dates, rent, leased or vacant, and the owner when none is set. Rent MagicDoor shows as paid in full this month is recorded in Month close. Closed months, fee rules and notes are never changed.</p>
-      ${pend ? `<div class="md-pend"><b>${pend} update${pend === 1 ? "" : "s"} waiting</b> <span class="muted">${plan.props.length} propert${plan.props.length === 1 ? "y" : "ies"}${plan.owners.length ? `, ${plan.owners.length} new owner${plan.owners.length === 1 ? "" : "s"}` : ""}${plan.rows.length ? `, ${plan.rows.length} rent payment${plan.rows.length === 1 ? "" : "s"}` : ""}</span>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">Each sync updates linked properties from MagicDoor: tenants and their contact details, lease dates, rent, leased or vacant, and the owner when none is set. In Month close it records rent MagicDoor shows as paid in full, adds vendor bills as repairs (with your admin fee), and marks owner payouts sent when MagicDoor shows the distribution. Closed months, fee rules and notes are never changed.</p>
+      ${pend ? `<div class="md-pend"><b>${pend} update${pend === 1 ? "" : "s"} waiting</b> <span class="muted">${plan.props.length} propert${plan.props.length === 1 ? "y" : "ies"}${plan.owners.length ? `, ${plan.owners.length} new owner${plan.owners.length === 1 ? "" : "s"}` : ""}${plan.rows.length ? `, ${plan.rows.length} rent payment${plan.rows.length === 1 ? "" : "s"}` : ""}${plan.bills.length ? `, ${plan.bills.length} bill${plan.bills.length === 1 ? "" : "s"}` : ""}${plan.payouts.length ? `, ${plan.payouts.length} payout${plan.payouts.length === 1 ? "" : "s"} sent` : ""}</span>
         <button class="btn sm" id="mdPreview">Preview</button><button class="btn primary sm" id="mdApplyNow">Apply now</button></div>` : `<div class="md-pend ok">Everything matches MagicDoor.</div>`}
       <details class="md-log" ${L.log.length ? "" : "hidden"}><summary>Recent updates</summary>
         ${L.log.map(e => `<div class="md-log-e"><div class="md-log-h">${esc(fdateS(e.at.slice(0, 10)))} ${esc(new Date(e.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))} · ${esc(e.by)}</div>
@@ -5637,6 +5686,8 @@ function mdPreviewSheet(plan){
     ${plan.props.length ? `<div class="label" style="margin-top:12px">Properties</div>${plan.props.map(({p, ch}) => `<div class="md-pv"><b>${esc(p.name)}</b>${Object.entries(ch).map(([k, c]) =>
       `<div class="md-pv-r"><span>${esc(c.label)}</span><span class="muted">${esc(k === "ownerId" ? "none" : k === "rent" ? usd(cents(c.from || 0)) : String(c.from || "—"))}</span><span>→ ${esc(k === "ownerId" ? (c.to.name || "") : k === "rent" ? usd(cents(c.to)) : String(c.to))}</span></div>`).join("")}</div>`).join("")}` : ""}
     ${plan.rows.length ? `<div class="label" style="margin-top:12px">Rent to record</div>${plan.rows.map(r => `<div class="md-pv-r"><span>${esc(r.p.name)}</span><span class="muted">${r.lastPayment ? "paid " + esc(fdateS(r.lastPayment)) : "credit"}</span><span class="num">${usd(cents(r.amount))}</span></div>`).join("")}` : ""}
+    ${plan.bills.length ? `<div class="label" style="margin-top:12px">Vendor bills to add as repairs</div>${plan.bills.map(b => `<div class="md-pv-r"><span>${esc(b.p.name)}</span><span class="muted">${esc(fdateS(b.li.date))} · ${esc(b.li.vendor || "")}${b.twin ? " · matches one already entered" : ""}</span><span class="num">${usd(cents(b.li.amount))}</span></div>`).join("")}` : ""}
+    ${plan.payouts.length ? `<div class="label" style="margin-top:12px">Owner payouts sent in MagicDoor</div>${plan.payouts.map(x => `<div class="md-pv-r"><span>${esc(x.p.name)}</span><span class="muted">${esc(monthLabel(x.row.month))} · ${esc(fdateS(x.date))}</span><span class="num">${usd(cents(x.amount))}</span></div>`).join("")}` : ""}
   </div>`, [["Close", closeSheet, "ghost"], ["Apply now", () => { closeSheet(); mdApply(); render(); }, "primary"]]);
 }
 
@@ -5672,6 +5723,7 @@ function mdPropertyCard(p){
       <table class="tbl" style="font-size:13px"><thead><tr><th>Unit</th><th>Tenants</th><th class="r">Rent</th><th class="r">Balance</th></tr></thead><tbody>
       ${[...m.leases].sort((a, b) => String(unitName(a.unitId)).localeCompare(unitName(b.unitId), undefined, {numeric:true})).map(x => `<tr><td>${esc(unitName(x.unitId) || x.unitName || "")}</td><td>${esc(mdTenants(x)) || "—"}</td><td class="r num">${x.rent ? usd(cents(x.rent)) : "—"}</td>
         <td class="r num">${x.balance > 0 ? `<span style="color:var(--red)">${usd(cents(x.balance))}</span>` : `<span style="color:var(--green)">Paid</span>`}</td></tr>`).join("")}</tbody></table>
+      ${mdHistoryHTML(m)}
       <div class="item-s" style="margin-top:8px">Rent in MagicDoor totals ${usd(cents(l.rent))}/mo · ${esc(m.how === "auto" ? "matched by address" : "linked by hand")} · <a href="#" id="mdChange">change</a></div></div>`;
     c.querySelector("#mdChange").onclick = ev => { ev.preventDefault(); S.ui.mdQ = p.name; S.ui.mdF = "all"; go("pmMd"); };
     return c;
@@ -5685,9 +5737,24 @@ function mdPropertyCard(p){
         <dt>Deposit</dt><dd class="num">${l.depositPaid ? usd(cents(l.depositPaid)) + " held" : "—"}${l.depositDue > 0 ? ` <span class="muted" style="font-family:var(--sans)">· ${usd(cents(l.depositDue))} still due</span>` : ""}</dd>
         ${l.lastPayment ? `<dt>Last payment</dt><dd>${esc(fdateS(l.lastPayment))}</dd>` : ""}</dl>`
       : `<p class="muted" style="margin:0">No active lease in MagicDoor.${e && e.end ? ` Last lease ended ${esc(fdateS(e.end))}${e.depositPaid ? ` with ${usd(cents(e.depositPaid))} deposit held` : ""}.` : ""}</p>`}
+      ${mdHistoryHTML(m)}
       <div class="item-s" style="margin-top:8px">${esc(m.how === "auto" ? "Matched by address" : "Linked by hand")} · <a href="#" id="mdChange">change</a></div></div>`;
   c.querySelector("#mdChange").onclick = ev => { ev.preventDefault(); S.ui.mdQ = p.name; S.ui.mdF = "all"; go("pmMd"); };
   return c;
+}
+
+function mdHistoryHTML(m){
+  if(!m || !m.property) return "";
+  const bills = [];
+  (S.md.bills || []).forEach(bl => { if(bl.company) return; (bl.lines || []).forEach(li => { if(li.propertyId === m.property.id && li.amount) bills.push({date:bl.date, vendor:bl.vendor, memo:li.text || bl.memo, amount:li.amount, owed:bl.owed}); }); });
+  bills.sort((a, b) => String(b.date).localeCompare(a.date));
+  const ds = PMCore.mdDistributions(S.md, m.property.id).sort((a, b) => String(b.date).localeCompare(a.date));
+  if(!bills.length && !ds.length) return "";
+  return `<div class="md-hist">
+    ${bills.length ? `<div class="label" style="margin:14px 0 4px">Vendor bills in MagicDoor <span class="muted">· ${bills.length}</span></div>
+      ${bills.slice(0, 6).map(x => `<div class="md-pv-r"><span>${esc(fdateS(x.date))} · ${esc(x.vendor || "—")}</span><span class="muted">${esc((x.memo || "").slice(0, 60))}</span><span class="num" style="text-align:right">${usd(cents(x.amount))}${x.owed > 0 ? ' <span class="tag gold">unpaid</span>' : ""}</span></div>`).join("")}` : ""}
+    ${ds.length ? `<div class="label" style="margin:14px 0 4px">Owner distributions <span class="muted">· ${ds.length}</span></div>
+      ${ds.slice(0, 4).map(x => `<div class="md-pv-r"><span>${esc(fdateS(x.date))}</span><span class="muted">for ${esc(monthLabel(PMCore.mdPayoutMonth(x.date)))}</span><span class="num" style="text-align:right">${usd(cents(x.amount))}</span></div>`).join("")}` : ""}</div>`;
 }
 
 /* ---------- a short tag under each property in Month close ---------- */
