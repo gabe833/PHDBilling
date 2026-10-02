@@ -97,11 +97,66 @@ To change when rent counts as late, the renewal heads-up and other thresholds, g
 
 From then on, use only the website. The single-file version still works offline, but its data is separate, and editing both would split your records.
 
-### 6. MagicDoor connection (step 1: field report)
+### 6. MagicDoor sync
+The console reads MagicDoor every hour (read-only) and keeps property details current. It reads:
+- properties, units and leases: rent, balance, days past due, last payment, deposits, and tenants' names and contact details
+- owners
+- management fees, vendor bills, owner distributions and lease renewals
+
+Social Security numbers, dates of birth and bank details are never saved.
+
 1. Store the MagicDoor key in Supabase under **Edge Functions → Secrets** as `MAGICDOOR_API_KEY`.
-2. Go to **Edge Functions → Deploy a new function → Via Editor**. Name it `magicdoor` exactly, replace the sample code with everything in `supabase/magicdoor/index.ts`, and deploy.
-3. In the function's **Details** (or settings), turn **Verify JWT / Enforce JWT verification** off. The function checks the Team list itself.
-4. In the console, go to **Team → MagicDoor connection**. Click **Test connection**, then **Build field report**, then **Copy report**.
+2. Deploy the function from `supabase/magicdoor/` (two files: `index.ts` and `engine.js`) under the name `magicdoor`, with **JWT verification off**. The function checks the Team list itself.
+3. In **SQL Editor**, run `supabase/magicdoor-setup.sql` once. It schedules the hourly sync.
+4. In the console, open **Property mgmt → MagicDoor** and click **Sync now**. Check the links (most match by address), and pick a unit for anything that didn't match.
+
+With **Automatic** on, each hourly sync updates the console on the server, so it happens whether or not anyone has the console open:
+- one row per MagicDoor unit: duplicates merged, missing units added, test entries removed
+- tenants, their contact details, lease dates and rent
+- leased or vacant
+- the owner, when none is set
+
+It also records this month's rent that MagicDoor shows as paid in full, adds vendor bills as repair items, and marks owner payouts sent. MagicDoor's own "10% Admin Fee" lines are never imported, because the console adds the admin fee itself. Closed months, fee rules and notes are never changed. Every change is listed under **MagicDoor → Recent updates**.
+
+Late rent, evictions, deposit returns after a move-out, and PM fees that differ from MagicDoor appear in the Action center and the morning email.
+
+---
+
+### 7. Owner statement emails (Gmail drafts from pm@)
+Month close → **Email statements** makes one Gmail draft per property in **pm@phdproperties.realestate**'s Gmail, with the statement attached as a PDF and the label **AutoDraft/Owner Statements**. Nothing is sent until someone opens the draft and presses Send. Closing a month makes them automatically (switch off in the same window).
+
+1. Sign in to Google as **pm@phdproperties.realestate** → script.google.com → New project → paste `apps-script/Statements.gs` → Save.
+2. Run **setup()** and allow access. The log shows the console key.
+3. Deploy → New deployment → **Web app** · Execute as **Me** · Who has access **Anyone** → copy the URL.
+4. In the console: Month close → Email statements → paste the URL and key → Connect.
+
+The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one.
+
+---
+
+### 8. Payments: Nickel (pay vendors, invoice owners) and QuickBooks
+The PM side opens on **Bills**. Add a bill (or approve a receipt in the inbox), then choose how the owner covers it: **Deduct from owner payout**, **Invoice the owner**, or **PHD expense (not billed)**. Tick bills and press **Pay N selected** (or **Pay with Nickel** on one bill) to pay vendors through Nickel. **Owner invoices** bundles an owner's bills into one invoice and sends a Nickel payment link. Rent, statements and MagicDoor are under **Rent & reporting**.
+
+API keys never go in `config.js` or the browser. They live only in Supabase secrets.
+
+**Nickel**
+1. In Nickel (Pro plan) → Settings → Developer → create an API token. Start with a **sandbox** token.
+2. Supabase → Edge Functions → Secrets → add `NICKEL_API_KEY` (the token) and `NICKEL_ENV` = `sandbox`. After testing, swap in a live token and set `NICKEL_ENV` = `live`.
+3. In SQL Editor, edit the email list in `supabase/payments-setup.sql` and run it. Only those people can send money. Everyone else can still add bills and invoices.
+4. Console → **Payments setup** should show Nickel connected and the accounts you can pay from.
+5. For each vendor, **Vendors → Ask for bank details** gives you a Nickel link to send them. They type their own bank details into Nickel. The console never sees or stores account numbers.
+
+**QuickBooks Online**
+1. developer.intuit.com → Create an app (QuickBooks Online, Accounting scope).
+2. Under Keys & OAuth, add this Redirect URI exactly:
+   `https://skeuyevmbxtkjusmrmdd.supabase.co/functions/v1/payments?qbo=callback`
+3. Supabase secrets: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENV` = `sandbox` (or `production` once Intuit approves production keys).
+4. Console → **Payments setup → Connect QuickBooks**, then sign in to the company file.
+5. Pick the expense account, bank account, and the items for owner reimbursements and the admin fee. **Have your bookkeeper confirm these choices.** Then tick **Send bills, payments and invoices to QuickBooks automatically**.
+
+Bills paid through Nickel are written to QuickBooks as a Bill plus a Bill Payment. Owner invoices are written as an Invoice, plus a Payment when the owner pays. Nickel's own QuickBooks sync doesn't cover anything created through its API, so the console does this step itself. Don't turn on both for the same vendors, or entries will be duplicated.
+
+A scheduled job checks Nickel every hour at :37 and marks bills and invoices as paid when the money moves.
 
 ---
 

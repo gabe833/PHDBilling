@@ -877,4 +877,38 @@ table.tbl.pm-plist td{padding:8px 14px;font-size:13px} table.tbl.pm-plist th{pad
 .sm-setup{border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:10px;padding:14px 16px;margin-bottom:14px;font-size:13px}
 .sm-setup p{margin:4px 0 10px;color:var(--ink-2)} .sm-setup .fld{margin-bottom:8px} .sm-setup .fld{display:block} .sm-setup .fld span{display:block;font-size:12px;color:var(--muted);margin-bottom:4px} .sm-setup input{display:block;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--line-3);border-radius:var(--r-sm);background:#fff;font:inherit;font-size:13px}
 .sm-box{font-size:12.5px;color:var(--muted);margin-bottom:12px} .sm-box a{color:var(--accent)}
+/* ---------- bills, owner invoices, vendors, payments setup ---------- */
+.nav .nav-fold{margin-top:6px} .nav .nav-fold .badge:empty{display:none}
+.nav .nav-chev{margin-left:6px;font-weight:400;color:var(--faint);font-size:11px}
+.nav .nav-fold .badge + .nav-chev{margin-left:6px}
+.nav-sub{display:flex;flex-direction:column;gap:1px;margin:1px 0 6px 12px;padding-left:6px;border-left:1px solid var(--line-2)}
+.nav-sub button{font-size:13px !important;padding:6px 10px !important}
+.bl-quick{margin-top:14px}
+.bl-q{display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(140px,1.1fr) 110px 138px minmax(170px,1.6fr) 160px auto;gap:8px;padding:12px 14px 6px}
+.bl-q input,.bl-q select{font-size:13px;padding:7px 9px}
+.bl-qh{display:flex;gap:12px;padding:0 16px 10px;font-size:12px} .bl-qh a{margin-left:auto;color:var(--accent);text-decoration:none} .bl-qh a:hover{text-decoration:underline}
+table.tbl.bl-tbl td{padding:8px 14px;font-size:13px} table.tbl.bl-tbl th{padding-left:14px;padding-right:14px}
+.bl-tbl tbody tr{cursor:pointer} .bl-tbl tbody tr:hover td{background:var(--panel-2,#F7F8F7)}
+.bl-tbl .item-t{font-weight:550} .bl-tbl .item-s{font-size:11.5px;max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bl-tbl .nw{white-space:nowrap} .bl-p{max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} .bl-o{font-size:12.5px;white-space:nowrap}
+.f3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.bl-rec{display:flex;flex-direction:column;gap:6px}
+.bl-rec label{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;cursor:pointer;line-height:1.4}
+.bl-rec label.on{border-color:var(--accent-line);background:var(--accent-soft)} .bl-rec label.dis{opacity:.6;cursor:default} .bl-rec input{margin-top:2px}
+.bl-pay{display:flex;gap:8px;flex-wrap:wrap}
+.bl-paid,.bl-qbo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:10px 12px;border:1px solid var(--line-2);border-radius:9px}
+.np-r{grid-template-columns:4px minmax(0,1fr) auto auto auto !important;cursor:default !important}
+.inv .iv-o{flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.iv-tot td{font-weight:600;border-top:1px solid var(--line)}
+.iv-pay{padding:8px 14px;font-size:12.5px;display:flex;gap:6px;flex-wrap:wrap;word-break:break-all}
+.iv-act{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:10px 14px 14px}
+.iv-act .fld input{padding:5px 8px;font-size:12.5px}
+.ps-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.ps-b{font-size:13.3px} .ps-b code{font-size:11.5px;word-break:break-all;background:var(--sunken);padding:1px 5px;border-radius:4px}
+.ps-steps{padding-left:18px;margin:6px 0 0;line-height:1.6} .ps-steps li{margin-bottom:6px}
+.ps-kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line-2)} .ps-kv span{color:var(--muted)}
+.ps-chk{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px}
+@media (max-width:1180px){ .bl-q{grid-template-columns:1fr 1fr 1fr} .bl-q #bqM{grid-column:span 2} }
+@media (max-width:900px){ .ps-grid,.f3{grid-template-columns:1fr} }
+@media (max-width:640px){ .bl-q{grid-template-columns:1fr 1fr} .bl-q #bqM,.bl-q #bqP{grid-column:span 2} .bl-tbl th:nth-child(5),.bl-tbl td:nth-child(5),.bl-tbl th:nth-child(7),.bl-tbl td:nth-child(7){display:none} }
 

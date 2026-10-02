@@ -33,7 +33,7 @@ grant execute on function public.is_staff() to authenticated;
 
 -- ---------- every record the console keeps ----------
 create table if not exists public.docs (
-  kind        text not null,            -- pj_property | shared | pm_property | pm_row | pm_meta | pm_deposit
+  kind        text not null,            -- pj_property | shared | pm_property | pm_row | pm_meta | pm_deposit | pm_bill | pm_invoice
   id          text not null,
   data        jsonb not null,
   version     integer not null default 1,
@@ -41,7 +41,7 @@ create table if not exists public.docs (
   updated_at  timestamptz not null default now(),
   updated_by  text,
   primary key (kind, id),
-  constraint docs_kind_ok check (kind in ('pj_property','shared','pm_property','pm_row','pm_meta','pm_deposit')),
+  constraint docs_kind_ok check (kind in ('pj_property','shared','pm_property','pm_row','pm_meta','pm_deposit','pm_bill','pm_invoice')),
   constraint docs_size_ok check (pg_column_size(data) < 2000000)
 );
 
@@ -77,6 +77,7 @@ create trigger docs_stamp before insert or update on public.docs
 create or replace function public.docs_audit() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  if new.kind = 'shared' and new.id = 'magicdoor' then return null; end if;   -- hourly MagicDoor snapshot isn't logged
   insert into public.audit_log (actor, kind, doc_id, action, data)
   values (public.current_email(), new.kind, new.id,
           case when tg_op = 'INSERT' then 'INSERT' when new.deleted and not old.deleted then 'DELETE' else 'UPDATE' end,
