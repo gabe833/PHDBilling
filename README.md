@@ -134,29 +134,21 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 
 ---
 
-### 8. Payments: Nickel (pay vendors, invoice owners) and QuickBooks
-The PM side opens on **Bills**. Add a bill (or approve a receipt in the inbox), then choose how the owner covers it: **Deduct from owner payout**, **Invoice the owner**, or **PHD expense (not billed)**. Tick bills and press **Pay N selected** (or **Pay with Nickel** on one bill) to pay vendors through Nickel. **Owner invoices** bundles an owner's bills into one invoice and sends a Nickel payment link. Rent, statements and MagicDoor are under **Rent & reporting**.
+### 8. Payments: Nickel (free plan, through Nickel's MCP server)
+The PM side opens on **Bills**. Add a bill (or approve a receipt in the inbox), then choose how the owner covers it: **Deduct from owner payout**, **Invoice the owner**, or **PHD expense (not billed)**. Rent, statements and MagicDoor are under **Rent & reporting**.
 
-API keys never go in `config.js` or the browser. They live only in Supabase secrets.
+**Setup (once)**
+1. Nickel → Settings → MCP → API tokens → **Create token**. Copy it (it's shown once).
+2. Supabase → Edge Functions → Secrets → add `NICKEL_MCP_TOKEN` with the token. The token never goes in `config.js` or the browser.
+3. Who may send money is the `payers` list (`supabase/payments-setup.sql`). Everyone else can add bills and invoices but can't pay.
+4. Console → **Payments setup**: pick the account vendors are paid from, and (with your bookkeeper) which QuickBooks accounts bills, reimbursed bills and the admin fee are coded to. Nickel's own QuickBooks connection does the posting, so no Intuit app is needed.
 
-**Nickel**
-1. In Nickel (Pro plan) → Settings → Developer → create an API token. Start with a **sandbox** token.
-2. Supabase → Edge Functions → Secrets → add `NICKEL_API_KEY` (the token) and `NICKEL_ENV` = `sandbox`. After testing, swap in a live token and set `NICKEL_ENV` = `live`.
-3. In SQL Editor, edit the email list in `supabase/payments-setup.sql` and run it. Only those people can send money. Everyone else can still add bills and invoices.
-4. Console → **Payments setup** should show Nickel connected and the accounts you can pay from.
-5. For each vendor, **Vendors → Ask for bank details** gives you a Nickel link to send them. They type their own bank details into Nickel. The console never sees or stores account numbers.
-
-**QuickBooks Online**
-1. developer.intuit.com → Create an app (QuickBooks Online, Accounting scope).
-2. Under Keys & OAuth, add this Redirect URI exactly:
-   `https://skeuyevmbxtkjusmrmdd.supabase.co/functions/v1/payments?qbo=callback`
-3. Supabase secrets: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENV` = `sandbox` (or `production` once Intuit approves production keys).
-4. Console → **Payments setup → Connect QuickBooks**, then sign in to the company file.
-5. Pick the expense account, bank account, and the items for owner reimbursements and the admin fee. **Have your bookkeeper confirm these choices.** Then tick **Send bills, payments and invoices to QuickBooks automatically**.
-
-Bills paid through Nickel are written to QuickBooks as a Bill plus a Bill Payment. Owner invoices are written as an Invoice, plus a Payment when the owner pays. Nickel's own QuickBooks sync doesn't cover anything created through its API, so the console does this step itself. Don't turn on both for the same vendors, or entries will be duplicated.
-
-A scheduled job checks Nickel every hour at :37 and marks bills and invoices as paid when the money moves.
+**How it works**
+- Every change in Nickel (add a vendor, add a bill, pay, create or email an invoice) pops up a **Nickel confirmation window in the console** with Nickel's exact wording. Nothing happens until you press **Confirm**. Cancel means nothing changes. If nobody answers in about 100 seconds, nothing runs and the console offers Nickel's approval link instead.
+- **Paying:** tick bills → **Pay selected**. Bills not yet in Nickel are added first (one confirmation each), then **one confirmation pays them all**.
+- **Owner invoices:** **Send** → (first time only) add the owner to Nickel → create the invoice → email the pay link. Up to three confirmations.
+- **Reading needs no confirmation** and runs every hour at :37: vendors and owners are matched to Nickel (by email, then name), bills paid in Nickel are marked **Paid**, owners' online payments are recorded on their invoices, and vendors who filled in Nickel's bank-details form become ready to pay.
+- Bank details stay in Nickel. The console only keeps Nickel's ids, bank name and last four digits.
 
 ---
 

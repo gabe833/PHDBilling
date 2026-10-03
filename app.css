@@ -915,4 +915,31 @@ table.tbl.bl-tbl td{padding:8px 14px;font-size:13px} table.tbl.bl-tbl th{padding
 .bl-mlist div{display:flex;justify-content:space-between;gap:10px;padding:7px 12px;font-size:13px;border-bottom:1px solid var(--line)} .bl-mlist div:last-child{border-bottom:0}
 .ps-more{margin-top:10px;font-size:13px} .ps-more summary{cursor:pointer;color:var(--muted);font-weight:500} .ps-more[open] summary{margin-bottom:8px}
 .bl-pay a.btn{text-decoration:none}
+/* ---- Nickel confirmation window ---- */
+.nk-ov{position:fixed;inset:0;z-index:300;background:rgba(26,35,34,.38);display:grid;place-items:center;padding:16px;animation:nkIn .18s var(--ease)}
+@keyframes nkIn{from{opacity:0}to{opacity:1}}
+.nk-box{width:min(460px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;background:var(--panel);border-radius:var(--r);box-shadow:var(--sh-lift);overflow:hidden}
+.nk-h{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line-2)}
+.nk-logo{width:32px;height:32px;border-radius:9px;background:var(--ink);color:var(--panel);display:grid;place-items:center;font-weight:600;font-size:15px;flex:none}
+.nk-ht{display:flex;flex-direction:column;min-width:0}.nk-ht b{font-size:14px}.nk-ht span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nk-b{padding:18px 20px;overflow:auto}
+.nk-f{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--line-2);background:var(--panel-2)}
+.nk-f:empty{display:none}
+.nk-q{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.nk-msg{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);padding:12px 14px}
+.nk-act{font-weight:600;font-size:15px;margin-bottom:6px}
+.nk-kv{display:flex;gap:12px;justify-content:space-between;font-size:13px;padding:3px 0;border-top:1px dashed var(--line-2)}
+.nk-kv span{color:var(--muted);flex:none}.nk-kv b{font-weight:500;text-align:right;overflow-wrap:anywhere;font-family:var(--mono);font-size:12.5px}
+.nk-line{font-size:13px;padding:2px 0;overflow-wrap:anywhere}
+.nk-note{font-size:12.5px;color:var(--ink-2);margin:10px 0 0}
+.nk-left{font-size:12px;color:var(--muted);margin-top:10px;font-family:var(--mono)}
+.nk-p{font-size:13.5px;margin:0 0 10px}
+.nk-wait{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:13.5px;padding:6px 0}
+.nk-spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line-3);border-top-color:var(--accent);animation:nkSpin .8s linear infinite;flex:none}
+@keyframes nkSpin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.nk-spin{animation-duration:2.4s}.nk-ov{animation:none}}
+.nk-how{margin-top:14px;padding:12px 14px;border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:var(--r-sm);font-size:13px}
+.nk-how b{display:block;margin-bottom:4px}.nk-how ol{margin:0;padding-left:18px}.nk-how li{margin:2px 0}.nk-how .help{display:block;margin-top:6px}
+.bl-nk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12.5px}
+.bl-rec label span b{font-weight:600}
 

@@ -6324,8 +6324,9 @@ async function stmtAutoOnClose(m){
    A bill is a vendor's charge for a property. It gets paid (Nickel or
    recorded by hand) and recovered from the owner: deducted from that
    month's payout, put on an owner invoice, or kept as a PHD expense.
-   Nickel and QuickBooks calls happen server-side (Supabase function
-   "payments"); this file never sees an API key or a bank number.
+   Nickel calls happen server-side (Supabase function "payments"); every
+   change in Nickel is confirmed by the person here, in Nickel's own words.
+   QuickBooks is kept up to date by Nickel. No key or bank number here.
    ===================================================================== */
 const BILL_CATS = ["Repairs", "Maintenance", "Plumbing", "HVAC", "Electrical", "Appliances", "Landscaping", "Pest control", "Cleaning", "Turnover", "Utilities", "Supplies", "Inspection", "Other"];
 const BILL_REC = {deduct:"Deduct from owner payout", invoice:"Invoice the owner", phd:"PHD expense (not billed)"};
@@ -6341,7 +6342,7 @@ const billDays = iso => iso ? PMCore.dayNum(iso) - PMCore.dayNum(todayISO()) : n
 function billStatus(b){
   if(b.status === "void") return {k:"void", label:"Void", cls:"grey"};
   if(b.status === "paid") return {k:"paid", label:`Paid ${b.pay && b.pay.date ? fdateS(b.pay.date) : ""}`.trim(), cls:"green"};
-  if(b.status === "paying") return {k:"paying", label:b.pay && b.pay.scheduled ? `Scheduled ${fdateS(b.pay.scheduled)}` : "Payment processing", cls:"acc"};
+  if(b.status === "paying") return {k:"paying", label:b.pay && b.pay.approval ? "Waiting for approval in Nickel" : b.pay && b.pay.scheduled ? `Arrives by ${fdateS(b.pay.scheduled)}` : "Payment processing", cls:"acc"};
   if(b.pay && b.pay.failed) return {k:"failed", label:"Payment failed", cls:"red"};
   const d = billDays(b.due);
   if(d != null && d < 0) return {k:"overdue", label:`Overdue ${-d}d`, cls:"red"};
@@ -6358,9 +6359,9 @@ function billOwnerTag(b){
 }
 
 /* ---------- vendors (shared list, matched by name) ---------- */
-// Nickel and QuickBooks ids live in server-written records (shared/nickel, shared/qbomap)
+// Nickel matches live in a server-written record (shared/nickel)
 const nkVendor = id => ((S.nk || {}).vendors || {})[id] || {};
-const qbVendor = id => ((S.qbmap || {}).vendors || {})[id] || "";
+const nkOwner = id => ((S.nk || {}).customers || {})[id] || {};
 function pmVendors(){ if(!S.pmVendors || !Array.isArray(S.pmVendors.list)) S.pmVendors = {list:[]}; return S.pmVendors.list; }
 const vendorKey = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 function vendorFind(name){ const k = vendorKey(name); return k ? pmVendors().find(v => vendorKey(v.name) === k) || null : null; }
@@ -6416,9 +6417,7 @@ function billSave(b, isNew){
   if(b.vendor){ const v = vendorEnsure(b.vendor); b.vendorId = v.id; b.vendor = v.name; }
   pmState().bills[b.id] = b;
   billSyncDeduction(b);
-  if(b.qbo && b.qbo.billId) b.qbo.stale = true;                  // changed after it went to QuickBooks
   commit();
-  payAuto("bill", b.id, isNew ? "created" : "changed");
   return b;
 }
 function billNew(f){
@@ -6431,17 +6430,18 @@ function billNew(f){
 
 /* ---------- server calls (Supabase function "payments") ---------- */
 const payOnline = () => typeof Cloud !== "undefined" && Cloud.ready;
-async function payCall(mode, body){
-  if(!payOnline()) throw new Error("Payments and QuickBooks work in the hosted console (sign in first).");
-  clearTimeout(Cloud.timer); await Cloud.flush();                 // the server reads what's saved, so save first
+async function payCall(mode, body, opts){
+  opts = opts || {};
+  if(!payOnline()) throw new Error("Nickel works in the hosted console (sign in first).");
+  if(!opts.noSave){ clearTimeout(Cloud.timer); await Cloud.flush(); }    // the server reads what's saved, so save first
   const {data, error} = await Cloud.sb.functions.invoke("payments", {body:Object.assign({mode}, body || {})});
   if(error){
-    if(error.name === "FunctionsFetchError" || /Failed to send a request/i.test(error.message || "")) throw new Error("Couldn't reach the payments function — it may not be deployed yet.");
+    if(error.name === "FunctionsFetchError" || /Failed to send a request/i.test(error.message || "")) throw new Error("Couldn't reach the payments function. Check your connection and try again.");
     let msg = error.message; try{ const b = await error.context.json(); if(b && b.error) msg = b.error; }catch(e){}
     throw new Error(msg);
   }
   if(data && Array.isArray(data.docs) && data.docs.length) await payPull(data.docs);   // even when it failed: the record shows why
-  if(data && data.error) throw new Error(data.error);
+  if(data && data.error && !opts.raw) throw new Error(data.error);
   return data || {};
 }
 // re-read the records the server changed, so the screen shows them right away
@@ -6461,7 +6461,7 @@ async function payStatus(force){
   if(PAY.status && !force) return PAY.status;
   if(PAY.loading) return PAY.status;
   PAY.loading = true;
-  try{ PAY.status = await payCall("status"); PAY.err = ""; }catch(e){ PAY.err = e.message; PAY.status = null; }
+  try{ PAY.status = await payCall("status", {}, {noSave:true}); PAY.err = ""; }catch(e){ PAY.err = e.message; PAY.status = null; }
   PAY.loading = false; return PAY.status;
 }
 const NICKEL_APP = "https://app.nickel.com";
@@ -6472,19 +6472,76 @@ function payStatusThenRedraw(view){
   payStatus().then(() => { if(S.ui.view === view) render(); }).catch(() => {});
 }
 const nickelOn = () => !!(PAY.status && PAY.status.nickel && PAY.status.nickel.ok);
-const qboOn = () => !!(PAY.status && PAY.status.qbo && PAY.status.qbo.connected);
-// automatic QuickBooks posting, when switched on in Payments setup
-function payAuto(kind, id, why){
-  const a = S.acct || {};
-  if(!payOnline() || !a.qboAuto || !qboOn()) return;
-  setTimeout(() => payCall("qbo.push", {kind, id}).catch(e => toast("QuickBooks: " + e.message)), 900);
-}
-// pick up payments made in Nickel (owner invoices paid, vendor payments cleared)
+const nkQbOn = () => !!(nickelOn() && PAY.status.nickel.qbo && PAY.status.nickel.qbo.connected);
+// pick up what happened in Nickel (payments cleared, owners paid, vendors' bank details) — reading only
 let payRefreshAt = 0;
 function payRefreshSoon(){
-  if(!payOnline() || Date.now() - payRefreshAt < 60000) return;
+  if(!payOnline() || Date.now() - payRefreshAt < 10 * 60000) return;
   payRefreshAt = Date.now();
-  payStatus().then(st => { if(st && st.nickel && st.nickel.ok) payCall("nickel.refresh").then(r => { if(r.changed) toast(`${r.changed} payment update${r.changed === 1 ? "" : "s"} from Nickel`, true); }).catch(() => {}); });
+  payStatus().then(st => { if(st && st.nickel && st.nickel.ok) payCall("nickel.refresh", {}, {noSave:true}).then(r => { if(r.changed) toast(`${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel`); }).catch(() => {}); });
+}
+
+/* ---------- Nickel confirmations ----------
+   Anything that changes Nickel runs on the server, and Nickel asks for a confirmation.
+   This window shows Nickel's own wording; only your click is sent back. Nothing runs
+   without it, and if nobody answers in time nothing runs. */
+const nkSleep = ms => new Promise(r => setTimeout(r, ms));
+function nkBox(label){
+  document.querySelectorAll(".nk-ov").forEach(x => x.remove());
+  const ov = elm("div","nk-ov"); ov.setAttribute("role", "dialog"); ov.setAttribute("aria-modal", "true"); ov.setAttribute("aria-label", "Nickel confirmation");
+  ov.innerHTML = `<div class="nk-box"><div class="nk-h"><span class="nk-logo">N</span><div class="nk-ht"><b>Nickel</b><span>${esc(label || "")}</span></div></div><div class="nk-b"></div><div class="nk-f"></div></div>`;
+  document.body.appendChild(ov);
+  const B = ov.querySelector(".nk-b"), F = ov.querySelector(".nk-f");
+  let left = 0, timer = null, onKey = null;
+  const stopTimer = () => { clearInterval(timer); timer = null; if(onKey) document.removeEventListener("keydown", onKey); onKey = null; };
+  const box = {
+    wait(text){ stopTimer(); B.innerHTML = `<div class="nk-wait"><span class="nk-spin"></span>${esc(text || "Getting this ready in Nickel…")}</div>`; F.innerHTML = ""; },
+    ask(p, answer){
+      stopTimer();
+      const lines = String(p.message || "").split(/\r?\n/), head = (lines.shift() || p.title || "").trim();
+      const rows = lines.filter(l => l.trim()).map(l => { const m = l.match(/^([^:]{1,40}):\s*(.*)$/); return m ? `<div class="nk-kv"><span>${esc(m[1])}</span><b>${esc(m[2])}</b></div>` : `<div class="nk-line">${esc(l)}</div>`; }).join("");
+      B.innerHTML = `<div class="nk-q">Nickel asks you to confirm</div><div class="nk-msg"><div class="nk-act">${esc(head)}</div>${rows}</div>
+        ${p.note ? `<p class="nk-note">${esc(p.note)}</p>` : ""}<div class="nk-left" aria-live="polite"></div>`;
+      F.innerHTML = `<button class="btn" id="nkNo">Cancel</button><button class="btn primary" id="nkYes">Confirm</button>`;
+      left = Number(p.secondsLeft) || 90;
+      const L = B.querySelector(".nk-left"), show = () => { L.textContent = left > 0 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left to answer` : "Time's up"; };
+      show(); timer = setInterval(() => { left = Math.max(0, left - 1); show(); }, 1000);
+      const done = yes => { stopTimer(); box.wait(yes ? "Confirmed. Nickel is doing it now…" : "Cancelling…"); answer(yes); };
+      F.querySelector("#nkYes").onclick = () => done(true);
+      F.querySelector("#nkNo").onclick = () => done(false);
+      onKey = e => { if(e.key === "Escape") done(false); };
+      document.addEventListener("keydown", onKey);
+      setTimeout(() => { const y = F.querySelector("#nkYes"); if(y) y.focus(); }, 30);
+    },
+    tick(sec){ if(timer && Number.isFinite(sec)) left = sec; },
+    info(html, buttons){ stopTimer(); B.innerHTML = html; F.innerHTML = ""; (buttons || [["Close", () => box.close(), "primary"]]).forEach(([t, fn, cls]) => { const b = elm("button", "btn " + (cls || "")); b.textContent = t; b.onclick = fn; F.appendChild(b); }); },
+    close(){ stopTimer(); ov.remove(); }
+  };
+  box.wait();
+  return box;
+}
+// run one Nickel action: shows the confirmation when Nickel asks, returns the server's answer
+async function nkRun(op, args, label){
+  const runId = "run_" + uid() + uid(), box = nkBox(label);
+  let finished = false, result = null, failure = null, asked = false;
+  const job = payCall("nk.do", Object.assign({op, runId}, args || {}), {raw:true}).then(r => { result = r; }, e => { failure = e; }).finally(() => { finished = true; });
+  while(!finished){
+    await Promise.race([job, nkSleep(1100)]);
+    if(finished) break;
+    let q = null; try{ q = await payCall("nk.pending", {runId}, {noSave:true}); }catch(e){}
+    if(q && q.pending && !asked){ asked = true; box.ask(q.pending, yes => payCall("nk.answer", {runId, confirm:yes}, {noSave:true}).catch(() => {})); }
+    else if(q && q.pending) box.tick(q.pending.secondsLeft);
+  }
+  if(failure){ box.close(); throw failure; }
+  const r = result || {};
+  if(r.ok || r.already){ box.close(); return r; }
+  if(r.declined){ box.close(); toast("Cancelled. Nothing changed in Nickel."); return r; }
+  if(r.approvalUrl){
+    box.info(`<div class="nk-q">Nothing ran</div><p class="nk-p">${esc(r.error || "")}</p><p class="nk-p muted">You can review and approve this exact request in Nickel instead. Then do it again here and it runs once.</p>`,
+      [["Close", () => box.close(), ""], ["Open approval in Nickel", () => { window.open(r.approvalUrl, "_blank", "noopener"); box.close(); }, "primary"]]);
+    return r;
+  }
+  box.close(); if(r.error) toast(r.error); return r;
 }
 
 /* ====================================================================
@@ -6581,7 +6638,7 @@ function pgPmBills(){
         <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <span class="mark grey" title="Receipt attached">📎</span>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
-        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.qbo && b.qbo.billId ? ` <span class="mark grey" title="In QuickBooks">QB</span>` : ""}</td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}</td>
         <td class="bl-o">${billOwnerTag(b)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-nos]")) return; billSheet(tr.dataset.b); });
   t.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => { sel[c.dataset.sel] = c.checked; render(); });
@@ -6618,7 +6675,6 @@ function billSheet(id, preset){
           b.recover === "invoice" ? (inv ? `On owner invoice <b>${esc(inv.no)}</b> (${esc(inv.status)}).` : `Goes on ${esc(ownerLabel(o))}'s next owner invoice.`) : "PHD pays this and doesn't bill the owner."}</p>
 
         ${isNew ? "" : billPayBlock(b)}
-        ${isNew ? "" : billQboBlock(b)}
       </div>
       <div class="sheet-f">${!isNew && b.status !== "paid" && b.status !== "paying" ? `<button class="btn ghost danger" id="bsVoid">${b.status === "void" ? "Restore" : "Void bill"}</button>` : ""}<span style="flex:1"></span>
         <button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="bsSave">${isNew ? "Add bill" : "Save"}</button></div>`;
@@ -6648,54 +6704,49 @@ function billSheet(id, preset){
   draw(); openPanel();
 }
 function billPayBlock(b){
-  const p = b.pay || {};
+  const p = b.pay || {}, nb = b.nickel || {};
+  const inNk = nb.billId ? `<div class="bl-nk"><span class="tag acc">In Nickel</span>${nb.qb ? `<span class="muted">QuickBooks is updated by Nickel</span>` : ""}</div>` : "";
   if(b.status === "paid") return `<div class="sectl">Payment</div><div class="bl-paid"><b>Paid ${esc(p.date ? docShort(p.date) : "")}</b> · ${esc(p.method || "")}${p.ref ? ` · ${esc(p.ref)}` : ""}${p.by ? `<span class="muted"> · ${esc(cloudWhoSafe(p.by))}</span>` : ""}
-      ${!p.nickel ? `<button class="btn sm ghost" id="bpUndo" style="margin-left:auto">Undo</button>` : ""}</div>`;
-  if(b.status === "paying") return `<div class="sectl">Payment</div><div class="bl-paid"><b>${p.scheduled ? "Scheduled for " + esc(docShort(p.scheduled)) : "Payment processing"}</b> · Nickel${p.delivery ? " · " + esc(p.delivery) : ""}<span class="muted"> · sent by ${esc(cloudWhoSafe(p.by || ""))}</span>
-      <button class="btn sm ghost" id="bpCancel" style="margin-left:auto">Cancel payment</button></div>`;
+      ${!p.nickel ? `<button class="btn sm ghost" id="bpUndo" style="margin-left:auto">Undo</button>` : ""}</div>${inNk}
+      ${nb.billId && !p.nickel && !nb.recorded && nickelOn() ? `<div class="bl-pay"><button class="btn sm" id="bpRecord">Record this payment in Nickel</button><span class="help">Marks the Nickel bill paid so QuickBooks matches. You'll confirm it.</span></div>` : ""}`;
+  if(b.status === "paying") return `<div class="sectl">Payment</div><div class="bl-paid"><b>${esc(billStatus(b).label)}</b> · Nickel${p.delivery ? " · " + esc(p.delivery) : ""}<span class="muted"> · sent by ${esc(cloudWhoSafe(p.by || ""))}</span></div>
+      <p class="help">${p.approval ? "Nickel's approval rules sent this payment for approval. Someone with approval rights releases it in Nickel." : "It's marked Paid here automatically once Nickel shows it paid (checked every hour)."} To cancel it, open the bill in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a>.</p>${inNk}`;
   if(b.status === "void") return "";
-  return `<div class="sectl">Payment</div>${p.failed ? `<div class="pm-banner">The last Nickel payment failed${p.failReason ? ": " + esc(p.failReason) : ""}. Try again or record how it was paid.</div>` : ""}
-    ${nickelOn() ? `<div class="bl-pay"><button class="btn primary" id="bpNickel">Pay with Nickel</button><button class="btn" id="bpManual">Record a payment made elsewhere</button></div>`
-      : `<div class="bl-pay"><a class="btn" href="${NICKEL_APP}" target="_blank" rel="noopener">Open Nickel to pay</a><button class="btn primary" id="bpManual">Mark paid</button></div>`}`;
-}
-function billQboBlock(b){
-  if(!payOnline()) return "";
-  const q = b.qbo || {};
-  return `<div class="sectl">QuickBooks</div><div class="bl-qbo">${q.billId ? `<span class="tag green">In QuickBooks</span> <span class="muted">bill${q.paymentId ? " + payment" : ""}${q.at ? " · " + esc(fdateS(String(q.at).slice(0, 10))) : ""}</span>${q.stale ? ` <span class="tag gold">changed since</span>` : ""}`
-    : q.error ? `<span class="tag red">Not sent</span> <span class="muted">${esc(q.error)}</span>` : `<span class="muted">Not in QuickBooks yet</span>`}
-    <button class="btn sm" id="bqPush" style="margin-left:auto">${q.billId ? (q.stale ? "Update in QuickBooks" : "Send again") : "Send to QuickBooks"}</button></div>`;
+  return `<div class="sectl">Payment</div>${p.failed ? `<div class="pm-banner">The last Nickel payment didn't go through${p.failReason ? ": " + esc(p.failReason) : ""}. Try again or record how it was paid.</div>` : ""}
+    ${nickelOn() ? `<div class="bl-pay"><button class="btn primary" id="bpNickel">Pay with Nickel</button><button class="btn" id="bpManual">Paid another way</button></div>`
+      : `<div class="bl-pay"><a class="btn" href="${NICKEL_APP}" target="_blank" rel="noopener">Open Nickel to pay</a><button class="btn primary" id="bpManual">Mark paid</button></div>`}${inNk}`;
 }
 function billWirePay(sh, b, redraw){
   const n = sh.querySelector("#bpNickel"); if(n) n.onclick = () => billPaySheet([b.id]);
   const m = sh.querySelector("#bpManual"); if(m) m.onclick = () => billManualSheet(b.id);
   const u = sh.querySelector("#bpUndo"); if(u) u.onclick = () => { if(!confirm("Mark this bill unpaid again?")) return; const x = billById(b.id); x.status = "open"; x.pay = null; billSave(x, false); billSheet(b.id); render(); };
-  const c = sh.querySelector("#bpCancel"); if(c) c.onclick = async () => {
-    if(!confirm("Cancel this Nickel payment? It only works before the money leaves the account.")) return;
-    try{ await payCall("nickel.cancel", {billId:b.id}); toast("Payment cancelled", true); billSheet(b.id); }catch(e){ toast(e.message); }
-  };
-  const q = sh.querySelector("#bqPush"); if(q) q.onclick = async () => {
-    q.disabled = true; q.textContent = "Sending…";
-    try{ await payCall("qbo.push", {kind:"bill", id:b.id}); toast("Sent to QuickBooks", true); billSheet(b.id); }catch(e){ toast("QuickBooks: " + e.message); q.disabled = false; q.textContent = "Try again"; }
+  const rc = sh.querySelector("#bpRecord"); if(rc) rc.onclick = async () => {
+    try{ const r = await nkRun("bill.record", {billId:b.id}, `Record the ${b.vendor} payment`); if(r.ok) toast("Recorded in Nickel"); billSheet(b.id); }catch(e){ toast(e.message); }
   };
 }
 function billManualSheet(idOrIds){
   const ids = (Array.isArray(idOrIds) ? idOrIds : [idOrIds]).filter(i => billById(i)), one = ids.length === 1, b = billById(ids[0]), sh = $("#sheet");
   if(!b) return;
   const tot = ids.reduce((a, i) => a + cents(billById(i).amount), 0);
+  const inNk = ids.filter(i => (billById(i).nickel || {}).billId);
   const defM = nickelOn() ? "Check" : "Nickel";
   sh.innerHTML = `<div class="sheet-h"><div><h3>${one ? "Mark paid" : `Mark ${ids.length} bills paid`}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${one ? esc(b.vendor) + " · " : ""}${usd(tot)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">${nickelOn() ? "For a bill already paid outside the console: a check, a card, or paid in MagicDoor." : `Pay in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a> first, then record it here.`} The owner's statement and QuickBooks pick it up from here.</p>
+    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">${nickelOn() ? "For a bill paid outside the console: a check, a card, MagicDoor, or directly in Nickel." : `Pay in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a> first, then record it here.`} The owner's statement picks it up from here.</p>
       ${one ? "" : `<div class="bl-mlist">${ids.map(i => { const x = billById(i); return `<div><span>${esc(x.vendor)}</span><b>${usd(cents(x.amount))}</b></div>`; }).join("")}</div>`}
       <div class="f2"><label class="fld"><span>Paid on</span><input type="date" id="bmD" value="${todayISO()}"></label>
         <label class="fld"><span>How</span><select id="bmM">${BILL_PAYM.map(x => `<option ${x === defM ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
-      <label class="fld"><span>Check # or reference</span><input type="text" id="bmR" placeholder="optional"></label></div>
+      <label class="fld"><span>Check # or reference</span><input type="text" id="bmR" placeholder="optional"></label>
+      ${inNk.length && nickelOn() ? `<label class="ps-chk"><input type="checkbox" id="bmNk" checked> Also mark ${inNk.length === 1 ? "it" : `the ${inNk.length} bills`} paid in Nickel, so QuickBooks matches (you'll confirm ${inNk.length === 1 ? "once" : "each one"})</label>` : ""}</div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Back</button><button class="btn primary" id="bmGo">Mark paid</button></div>`;
   $("#shClose").onclick = closeSheet; $("#shCancel").onclick = () => one ? billSheet(ids[0]) : closeSheet(); openPanel();
-  $("#bmGo").onclick = () => {
+  $("#bmGo").onclick = async () => {
     const pay = {method:$("#bmM").value, date:$("#bmD").value || todayISO(), ref:$("#bmR").value.trim(), by:billWho(), at:new Date().toISOString()};
+    const alsoNk = !!($("#bmNk") && $("#bmNk").checked);
     ids.forEach(i => { const x = billById(i); if(!x || x.status !== "open") return; x.status = "paid"; x.pay = Object.assign({}, pay); billSave(x, false); });
     if(S.ui.billSel) ids.forEach(i => delete S.ui.billSel[i]);
-    toast(one ? `Marked paid · ${b.vendor}` : `${ids.length} bills marked paid`, true); closeSheet(); render();
+    closeSheet(); render();
+    toast(one ? `Marked paid · ${b.vendor}` : `${ids.length} bills marked paid`, true);
+    if(alsoNk) for(const i of inNk){ const x = billById(i); try{ const r = await nkRun("bill.record", {billId:i}, `Record the ${x.vendor} payment`); if(!r.ok && !r.already) break; }catch(e){ toast(e.message); break; } }
   };
 }
 
@@ -6704,44 +6755,52 @@ async function billPaySheet(ids){
   const sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><h3>Pay with Nickel</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div><div class="sheet-b"><p class="muted">Checking Nickel…</p></div>`;
   $("#shClose").onclick = closeSheet; openPanel();
-  let st, plan;
+  let st = null, plan;
   try{ st = await payStatus(true); }catch(e){}
   if(!st || !st.nickel || !st.nickel.ok){
-    sh.querySelector(".sheet-b").innerHTML = `<div class="pm-banner">Nickel isn't connected yet${PAY.status && PAY.status.nickel && PAY.status.nickel.error ? ": " + esc(PAY.status.nickel.error) : ""}. Set it up on the <a href="#" id="bpSetup">Payments setup</a> page, or record the payment by hand.</div>`;
+    sh.querySelector(".sheet-b").innerHTML = `<div class="pm-banner">Nickel isn't connected${PAY.status && PAY.status.nickel && PAY.status.nickel.error ? ": " + esc(PAY.status.nickel.error) : ""}. See <a href="#" id="bpSetup">Payments setup</a>, or pay in Nickel and press Mark paid.</div>`;
     sh.querySelector("#bpSetup").onclick = e => { e.preventDefault(); closeSheet(); go("pmPaySetup"); }; return;
   }
-  try{ plan = await payCall("nickel.plan", {billIds:ids}); }catch(e){ sh.querySelector(".sheet-b").innerHTML = `<div class="pm-banner">${esc(e.message)}</div>`; return; }
-  const bills = ids.map(billById).filter(Boolean), ready = plan.bills.filter(x => x.ready), blocked = plan.bills.filter(x => !x.ready);
-  const accts = plan.payMethods || [], a = S.acct || {}, acct = accts.find(x => x.id === a.nickelPayFrom) || accts[0];
+  try{ plan = await payCall("nk.plan", {billIds:ids}); }catch(e){ sh.querySelector(".sheet-b").innerHTML = `<div class="pm-banner">${esc(e.message)}</div>`; return; }
+  const rows = plan.bills || [], ready = rows.filter(x => x.need === "" || x.need === "bill"), toAdd = ready.filter(x => x.need === "bill"), blocked = rows.filter(x => x.need === "vendor" || x.need === "details");
+  const accts = plan.payFrom || [], a = S.acct || {}, acct = accts.find(x => x.id === a.nickelPayFrom) || accts.find(x => x.isDefault) || accts[0];
   const totC = ready.reduce((s, x) => s + cents((billById(x.id) || {}).amount), 0);
-  const draw = () => {
-    sh.innerHTML = `<div class="sheet-h"><div><h3>Pay with Nickel</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${ready.length} bill${ready.length === 1 ? "" : "s"} · ${usd(totC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-      <div class="sheet-b">
-        ${!plan.canPay ? `<div class="pm-banner">Only people on the payments list can send money (${esc((plan.payers || []).join(", ") || "nobody yet")}). You can still prepare the bills; one of them sends.</div>` : ""}
-        <label class="fld"><span>Pay from</span><select id="npFrom">${accts.map(x => `<option value="${esc(x.id)}" ${acct && x.id === acct.id ? "selected" : ""}>${esc(x.label)}</option>`).join("") || "<option value=''>No payment account in Nickel</option>"}</select></label>
-        <label class="fld"><span>Withdraw on</span><input type="date" id="npDate" value="${todayISO()}" min="${todayISO()}"><span class="help">Today pays as soon as Nickel processes it; a later date schedules it.</span></label>
-        <div class="sm-list">${ready.map(x => { const b = billById(x.id); return `<div class="sm-r np-r"><span></span><div class="sm-t"><b>${esc(b.vendor)}</b><span>${esc((pmProp(b.propertyId) || {}).name || "")} · ${esc(b.memo || "")}</span></div><span class="muted" style="font-size:12px">${esc(x.delivery)}</span><b class="num">${usd(cents(b.amount))}</b><span></span></div>`; }).join("")}</div>
-        ${blocked.length ? `<div class="label" style="margin:14px 0 6px">Can't pay yet · ${blocked.length}</div><div class="sm-list">${blocked.map(x => { const b = billById(x.id); return `<div class="sm-r off np-r"><span></span><div class="sm-t"><b>${esc(b ? b.vendor : "")}</b><span>${esc(x.why)}</span></div><span></span><b class="num">${b ? usd(cents(b.amount)) : ""}</b>
-            ${x.needsDetails && x.vendorId ? `<button class="btn sm ghost" data-ask="${esc(x.vendorId)}">Ask for bank details</button>` : "<span></span>"}</div>`; }).join("")}</div>` : ""}
-      </div>
-      <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="npGo" ${!ready.length || !plan.canPay || !accts.length ? "disabled" : ""}>Send ${usd(totC)}</button></div>`;
-    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
-    sh.querySelectorAll("[data-ask]").forEach(bt => bt.onclick = () => vendorAskDetails(bt.dataset.ask));
-    $("#npGo").onclick = async () => {
-      const from = $("#npFrom").value, when = $("#npDate").value || todayISO();
-      const label = (accts.find(x => x.id === from) || {}).label || "the selected account";
-      if(!confirm(`Send ${usd(totC)} to ${ready.length} vendor${ready.length === 1 ? "" : "s"} from ${label}${when > todayISO() ? " on " + docShort(when) : ""}?\n\nThis moves real money.`)) return;
-      const go2 = $("#npGo"); go2.disabled = true; go2.textContent = "Sending…";
-      try{
-        if(from !== a.nickelPayFrom){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:from}); commit(); }
-        const r = await payCall("nickel.pay", {billIds:ready.map(x => x.id), payMethodId:from, date:when});
-        ids.forEach(id => delete (S.ui.billSel || {})[id]);
-        closeSheet(); render();
-        toast(`${r.sent || 0} payment${r.sent === 1 ? "" : "s"} sent${r.scheduled ? ` · ${r.scheduled} scheduled` : ""}${r.failed ? ` · ${r.failed} failed (${r.errors[0]})` : ""}`, true);
-      }catch(e){ go2.disabled = false; go2.textContent = `Send ${usd(totC)}`; toast(e.message); }
-    };
+  const steps = toAdd.length + 1;
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Pay with Nickel</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${ready.length} bill${ready.length === 1 ? "" : "s"} ready · ${usd(totC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${!plan.canPay ? `<div class="pm-banner">Only people on the payments list can send money (${esc((plan.payers || []).join(", ") || "nobody yet")}).</div>` : ""}
+      <label class="fld"><span>Pay from</span><select id="npFrom">${accts.map(x => `<option value="${esc(x.id)}" ${acct && x.id === acct.id ? "selected" : ""}>${esc(x.label)}</option>`).join("") || "<option value=''>No account in Nickel</option>"}</select></label>
+      <label class="ps-chk"><input type="checkbox" id="npDue"> Pay by each bill's due date (Nickel keeps the money until then)</label>
+      ${ready.length ? `<div class="sm-list" style="margin-top:12px">${ready.map(x => { const b = billById(x.id); return `<div class="sm-r np-r"><span></span><div class="sm-t"><b>${esc(b.vendor)}</b><span>${esc((pmProp(b.propertyId) || {}).name || "")}${b.memo ? " · " + esc(b.memo) : ""}${b.due ? " · due " + esc(fdateS(b.due)) : ""}</span></div><span class="muted" style="font-size:12px">${esc(x.delivery || "")}${x.need === "bill" ? `<br><span class="tag grey">adds to Nickel</span>` : ""}</span><b class="num">${usd(cents(b.amount))}</b><span></span></div>`; }).join("")}</div>` : ""}
+      ${blocked.length ? `<div class="label" style="margin:14px 0 6px">Not ready yet · ${blocked.length}</div><div class="sm-list">${blocked.map(x => { const b = billById(x.id), v = pmVendors().find(y => y.id === x.vendorId);
+          const btn = x.need === "vendor" && x.vendorId ? `<button class="btn sm" data-vadd="${esc(x.vendorId)}">Add to Nickel</button>`
+            : x.need === "details" && x.vendorId ? (v && v.email ? `<button class="btn sm ${/^Waiting/.test(x.why || "") ? "ghost" : ""}" data-vask="${esc(x.vendorId)}">${/^Waiting/.test(x.why || "") ? "Email the form again" : "Email bank-details form"}</button>` : `<button class="btn sm ghost" data-vedit="${esc(x.vendorId)}">Add vendor email</button>`) : "<span></span>";
+          return `<div class="sm-r off np-r"><span></span><div class="sm-t"><b>${esc(b ? b.vendor : "")}</b><span>${esc(x.why || "")}</span></div><span></span><b class="num">${b ? usd(cents(b.amount)) : ""}</b>${btn}</div>`; }).join("")}</div>` : ""}
+      ${ready.length ? `<div class="nk-how"><b>What happens when you press Pay</b><ol>${toAdd.length ? `<li>Nickel asks you to confirm adding ${toAdd.length === 1 ? "the bill" : `each of the ${toAdd.length} bills`} (${toAdd.length} confirmation${toAdd.length === 1 ? "" : "s"}).</li>` : ""}<li>Nickel shows the payment${ready.length === 1 ? "" : "s"}. One confirmation sends ${ready.length === 1 ? "it" : "them all"}.</li><li>The bill${ready.length === 1 ? " shows" : "s show"} “Payment processing” here, then “Paid” once Nickel shows ${ready.length === 1 ? "it" : "them"} paid.</li></ol></div>` : ""}
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="npGo" ${!ready.length || !plan.canPay || !accts.length ? "disabled" : ""}>Pay ${usd(totC)}${steps > 1 ? ` · ${steps} confirmations` : ""}</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const again = () => billPaySheet(ids);
+  sh.querySelectorAll("[data-vadd]").forEach(bt => bt.onclick = async () => { const v = pmVendors().find(y => y.id === bt.dataset.vadd); try{ const r = await nkRun("vendor.create", {vendorId:bt.dataset.vadd}, `Add ${v ? v.name : "vendor"} to Nickel`); if(r.ok) toast(`${v ? v.name : "Vendor"} added to Nickel`); }catch(e){ toast(e.message); } again(); });
+  sh.querySelectorAll("[data-vask]").forEach(bt => bt.onclick = async () => { await vendorAskDetails(bt.dataset.vask); again(); });
+  sh.querySelectorAll("[data-vedit]").forEach(bt => bt.onclick = () => vendorSheet(bt.dataset.vedit));
+  $("#npGo").onclick = async () => {
+    const from = $("#npFrom").value, byDue = $("#npDue").checked, go2 = $("#npGo");
+    go2.disabled = true;
+    if(from !== a.nickelPayFrom){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:from}); commit(); }
+    try{
+      for(const x of toAdd){
+        const b = billById(x.id);
+        const r = await nkRun("bill.create", {billId:x.id}, `Add the ${b.vendor} bill (${usd(cents(b.amount))}) to Nickel`);
+        if(!r.ok && !r.already){ toast("Stopped. Nothing was paid."); again(); return; }
+      }
+      const r = await nkRun("bill.pay", {billIds:ready.map(x => x.id), payFrom:from, byDue}, `Pay ${ready.length} bill${ready.length === 1 ? "" : "s"} · ${usd(totC)}`);
+      if(!r.ok){ again(); return; }
+      ids.forEach(id => delete (S.ui.billSel || {})[id]);
+      closeSheet(); render();
+      toast(`${r.paying ? `${r.paying} payment${r.paying === 1 ? "" : "s"} on the way` : ""}${r.approval ? `${r.paying ? " · " : ""}${r.approval} waiting for approval in Nickel` : ""}${r.failed ? ` · ${r.failed} didn't go through (${r.errors[0]})` : ""}` || "Done");
+    }catch(e){ toast(e.message); again(); }
   };
-  draw();
 }
 
 /* ====================================================================
@@ -6765,8 +6824,8 @@ function invCreate(ownerId, billIds){
   billIds.forEach(id => { const b = billById(id); b.invoiceId = v.id; b.updatedAt = new Date().toISOString(); });
   commit(); return v;
 }
-function invRefreshLines(v){   // drafts follow the bills
-  if(v.status !== "draft") return;
+function invRefreshLines(v){   // drafts follow the bills (until the invoice exists in Nickel; then its amount is fixed)
+  if(v.status !== "draft" || (v.nickel && v.nickel.invoiceId)) return;
   v.lines = v.lines.map(l => billById(l.billId)).filter(b => b && b.status !== "void" && b.invoiceId === v.id && b.recover === "invoice").map(invLineFor);
 }
 function invStatus(v){
@@ -6816,12 +6875,12 @@ function invBlock(inv){
   const w = elm("div","inv"); if(open) w.setAttribute("open", "");
   const head = elm("div","inv-head");
   head.innerHTML = `<span class="chev">›</span><span class="inv-n">${esc(inv.no)}</span><span class="tag ${st.cls}">${esc(st.label)}</span>
-    <span class="iv-o">${esc(o ? ownerLabel(o) : "—")} <span class="muted">· ${inv.lines.length} bill${inv.lines.length === 1 ? "" : "s"} · ${esc(fdateS(inv.date))}</span>${inv.qbo && inv.qbo.invoiceId ? ` <span class="mark grey" title="In QuickBooks">QB</span>` : ""}</span>
+    <span class="iv-o">${esc(o ? ownerLabel(o) : "—")} <span class="muted">· ${inv.lines.length} bill${inv.lines.length === 1 ? "" : "s"} · ${esc(fdateS(inv.date))}</span>${inv.nickel && inv.nickel.invoiceId ? ` <span class="mark grey" title="In Nickel${inv.nickel.qb ? " and QuickBooks" : ""}">N</span>` : ""}</span>
     <span class="inv-amt">${usd(t.totalC)}<small>${t.paidC ? usd(t.paidC) + " paid" : inv.status === "sent" ? "due " + esc(fdateS(inv.due)) : ""}</small></span>`;
   head.onclick = () => { S.ui.invOpen = open ? null : inv.id; render(); };
   w.appendChild(head);
   if(!open) return w;
-  const draft = inv.status === "draft", body = elm("div","inv-body");
+  const draft = inv.status === "draft" && !(inv.nickel && inv.nickel.invoiceId), body = elm("div","inv-body");
   body.innerHTML = `<table class="tbl pp-tbl"><thead><tr><th>Date</th><th>Property</th><th>Bill</th><th class="r">Amount</th><th class="r">Admin fee</th>${draft ? "<th></th>" : ""}</tr></thead><tbody>
       ${inv.lines.map(l => `<tr><td class="muted nw">${esc(fdateS(l.date))}</td><td>${esc(l.property)}</td><td>${esc(l.vendor)}<div class="item-s">${esc(l.desc)}</div></td><td class="r num">${usd(cents(l.amount))}</td><td class="r num">${l.fee ? usd(cents(l.fee)) : "—"}</td>
         ${draft ? `<td class="r"><button class="btn sm ghost" data-rm="${l.billId}" title="Take off this invoice">✕</button></td>` : ""}</tr>`).join("")}
@@ -6829,26 +6888,22 @@ function invBlock(inv){
       <tr class="iv-tot"><td colspan="${draft ? 6 : 5}" class="r"><b>${usd(t.totalC)}</b>${t.paidC ? ` · paid ${usd(t.paidC)} · <b>${usd(t.dueC)} due</b>` : ""}</td></tr></tbody></table>
     ${(inv.payments || []).length ? `<div class="iv-pay">${inv.payments.map(x => `<span class="tag green">${usd(cents(x.amount))} · ${esc(fdateS(x.date))} · ${esc(x.method || "")}</span>`).join(" ")}</div>` : ""}
     ${inv.nickel && inv.nickel.url ? `<div class="iv-pay muted">Pay link: <a href="${esc(inv.nickel.url)}" target="_blank" rel="noopener">${esc(inv.nickel.url)}</a>${inv.sentTo ? ` · emailed to ${esc(inv.sentTo)}` : ""}</div>` : ""}
-    ${inv.qbo && inv.qbo.error ? `<div class="iv-pay"><span class="tag red">QuickBooks: ${esc(inv.qbo.error)}</span></div>` : ""}
     <div class="iv-act">
       ${draft ? `<label class="fld" style="margin:0"><span>Due</span><input type="date" id="ivDue" value="${esc(inv.due)}"></label>` : ""}
       <span style="flex:1"></span>
       <button class="btn sm" id="ivPdf">PDF</button>
-      ${inv.status !== "void" ? `<button class="btn sm" id="ivQb">${inv.qbo && inv.qbo.invoiceId ? "QuickBooks ✓" : "Send to QuickBooks"}</button>` : ""}
       ${inv.status !== "void" && t.dueC > 0 && inv.status !== "draft" ? `<button class="btn sm" id="ivPaid">Record payment</button>` : ""}
-      ${draft ? `<button class="btn sm ghost danger" id="ivDel">Delete draft</button><button class="btn sm primary" id="ivSend" ${!inv.lines.length ? "disabled" : ""}>Send to ${esc(o && o.email ? o.email : "owner")}</button>` : ""}
+      ${draft ? `<button class="btn sm ghost danger" id="ivDel">Delete draft</button>` : ""}${inv.status === "draft" ? `<button class="btn sm primary" id="ivSend" ${!inv.lines.length ? "disabled" : ""}>${inv.nickel && inv.nickel.invoiceId ? "Finish sending" : "Send to " + esc(o && o.email ? o.email : "owner")}</button>` : ""}
       ${inv.status === "sent" && !t.paidC ? `<button class="btn sm ghost danger" id="ivVoid">Void</button>` : ""}
     </div>`;
   w.appendChild(body);
   body.querySelectorAll("[data-rm]").forEach(bt => bt.onclick = () => { snapshot(); const b = billById(bt.dataset.rm); if(b) b.invoiceId = null; inv.lines = inv.lines.filter(l => l.billId !== bt.dataset.rm); commit(); render(); });
   const due = body.querySelector("#ivDue"); if(due) due.onchange = () => { snapshot(); inv.due = due.value; commit(); };
   body.querySelector("#ivPdf").onclick = () => printDoc(invHTML(inv));
-  const qb = body.querySelector("#ivQb"); if(qb) qb.onclick = async () => { qb.disabled = true; try{ await payCall("qbo.push", {kind:"invoice", id:inv.id}); toast("Invoice is in QuickBooks", true); }catch(e){ toast("QuickBooks: " + e.message); qb.disabled = false; } };
   const pd = body.querySelector("#ivPaid"); if(pd) pd.onclick = () => invPaySheet(inv.id);
   const dl = body.querySelector("#ivDel"); if(dl) dl.onclick = () => { if(!confirm(`Delete draft ${inv.no}? Its bills go back to Ready to invoice.`)) return; snapshot(); inv.lines.forEach(l => { const b = billById(l.billId); if(b) b.invoiceId = null; }); delete pmState().invoices[inv.id]; commit(); render(); };
   const vd = body.querySelector("#ivVoid"); if(vd) vd.onclick = async () => {
-    if(!confirm(`Void ${inv.no}? Its bills go back to Ready to invoice${inv.nickel && inv.nickel.linkId ? " and the Nickel pay link is turned off" : ""}.`)) return;
-    try{ if(inv.nickel && inv.nickel.linkId) await payCall("nickel.voidInvoice", {id:inv.id}); }catch(e){ return toast(e.message); }
+    if(!confirm(`Void ${inv.no}? Its bills go back to Ready to invoice.${inv.nickel && inv.nickel.invoiceId ? "\n\nIt was sent through Nickel: also delete it in Nickel so the owner's pay link stops working." : ""}`)) return;
     snapshot(); const x = invById(inv.id); x.status = "void"; x.lines.forEach(l => { const b = billById(l.billId); if(b && b.invoiceId === x.id) b.invoiceId = null; }); commit(); render();
   };
   const sd = body.querySelector("#ivSend"); if(sd) sd.onclick = () => invSendSheet(inv.id);
@@ -6857,52 +6912,57 @@ function invBlock(inv){
 function invSendSheet(id){
   const inv = invById(id), o = ownerById(inv.ownerId), t = invTotals(inv), sh = $("#sheet");
   const emails = [o && o.email].concat(String((o && o.cc) || "").split(/[,;\s]+/)).filter(e => e && /@/.test(e));
+  const viaNk = nickelOn(), inNkOwner = !!nkOwner(inv.ownerId).id, made = !!(inv.nickel && inv.nickel.invoiceId);
+  const n = (inNkOwner ? 0 : 1) + (made ? 0 : 1) + 1;
   sh.innerHTML = `<div class="sheet-h"><div><h3>Send ${esc(inv.no)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(o ? ownerLabel(o) : "")} · ${usd(t.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <div class="bl-rec">
-${nickelOn() ? `<label class="on"><input type="radio" name="how" value="nickel" checked> Nickel pay link: the owner pays online by bank transfer (or card), and it's marked paid here automatically</label>
-        <label><input type="radio" name="how" value="manual"> Mark as sent: I'll send the PDF myself</label>`
-        : `<label class="on"><input type="radio" name="how" value="manual" checked> Mark as sent: download the PDF and email it, or request the payment in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a>. Press <b>Record payment</b> here when the owner pays.</label>`}</div>
-      ${nickelOn() ? `<label class="fld" style="margin-top:12px"><span>Email to</span><input type="text" id="isTo" value="${esc(emails.join(", "))}"></label>
-      <label class="fld"><span>Allow card payments</span><select id="isCard"><option value="no">No, bank transfer only</option><option value="yes">Yes, card fee paid by the owner</option></select></label>` : `<input type="hidden" id="isTo" value="${esc(emails.join(", "))}">`}
-      <p class="help">The invoice goes to QuickBooks${(S.acct || {}).qboAuto ? " automatically" : " when you press Send to QuickBooks"}.</p></div>
-    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="isGo">Send</button></div>`;
+        ${viaNk ? `<label class="on"><input type="radio" name="how" value="nickel" checked> <span><b>Email a Nickel pay link</b><br>The owner pays online, and it's marked paid here automatically.</span></label>` : ""}
+        <label class="${viaNk ? "" : "on"}"><input type="radio" name="how" value="manual" ${viaNk ? "" : "checked"}> <span><b>Mark as sent</b><br>Download the PDF and email it yourself. Press Record payment when the owner pays.</span></label></div>
+      ${viaNk ? `<div id="isNk"><label class="fld" style="margin-top:12px"><span>Email to</span><input type="text" id="isTo" value="${esc(emails.join(", "))}"></label>
+        <div class="nk-how"><b>What happens when you press Send</b><ol>${inNkOwner ? "" : `<li>Nickel asks you to confirm adding ${esc(o ? ownerLabel(o) : "the owner")} as a customer (first time only).</li>`}${made ? "" : `<li>Nickel asks you to confirm creating invoice ${esc(inv.no)} for ${usd(t.totalC)}.</li>`}<li>Nickel asks you to confirm emailing it.</li></ol>
+        ${nkQbOn() ? `<span class="help">Nickel adds the invoice to QuickBooks.</span>` : ""}</div></div>` : ""}
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="isGo">${viaNk ? `Send · ${n} confirmation${n === 1 ? "" : "s"}` : "Mark as sent"}</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
-  sh.querySelectorAll("[name=how]").forEach(r => r.onchange = () => sh.querySelectorAll(".bl-rec label").forEach(l => l.classList.toggle("on", l.querySelector("input").checked)));
+  sh.querySelectorAll("[name=how]").forEach(r => r.onchange = () => {
+    sh.querySelectorAll(".bl-rec label").forEach(l => l.classList.toggle("on", l.querySelector("input").checked));
+    const nk = sh.querySelector("[name=how]:checked").value === "nickel", box = $("#isNk"); if(box) box.style.display = nk ? "" : "none";
+    $("#isGo").textContent = nk ? `Send · ${n} confirmation${n === 1 ? "" : "s"}` : "Mark as sent";
+  });
   openPanel();
   $("#isGo").onclick = async () => {
-    const how = sh.querySelector("[name=how]:checked").value, to = $("#isTo").value.split(/[,;\s]+/).filter(e => /@/.test(e));
-    const go2 = $("#isGo"); go2.disabled = true; go2.textContent = "Sending…";
+    const how = sh.querySelector("[name=how]:checked").value, go2 = $("#isGo");
+    if(how === "manual"){ snapshot(); const x = invById(id); x.status = "sent"; x.sentAt = new Date().toISOString(); x.sentBy = billWho(); x.lines.forEach(l => { const b = billById(l.billId); if(b) b.invoiceId = x.id; }); commit(); closeSheet(); toast(`${inv.no} marked as sent`, true); render(); return; }
+    const to = $("#isTo").value.split(/[,;\s]+/).filter(e => /@/.test(e));
+    if(!to.length) return toast("Add the owner's email");
+    go2.disabled = true;
     try{
-      if(how === "nickel"){
-        if(!to.length) throw new Error("Add the owner's email");
-        await payCall("nickel.invoice", {id, emails:to, card:$("#isCard").value === "yes"});
-      } else { snapshot(); const x = invById(id); x.status = "sent"; x.sentAt = new Date().toISOString(); x.sentBy = billWho(); commit(); }
-      const x = invById(id); if(x){ x.lines.forEach(l => { const b = billById(l.billId); if(b) b.invoiceId = x.id; }); }
-      payAuto("invoice", id, "sent");
-      closeSheet(); toast(how === "nickel" ? `${inv.no} sent with a Nickel pay link` : `${inv.no} marked as sent`, true); render();
-    }catch(e){ go2.disabled = false; go2.textContent = "Send"; toast(e.message); }
+      await payCall("nk.match", {}, {raw:true}).catch(() => {});                 // the owner may already be in Nickel
+      if(!nkOwner(inv.ownerId).id){ const r = await nkRun("owner.create", {ownerId:inv.ownerId}, `Add ${o ? ownerLabel(o) : "the owner"} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
+      if(!(invById(id).nickel || {}).invoiceId){ const r = await nkRun("invoice.create", {invoiceId:id}, `Create ${inv.no} · ${usd(t.totalC)}`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
+      const r = await nkRun("invoice.send", {invoiceId:id, emails:to}, `Email ${inv.no} to ${to.join(", ")}`);
+      if(!r.ok){ go2.disabled = false; return; }
+      closeSheet(); toast(`${inv.no} emailed with a Nickel pay link`); render();
+    }catch(e){ go2.disabled = false; toast(e.message); }
   };
 }
 function invPaySheet(id){
   const inv = invById(id), t = invTotals(inv), sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><div><h3>Record a payment</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(inv.no)} · ${usd(t.dueC)} due</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">For a payment that didn't come through the Nickel link — a check, or taken out of rent.</p>
+    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">For a payment that didn't come through the Nickel pay link: a check, or taken out of rent.${inv.nickel && inv.nickel.invoiceId ? " Also mark it paid in Nickel so the pay link closes and QuickBooks matches." : ""}</p>
       <div class="f3"><label class="fld"><span>Amount</span><input type="number" step="0.01" id="ipA" value="${(t.dueC / 100).toFixed(2)}"></label>
         <label class="fld"><span>Date</span><input type="date" id="ipD" value="${todayISO()}"></label>
-        <label class="fld"><span>How</span><select id="ipM"><option>Nickel</option><option>Check</option><option>ACH / bank transfer</option><option>Deducted from rent</option><option>Zelle</option><option>Other</option></select></label></div>
+        <label class="fld"><span>How</span><select id="ipM"><option>Check</option><option>ACH / bank transfer</option><option>Deducted from rent</option><option>Zelle</option><option>Other</option></select></label></div>
       <label class="fld"><span>Reference</span><input type="text" id="ipR" placeholder="optional"></label></div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="ipGo">Record</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
-  $("#ipGo").onclick = async () => {
+  $("#ipGo").onclick = () => {
     const amt = Math.round(Number($("#ipA").value) * 100) / 100; if(!(amt > 0)) return toast("Enter the amount");
     snapshot(); const x = invById(id);
     x.payments = (x.payments || []).concat([{id:"pay_" + uid(), amount:amt, date:$("#ipD").value || todayISO(), method:$("#ipM").value, ref:$("#ipR").value.trim(), by:billWho()}]);
     if(invTotals(x).dueC === 0) x.status = "paid";
-    commit();
-    if(x.nickel && x.nickel.linkId) payCall("nickel.external", {id, paymentId:x.payments[x.payments.length - 1].id}).catch(e => toast("Nickel: " + e.message));
-    payAuto("invoice", id, "payment");
-    closeSheet(); toast("Payment recorded", true); render();
+    commit(); closeSheet(); toast("Payment recorded", true); render();
   };
 }
 function invHTML(inv){
@@ -6931,6 +6991,16 @@ function invHTML(inv){
 /* ====================================================================
    VENDORS
    ==================================================================== */
+const nkVendorTag = id => { const nk = nkVendor(id);
+  if(!nk.id) return nk.requested ? `<span class="tag gold">Not in Nickel</span>` : `<span class="muted">Not in Nickel</span>`;
+  if((nk.payout || []).length) return `<span class="tag green">Ready · ${nk.payout[0].type === "CHECK" ? "check" : "bank"}</span>`;
+  return nk.requested ? `<span class="tag gold">Form sent ${esc(fdateS(String(nk.requested).slice(0, 10)))}</span>` : `<span class="tag gold">No bank details</span>`; };
+let nkMatchAt = 0;
+function nkMatchSoon(view){
+  if(!payOnline() || !nickelOn() || Date.now() - nkMatchAt < 15 * 60000) return;
+  nkMatchAt = Date.now();
+  payCall("nk.match", {}, {raw:true}).then(() => { if(S.ui.view === view) render(); }).catch(() => {});
+}
 function pgPmVendors(){
   $("#pgCrumb").textContent = "Property management"; $("#pgTitle").textContent = "Vendors";
   // anyone billed before becomes a vendor record
@@ -6938,20 +7008,17 @@ function pgPmVendors(){
   const missing = [...new Set(billList().map(b => b.vendor).filter(n => n && !names.has(vendorKey(n))))];
   if(missing.length){ snapshot(); missing.forEach(vendorEnsure); commit(); }
   const vs = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
-  $("#pgSub").textContent = `${vs.length} vendor${vs.length === 1 ? "" : "s"} · bank details are collected by Nickel, never stored here`;
-  actions([["Add vendor", () => vendorSheet(null), "primary"]]);
-  payStatusThenRedraw("pmVendors");
+  $("#pgSub").textContent = `${vs.length} vendor${vs.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
+  actions([["Check Nickel", async () => { try{ const r = await payCall("nk.match"); toast(`${r.vendors} of ${vs.length} vendors found in Nickel`); }catch(e){ toast(e.message); } }, "ghost"], ["Add vendor", () => vendorSheet(null), "primary"]]);
+  payStatusThenRedraw("pmVendors"); nkMatchSoon("pmVendors");
   const v = $("#view"), yr = todayISO().slice(0, 4);
   const card = elm("div","card");
   if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>They're added automatically the first time you enter a bill from them.</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl pm-plist");
-  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Nickel</th><th>QuickBooks</th><th></th></tr></thead><tbody>
+  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Nickel</th><th></th></tr></thead><tbody>
     ${vs.map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
-      const nk = nkVendor(x.id);
       return `<tr data-v="${x.id}"><td><div class="item-t">${esc(x.name)}</div><div class="item-s">${bs.length} bill${bs.length === 1 ? "" : "s"}</div></td><td class="muted" style="font-size:12.5px">${esc([x.email, x.phone].filter(Boolean).join(" · ") || "—")}</td>
-        <td class="r num">${paid ? usd(paid) : "—"}</td>
-        <td>${nk.ach ? `<span class="tag green">Bank on file</span>` : nk.check ? `<span class="tag green">Check</span>` : nk.requested ? `<span class="tag gold">Asked ${esc(fdateS(String(nk.requested).slice(0, 10)))}</span>` : `<span class="muted">—</span>`}</td>
-        <td>${qbVendor(x.id) ? `<span class="muted">Linked</span>` : `<span class="muted">—</span>`}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
+        <td class="r num">${paid ? usd(paid) : "—"}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-v]").forEach(tr => tr.onclick = () => vendorSheet(tr.dataset.v));
   const w = elm("div","tbl-wrap vn-ok"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
 }
@@ -6962,93 +7029,84 @@ function vendorSheet(id){
   sh.innerHTML = `<div class="sheet-h"><h3>${isNew ? "New vendor" : esc(v.name)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">${F.map(([k, l]) => `<label class="fld"><span>${l}</span><input type="text" data-k="${k}" value="${esc(v[k] || "")}"></label>`).join("")}
       <label class="fld"><span>Notes</span><textarea data-k="notes" rows="2">${esc(v.notes || "")}</textarea></label>
-      ${isNew ? "" : `<div class="sectl">Getting paid through Nickel</div>
-        <p class="help" style="margin-top:0">Nickel emails ${esc(v.email || "the vendor")} a secure form to enter their bank account (or a mailing address for checks). Bank numbers stay in Nickel — this console never sees them.</p>
-        <div class="bl-qbo">${nk.ach ? `<span class="tag green">Bank account on file${nk.bank ? " · " + esc(nk.bank) : ""}</span>` : nk.check ? `<span class="tag green">Checks to ${esc(nk.check)}</span>` : nk.requested ? `<span class="tag gold">Requested ${esc(fdateS(String(nk.requested).slice(0, 10)))}</span>` : `<span class="muted">Not set up</span>`}
-          <button class="btn sm" id="vnAsk" style="margin-left:auto">${nk.ach || nk.check ? "Ask to update" : nk.requested ? "Ask again" : "Ask for bank details"}</button></div>
-        ${nk.formUrl ? `<p class="help">Form link (if the email didn't arrive): <a href="${esc(nk.formUrl)}" target="_blank" rel="noopener">open</a></p>` : ""}`}
+      ${isNew ? "" : `<div class="sectl">Nickel</div>
+        ${!nickelOn() ? `<p class="help" style="margin-top:0">Nickel isn't connected (Payments setup).</p>`
+        : !nk.id ? `<p class="help" style="margin-top:0">Not in Nickel yet${v.email ? "" : ". Add a billing email first so Nickel can send payment notices"}.</p><div class="bl-pay"><button class="btn sm" id="vnAdd">Add to Nickel</button></div>`
+        : `<div class="bl-nk">${nkVendorTag(v.id)}${nk.name && vendorKey(nk.name) !== vendorKey(v.name) ? `<span class="muted">as “${esc(nk.name)}” in Nickel</span>` : ""}</div>
+          ${(nk.payout || []).map(m => `<div class="ps-kv"><span>${m.type === "CHECK" ? "Check" : "Bank"}</span><b>${esc(m.label)}</b></div>`).join("")}
+          <p class="help">${(nk.payout || []).length ? "Ready to pay from the console." : "Nickel needs the vendor's bank account (or a check address) before you can pay them."} Nickel's form lets the vendor type their own bank details. They never pass through this console.</p>
+          <div class="bl-pay">${v.email ? `<button class="btn sm" id="vnAsk">${(nk.payout || []).length ? "Ask them to update bank details" : nk.requested ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">Add a billing email to send Nickel's form.</span>`}${nk.url ? `<a class="btn sm ghost" href="${esc(nk.url)}" target="_blank" rel="noopener">Open in Nickel</a>` : ""}</div>`}`}
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="vnSave">Save</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
-  const ask = $("#vnAsk"); if(ask) ask.onclick = () => vendorAskDetails(v.id);
-  $("#vnSave").onclick = () => {
+  const saveForm = () => {
     sh.querySelectorAll("[data-k]").forEach(i => v[i.dataset.k] = i.value.trim());
-    if(!v.name) return toast("Enter the vendor's name");
-    const dup = vendorFind(v.name); if(dup && dup.id !== v.id) return toast("There's already a vendor with that name");
+    if(!v.name){ toast("Enter the vendor's name"); return false; }
+    const dup = vendorFind(v.name); if(dup && dup.id !== v.id){ toast("There's already a vendor with that name"); return false; }
     snapshot(); const L = pmVendors(), i = L.findIndex(x => x.id === v.id);
     if(i >= 0){ const old = L[i].name; L[i] = Object.assign(L[i], v); if(old !== v.name) billList().forEach(b => { if(b.vendorId === v.id) b.vendor = v.name; }); } else L.push(v);
-    commit(); closeSheet(); toast("Vendor saved", true); render();
+    commit(); return true;
   };
+  const add = $("#vnAdd"); if(add) add.onclick = async () => { if(!saveForm()) return; try{ const r = await nkRun("vendor.create", {vendorId:v.id}, `Add ${v.name} to Nickel`); if(r.ok) toast(`${v.name} added to Nickel`); }catch(e){ toast(e.message); } vendorSheet(v.id); };
+  const ask = $("#vnAsk"); if(ask) ask.onclick = async () => { if(!saveForm()) return; await vendorAskDetails(v.id); vendorSheet(v.id); };
+  $("#vnSave").onclick = () => { if(!saveForm()) return; closeSheet(); toast("Vendor saved", true); render(); };
 }
 async function vendorAskDetails(vendorId){
   const v = pmVendors().find(x => x.id === vendorId); if(!v) return;
   if(!v.email) return toast("Add the vendor's billing email first");
-  if(!confirm(`Email ${v.email} a secure Nickel form to enter their bank details?`)) return;
-  try{ const r = await payCall("nickel.askVendor", {vendorId}); toast(`Request sent to ${v.email}`, true); render(); if(r.url && $("#sheet").classList.contains("on")) vendorSheet(vendorId); }
+  try{ const r = await nkRun("vendor.ask", {vendorId}, `Email ${v.name} Nickel's bank-details form`); if(r.ok) toast(`Nickel emailed the form to ${v.email}`); }
   catch(e){ toast(e.message); }
 }
 
 /* ====================================================================
-   PAYMENTS SETUP — Nickel and QuickBooks connections, account mapping
+   PAYMENTS SETUP — Nickel connection, who can pay, QuickBooks coding (through Nickel)
    ==================================================================== */
+let NKL = null;   // QuickBooks accounts, read through Nickel
 function pgPmPaySetup(){
   $("#pgCrumb").textContent = "Property management"; $("#pgTitle").textContent = "Payments setup";
-  $("#pgSub").textContent = "Nickel pays vendors and collects from owners · QuickBooks gets every bill, invoice and payment";
-  actions([["Check again", async () => { await payStatus(true); render(); }, "ghost"]]);
+  $("#pgSub").textContent = "Nickel pays vendors and collects from owners · Nickel keeps QuickBooks up to date";
+  actions([["Check again", async () => { NKL = null; await payStatus(true); render(); }, "ghost"]]);
   const v = $("#view");
-  if(!payOnline()){ v.appendChild(elm("div","card",`<div class="empty"><b>Sign in to the hosted console</b><p>Payments and QuickBooks run through the office's Supabase project.</p></div>`)); return; }
-  if(!PAY.status && !PAY.err && !PAY.asked){ v.appendChild(elm("div","card",`<div class="empty"><p class="muted">Checking connections…</p></div>`)); payStatusThenRedraw("pmPaySetup"); return; }
-  const st = PAY.status || {}, nk = st.nickel || {}, qb = st.qbo || {}, a = S.acct || {};
+  if(!payOnline()){ v.appendChild(elm("div","card",`<div class="empty"><b>Sign in to the hosted console</b><p>Payments run through the office's Supabase project.</p></div>`)); return; }
+  if(!PAY.status && !PAY.err && !PAY.asked){ v.appendChild(elm("div","card",`<div class="empty"><p class="muted">Checking Nickel…</p></div>`)); payStatusThenRedraw("pmPaySetup"); return; }
+  const st = PAY.status || {}, nk = st.nickel || {}, a = S.acct || {}, qb = nk.qbo || {};
   if(PAY.err) v.appendChild(elm("div","pm-banner", `The payments function didn't answer: ${esc(PAY.err)}`));
   const grid = elm("div","ps-grid"); v.appendChild(grid);
 
   const nc = elm("div","card");
-  nc.innerHTML = `<div class="card-h"><h3>Nickel</h3>${nk.ok ? `<span class="tag green">Connected${nk.env === "sandbox" ? " · sandbox" : ""}</span>` : `<span class="tag grey">Not connected</span>`}</div>
+  const from = (nk.payFrom || []).find(x => x.id === a.nickelPayFrom) || (nk.payFrom || []).find(x => x.isDefault) || (nk.payFrom || [])[0];
+  nc.innerHTML = `<div class="card-h"><h3>Nickel</h3>${nk.ok ? `<span class="tag green">Connected</span>` : `<span class="tag grey">Not connected</span>`}</div>
     <div class="card-b ps-b">${nk.ok ? `
-      <div class="ps-kv"><span>Pay vendors from</span><b>${esc(((nk.payMethods || []).find(x => x.id === a.nickelPayFrom) || (nk.payMethods || [])[0] || {}).label || "No payment account in Nickel")}</b></div>
+      <label class="fld"><span>Pay vendors from</span><select id="psFrom">${(nk.payFrom || []).map(x => `<option value="${esc(x.id)}" ${from && x.id === from.id ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>
       <div class="ps-kv"><span>Can send payments</span><b>${esc((nk.payers || []).join(", ") || "Nobody yet")}</b></div>
-      <div class="ps-kv"><span>Payment updates</span><b>${nk.lastRefresh ? "Checked " + esc(mdAgo(nk.lastRefresh)) : "Every hour"}</b></div>
-      ${nk.env === "sandbox" ? `<p class="help">Sandbox: payments are pretend. Switch NICKEL_ENV to live in Supabase secrets when you're ready.</p>` : ""}
-      <button class="btn sm" id="psNkRefresh">Check for payments now</button>`
-      : `<p style="margin-top:0"><b>Using Nickel without the API.</b> Pay bills in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a> as usual, then press <b>Mark paid</b> on the bill here (tick several to mark them together). Statements and QuickBooks still update from the console.</p>
-      <details class="ps-more"><summary>Pay straight from the console (needs Nickel Pro)</summary>
-      ${nk.error ? `<p class="help">Last check: ${esc(nk.error)}</p>` : ""}
-      <ol class="ps-steps"><li>Nickel → Settings → API → create a token (Nickel Pro).</li><li>Supabase → Edge Functions → Secrets: <code>NICKEL_API_KEY</code> = the token, <code>NICKEL_ENV</code> = <code>sandbox</code> (test) or <code>live</code>.</li>
-        <li>Choose who may send payments — run in Supabase SQL Editor:<br><code>insert into private_settings(key,value) values ('payers','gabe@phdproperties.realestate,peter@phdproperties.realestate') on conflict (key) do update set value = excluded.value;</code></li><li>Press Check again.</li></ol></details>`}</div>`;
+      <div class="ps-kv"><span>Payments and owner invoices checked</span><b>${nk.lastRefresh ? esc(mdAgo(nk.lastRefresh)) : "Every hour"}</b></div>
+      <p class="help">Every change in Nickel asks for your confirmation in the console, in Nickel's own words. Reading (statuses, vendor matches) happens on its own every hour.</p>
+      <button class="btn sm" id="psNkRefresh">Check Nickel now</button>`
+      : `<p style="margin-top:0">${esc(nk.error || "Not connected.")}</p>
+      <ol class="ps-steps"><li>Nickel → Settings → MCP → API tokens → <b>Create token</b>. Copy it (it's shown once).</li>
+        <li>Supabase → Edge Functions → Secrets → add <code>NICKEL_MCP_TOKEN</code> with the token.</li>
+        <li>Press Check again.</li></ol>
+      <p class="help">Until then: pay in <a href="${NICKEL_APP}" target="_blank" rel="noopener">Nickel</a> and press Mark paid on the bill here.</p>`}</div>`;
   grid.appendChild(nc);
-  const r1 = nc.querySelector("#psNkRefresh"); if(r1) r1.onclick = async () => { r1.disabled = true; try{ const r = await payCall("nickel.refresh"); toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date", true); }catch(e){ toast(e.message); } r1.disabled = false; };
+  const pf = nc.querySelector("#psFrom"); if(pf) pf.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:pf.value}); commit(); toast("Saved", true); };
+  const r1 = nc.querySelector("#psNkRefresh"); if(r1) r1.onclick = async () => { r1.disabled = true; try{ const r = await payCall("nickel.refresh"); await payStatus(true); toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date"); render(); }catch(e){ toast(e.message); r1.disabled = false; } };
 
   const qc = elm("div","card");
-  const opt = (list, cur, none) => `<option value="">${none || "Choose…"}</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) ? "selected" : ""}>${esc(x.name)}</option>`).join("");
-  qc.innerHTML = `<div class="card-h"><h3>QuickBooks</h3>${qb.connected ? `<span class="tag green">Connected${qb.company ? " · " + esc(qb.company) : ""}</span>` : `<span class="tag grey">Not connected</span>`}</div>
-    <div class="card-b ps-b">${!qb.configured ? `<p style="margin-top:0">Needs an Intuit developer app (free).</p>
-      <ol class="ps-steps"><li>developer.intuit.com → Create an app → QuickBooks Online and Payments → scope <b>Accounting</b>.</li>
-        <li>Under Keys &amp; credentials, add this redirect URI:<br><code>${esc(qb.redirectUri || "")}</code></li>
-        <li>Supabase → Edge Functions → Secrets: <code>QBO_CLIENT_ID</code>, <code>QBO_CLIENT_SECRET</code>, and <code>QBO_ENV</code> = <code>production</code> (or <code>sandbox</code> to test).</li><li>Press Check again, then Connect.</li></ol>`
-      : !qb.connected ? `<p style="margin-top:0">${qb.error ? esc(qb.error) : "Sign in to QuickBooks and pick the PHD company."}</p><button class="btn primary" id="psQbGo">Connect QuickBooks</button>`
-      : `<p class="help" style="margin-top:0">Where things are recorded. Your bookkeeper should confirm these.</p>
-        <label class="fld"><span>Bills are expenses in</span><select data-a="qboExpense">${opt(qb.accounts && qb.accounts.expense, a.qboExpense)}</select></label>
-        <label class="fld"><span>Vendor payments come out of</span><select data-a="qboBank">${opt(qb.accounts && qb.accounts.bank, a.qboBank)}</select></label>
-        <label class="fld"><span>Owner invoices: reimbursed bills use item</span><select data-a="qboItemReimb">${opt(qb.items, a.qboItemReimb)}</select></label>
-        <label class="fld"><span>Owner invoices: admin fee uses item</span><select data-a="qboItemFee">${opt(qb.items, a.qboItemFee)}</select></label>
-        <label class="fld"><span>Owner payments are deposited to</span><select data-a="qboDeposit">${opt(qb.accounts && qb.accounts.bank, a.qboDeposit)}</select></label>
-        <label class="ps-chk"><input type="checkbox" id="psAuto" ${a.qboAuto ? "checked" : ""}> Send bills, payments and invoices to QuickBooks automatically</label>
-        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm ghost danger" id="psQbOff">Disconnect</button></div>`}</div>`;
+  const opt = (list, cur) => `<option value="">Don't code it (Nickel only)</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) ? "selected" : ""}>${esc(x.name)}${x.type ? " · " + esc(x.type) : ""}</option>`).join("");
+  qc.innerHTML = `<div class="card-h"><h3>QuickBooks</h3>${!nk.ok ? `<span class="tag grey">—</span>` : qb.connected ? `<span class="tag green">Synced through Nickel</span>` : `<span class="tag grey">Not connected in Nickel</span>`}</div>
+    <div class="card-b ps-b">${!nk.ok ? `<p class="help" style="margin-top:0">Connect Nickel first.</p>`
+      : !qb.connected ? `<p style="margin-top:0">Nickel isn't connected to QuickBooks. Connect it in Nickel (Settings → Integrations) and bills and invoices made here will flow into QuickBooks.</p>`
+      : !NKL ? `<p class="muted" style="margin-top:0">Loading your QuickBooks accounts…</p>`
+      : `<p class="help" style="margin-top:0">Which QuickBooks account each kind of entry is coded to when Nickel adds it. Your bookkeeper should confirm these.</p>
+        <label class="fld"><span>Vendor bills</span><select data-a="nkExpense">${opt(NKL.expense, a.nkExpense)}</select></label>
+        <label class="fld"><span>Owner invoices: reimbursed bills</span><select data-a="nkReimb">${opt(NKL.revenue, a.nkReimb)}</select></label>
+        <label class="fld"><span>Owner invoices: admin fee</span><select data-a="nkFee">${opt(NKL.revenue, a.nkFee)}</select></label>
+        <p class="help">Left blank, the bill or invoice is still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
   grid.appendChild(qc);
-  const go2 = qc.querySelector("#psQbGo"); if(go2) go2.onclick = async () => {
-    try{ const r = await payCall("qbo.connect"); const w = window.open(r.url, "qbo", "width=640,height=760"); if(!w) location.href = r.url;
-      const t = setInterval(async () => { if(w && !w.closed) return; clearInterval(t); await payStatus(true); render(); }, 1200);
-    }catch(e){ toast(e.message); }
-  };
-  qc.querySelectorAll("[data-a]").forEach(s => s.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s.dataset.a]:s.value}); commit(); toast("Saved", true); });
-  const au = qc.querySelector("#psAuto"); if(au) au.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {qboAuto:au.checked}); commit(); };
-  const off = qc.querySelector("#psQbOff"); if(off) off.onclick = async () => { if(!confirm("Disconnect QuickBooks? Nothing already recorded there changes.")) return; try{ await payCall("qbo.disconnect"); await payStatus(true); render(); }catch(e){ toast(e.message); } };
-  if(nk.ok && (nk.payMethods || []).length > 1){
-    const s = elm("div","card"); s.style.marginTop = "14px";
-    s.innerHTML = `<div class="card-b"><label class="fld" style="margin:0"><span>Default account vendors are paid from</span><select id="psFrom">${nk.payMethods.map(x => `<option value="${esc(x.id)}" ${x.id === a.nickelPayFrom ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label></div>`;
-    v.appendChild(s); s.querySelector("#psFrom").onchange = e => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:e.target.value}); commit(); };
-  }
+  qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value}); commit(); toast("Saved", true); });
+  if(nk.ok && qb.connected && !NKL && !NKL_LOADING){ NKL_LOADING = true; payCall("nk.lists", {}, {noSave:true}).then(r => { NKL = r; }).catch(e => { NKL = {expense:[], revenue:[]}; toast("QuickBooks accounts: " + e.message); }).finally(() => { NKL_LOADING = false; if(S.ui.view === "pmPaySetup") render(); }); }
 }
+let NKL_LOADING = false;
 
 /* =====================================================================
    SHELL — Projects | Property management switch, PM navigation,
