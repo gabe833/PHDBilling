@@ -6525,7 +6525,8 @@ function nkBox(label){
 function nkNames(){
   const m = {}, add = (id, name) => { if(id && name) m[id] = name; };
   const nk = S.nk || {};
-  Object.entries(nk.customers || {}).forEach(([oid, c]) => add(c.id, (ownerById(oid) && ownerLabel(ownerById(oid))) || c.name));
+  (nk.nickelCustomers || []).forEach(c => add(c.id, c.name));   // Nickel's own customer name: what the invoice shows
+  Object.entries(nk.customers || {}).forEach(([oid, c]) => { if(!m[c.id]) add(c.id, c.name || (ownerById(oid) && ownerLabel(ownerById(oid)))); });
   Object.values(nk.vendors || {}).forEach(v => add(v.id, v.name)); (nk.nickelVendors || []).forEach(v => add(v.id, v.name));
   if(typeof NKL !== "undefined" && NKL) ["expense","revenue","revenueItems"].forEach(k => (NKL[k] || []).forEach(x => add(x.id, x.name)));
   ((PAY.status && PAY.status.nickel && PAY.status.nickel.payFrom) || []).forEach(x => add(x.id, x.label));
@@ -7254,7 +7255,7 @@ function pjNickelPanel(p, unit, inv){
   const reg = inv.reg || {}, nk = reg.nickel || {}, box = elm("div", "pj-nk");
   if(nk.invoiceId){
     box.innerHTML = `<div class="pj-nk-h"><span class="tag acc">In Nickel</span>${nk.qb ? `<span class="tag green">In QuickBooks</span>` : `<span class="tag gold" title="${esc(nk.qbWhy || "")}">Not in QuickBooks</span>`}
-        <span class="muted">${esc(nk.number || "")}${nk.sentTo ? ` · emailed to ${esc(nk.sentTo)}` : ""}${reg.paid ? " · paid" : nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}</span></div>
+        <span class="muted">${esc(nk.number || "")}${nk.customer ? ` · billed to ${esc(nk.customer)}` : ""}${nk.sentTo ? ` · emailed to ${esc(nk.sentTo)}` : ""}${reg.paid ? " · paid" : nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}</span></div>
       ${nk.url ? `<div class="pj-nk-link"><input type="text" readonly value="${esc(nk.url)}" aria-label="Pay link"><button class="btn sm" data-pj="copy">Copy pay link</button><a class="btn sm ghost" href="${esc(nk.url)}" target="_blank" rel="noopener">Open</a>${!nk.sentTo && !reg.paid ? `<button class="btn sm ghost" data-pj="send">Email it from Nickel</button>` : ""}</div>`
         : `<p class="help">Nickel didn't return a pay link. Open the invoice in Nickel to copy it.</p>`}
       ${!nk.qb && nk.qbWhy ? `<p class="help">Not added to QuickBooks: ${esc(nk.qbWhy)}.</p>` : ""}
@@ -7283,7 +7284,7 @@ async function pjCreateSheet(p, unit, inv){
   sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${inv.no} → QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(pjUnitLabel(p, unit))} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       ${!o ? `<div class="pm-banner">This property has no owner. Set one on the Owner page first.</div>` : !o.email ? `<div class="pm-banner">${esc(ownerLabel(o))} has no email. Add it on the Owner page first.</div>` : ""}
-      <div class="ps-kv"><span>Bill to</span><b>${esc(o ? ownerLabel(o) : "—")}${o && o.email ? ` · ${esc(o.email)}` : ""}</b></div>
+      <div class="ps-kv"><span>Bill to</span><b id="pjCust">${esc(o ? ownerLabel(o) : "—")}${o && o.email ? ` · ${esc(o.email)}` : ""} <span class="muted">· checking Nickel…</span></b></div>
       <div class="ps-kv"><span>Amount</span><b>${usd(inv.totalC)} <span class="muted">(${usd(inv.expC)} expenses + ${usd(inv.feeC)} fee)</span></b></div>
       <div class="f2" style="margin-top:12px"><label class="fld"><span>Invoice number in QuickBooks</span><input type="text" id="pjNo" maxlength="21" value="${esc(pjInvNumber(p, unit, inv))}"></label>
         <label class="fld"><span>Due</span><input type="date" id="pjDue" value="${due}"></label></div>
@@ -7294,13 +7295,25 @@ async function pjCreateSheet(p, unit, inv){
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="pjGo" ${!o || !o.email ? "disabled" : ""}>Create</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  // the Nickel customer it will bill: the one this property's earlier invoices went to, else the owner's match
+  let cust = null;
+  const showCust = async () => {
+    const box = $("#pjCust"); if(!box) return;
+    try{
+      const r = await payCall("nk.projCustomer", {propertyId:p.id, invoiceNumber:$("#pjNo").value}, {noSave:true}); cust = (r && r.customer) || {};
+      if(!$("#pjCust")) return;
+      box.innerHTML = cust.id ? `${esc(cust.name || "Customer in Nickel")} <span class="muted">· ${cust.from ? `same Nickel customer as ${esc(cust.from)}` : "matched by email"}</span>`
+        : `${esc(o ? ownerLabel(o) : "—")} <span class="muted">· not in Nickel yet (you'll confirm adding them)</span>`;
+    }catch(e){ cust = null; box.innerHTML = `${esc(o ? ownerLabel(o) : "—")} <span class="muted">· couldn't check Nickel</span>`; }
+  };
+  showCust(); $("#pjNo").onchange = showCust;
   $("#pjGo").onclick = async () => {
     const nkOnly = !!($("#pjNkOnly") && $("#pjNkOnly").checked);
     if(why && !nkOnly) return toast("Fix the QuickBooks setting first, or tick “Nickel only”");
     const go2 = $("#pjGo"); go2.disabled = true;
     try{
       await payCall("nk.match", {}, {raw:true}).catch(() => {});
-      if(!nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
+      if(!(cust && cust.id) && !nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
       const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)}, `${p.name}${pjUnitLabel(p, unit)} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
       if(!r.ok && !r.already){ go2.disabled = false; if(r.error && !r.declined && !r.approvalUrl) toast(r.error); return; }
       closeSheet(); render();

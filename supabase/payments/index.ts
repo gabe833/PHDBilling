@@ -245,20 +245,24 @@ async function syncMatches() {
     if (nv) vOut[v.id] = vendorRecord(nv, { requested: S(cur.requested) });
     else if (cur.requested) vOut[v.id] = { requested: cur.requested };
   }
+  // an owner can have several Nickel customers on one email (e.g. "Kenneth Ansin" and an old "3108 Terry Dr").
+  // Bill the person: a name that isn't a street address and shares the owner's last name wins.
+  const addrLike = (n: string) => /^\s*\d+[A-Za-z]?\s+\S/.test(n);
+  const custScore = (x: Obj, o: Obj) => { const n = S(x.name), last = S(o.name).trim().split(/\s+/).pop() || ""; return (addrLike(n) ? 0 : 4) + (last.length > 1 && nkey(n).includes(nkey(last)) ? 2 : 0) + (x.quickBooksSynced ? 1 : 0); };
   for (const o of owners) {
     const cur = (map.customers || {})[o.id] || {};
-    let nc = cur.id ? ncs.find((x) => x.id === cur.id) : null;
-    if (!nc) {
-      const ems = [o.email].concat(S(o.cc).split(/[,;\s]+/)).map((e) => S(e).toLowerCase().trim()).filter(isEmail);
-      const c = ncs.filter((x) => (x.emails || []).some((e: string) => ems.includes(S(e).toLowerCase())));
-      nc = c.length ? best(c, (x) => !!x.quickBooksSynced) : null;
-    }
-    if (nc) cOut[o.id] = { id: nc.id, name: S(nc.name), emails: nc.emails || [], synced: !!nc.quickBooksSynced, url: S(nc.dashboardUrl) };
+    const ems = [o.email].concat(S(o.cc).split(/[,;\s]+/)).map((e) => S(e).toLowerCase().trim()).filter(isEmail);
+    const c = ncs.filter((x) => (x.emails || []).some((e: string) => ems.includes(S(e).toLowerCase())));
+    let nc = cur.created && cur.id ? ncs.find((x) => x.id === cur.id) : null;     // one the console added itself stays
+    if (!nc && c.length) nc = c.slice().sort((a, b) => custScore(b, o) - custScore(a, o) || (a.id === cur.id ? -1 : b.id === cur.id ? 1 : 0))[0];
+    if (!nc && cur.id) nc = ncs.find((x) => x.id === cur.id) || null;
+    if (nc) cOut[o.id] = { id: nc.id, name: S(nc.name), emails: nc.emails || [], synced: !!nc.quickBooksSynced, url: S(nc.dashboardUrl), created: !!(cur.created && cur.id === nc.id) };
   }
   // every Nickel vendor (names, emails, address, how they're paid — never bank numbers), so the console can list them
   const all = nvs.map((x) => ({ ...vendorRecord(x), address: S(x.address), city: S(x.city), state: S(x.state), zip: S(x.zip) }));
+  const allC = ncs.map((x) => ({ id: x.id, name: S(x.name), emails: x.emails || [], synced: !!x.quickBooksSynced }));
   const counts = { nickelVendors: nvs.length, nickelCustomers: ncs.length, vendorsMatched: Object.values(vOut).filter((x: Obj) => x.id).length, ownersMatched: Object.keys(cOut).length, owners: owners.length };
-  await saveMap((m) => { m.vendors = vOut; m.customers = cOut; m.nickelVendors = all; m.counts = counts; m.matchedAt = new Date().toISOString(); });
+  await saveMap((m) => { m.vendors = vOut; m.customers = cOut; m.nickelVendors = all; m.nickelCustomers = allC; m.counts = counts; m.matchedAt = new Date().toISOString(); });
   return counts;
 }
 
@@ -300,6 +304,26 @@ async function plan(billIds: string[], email: string) {
     out.push({ id, vendorId: v.id, need: b.nickel && b.nickel.billId ? "" : "bill", delivery: nv.payout[0].label });
   }
   return { bills: out, payFrom: pf, payers: ps, canPay: ps.includes(email) };
+}
+
+/* ====================================================================
+   PROJECT INVOICES: bill the same Nickel customer as the property's earlier invoices
+   ==================================================================== */
+const pjPrefix = (number: string) => S(number).trim().toUpperCase().replace(/-\d+$/, "");
+async function projCustomer(p: Obj, number: string, map: Obj): Promise<Obj> {
+  const prefix = pjPrefix(number), named = (id: string) => S(((map.nickelCustomers || []) as Obj[]).find((x) => x.id === id)?.name);
+  if (prefix.length >= 3) {
+    try {
+      const rows = (await readAll("search_invoices", { query: prefix }, 3))
+        .filter((x) => S(x.name).toUpperCase().startsWith(prefix + "-") && S(x.name).toUpperCase() !== S(number).trim().toUpperCase() && S(x.status).toUpperCase() !== "CANCELED" && x.customerId)
+        .sort((a, b) => S(b.createdAt).localeCompare(S(a.createdAt)));
+      // the customer most of them went to (newest breaks a tie), so one mis-billed invoice doesn't steer the next
+      const n: Obj = {}; rows.forEach((x) => { n[x.customerId] = (n[x.customerId] || 0) + 1; });
+      if (rows.length) { const r0 = rows.slice().sort((a, b) => n[b.customerId] - n[a.customerId])[0]; return { id: S(r0.customerId), name: named(r0.customerId), synced: !!r0.quickBooksSynced || !!((map.nickelCustomers || []) as Obj[]).find((x) => x.id === r0.customerId && x.synced), from: S(r0.name) }; }
+    } catch (_) { /* fall back to the owner's match */ }
+  }
+  const c = (map.customers || {})[S(p.ownerId)] || {};
+  return c.id ? { id: c.id, name: S(c.name), synced: !!c.synced, from: "" } : {};
 }
 
 /* ====================================================================
@@ -412,7 +436,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     const r = await tool("create_customer", args, ask(`Add ${args.name} to Nickel`));
     if (!r.ok) return refused(r, "Adding the owner");
     const cid = newId(r.data, "customerId");
-    await saveMap((m) => { m.customers[o.id] = { id: cid, name: args.name, emails: args.emails, synced: !!args.syncToQbo }; });
+    await saveMap((m) => { m.customers[o.id] = { id: cid, name: args.name, emails: args.emails, synced: !!args.syncToQbo, created: true }; });
     return { ok: true, nickelId: cid };
   }
 
@@ -473,12 +497,13 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
       return { ok: true };
     }
     if (reg.nickel && reg.nickel.invoiceId) return { ok: true, already: true, url: reg.nickel.url };
-    const c = (map.customers || {})[S(p.ownerId)]; if (!c || !c.id) throw new Error("Add the owner to Nickel first");
+    const number0 = S(body.invoiceNumber).replace(/[^A-Za-z0-9 #._\/-]/g, "").trim().slice(0, 21);
+    const c = await projCustomer(p, number0, map); if (!c.id) throw new Error("Add the owner to Nickel first");
     const totalC = Number(fz.totalC) || 0, feeC = Number(fz.feeC) || 0, lines: Obj[] = fz.lines || [];
     if (!(totalC > 0)) throw new Error("The invoice total is zero");
     const txn = (id: string) => (p.transactions || []).find((t: Obj) => t.id === id) || {};
     const single = (p.units || []).length <= 1, where = single ? "" : ` — ${unit.name}`;
-    const number = S(body.invoiceNumber).replace(/[^A-Za-z0-9 #._\/-]/g, "").trim().slice(0, 21) || `${unit.name}-${Number(body.no)}`.slice(0, 21);
+    const number = number0 || `${unit.name}-${Number(body.no)}`.slice(0, 21);
     // line wording from the console (labels only); amounts always from the locked invoice
     const said: Obj = {}; for (const l of (Array.isArray(body.lines) ? body.lines : [])) if (l && l.txnId) said[S(l.txnId)] = S(l.desc).slice(0, 300);
     const lineText = (l: Obj) => said[l.txnId] || (() => { const t = txn(l.txnId); return `${t.desc || "Project expense"}${t.vendor ? ` (${t.vendor})` : ""}${l.feeApplies === false ? " — billed at cost" : ""}`; })();
@@ -513,7 +538,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     if (!r.ok) return refused(r, "Creating the invoice");
     const iid = newId(r.data, "invoiceId", "paymentLinkId"); if (!iid) throw new Error("Nickel created the invoice but didn't say its id. Find it in Nickel.");
     let url = S(r.data && r.data.url); if (!url) { try { url = S((await read("get_invoice", { invoiceId: iid }) || {}).url); } catch { /* shown as missing */ } }
-    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
+    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, customer: c.name || "", at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
     return { ok: true, url, qb: !!args.lines, qbWhy };
   }
 
@@ -591,6 +616,10 @@ async function handle(req: Request): Promise<Response> {
       case "status": return json(await status(who.email));
       case "nk.lists": return json(await qbLists());
       case "nk.match": return done(await syncMatches());
+      case "nk.projCustomer": {   // who a project invoice will bill (read-only)
+        const p = await docData("pj_property", S(body.propertyId)); if (!p) throw new Error("Project not found");
+        return json({ customer: await projCustomer(p, S(body.invoiceNumber), await nkMap()) });
+      }
       case "nk.plan": return done(await plan((body.billIds || []).map(S), who.email));
       case "nk.do": {
         const runId = S(body.runId); if (!/^[A-Za-z0-9_-]{8,64}$/.test(runId)) throw new Error("Missing run id");
