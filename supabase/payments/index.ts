@@ -279,7 +279,8 @@ async function status(email: string) {
 async function qbLists() {
   const ex = await read("get_quickbooks_accounts_and_items", { side: "EXPENSE" }), rv = await read("get_quickbooks_accounts_and_items", { side: "REVENUE" });
   const acc = (d: Obj) => ((d && d.accounts) || []).map((a: Obj) => ({ id: a.id, name: S(a.name), type: S(a.accountType) })).sort((a: Obj, b: Obj) => a.name.localeCompare(b.name));
-  return { expense: acc(ex), revenue: acc(rv) };
+  const itm = (d: Obj) => ((d && d.items) || []).map((a: Obj) => ({ id: a.id, name: S(a.name), type: S(a.type) })).sort((a: Obj, b: Obj) => a.name.localeCompare(b.name));
+  return { expense: acc(ex), revenue: acc(rv), revenueItems: itm(rv) };
 }
 
 /* ====================================================================
@@ -460,7 +461,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     const reg = (p.register || {})[key] || {}, fz = reg.frozen, unit = (p.units || []).find((u: Obj) => u.id === S(body.unitId));
     if (!unit) throw new Error("Unit not found");
     if (!fz) throw new Error("Lock the invoice first, so its lines can't change after it's in QuickBooks");
-    const label = `${p.name} · ${unit.name} · Invoice ${Number(body.no)}`;
+    const label = `${p.name}${(p.units || []).length > 1 ? " · " + unit.name : ""} · Invoice ${Number(body.no)}`;
     if (op === "project.send") {
       const nk = reg.nickel || {}; if (!nk.invoiceId) throw new Error("Create it in Nickel first");
       const o = (await ownersList()).find((x) => x.id === p.ownerId);
@@ -476,26 +477,43 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     const totalC = Number(fz.totalC) || 0, feeC = Number(fz.feeC) || 0, lines: Obj[] = fz.lines || [];
     if (!(totalC > 0)) throw new Error("The invoice total is zero");
     const txn = (id: string) => (p.transactions || []).find((t: Obj) => t.id === id) || {};
+    const single = (p.units || []).length <= 1, where = single ? "" : ` — ${unit.name}`;
     const number = S(body.invoiceNumber).replace(/[^A-Za-z0-9 #._\/-]/g, "").trim().slice(0, 21) || `${unit.name}-${Number(body.no)}`.slice(0, 21);
-    const memo = (`${label}. ` + lines.map((l: Obj) => { const t = txn(l.txnId); return `${t.vendor ? t.vendor + " — " : ""}${t.desc || "Expense"} ${money(Number(l.expC) || 0)}`; }).join("; ") + (feeC ? `; ${S(p.feeLabel) || "Project management fee"} (${p.feePct}%) ${money(feeC)}` : "")).slice(0, 900);
+    // line wording from the console (labels only); amounts always from the locked invoice
+    const said: Obj = {}; for (const l of (Array.isArray(body.lines) ? body.lines : [])) if (l && l.txnId) said[S(l.txnId)] = S(l.desc).slice(0, 300);
+    const lineText = (l: Obj) => said[l.txnId] || (() => { const t = txn(l.txnId); return `${t.desc || "Project expense"}${t.vendor ? ` (${t.vendor})` : ""}${l.feeApplies === false ? " — billed at cost" : ""}`; })();
+    const feeText = `${S(p.feeLabel) || "Project Management Fee"} (${p.feePct}%)${where} — Invoice ${Number(body.no)}`;
+    const capTxt = money(Math.round((Number(p.invoiceTarget) || 10000) * 100));
+    const memo = S(acct.nkProjMemo || `Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\nIf you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!`).replace(/\{cap\}/g, capTxt).slice(0, 1000);
     const args: Obj = { customerId: c.id, invoiceNumber: number, amountInCents: totalC, memo, invoiceDate: S(fz.at || today()).slice(0, 10) };
     if (/^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate))) args.dueDate = S(body.dueDate);
     const qb = await qbStatus(); let qbWhy = "";
+    // fee product: one named for this fee % (e.g. "10% Project Management Fee") wins over the default
+    const feeItem = S((body.feeItem && /^[A-Za-z0-9_-]+$/.test(S(body.feeItem)) ? body.feeItem : "") || acct.nkProjFeeItem);
+    const useItems = !!(acct.nkProjItem && (!feeC || feeItem));
     if (!qb.connected) qbWhy = "Nickel isn't connected to QuickBooks";
     else if (!c.synced) qbWhy = "this owner isn't linked to QuickBooks in Nickel";
-    else if (!acct.nkProjExp || (feeC && !acct.nkProjFee)) qbWhy = "pick the QuickBooks accounts for project invoices on Payments setup";
+    else if (!useItems && (!acct.nkProjExp || (feeC && !acct.nkProjFee))) qbWhy = "pick the QuickBooks products for project invoices on Payments setup";
     else {
-      const cats = lines.filter((l: Obj) => Number(l.expC)).map((l: Obj) => { const t = txn(l.txnId); return { id: acct.nkProjExp, amountCents: Number(l.expC), description: `${t.vendor ? t.vendor + " — " : ""}${t.desc || "Project expense"}${l.feeApplies === false ? " (at cost)" : ""}`.slice(0, 200) }; });
-      if (feeC) cats.push({ id: acct.nkProjFee, amountCents: feeC, description: `${S(p.feeLabel) || "Project management fee"} (${p.feePct}%) — ${unit.name} — Invoice ${Number(body.no)}`.slice(0, 200) });
-      if (cats.reduce((a: number, x: Obj) => a + x.amountCents, 0) !== totalC) qbWhy = "the invoice lines don't add up to its total";
-      else args.lines = { categories: cats };
+      const ls = lines.filter((l: Obj) => Number(l.expC));
+      if (useItems) {
+        const its = ls.map((l: Obj) => ({ id: acct.nkProjItem, quantity: 1, rate: Number(l.expC) / 100, amountCents: Number(l.expC), description: lineText(l).slice(0, 300) }));
+        if (feeC) its.push({ id: feeItem, quantity: 1, rate: feeC / 100, amountCents: feeC, description: feeText.slice(0, 300) });
+        if (its.reduce((a: number, x: Obj) => a + x.amountCents, 0) !== totalC) qbWhy = "the invoice lines don't add up to its total";
+        else args.lines = { items: its };
+      } else {
+        const cats = ls.map((l: Obj) => ({ id: acct.nkProjExp, amountCents: Number(l.expC), description: lineText(l).slice(0, 200) }));
+        if (feeC) cats.push({ id: acct.nkProjFee, amountCents: feeC, description: feeText.slice(0, 200) });
+        if (cats.reduce((a: number, x: Obj) => a + x.amountCents, 0) !== totalC) qbWhy = "the invoice lines don't add up to its total";
+        else args.lines = { categories: cats };
+      }
     }
     if (qbWhy && body.requireQb) return { ok: false, error: `Not created: ${qbWhy}.` };
     const r = await tool("create_invoice", args, ask(`Create ${label} in Nickel${args.lines ? " and QuickBooks" : ""}`));
     if (!r.ok) return refused(r, "Creating the invoice");
     const iid = newId(r.data, "invoiceId", "paymentLinkId"); if (!iid) throw new Error("Nickel created the invoice but didn't say its id. Find it in Nickel.");
     let url = S(r.data && r.data.url); if (!url) { try { url = S((await read("get_invoice", { invoiceId: iid }) || {}).url); } catch { /* shown as missing */ } }
-    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; });
+    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
     return { ok: true, url, qb: !!args.lines, qbWhy };
   }
 

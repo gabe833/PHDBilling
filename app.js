@@ -6499,9 +6499,7 @@ function nkBox(label){
     wait(text){ stopTimer(); B.innerHTML = `<div class="nk-wait"><span class="nk-spin"></span>${esc(text || "Getting this ready in Nickel…")}</div>`; F.innerHTML = ""; },
     ask(p, answer){
       stopTimer();
-      const lines = String(p.message || "").split(/\r?\n/), head = (lines.shift() || p.title || "").trim();
-      const rows = lines.filter(l => l.trim()).map(l => { const m = l.match(/^([^:]{1,40}):\s*(.*)$/); return m ? `<div class="nk-kv"><span>${esc(m[1])}</span><b>${esc(m[2])}</b></div>` : `<div class="nk-line">${esc(l)}</div>`; }).join("");
-      B.innerHTML = `<div class="nk-q">Nickel asks you to confirm</div><div class="nk-msg"><div class="nk-act">${esc(head)}</div>${rows}</div>
+      B.innerHTML = `<div class="nk-q">Nickel asks you to confirm</div>${nkPreview(p.message || "", p.title)}
         ${p.note ? `<p class="nk-note">${esc(p.note)}</p>` : ""}<div class="nk-left" aria-live="polite"></div>`;
       F.innerHTML = `<button class="btn" id="nkNo">Cancel</button><button class="btn primary" id="nkYes">Confirm</button>`;
       left = Number(p.secondsLeft) || 90;
@@ -6520,6 +6518,57 @@ function nkBox(label){
   };
   box.wait();
   return box;
+}
+/* Nickel's confirmation, laid out to read: fields at the top, the memo as a paragraph, line
+   items as a table with a running check against the total. Everything shown comes from
+   Nickel's own text; ids are labelled with the names the console knows them by. */
+function nkNames(){
+  const m = {}, add = (id, name) => { if(id && name) m[id] = name; };
+  const nk = S.nk || {};
+  Object.entries(nk.customers || {}).forEach(([oid, c]) => add(c.id, (ownerById(oid) && ownerLabel(ownerById(oid))) || c.name));
+  Object.values(nk.vendors || {}).forEach(v => add(v.id, v.name)); (nk.nickelVendors || []).forEach(v => add(v.id, v.name));
+  if(typeof NKL !== "undefined" && NKL) ["expense","revenue","revenueItems"].forEach(k => (NKL[k] || []).forEach(x => add(x.id, x.name)));
+  ((PAY.status && PAY.status.nickel && PAY.status.nickel.payFrom) || []).forEach(x => add(x.id, x.label));
+  return m;
+}
+const nkMoneyC = v => { const m = String(v).replace(/[$,\s]/g, ""); return /^-?\d+(\.\d+)?$/.test(m) ? Math.round(Number(m) * 100) : null; };
+function nkPreview(text, title){
+  const names = nkNames(), lines = String(text).split(/\r?\n/), head = (lines.shift() || title || "").trim();
+  const top = [], groups = []; let cur = null, section = "";
+  for(const raw of lines){
+    const l = raw.trim(); if(!l) continue;
+    const num = l.match(/^(\d+)\.\s*(.*)$/), kv = l.match(/^([^:]{1,40}):\s*(.*)$/);
+    if(num){ cur = {section, f:{}}; groups.push(cur); if(num[2]){ const k2 = num[2].match(/^([^:]{1,40}):\s*(.*)$/); if(k2) cur.f[k2[1].trim()] = k2[2]; } continue; }
+    if(kv && kv[2] === "" ){ section = kv[1].trim(); cur = null; continue; }
+    if(!kv && !num && /^[A-Za-z ]{2,30}$/.test(l)){ section = l; cur = null; continue; }
+    if(kv){ if(cur) cur.f[kv[1].trim()] = kv[2]; else top.push({k:kv[1].trim(), v:kv[2]}); continue; }
+    const last = top[top.length - 1];
+    if(!cur && last && /^(memo|note|message)$/i.test(last.k)){ last.v += "\n" + l; continue; }   // a message can run over several lines
+    top.push({k:"", v:l});
+  }
+  const label = (k, v) => { const id = String(v).trim(); return /\b(id)$/i.test(k) && names[id] ? `<b>${esc(names[id])}</b> <span class="nk-id">${esc(id)}</span>` : names[id] ? `<b>${esc(names[id])}</b>` : esc(v); };
+  const memo = top.filter(x => /^(memo|note|message)$/i.test(x.k)), fields = top.filter(x => !/^(memo|note|message)$/i.test(x.k));
+  let html = `<div class="nk-msg"><div class="nk-act">${esc(head)}</div>`;
+  html += fields.map(x => x.k ? `<div class="nk-kv"><span>${esc(x.k.replace(/\bID\b/, "").trim() || x.k)}</span><b>${label(x.k, x.v)}</b></div>` : `<div class="nk-line">${esc(x.v)}</div>`).join("");
+  if(memo.length) html += memo.map(x => `<div class="nk-memo"><span>${esc(x.k)}</span><p>${esc(x.v)}</p></div>`).join("");
+  if(groups.length){
+    const amtKey = f => Object.keys(f).find(k => /amount|total/i.test(k)), descKey = f => Object.keys(f).find(k => /desc|memo|reason/i.test(k));
+    const idKey = f => Object.keys(f).find(k => /^(id|bill ?id|item|account)$/i.test(k));
+    let sum = 0, allMoney = true;
+    const rows = groups.map((g, i) => {
+      const a = amtKey(g.f), d = descKey(g.f), id = idKey(g.f), c = a ? nkMoneyC(g.f[a]) : null;
+      if(c == null) allMoney = false; else sum += c;
+      const what = id ? (names[String(g.f[id]).trim()] || g.f[id]) : "";
+      const q1 = Object.entries(g.f).some(([k, v]) => /^quantity$/i.test(k) && Number(v) === 1);
+      const rest = Object.entries(g.f).filter(([k]) => k !== a && k !== d && k !== id && !(q1 && /^(quantity|rate)$/i.test(k))).map(([k, v]) => `${k}: ${names[String(v).trim()] || v}`).join(" · ");
+      return `<tr><td class="nk-n">${i + 1}</td><td>${d ? esc(g.f[d]) : ""}${what ? `<div class="nk-sub">${esc(what)}</div>` : ""}${rest ? `<div class="nk-sub">${esc(rest)}</div>` : ""}</td><td class="nk-a">${a ? esc(g.f[a]) : ""}</td></tr>`;
+    }).join("");
+    const totF = fields.find(x => /^amount|^total/i.test(x.k)), totC = totF ? nkMoneyC(totF.v) : null;
+    const check = allMoney && totC != null ? (sum === totC ? `<span class="nk-ok">Lines add up to ${esc(totF.v)} ✓</span>` : `<span class="nk-bad">Lines add up to ${usd(sum)}, not ${esc(totF.v)}</span>`) : "";
+    html += `<div class="nk-sect">${esc(groups[0].section || "Lines")} · ${groups.length}</div><div class="nk-tw"><table class="nk-tbl"><tbody>${rows}</tbody></table></div>${check ? `<div class="nk-check">${check}</div>` : ""}`;
+  }
+  html += `<details class="nk-raw"><summary>Nickel's exact text</summary><pre>${esc(text)}</pre></details></div>`;
+  return html;
 }
 // run one Nickel action: shows the confirmation when Nickel asks, returns the server's answer
 async function nkRun(op, args, label){
@@ -7094,7 +7143,8 @@ async function vendorAskDetails(vendorId){
 /* ====================================================================
    PAYMENTS SETUP — Nickel connection, who can pay, QuickBooks coding (through Nickel)
    ==================================================================== */
-let NKL = null;   // QuickBooks accounts, read through Nickel
+let NKL = null;   // QuickBooks accounts and products, read through Nickel
+const PJ_MEMO_DEFAULT = "Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\nIf you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!";
 function pgPmPaySetup(){
   $("#pgCrumb").textContent = "Property management"; $("#pgTitle").textContent = "Payments setup";
   $("#pgSub").textContent = "Nickel pays vendors and collects from owners · Nickel keeps QuickBooks up to date";
@@ -7128,6 +7178,8 @@ function pgPmPaySetup(){
 
   const qc = elm("div","card");
   const opt = (list, cur) => `<option value="">Don't code it (Nickel only)</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) ? "selected" : ""}>${esc(x.name)}${x.type ? " · " + esc(x.type) : ""}</option>`).join("");
+  const optI = (list, cur, guess) => { const g = !cur && (list || []).find(x => x.name.toLowerCase() === String(guess).toLowerCase());
+    return `<option value="">Choose…</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) || (g && g.id === x.id) ? "selected" : ""}>${esc(x.name)}</option>`).join(""); };
   qc.innerHTML = `<div class="card-h"><h3>QuickBooks</h3>${!nk.ok ? `<span class="tag grey">—</span>` : qb.connected ? `<span class="tag green">Synced through Nickel</span>` : `<span class="tag grey">Not connected in Nickel</span>`}</div>
     <div class="card-b ps-b">${!nk.ok ? `<p class="help" style="margin-top:0">Connect Nickel first.</p>`
       : !qb.connected ? `<p style="margin-top:0">Nickel isn't connected to QuickBooks. Connect it in Nickel (Settings → Integrations) and bills and invoices made here will flow into QuickBooks.</p>`
@@ -7137,11 +7189,16 @@ function pgPmPaySetup(){
         <label class="fld"><span>Owner invoices: reimbursed bills</span><select data-a="nkReimb">${opt(NKL.revenue, a.nkReimb)}</select></label>
         <label class="fld"><span>Owner invoices: admin fee</span><select data-a="nkFee">${opt(NKL.revenue, a.nkFee)}</select></label>
         <div class="sectl">Project invoices</div>
-        <label class="fld"><span>Project expenses billed to owners</span><select data-a="nkProjExp">${opt(NKL.revenue, a.nkProjExp)}</select></label>
-        <label class="fld"><span>Project management fee</span><select data-a="nkProjFee">${opt(NKL.revenue, a.nkProjFee)}</select></label>
+        <label class="fld"><span>Product for project expenses</span><select data-a="nkProjItem">${optI(NKL.revenueItems, a.nkProjItem, "Project Management")}</select></label>
+        <label class="fld"><span>Product for the fee (if none matches the property's %)</span><select data-a="nkProjFeeItem">${optI(NKL.revenueItems, a.nkProjFeeItem, "Project Management Fee")}</select>
+          <span class="help">A product named like “10% Project Management Fee” or “15% Project Management Fee” is picked automatically for properties with that fee.</span></label>
+        <label class="fld"><span>Message on project invoices</span><textarea data-a="nkProjMemo" rows="5" placeholder="${esc(PJ_MEMO_DEFAULT)}">${esc(a.nkProjMemo || "")}</textarea>
+          <span class="help">Blank uses the standard message. {cap} becomes the property's invoice cap.</span></label>
         <p class="help">Left blank, the bill or invoice is still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
   grid.appendChild(qc);
-  qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value}); commit(); toast("Saved", true); });
+  qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value.trim()}); commit(); toast("Saved"); });
+  // a guessed product (exact name match) counts as chosen
+  qc.querySelectorAll("select[data-a]").forEach(s2 => { if(s2.value && !(S.acct || {})[s2.dataset.a]){ S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value}); commit(); } });
   if(nk.ok && qb.connected && !NKL && !NKL_LOADING){ NKL_LOADING = true; payCall("nk.lists", {}, {noSave:true}).then(r => { NKL = r; }).catch(e => { NKL = {expense:[], revenue:[]}; toast("QuickBooks accounts: " + e.message); }).finally(() => { NKL_LOADING = false; if(S.ui.view === "pmPaySetup") render(); }); }
 }
 let NKL_LOADING = false;
@@ -7154,17 +7211,42 @@ let NKL_LOADING = false;
    invoice Paid in full. Every change is confirmed in the Nickel window.
    ===================================================================== */
 const pjKey = (unit, inv) => unit.id + "|" + inv.no;
+// 3282HARTWELL-006 · 120SMITH-B-001 (street words dropped; unit only when the property has several)
+const PJ_STREET = /\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|blvd|boulevard|ct|court|way|pl|place|cir|circle|hwy|highway|pkwy|parkway|ter|terrace|trl|trail)\b\.?/gi;
 function pjInvNumber(p, unit, inv){
-  const s = x => String(x || "").replace(/[^A-Za-z0-9]/g, "");
-  const tail = `-${s(unit.name).replace(/^Unit/i, "") || "U"}-${inv.no}`;
-  return (s(p.name).slice(0, Math.max(4, 21 - tail.length)) + tail).slice(0, 21);
+  const base = (p.qbPrefix || String(p.name || "").replace(PJ_STREET, "")).toUpperCase().replace(/[^A-Z0-9]/g, "") || "INV";
+  const u = p.units.length > 1 ? String(unit.name || "").replace(/^unit\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "") : "";
+  const tail = `${u ? "-" + u : ""}-${String(inv.no).padStart(3, "0")}`;
+  return base.slice(0, 21 - tail.length) + tail;
 }
+const pjUnitLabel = (p, unit) => p.units.length > 1 ? ` · ${unit.name}` : "";
+// how each line reads in QuickBooks, like the invoices made by hand:
+// "Bathroom Renovation — Part 2 of 3 of $20,366.00 (Armando)"
+function pjLineWords(p, unit, inv){
+  const C = ALL[p.id];
+  return inv.lines.filter(l => l.expC).map(l => {
+    const t = l.txn || {}, parts = ((C && C.txn[l.txnId] && C.txn[l.txnId].parts) || []).filter(x => x.unitId === unit.id), pi = parts.findIndex(x => x.no === inv.no);
+    let d = String(t.desc || "Project expense").trim();
+    if(l.partial && !l.credit && parts.length > 1) d += ` — Part ${pi + 1} of ${parts.length} of ${usd(l.fullC)}`;
+    if(t.vendor) d += ` (${String(t.vendor).trim()})`;
+    if(!l.feeApplies && !l.credit) d += " — billed at cost";
+    return {txnId:l.txnId, desc:d};
+  });
+}
+// the fee product for this property's %: "10% Project Management Fee" if QuickBooks has one, else the default
+function pjFeeItem(p){
+  const list = (typeof NKL !== "undefined" && NKL && NKL.revenueItems) || [];
+  const hit = list.find(x => new RegExp(`(^|\\D)${String(p.feePct).replace(".", "\\.")}\\s*%`).test(x.name) && /fee/i.test(x.name));
+  return hit ? hit.id : ((S.acct || {}).nkProjFeeItem || "");
+}
+async function pjLoadLists(){ if(typeof NKL !== "undefined" && NKL && NKL.revenueItems) return; try{ NKL = await payCall("nk.lists", {}, {noSave:true}); }catch(e){} }
 // can Nickel put this one in QuickBooks? (same rules the server applies)
 function pjQbWhy(p, inv){
   const st = PAY.status && PAY.status.nickel, a = S.acct || {}, c = nkOwner(p.ownerId);
   if(!st || !st.ok) return "Nickel isn't connected";
   if(!(st.qbo && st.qbo.connected)) return "Nickel isn't connected to QuickBooks";
-  if(!a.nkProjExp || (inv.feeC && !a.nkProjFee)) return "pick the QuickBooks accounts for project invoices on Payments setup";
+  if(!a.nkProjItem && !a.nkProjExp) return "pick the QuickBooks products for project invoices on Payments setup";
+  if(a.nkProjItem && inv.feeC && !pjFeeItem(p)) return `pick the fee product on Payments setup (no “${p.feePct}% … Fee” product found)`;
   if(c.id && !c.synced) return "this owner isn't linked to QuickBooks in Nickel";
   return "";
 }
@@ -7175,7 +7257,8 @@ function pjNickelPanel(p, unit, inv){
         <span class="muted">${esc(nk.number || "")}${nk.sentTo ? ` · emailed to ${esc(nk.sentTo)}` : ""}${reg.paid ? " · paid" : nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}</span></div>
       ${nk.url ? `<div class="pj-nk-link"><input type="text" readonly value="${esc(nk.url)}" aria-label="Pay link"><button class="btn sm" data-pj="copy">Copy pay link</button><a class="btn sm ghost" href="${esc(nk.url)}" target="_blank" rel="noopener">Open</a>${!nk.sentTo && !reg.paid ? `<button class="btn sm ghost" data-pj="send">Email it from Nickel</button>` : ""}</div>`
         : `<p class="help">Nickel didn't return a pay link. Open the invoice in Nickel to copy it.</p>`}
-      ${!nk.qb && nk.qbWhy ? `<p class="help">Not added to QuickBooks: ${esc(nk.qbWhy)}.</p>` : ""}`;
+      ${!nk.qb && nk.qbWhy ? `<p class="help">Not added to QuickBooks: ${esc(nk.qbWhy)}.</p>` : ""}
+      <p class="help">Need to redo it? Delete it in Nickel and QuickBooks first, then <a href="#" data-pj="forget">clear the link here</a>.</p>`;
   } else if(inv.locked){
     const why = pjQbWhy(p, inv);
     box.innerHTML = `<div class="pj-nk-h"><b>QuickBooks + Nickel pay link</b><span class="muted">${why ? esc(why[0].toUpperCase() + why.slice(1)) + "." : "Creates this invoice in QuickBooks (through Nickel) and gets the owner's pay link."}</span></div>
@@ -7188,12 +7271,16 @@ function pjNickelPanel(p, unit, inv){
   if(q("setup")) q("setup").onclick = () => { setMode("pm"); go("pmPaySetup"); };
   if(q("create")) q("create").onclick = () => pjCreateSheet(p, unit, inv);
   if(q("send")) q("send").onclick = () => pjSendSheet(p, unit, inv);
+  if(q("forget")) q("forget").onclick = e => { e.preventDefault();
+    if(!confirm(`Clear the Nickel link from invoice ${inv.no}?\n\nOnly do this after deleting ${nk.number || "it"} in Nickel and QuickBooks. Then you can create it again.`)) return;
+    snapshot(); const g = P().register[pjKey(unit, inv)]; if(g){ if(g.link === nk.url) delete g.link; delete g.nickel; } commit(); render(); };
   return box;
 }
-function pjCreateSheet(p, unit, inv){
+async function pjCreateSheet(p, unit, inv){
+  await pjLoadLists();
   const o = ownerRec(p), sh = $("#sheet"), why = pjQbWhy(p, inv), linked = !!nkOwner(p.ownerId).id;
   const due = PMCore.isoOf(PMCore.dayNum(todayISO()) + 15);
-  sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${inv.no} → QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(unit.name)} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${inv.no} → QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(pjUnitLabel(p, unit))} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       ${!o ? `<div class="pm-banner">This property has no owner. Set one on the Owner page first.</div>` : !o.email ? `<div class="pm-banner">${esc(ownerLabel(o))} has no email. Add it on the Owner page first.</div>` : ""}
       <div class="ps-kv"><span>Bill to</span><b>${esc(o ? ownerLabel(o) : "—")}${o && o.email ? ` · ${esc(o.email)}` : ""}</b></div>
@@ -7214,7 +7301,7 @@ function pjCreateSheet(p, unit, inv){
     try{
       await payCall("nk.match", {}, {raw:true}).catch(() => {});
       if(!nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
-      const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly}, `${p.name} · ${unit.name} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
+      const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)}, `${p.name}${pjUnitLabel(p, unit)} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
       if(!r.ok && !r.already){ go2.disabled = false; if(r.error && !r.declined && !r.approvalUrl) toast(r.error); return; }
       closeSheet(); render();
       if(r.url){ try{ await navigator.clipboard.writeText(r.url); toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""} · pay link copied`); }catch(e){ toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""}`); } }
@@ -7225,7 +7312,7 @@ function pjCreateSheet(p, unit, inv){
 function pjSendSheet(p, unit, inv){
   const o = ownerRec(p), sh = $("#sheet");
   const emails = [o && o.email].concat(String((o && o.cc) || "").split(/[,;\s]+/)).filter(e => e && /@/.test(e));
-  sh.innerHTML = `<div class="sheet-h"><div><h3>Email invoice ${inv.no}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(unit.name)} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Email invoice ${inv.no}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(pjUnitLabel(p, unit))} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">Nickel emails the owner its invoice with the pay link. The invoice is marked sent here. You'll confirm it in the Nickel window.</p>
       <label class="fld"><span>Email to</span><input type="text" id="pjTo" value="${esc(emails.join(", "))}"></label></div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="pjSend">Email it</button></div>`;
