@@ -255,8 +255,11 @@ async function syncMatches() {
     }
     if (nc) cOut[o.id] = { id: nc.id, name: S(nc.name), emails: nc.emails || [], synced: !!nc.quickBooksSynced, url: S(nc.dashboardUrl) };
   }
-  await saveMap((m) => { m.vendors = vOut; m.customers = cOut; m.matchedAt = new Date().toISOString(); });
-  return { vendors: Object.values(vOut).filter((x: Obj) => x.id).length, owners: Object.keys(cOut).length, nickelVendors: nvs.length };
+  // every Nickel vendor (names, emails, address, how they're paid — never bank numbers), so the console can list them
+  const all = nvs.map((x) => ({ ...vendorRecord(x), address: S(x.address), city: S(x.city), state: S(x.state), zip: S(x.zip) }));
+  const counts = { nickelVendors: nvs.length, nickelCustomers: ncs.length, vendorsMatched: Object.values(vOut).filter((x: Obj) => x.id).length, ownersMatched: Object.keys(cOut).length, owners: owners.length };
+  await saveMap((m) => { m.vendors = vOut; m.customers = cOut; m.nickelVendors = all; m.counts = counts; m.matchedAt = new Date().toISOString(); });
+  return counts;
 }
 
 /* ====================================================================

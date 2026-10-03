@@ -6561,7 +6561,7 @@ function pgPmBills(){
   acts.push(["Add bill", () => billSheet(null), selIds.length ? "" : "primary"]);
   actions(acts);
   payStatusThenRedraw("pmBills");
-  payRefreshSoon();
+  payRefreshSoon(); nkImportVendors(); nkMatchSoon("pmBills");
   const v = $("#view");
 
   /* ---- numbers ---- */
@@ -6995,11 +6995,26 @@ const nkVendorTag = id => { const nk = nkVendor(id);
   if(!nk.id) return nk.requested ? `<span class="tag gold">Not in Nickel</span>` : `<span class="muted">Not in Nickel</span>`;
   if((nk.payout || []).length) return `<span class="tag green">Ready · ${nk.payout[0].type === "CHECK" ? "check" : "bank"}</span>`;
   return nk.requested ? `<span class="tag gold">Form sent ${esc(fdateS(String(nk.requested).slice(0, 10)))}</span>` : `<span class="tag gold">No bank details</span>`; };
+// Nickel's vendors that aren't in the console yet are brought in (matched by email, then name)
+function nkImportVendors(){
+  const all = (S.nk && S.nk.nickelVendors) || [];
+  if(!all.length) return 0;
+  const L = pmVendors(), em = new Set(L.map(v => String(v.email || "").toLowerCase()).filter(Boolean)), nm = new Set(L.map(v => vendorKey(v.name)));
+  const add = all.filter(x => x.name && !nm.has(vendorKey(x.name)) && !(x.emails || []).some(e => em.has(String(e).toLowerCase())));
+  if(!add.length) return 0;
+  snapshot();
+  add.forEach(x => { L.push({id:"vn_" + uid(), name:x.name.trim(), email:(x.emails || [])[0] || "", phone:"", address:x.address || "", city:x.city || "", state:x.state || "", zip:x.zip || "", notes:"", createdAt:new Date().toISOString(), from:"Nickel"}); nm.add(vendorKey(x.name)); });
+  commit();
+  return add.length;
+}
 let nkMatchAt = 0;
 function nkMatchSoon(view){
   if(!payOnline() || !nickelOn() || Date.now() - nkMatchAt < 15 * 60000) return;
   nkMatchAt = Date.now();
-  payCall("nk.match", {}, {raw:true}).then(() => { if(S.ui.view === view) render(); }).catch(() => {});
+  payCall("nk.match", {}, {raw:true}).then(() => {
+    const n = nkImportVendors();
+    if(n){ toast(`Added ${n} vendor${n === 1 ? "" : "s"} from Nickel`); return payCall("nk.match", {}, {raw:true}); }   // link the new ones
+  }).then(() => { if(S.ui.view === view) render(); }).catch(() => {});
 }
 function pgPmVendors(){
   $("#pgCrumb").textContent = "Property management"; $("#pgTitle").textContent = "Vendors";
@@ -7007,13 +7022,15 @@ function pgPmVendors(){
   const names = new Set(pmVendors().map(v => vendorKey(v.name)));
   const missing = [...new Set(billList().map(b => b.vendor).filter(n => n && !names.has(vendorKey(n))))];
   if(missing.length){ snapshot(); missing.forEach(vendorEnsure); commit(); }
+  if(nkImportVendors()) nkMatchAt = 0;                              // new ones get linked on the next check below
   const vs = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
   $("#pgSub").textContent = `${vs.length} vendor${vs.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
-  actions([["Check Nickel", async () => { try{ const r = await payCall("nk.match"); toast(`${r.vendors} of ${vs.length} vendors found in Nickel`); }catch(e){ toast(e.message); } }, "ghost"], ["Add vendor", () => vendorSheet(null), "primary"]]);
+  actions([["Check Nickel", async () => { try{ await payCall("nk.match"); const n = nkImportVendors(); const r = n ? await payCall("nk.match") : (S.nk || {}).counts || {};
+      toast(`${n ? `Added ${n} from Nickel · ` : ""}${r.vendorsMatched || 0} of ${pmVendors().length} vendors linked to Nickel`); render(); }catch(e){ toast(e.message); } }, "ghost"], ["Add vendor", () => vendorSheet(null), "primary"]]);
   payStatusThenRedraw("pmVendors"); nkMatchSoon("pmVendors");
   const v = $("#view"), yr = todayISO().slice(0, 4);
   const card = elm("div","card");
-  if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>They're added automatically the first time you enter a bill from them.</p></div>`; v.appendChild(card); return; }
+  if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>${nickelOn() ? "Bringing in your vendors from Nickel…" : "They're added automatically the first time you enter a bill from them, or from Nickel once it's connected."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl pm-plist");
   t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Nickel</th><th></th></tr></thead><tbody>
     ${vs.map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
@@ -7080,6 +7097,8 @@ function pgPmPaySetup(){
       <label class="fld"><span>Pay vendors from</span><select id="psFrom">${(nk.payFrom || []).map(x => `<option value="${esc(x.id)}" ${from && x.id === from.id ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>
       <div class="ps-kv"><span>Can send payments</span><b>${esc((nk.payers || []).join(", ") || "Nobody yet")}</b></div>
       <div class="ps-kv"><span>Payments and owner invoices checked</span><b>${nk.lastRefresh ? esc(mdAgo(nk.lastRefresh)) : "Every hour"}</b></div>
+      ${(S.nk || {}).counts ? `<div class="ps-kv"><span>Vendors linked to Nickel</span><b>${S.nk.counts.vendorsMatched} of ${pmVendors().length} · Nickel has ${S.nk.counts.nickelVendors}</b></div>
+      <div class="ps-kv"><span>Owners linked to Nickel customers</span><b>${S.nk.counts.ownersMatched} of ${S.nk.counts.owners} · Nickel has ${S.nk.counts.nickelCustomers}</b></div>` : ""}
       <p class="help">Every change in Nickel asks for your confirmation in the console, in Nickel's own words. Reading (statuses, vendor matches) happens on its own every hour.</p>
       <button class="btn sm" id="psNkRefresh">Check Nickel now</button>`
       : `<p style="margin-top:0">${esc(nk.error || "Not connected.")}</p>
