@@ -2288,6 +2288,7 @@ function invoiceDocHTML(p, unit, inv){
         <tr class="bal"><td></td><td colspan="2">Balance due</td><td class="r">${usd(reg.paid ? 0 : inv.totalC)}</td></tr>
       </tbody>
     </table>
+    ${!reg.paid && reg.nickel && reg.nickel.url ? `<div class="paybox"><div class="terms"><b>Pay online:</b> <a href="${esc(reg.nickel.url)}">${esc(reg.nickel.url)}</a></div></div>` : ""}
     ${rep.terms ? `<div class="paybox"><div class="terms">${esc(rep.terms)}</div></div>` : ""}
   </body></html>`);
 }
@@ -7135,12 +7136,121 @@ function pgPmPaySetup(){
         <label class="fld"><span>Vendor bills</span><select data-a="nkExpense">${opt(NKL.expense, a.nkExpense)}</select></label>
         <label class="fld"><span>Owner invoices: reimbursed bills</span><select data-a="nkReimb">${opt(NKL.revenue, a.nkReimb)}</select></label>
         <label class="fld"><span>Owner invoices: admin fee</span><select data-a="nkFee">${opt(NKL.revenue, a.nkFee)}</select></label>
+        <div class="sectl">Project invoices</div>
+        <label class="fld"><span>Project expenses billed to owners</span><select data-a="nkProjExp">${opt(NKL.revenue, a.nkProjExp)}</select></label>
+        <label class="fld"><span>Project management fee</span><select data-a="nkProjFee">${opt(NKL.revenue, a.nkProjFee)}</select></label>
         <p class="help">Left blank, the bill or invoice is still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
   grid.appendChild(qc);
   qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value}); commit(); toast("Saved", true); });
   if(nk.ok && qb.connected && !NKL && !NKL_LOADING){ NKL_LOADING = true; payCall("nk.lists", {}, {noSave:true}).then(r => { NKL = r; }).catch(e => { NKL = {expense:[], revenue:[]}; toast("QuickBooks accounts: " + e.message); }).finally(() => { NKL_LOADING = false; if(S.ui.view === "pmPaySetup") render(); }); }
 }
 let NKL_LOADING = false;
+
+/* =====================================================================
+   PROJECT INVOICES → NICKEL + QUICKBOOKS
+   A locked invoice can be created in Nickel with one button. Nickel adds it
+   to QuickBooks (coded to the accounts picked on Payments setup) and gives
+   back the owner's pay link. When the owner pays, the hourly check marks the
+   invoice Paid in full. Every change is confirmed in the Nickel window.
+   ===================================================================== */
+const pjKey = (unit, inv) => unit.id + "|" + inv.no;
+function pjInvNumber(p, unit, inv){
+  const s = x => String(x || "").replace(/[^A-Za-z0-9]/g, "");
+  const tail = `-${s(unit.name).replace(/^Unit/i, "") || "U"}-${inv.no}`;
+  return (s(p.name).slice(0, Math.max(4, 21 - tail.length)) + tail).slice(0, 21);
+}
+// can Nickel put this one in QuickBooks? (same rules the server applies)
+function pjQbWhy(p, inv){
+  const st = PAY.status && PAY.status.nickel, a = S.acct || {}, c = nkOwner(p.ownerId);
+  if(!st || !st.ok) return "Nickel isn't connected";
+  if(!(st.qbo && st.qbo.connected)) return "Nickel isn't connected to QuickBooks";
+  if(!a.nkProjExp || (inv.feeC && !a.nkProjFee)) return "pick the QuickBooks accounts for project invoices on Payments setup";
+  if(c.id && !c.synced) return "this owner isn't linked to QuickBooks in Nickel";
+  return "";
+}
+function pjNickelPanel(p, unit, inv){
+  const reg = inv.reg || {}, nk = reg.nickel || {}, box = elm("div", "pj-nk");
+  if(nk.invoiceId){
+    box.innerHTML = `<div class="pj-nk-h"><span class="tag acc">In Nickel</span>${nk.qb ? `<span class="tag green">In QuickBooks</span>` : `<span class="tag gold" title="${esc(nk.qbWhy || "")}">Not in QuickBooks</span>`}
+        <span class="muted">${esc(nk.number || "")}${nk.sentTo ? ` · emailed to ${esc(nk.sentTo)}` : ""}${reg.paid ? " · paid" : nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}</span></div>
+      ${nk.url ? `<div class="pj-nk-link"><input type="text" readonly value="${esc(nk.url)}" aria-label="Pay link"><button class="btn sm" data-pj="copy">Copy pay link</button><a class="btn sm ghost" href="${esc(nk.url)}" target="_blank" rel="noopener">Open</a>${!nk.sentTo && !reg.paid ? `<button class="btn sm ghost" data-pj="send">Email it from Nickel</button>` : ""}</div>`
+        : `<p class="help">Nickel didn't return a pay link. Open the invoice in Nickel to copy it.</p>`}
+      ${!nk.qb && nk.qbWhy ? `<p class="help">Not added to QuickBooks: ${esc(nk.qbWhy)}.</p>` : ""}`;
+  } else if(inv.locked){
+    const why = pjQbWhy(p, inv);
+    box.innerHTML = `<div class="pj-nk-h"><b>QuickBooks + Nickel pay link</b><span class="muted">${why ? esc(why[0].toUpperCase() + why.slice(1)) + "." : "Creates this invoice in QuickBooks (through Nickel) and gets the owner's pay link."}</span></div>
+      <div class="pj-nk-link"><button class="btn sm primary" data-pj="create" ${why === "Nickel isn't connected" ? "disabled" : ""}>Create in QuickBooks + get pay link</button>${why && why !== "Nickel isn't connected" ? `<button class="btn sm ghost" data-pj="setup">Payments setup</button>` : ""}</div>`;
+  } else {
+    box.innerHTML = `<div class="pj-nk-h"><span class="muted">Lock this invoice to create it in QuickBooks and get a Nickel pay link.</span></div>`;
+  }
+  const q = sel => box.querySelector(`[data-pj="${sel}"]`);
+  if(q("copy")) q("copy").onclick = () => { navigator.clipboard.writeText(nk.url).then(() => toast("Pay link copied")); };
+  if(q("setup")) q("setup").onclick = () => { setMode("pm"); go("pmPaySetup"); };
+  if(q("create")) q("create").onclick = () => pjCreateSheet(p, unit, inv);
+  if(q("send")) q("send").onclick = () => pjSendSheet(p, unit, inv);
+  return box;
+}
+function pjCreateSheet(p, unit, inv){
+  const o = ownerRec(p), sh = $("#sheet"), why = pjQbWhy(p, inv), linked = !!nkOwner(p.ownerId).id;
+  const due = PMCore.isoOf(PMCore.dayNum(todayISO()) + 15);
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${inv.no} → QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(unit.name)} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${!o ? `<div class="pm-banner">This property has no owner. Set one on the Owner page first.</div>` : !o.email ? `<div class="pm-banner">${esc(ownerLabel(o))} has no email. Add it on the Owner page first.</div>` : ""}
+      <div class="ps-kv"><span>Bill to</span><b>${esc(o ? ownerLabel(o) : "—")}${o && o.email ? ` · ${esc(o.email)}` : ""}</b></div>
+      <div class="ps-kv"><span>Amount</span><b>${usd(inv.totalC)} <span class="muted">(${usd(inv.expC)} expenses + ${usd(inv.feeC)} fee)</span></b></div>
+      <div class="f2" style="margin-top:12px"><label class="fld"><span>Invoice number in QuickBooks</span><input type="text" id="pjNo" maxlength="21" value="${esc(pjInvNumber(p, unit, inv))}"></label>
+        <label class="fld"><span>Due</span><input type="date" id="pjDue" value="${due}"></label></div>
+      ${why ? `<div class="pm-banner">Can't add it to QuickBooks yet: ${esc(why)}.</div><label class="ps-chk"><input type="checkbox" id="pjNkOnly"> Create it in Nickel only (pay link, no QuickBooks)</label>` : ""}
+      <div class="nk-how"><b>What happens when you press Create</b><ol>${linked ? "" : `<li>Nickel asks you to confirm adding ${esc(o ? ownerLabel(o) : "the owner")} as a customer (first time only).</li>`}
+        <li>Nickel shows the invoice: ${usd(inv.totalC)}, ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"} + the fee. Confirm once and it's created${why ? "" : " in Nickel and QuickBooks"}.</li>
+        <li>The pay link appears on this invoice, ready to copy. It's also printed on the invoice PDF.</li></ol></div>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="pjGo" ${!o || !o.email ? "disabled" : ""}>Create</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  $("#pjGo").onclick = async () => {
+    const nkOnly = !!($("#pjNkOnly") && $("#pjNkOnly").checked);
+    if(why && !nkOnly) return toast("Fix the QuickBooks setting first, or tick “Nickel only”");
+    const go2 = $("#pjGo"); go2.disabled = true;
+    try{
+      await payCall("nk.match", {}, {raw:true}).catch(() => {});
+      if(!nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
+      const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly}, `${p.name} · ${unit.name} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
+      if(!r.ok && !r.already){ go2.disabled = false; if(r.error && !r.declined && !r.approvalUrl) toast(r.error); return; }
+      closeSheet(); render();
+      if(r.url){ try{ await navigator.clipboard.writeText(r.url); toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""} · pay link copied`); }catch(e){ toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""}`); } }
+      else toast(`Invoice ${inv.no} created`);
+    }catch(e){ go2.disabled = false; toast(e.message); }
+  };
+}
+function pjSendSheet(p, unit, inv){
+  const o = ownerRec(p), sh = $("#sheet");
+  const emails = [o && o.email].concat(String((o && o.cc) || "").split(/[,;\s]+/)).filter(e => e && /@/.test(e));
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Email invoice ${inv.no}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(unit.name)} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">Nickel emails the owner its invoice with the pay link. The invoice is marked sent here. You'll confirm it in the Nickel window.</p>
+      <label class="fld"><span>Email to</span><input type="text" id="pjTo" value="${esc(emails.join(", "))}"></label></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="pjSend">Email it</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  $("#pjSend").onclick = async () => {
+    const to = $("#pjTo").value.split(/[,;\s]+/).filter(e => /@/.test(e)); if(!to.length) return toast("Add an email");
+    try{ const r = await nkRun("project.send", {propertyId:p.id, unitId:unit.id, no:inv.no, emails:to}, `Email invoice ${inv.no} to ${to.join(", ")}`); if(r.ok){ closeSheet(); render(); toast(`Invoice ${inv.no} emailed from Nickel`); } }
+    catch(e){ toast(e.message); }
+  };
+}
+// add the panel to each open invoice on the project side
+(function(){
+  const base = invoiceBlock;
+  invoiceBlock = function(inv, unit, p){
+    const w = base(inv, unit, p), acts = w.querySelector(".inv-acts");
+    if(acts && payOnline()){ acts.parentNode.insertBefore(pjNickelPanel(p, unit, inv), acts); payStatusThenRedraw(S.ui.view); }
+    // once it's in Nickel/QuickBooks, unlocking would let its lines change: say so first
+    if(inv.reg && inv.reg.nickel && inv.reg.nickel.invoiceId){
+      const warn = () => confirm(`Invoice ${inv.no} is already in Nickel${inv.reg.nickel.qb ? " and QuickBooks" : ""} for ${usd(inv.totalC)}.\n\nIf you unlock it and its lines change, update or void it there too. Continue?`);
+      const lb = w.querySelector('[data-x="lock"]'); if(lb){ const orig = lb.onchange; lb.onchange = e => { if(!lb.checked && !warn()){ lb.checked = true; return; } if(orig) orig(e); }; }
+      const ub = w.querySelector('[data-x="unlock"]'); if(ub){ const orig = ub.onclick; ub.onclick = e => { if(!warn()) return; if(orig) orig(e); }; }
+    }
+    return w;
+  };
+})();
 
 /* =====================================================================
    SHELL — Projects | Property management switch, PM navigation,

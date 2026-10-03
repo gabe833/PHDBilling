@@ -149,6 +149,7 @@ The PM side opens on **Bills**. Add a bill (or approve a receipt in the inbox), 
 - **Owner invoices:** **Send** → (first time only) add the owner to Nickel → create the invoice → email the pay link. Up to three confirmations.
 - **Reading needs no confirmation** and runs every hour at :37: vendors and owners are matched to Nickel (by email, then name), bills paid in Nickel are marked **Paid**, owners' online payments are recorded on their invoices, and vendors who filled in Nickel's bank-details form become ready to pay.
 - Bank details stay in Nickel. The console only keeps Nickel's ids, bank name and last four digits.
+- **Project invoices:** lock an invoice, then press **Create in QuickBooks + get pay link**. (First time per owner: confirm adding them to Nickel.) One confirmation creates it in Nickel, Nickel adds it to QuickBooks coded to the project accounts on Payments setup, and the pay link appears on the invoice (copied for you, and printed on the invoice PDF). **Email it from Nickel** is optional. When the owner pays the link, the invoice turns **Paid in full** within the hour.
 
 ---
 

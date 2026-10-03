@@ -942,4 +942,10 @@ table.tbl.bl-tbl td{padding:8px 14px;font-size:13px} table.tbl.bl-tbl th{padding
 .nk-how b{display:block;margin-bottom:4px}.nk-how ol{margin:0;padding-left:18px}.nk-how li{margin:2px 0}.nk-how .help{display:block;margin-top:6px}
 .bl-nk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12.5px}
 .bl-rec label span b{font-weight:600}
+.pj-nk{margin-top:14px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2)}
+.pj-nk-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.pj-nk-link{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.pj-nk-link input{flex:1;min-width:200px;font-family:var(--mono);font-size:12px}
+.pj-nk .help{margin:8px 0 0}
+@media print{.pj-nk{display:none}}
 

@@ -453,6 +453,52 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     return { ok: true, url };
   }
 
+  /* ---- project side: a locked invoice → Nickel invoice (and QuickBooks through Nickel) + pay link ---- */
+  if (op === "project.invoice" || op === "project.send") {
+    const pid = S(body.propertyId), key = `${S(body.unitId)}|${Number(body.no) || 0}`;
+    const p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
+    const reg = (p.register || {})[key] || {}, fz = reg.frozen, unit = (p.units || []).find((u: Obj) => u.id === S(body.unitId));
+    if (!unit) throw new Error("Unit not found");
+    if (!fz) throw new Error("Lock the invoice first, so its lines can't change after it's in QuickBooks");
+    const label = `${p.name} · ${unit.name} · Invoice ${Number(body.no)}`;
+    if (op === "project.send") {
+      const nk = reg.nickel || {}; if (!nk.invoiceId) throw new Error("Create it in Nickel first");
+      const o = (await ownersList()).find((x) => x.id === p.ownerId);
+      const to = (body.emails || []).map((e: unknown) => S(e).trim()).filter(isEmail).slice(0, 5); if (!to.length) throw new Error("Add the owner's email");
+      const name = S(o && (o.name || o.company));
+      const r = await tool("send_invoice", { invoiceId: nk.invoiceId, recipients: to.map((e: string) => (name ? { email: e, name } : { email: e })) }, ask(`Email ${label}`));
+      if (!r.ok) return refused(r, "Sending the invoice");
+      await updateDoc("pj_property", pid, (x) => { const g = x.register[key] = x.register[key] || {}; g.nickel = { ...(g.nickel || {}), sentTo: to.join(", "), sentAt: new Date().toISOString() }; if (!g.dateSent) g.dateSent = today(); });
+      return { ok: true };
+    }
+    if (reg.nickel && reg.nickel.invoiceId) return { ok: true, already: true, url: reg.nickel.url };
+    const c = (map.customers || {})[S(p.ownerId)]; if (!c || !c.id) throw new Error("Add the owner to Nickel first");
+    const totalC = Number(fz.totalC) || 0, feeC = Number(fz.feeC) || 0, lines: Obj[] = fz.lines || [];
+    if (!(totalC > 0)) throw new Error("The invoice total is zero");
+    const txn = (id: string) => (p.transactions || []).find((t: Obj) => t.id === id) || {};
+    const number = S(body.invoiceNumber).replace(/[^A-Za-z0-9 #._\/-]/g, "").trim().slice(0, 21) || `${unit.name}-${Number(body.no)}`.slice(0, 21);
+    const memo = (`${label}. ` + lines.map((l: Obj) => { const t = txn(l.txnId); return `${t.vendor ? t.vendor + " — " : ""}${t.desc || "Expense"} ${money(Number(l.expC) || 0)}`; }).join("; ") + (feeC ? `; ${S(p.feeLabel) || "Project management fee"} (${p.feePct}%) ${money(feeC)}` : "")).slice(0, 900);
+    const args: Obj = { customerId: c.id, invoiceNumber: number, amountInCents: totalC, memo, invoiceDate: S(fz.at || today()).slice(0, 10) };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate))) args.dueDate = S(body.dueDate);
+    const qb = await qbStatus(); let qbWhy = "";
+    if (!qb.connected) qbWhy = "Nickel isn't connected to QuickBooks";
+    else if (!c.synced) qbWhy = "this owner isn't linked to QuickBooks in Nickel";
+    else if (!acct.nkProjExp || (feeC && !acct.nkProjFee)) qbWhy = "pick the QuickBooks accounts for project invoices on Payments setup";
+    else {
+      const cats = lines.filter((l: Obj) => Number(l.expC)).map((l: Obj) => { const t = txn(l.txnId); return { id: acct.nkProjExp, amountCents: Number(l.expC), description: `${t.vendor ? t.vendor + " — " : ""}${t.desc || "Project expense"}${l.feeApplies === false ? " (at cost)" : ""}`.slice(0, 200) }; });
+      if (feeC) cats.push({ id: acct.nkProjFee, amountCents: feeC, description: `${S(p.feeLabel) || "Project management fee"} (${p.feePct}%) — ${unit.name} — Invoice ${Number(body.no)}`.slice(0, 200) });
+      if (cats.reduce((a: number, x: Obj) => a + x.amountCents, 0) !== totalC) qbWhy = "the invoice lines don't add up to its total";
+      else args.lines = { categories: cats };
+    }
+    if (qbWhy && body.requireQb) return { ok: false, error: `Not created: ${qbWhy}.` };
+    const r = await tool("create_invoice", args, ask(`Create ${label} in Nickel${args.lines ? " and QuickBooks" : ""}`));
+    if (!r.ok) return refused(r, "Creating the invoice");
+    const iid = newId(r.data, "invoiceId", "paymentLinkId"); if (!iid) throw new Error("Nickel created the invoice but didn't say its id. Find it in Nickel.");
+    let url = S(r.data && r.data.url); if (!url) { try { url = S((await read("get_invoice", { invoiceId: iid }) || {}).url); } catch { /* shown as missing */ } }
+    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; });
+    return { ok: true, url, qb: !!args.lines, qbWhy };
+  }
+
   throw new Error("Unknown action");
 }
 
@@ -489,6 +535,20 @@ async function refresh() {
       });
       changed++;
     } catch (_) { /* next hour */ }
+  }
+  // project invoices created in Nickel: mark paid when the owner pays
+  const projs = await (await rest("docs?select=id,data&kind=eq.pj_property&deleted=is.false")).json();
+  for (const row of projs) {
+    for (const [key, g] of Object.entries((row.data.register || {}) as Obj)) {
+      const iid = g && g.nickel && g.nickel.invoiceId; if (!iid || g.paid) continue;
+      try {
+        const inv = await read("get_invoice", { invoiceId: iid });
+        const paidC = Number((inv && inv.amountPaid && inv.amountPaid.amountInCents) || 0), outC = Number((inv && inv.amountOutstanding && inv.amountOutstanding.amountInCents) || 0);
+        if (!(paidC > 0) || outC > 0) { if (paidC !== Number(g.nickel.paidC || 0)) await updateDoc("pj_property", row.id, (x) => { const r2 = (x.register || {})[key]; if (!r2 || !r2.nickel) return false; r2.nickel.paidC = paidC; }); continue; }
+        await updateDoc("pj_property", row.id, (x) => { const r2 = (x.register || {})[key]; if (!r2 || r2.paid) return false; r2.paid = true; r2.datePaid = S(inv.paidDate).slice(0, 10) || today(); if (!r2.ref) r2.ref = "Nickel"; r2.nickel = { ...(r2.nickel || {}), paidC }; });
+        changed++;
+      } catch (_) { /* next hour */ }
+    }
   }
   await saveMap((m) => { m.lastRefresh = new Date().toISOString(); });
   return { changed };
