@@ -6561,7 +6561,7 @@ function pgPmBills(){
   acts.push(["Add bill", () => billSheet(null), selIds.length ? "" : "primary"]);
   actions(acts);
   payStatusThenRedraw("pmBills");
-  payRefreshSoon(); nkImportVendors(); nkMatchSoon("pmBills");
+  payRefreshSoon(); if(nkImportVendors()){ setTimeout(render, 0); return; } nkMatchSoon("pmBills");
   const v = $("#view");
 
   /* ---- numbers ---- */
@@ -7022,22 +7022,37 @@ function pgPmVendors(){
   const names = new Set(pmVendors().map(v => vendorKey(v.name)));
   const missing = [...new Set(billList().map(b => b.vendor).filter(n => n && !names.has(vendorKey(n))))];
   if(missing.length){ snapshot(); missing.forEach(vendorEnsure); commit(); }
-  if(nkImportVendors()) nkMatchAt = 0;                              // new ones get linked on the next check below
-  const vs = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
-  $("#pgSub").textContent = `${vs.length} vendor${vs.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
+  if(nkImportVendors()){ nkMatchAt = 0; setTimeout(render, 0); return; }   // new ones are drawn (and linked) on the next pass
+  const allV = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
+  const used = new Set(billList().map(b => b.vendorId)), vq = (S.ui.vnQ || "").toLowerCase(), vf = S.ui.vnF || "all";
+  const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id]];
+  const vs = allV.filter((VF.find(f => f[0] === vf) || VF[0])[2]).filter(x => !vq || `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(vq));
+  $("#pgSub").textContent = `${allV.length} vendor${allV.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
   actions([["Check Nickel", async () => { try{ await payCall("nk.match"); const n = nkImportVendors(); const r = n ? await payCall("nk.match") : (S.nk || {}).counts || {};
       toast(`${n ? `Added ${n} from Nickel · ` : ""}${r.vendorsMatched || 0} of ${pmVendors().length} vendors linked to Nickel`); render(); }catch(e){ toast(e.message); } }, "ghost"], ["Add vendor", () => vendorSheet(null), "primary"]]);
   payStatusThenRedraw("pmVendors"); nkMatchSoon("pmVendors");
   const v = $("#view"), yr = todayISO().slice(0, 4);
+  if(allV.length){
+    const bar = elm("div","sc-bar");
+    bar.innerHTML = `<div class="sc-seg">${VF.map(([k, l, fn]) => `<button data-f="${k}" class="${vf === k ? "on" : ""}">${l} <span>${allV.filter(fn).length}</span></button>`).join("")}</div>
+      <div class="sc-q"><input type="text" id="vnQ" placeholder="Find a vendor…" value="${esc(S.ui.vnQ || "")}"></div>`;
+    v.appendChild(bar);
+    bar.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.vnF = b.dataset.f; render(); });
+    const qi = bar.querySelector("#vnQ");
+    qi.oninput = () => { S.ui.vnQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#vnQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 160); };
+  }
   const card = elm("div","card");
+  if(allV.length && !vs.length){ card.innerHTML = `<div class="empty"><b>No vendors match</b><p>Try another filter or search.</p></div>`; v.appendChild(card); return; }
   if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>${nickelOn() ? "Bringing in your vendors from Nickel…" : "They're added automatically the first time you enter a bill from them, or from Nickel once it's connected."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl pm-plist");
   t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Nickel</th><th></th></tr></thead><tbody>
-    ${vs.map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
+    ${vs.slice(0, 300).map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
       return `<tr data-v="${x.id}"><td><div class="item-t">${esc(x.name)}</div><div class="item-s">${bs.length} bill${bs.length === 1 ? "" : "s"}</div></td><td class="muted" style="font-size:12.5px">${esc([x.email, x.phone].filter(Boolean).join(" · ") || "—")}</td>
         <td class="r num">${paid ? usd(paid) : "—"}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-v]").forEach(tr => tr.onclick = () => vendorSheet(tr.dataset.v));
-  const w = elm("div","tbl-wrap vn-ok"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
+  const w = elm("div","tbl-wrap vn-ok"); w.appendChild(t); card.appendChild(w);
+  if(vs.length > 300) card.appendChild(elm("div","muted", `<div style="padding:10px 16px;font-size:12.5px">Showing 300 of ${vs.length}. Search to find the rest.</div>`));
+  v.appendChild(card);
 }
 function vendorSheet(id){
   const isNew = !id, v = isNew ? {id:"vn_" + uid(), name:"", email:"", phone:"", address:"", city:"", state:"SC", zip:"", notes:""} : JSON.parse(JSON.stringify(pmVendors().find(x => x.id === id)));
