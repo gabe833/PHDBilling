@@ -1114,28 +1114,3 @@ input[type=text],input[type=number],input[type=date],input[type=email],input[typ
 .se-att{display:flex;align-items:center;gap:6px;margin:10px 0;font-size:13px}
 .inv-tbl th,.inv table th,.reg-h,.th{text-transform:none!important;letter-spacing:0!important}
 
-/* ---------- add bill by upload ---------- */
-.bl-qh a + a{margin-left:0}
-.bu-seg{margin-bottom:12px;display:inline-flex}
-.bu-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:26px 16px;border:1.5px dashed var(--line-3);border-radius:var(--r);background:var(--panel-2);cursor:pointer;text-align:center;transition:border-color .15s var(--ease),background .15s var(--ease)}
-.bu-drop input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
-.bu-drop svg{width:22px;height:22px;color:var(--accent);margin-bottom:4px}
-.bu-drop b{font-size:14px;color:var(--ink)} .bu-drop span{font-size:12px;color:var(--muted)}
-.bu-drop:hover,.bu-drop.over{border-color:var(--accent);background:var(--accent-soft)}
-.bu-drop:focus-within{outline:2px solid var(--accent);outline-offset:2px}
-.bu-drop.dis{opacity:.55;cursor:not-allowed}
-.bu-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
-.bu-r{display:flex;align-items:center;gap:10px;padding:10px 12px;border-top:1px solid var(--line);background:var(--panel)}
-.bu-r:first-child{border-top:0}
-.bu-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px} .bu-t b{font-size:13.5px} .bu-t span{font-size:12px;color:var(--muted)}
-.bu-n{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bu-ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;flex:none}
-.bu-r.ok .bu-ic{background:var(--green-soft);color:var(--green)}
-.bu-r.warn .bu-ic{background:var(--gold-soft);color:var(--gold)}
-.bu-r.err .bu-ic{background:var(--red-soft);color:var(--red)}
-.bu-spin{width:18px;height:18px;margin:2px;border-radius:50%;border:2px solid var(--line-2);border-top-color:var(--accent);animation:buSpin .8s linear infinite;flex:none}
-@keyframes buSpin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.bu-spin{animation-duration:2.4s}}
-#view.bu-over{outline:2px dashed var(--accent);outline-offset:-6px;border-radius:var(--r)}
-.td-r.late .td-t b::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--red);margin-left:7px;vertical-align:middle}
-
