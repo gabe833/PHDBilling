@@ -9022,8 +9022,12 @@ const BRAND_SVG = {
   copy:`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 5.5V3.9c0-.9-.7-1.4-1.4-1.4H3.9c-.8 0-1.4.6-1.4 1.4v5.2c0 .8.6 1.4 1.4 1.4h1.6"/></svg>`
 };
 const brandIc = k => `<span class="brand-ic b-${k}">${BRAND_SVG[k]}</span>`;
-const gmailSearch = (acct, q) => `https://mail.google.com/mail/u/${encodeURIComponent(acct)}/#search/${encodeURIComponent(q)}`;
-const gmailCompose = (acct, to, su) => `https://mail.google.com/mail/u/${encodeURIComponent(acct)}/?view=cm&fs=1&to=${encodeURIComponent(to || "")}${su ? "&su=" + encodeURIComponent(su) : ""}`;
+// Google picks the account from ?authuser=<email>: it opens that mailbox or Drive when the account is signed in
+// in this browser, and asks to sign in to it when it isn't (rather than opening whoever is signed in first)
+const withAcct = (url, acct) => { if(!acct || !url) return url; const [base, hash] = String(url).split("#"); return base + (base.includes("?") ? "&" : "?") + "authuser=" + encodeURIComponent(acct) + (hash != null ? "#" + hash : ""); };
+const gmailSearch = (acct, q) => withAcct("https://mail.google.com/mail/", acct) + "#search/" + encodeURIComponent(q);
+const gmailCompose = (acct, to, su) => withAcct("https://mail.google.com/mail/", acct) + `&view=cm&fs=1&to=${encodeURIComponent(to || "")}${su ? "&su=" + encodeURIComponent(su) : ""}`;
+const DRIVE_ACCT = () => (DRV.data && DRV.data.mailbox) || "billing@phdproperties.realestate";
 const mapsUrl = q => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 
 /* ---------- receipt folders in Drive (from the receipt inbox script) ---------- */
@@ -9031,7 +9035,7 @@ const DRV = {data:null, loading:false, failed:false};
 function drvLoad(){
   if(DRV.data || DRV.loading || DRV.failed || typeof inboxConn !== "function" || !inboxConn()) return;
   DRV.loading = true;
-  inboxGet({action:"folders"}).then(j => { DRV.data = {root:j.root || "", sheet:j.sheet || "", map:{}}; (j.folders || []).forEach(f => DRV.data.map[drvKey(f.name)] = f.url); })
+  inboxGet({action:"folders"}).then(j => { DRV.data = {root:j.root || "", sheet:j.sheet || "", mailbox:j.mailbox || "", map:{}}; (j.folders || []).forEach(f => DRV.data.map[drvKey(f.name)] = f.url); })
     .catch(() => { DRV.failed = true; }).finally(() => { DRV.loading = false; navTools(); });
 }
 const drvKey = s => String(s || "").replace(/[\\/:*?"<>|#%]+/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
@@ -9140,7 +9144,7 @@ function navTools(){
   const box = $("#pgActions"); if(!box) return;
   const old = box.querySelector(".hd-tools"); if(old) old.remove();
   const L = [], v = S.ui.view;
-  const link = (k, href, title, label) => L.push(`<a class="tool ${label ? "wl" : ""}" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${brandIc(k)}${label ? `<span>${esc(label)}</span>` : ""}</a>`);
+  const link = (k, href, title, label) => { if(k === "drive" || k === "sheets") href = withAcct(href, DRIVE_ACCT()); L.push(`<a class="tool ${label ? "wl" : ""}" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${brandIc(k)}${label ? `<span>${esc(label)}</span>` : ""}</a>`); };
   let pager = "";
   if(v === "pmProperty" && typeof pmProp === "function" && pmProp(S.ui.pmPropId)){
     drvLoad();
