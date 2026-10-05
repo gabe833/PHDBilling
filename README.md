@@ -135,21 +135,32 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)
-The PM side opens on **Bills**. Add a bill (or approve a receipt in the inbox), then choose how the owner covers it: **Deduct from owner payout**, **Invoice the owner**, or **PHD expense (not billed)**. Rent, statements and MagicDoor are under **Rent & reporting**.
+**Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
+- **Money in & out:** Nickel balances, every payment in and out with a **Receipt** button (Nickel's PDF) and a link to the console record it belongs to, and **Deposited checks to apply**. A check you deposited in Nickel can be put toward any open owner or project invoice without moving money again.
+- **Setup:** where vendors are paid from, who can send money, and which QuickBooks accounts and products Nickel codes things to.
 
 **Setup (once)**
 1. Nickel → Settings → MCP → API tokens → **Create token**. Copy it (it's shown once).
 2. Supabase → Edge Functions → Secrets → add `NICKEL_MCP_TOKEN` with the token. The token never goes in `config.js` or the browser.
 3. Who may send money is the `payers` list (`supabase/payments-setup.sql`). Everyone else can add bills and invoices but can't pay.
-4. Console → **Payments setup**: pick the account vendors are paid from, and (with your bookkeeper) which QuickBooks accounts bills, reimbursed bills and the admin fee are coded to. Nickel's own QuickBooks connection does the posting, so no Intuit app is needed.
+4. **Payments → Setup:** pick the pay-from account and (with your bookkeeper) the QuickBooks accounts: vendor bills, owner invoices, project vendor bills, and the project invoice products. Nickel's own QuickBooks connection does the posting.
 
-**How it works**
-- Every change in Nickel (add a vendor, add a bill, pay, create or email an invoice) pops up a **Nickel confirmation window in the console** with Nickel's exact wording. Nothing happens until you press **Confirm**. Cancel means nothing changes. If nobody answers in about 100 seconds, nothing runs and the console offers Nickel's approval link instead.
-- **Paying:** tick bills → **Pay selected**. Bills not yet in Nickel are added first (one confirmation each), then **one confirmation pays them all**.
-- **Owner invoices:** **Send** → (first time only) add the owner to Nickel → create the invoice → email the pay link. Up to three confirmations.
-- **Reading needs no confirmation** and runs every hour at :37: vendors and owners are matched to Nickel (by email, then name), bills paid in Nickel are marked **Paid**, owners' online payments are recorded on their invoices, and vendors who filled in Nickel's bank-details form become ready to pay.
-- Bank details stay in Nickel. The console only keeps Nickel's ids, bank name and last four digits.
-- **Project invoices:** lock an invoice, then press **Create in QuickBooks + get pay link**. (First time per owner: confirm adding them to Nickel.) One confirmation creates it in Nickel, Nickel adds it to QuickBooks coded to the project accounts on Payments setup, and the pay link appears on the invoice (copied for you, and printed on the invoice PDF). **Email it from Nickel** is optional. When the owner pays the link, the invoice turns **Paid in full** within the hour.
+**Confirmations.** Every change in Nickel pops up a **Nickel confirmation window** in the console with Nickel's exact wording. Nothing happens until you press **Confirm**. If nobody answers in about 100 seconds, nothing runs and Nickel's approval link is offered instead. Reading never needs a confirmation.
+
+**Syncing (every hour at :37, or "Check Nickel" on any record)**
+- **Bills** paid in Nickel turn **Paid**, with Nickel's payment receipt and where the money is (on the way, deposited, or failed). A cancelled or failed payment puts the bill back in To pay. Bills already in Nickel (added there by hand) are matched by vendor and amount.
+- **Owner invoices** and **project invoices** pick up every payment: online payments with their receipt, partial payments, and payments recorded in Nickel. Paid in full turns the invoice paid.
+- **Older project invoices** made by hand in Nickel (like 3282HARTWELL-001…005) are matched by number when you open the property's invoices, so their status, pay link and receipts show.
+- **Project expenses** PHD paid through Nickel get the payment receipt on the transaction (matched by amount and the vendor or property on the Nickel bill). Press **×** on the "Paid in Nickel" chip if it matched the wrong one.
+- Owners and vendors are matched to Nickel by email, then name. Bank details stay in Nickel; the console keeps ids, bank name and last four digits only.
+
+**Tools (each one confirmed in the Nickel window)**
+- **Bills:** pay (one confirmation for many), cancel a payment before it leaves, update a bill changed here, delete it in Nickel when voided, record a check payment in Nickel.
+- **Owner invoices:** create and email the pay link, email it again as a reminder, change the due date, record a check in Nickel (ticked by default on Record payment), charge the owner's account on file, delete it in Nickel.
+- **Project invoices:** lock → **Create in QuickBooks + get pay link** (billed to the same Nickel customer as the property's earlier invoices), email it or email it again, charge the account on file, **Mark paid in Nickel too** after you mark it paid here, delete it in Nickel to redo it.
+- **Project expenses:** open a transaction → **Pay through Nickel** adds it as a Nickel bill and pays the vendor (two confirmations). The receipt lands on the transaction.
+- **Owners:** the Owner page shows the Nickel customer and any account on file, and can email the owner Nickel's form to put a bank account on file.
+- **Vendors:** add to Nickel, email the bank-details form, and **Send changes to Nickel** (name, email, address).
 
 ---
 

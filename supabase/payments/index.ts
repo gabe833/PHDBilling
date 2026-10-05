@@ -256,7 +256,9 @@ async function syncMatches() {
     let nc = cur.created && cur.id ? ncs.find((x) => x.id === cur.id) : null;     // one the console added itself stays
     if (!nc && c.length) nc = c.slice().sort((a, b) => custScore(b, o) - custScore(a, o) || (a.id === cur.id ? -1 : b.id === cur.id ? 1 : 0))[0];
     if (!nc && cur.id) nc = ncs.find((x) => x.id === cur.id) || null;
-    if (nc) cOut[o.id] = { id: nc.id, name: S(nc.name), emails: nc.emails || [], synced: !!nc.quickBooksSynced, url: S(nc.dashboardUrl), created: !!(cur.created && cur.id === nc.id) };
+    if (nc) cOut[o.id] = { id: nc.id, name: S(nc.name), emails: nc.emails || [], synced: !!nc.quickBooksSynced, url: S(nc.dashboardUrl), created: !!(cur.created && cur.id === nc.id),
+      onFile: ((nc.paymentMethodsOnFile || []) as Obj[]).map((m) => ({ id: S(m.id), label: [S(m.type || m.kind).replace(/_/g, " ").toLowerCase(), S(m.bankName || m.brand), (m.last4 || m.accountNumberLastFour) ? "····" + S(m.last4 || m.accountNumberLastFour) : ""].filter(Boolean).join(" ") || "Account on file" })),
+      ...(cur.autopayAsked ? { autopayAsked: cur.autopayAsked } : {}) };
   }
   // every Nickel vendor (names, emails, address, how they're paid — never bank numbers), so the console can list them
   const all = nvs.map((x) => ({ ...vendorRecord(x), address: S(x.address), city: S(x.city), state: S(x.state), zip: S(x.zip) }));
@@ -372,7 +374,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     let nbid = newId(r.data, "billId");
     if (!nbid) { try { const f = items(await read("search_bills", { invoiceNumbers: [ref] })).find((x) => x.vendorId === nv.id); nbid = f ? f.id : ""; } catch { /* below */ } }
     if (!nbid) throw new Error("Nickel added the bill but didn't say its id. Open it in Nickel to pay it.");
-    await updateDoc("pm_bill", id, (x) => { x.nickel = { billId: nbid, ref, at: new Date().toISOString(), by, qb: !!args.lines }; });
+    await updateDoc("pm_bill", id, (x) => { x.nickel = { billId: nbid, ref, at: new Date().toISOString(), by, qb: !!args.lines, sent: { amountC: amt, due: args.dueDate, desc } }; });
     return { ok: true, nickelId: nbid };
   }
 
@@ -400,6 +402,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
       let st: Obj = {}; try { st = (await read("get_bill", { billId: nb })) || {}; } catch { /* keep going */ }
       const moving = ((st.amountScheduled || {}).amountInCents || 0) + ((st.amountPaid || {}).amountInCents || 0) > 0 || S(st.paidStatus).toUpperCase() !== "UNPAID";
       const routed = near(`"routedForApproval":true`);
+      const payId = (res.match(new RegExp(`"billId":"${nb}"[^{}]*?"(?:billPaymentId|paymentId)":"([^"]+)"`)) || res.match(new RegExp(`"(?:billPaymentId|paymentId)":"([^"]+)"[^{}]*?"billId":"${nb}"`)) || [])[1] || "";
       const errM = (res.match(new RegExp(`"billId":"${nb}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
       if (!moving && !routed && errM) {
         failed++; errors.push(errM);
@@ -409,7 +412,7 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
       await updateDoc("pm_bill", ids[i], (x) => {
         if (x.status !== "open") return false;
         x.status = S(st.paidStatus).toUpperCase() === "PAID" ? "paid" : "paying";
-        x.pay = { method: "Nickel", date: today(), by, at: new Date().toISOString(), delivery: kinds[i], nickel: { billId: nb }, approval: routed, scheduled: rows[i].arrivalDate || "" };
+        x.pay = { method: "Nickel", date: today(), by, at: new Date().toISOString(), delivery: kinds[i], nickel: { billId: nb }, approval: routed, scheduled: rows[i].arrivalDate || "", paymentId: payId };
         x.updatedAt = new Date().toISOString(); x.updatedBy = by;
       });
       if (routed) approval++; else paying++;
@@ -538,63 +541,461 @@ async function act(op: string, body: Obj, by: string, runId: string): Promise<Ob
     if (!r.ok) return refused(r, "Creating the invoice");
     const iid = newId(r.data, "invoiceId", "paymentLinkId"); if (!iid) throw new Error("Nickel created the invoice but didn't say its id. Find it in Nickel.");
     let url = S(r.data && r.data.url); if (!url) { try { url = S((await read("get_invoice", { invoiceId: iid }) || {}).url); } catch { /* shown as missing */ } }
-    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, customer: c.name || "", at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
+    await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, customer: c.name || "", customerId: c.id, amountC: totalC, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
     return { ok: true, url, qb: !!args.lines, qbWhy };
+  }
+
+  /* ---- fixing things after the fact: change, cancel, delete, record, charge, remind ---- */
+  if (op === "bill.update" || op === "bill.delete" || op === "bill.cancel") {
+    const id = S(body.billId), b = await docData("pm_bill", id); if (!b) throw new Error("Bill not found");
+    const nbId = S((b.nickel || {}).billId); if (!nbId) throw new Error("This bill isn't in Nickel");
+    if (op === "bill.update") {
+      if (b.status !== "open") throw new Error("Only unpaid bills can be changed in Nickel");
+      const prop = await docData("pm_property", b.propertyId), pname = S(prop && prop.name);
+      const args: Obj = { billId: nbId, amountInCents: cents(b.amount), description: `${pname ? pname + " — " : ""}${b.memo || b.category || "Bill"}`.slice(0, 200) };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(day(b.due))) args.dueDate = day(b.due);
+      if (b.billNo) args.invoiceNumber = S(b.billNo).slice(0, 40);
+      const r = await tool("update_bill", args, ask(`Update the ${b.vendor} bill in Nickel`));
+      if (!r.ok) return refused(r, "Updating the bill");
+      await patch("pm_bill", id, (x) => { x.nickel = { ...(x.nickel || {}), sent: { amountC: args.amountInCents, due: args.dueDate || "", desc: args.description } }; });
+      return { ok: true };
+    }
+    if (op === "bill.delete") {
+      if (b.status === "paid" || b.status === "paying") throw new Error("A paid bill can't be deleted in Nickel");
+      const r = await tool("delete_bill", { billId: nbId }, ask(`Delete the ${b.vendor} bill (${money(cents(b.amount))}) in Nickel`));
+      if (!r.ok) return refused(r, "Deleting the bill");
+      await patch("pm_bill", id, (x) => { x.nickelOld = { ...(x.nickel || {}), deleted: new Date().toISOString() }; delete x.nickel; });
+      return { ok: true };
+    }
+    if (b.status !== "paying") throw new Error("There's no payment in progress to cancel");
+    let pid = S((b.pay || {}).scheduledId);
+    if (!pid) { try { const nb = await read("get_bill", { billId: nbId }); pid = S((((nb && nb.scheduledPayments) || [])[0] || {}).id); } catch { /* below */ } }
+    if (!pid) pid = S((b.pay || {}).paymentId || ((b.pay || {}).receipt || {}).id);
+    if (!pid) throw new Error("Couldn't find the payment in Nickel. Cancel it in Nickel's dashboard.");
+    const r = await tool("cancel_bill_payment", { billPaymentId: pid }, ask(`Cancel the ${money(cents(b.amount))} payment to ${b.vendor}`));
+    if (!r.ok) return refused(r, "Cancelling the payment");
+    await patch("pm_bill", id, (x) => { x.status = "open"; x.pay = { canceled: new Date().toISOString(), canceledBy: by }; });
+    return { ok: true };
+  }
+
+  if (op === "invoice.delete" || op === "invoice.record" || op === "invoice.charge" || op === "invoice.update") {
+    const id = S(body.invoiceId), inv = await docData("pm_invoice", id); if (!inv) throw new Error("Invoice not found");
+    const iid = S((inv.nickel || {}).invoiceId); if (!iid || (inv.nickel || {}).deleted) throw new Error("This invoice isn't in Nickel");
+    if (op === "invoice.delete") {
+      const r = await tool("delete_invoice", { invoiceId: iid }, ask(`Delete ${inv.no} in Nickel (its pay link stops working)`));
+      if (!r.ok) return refused(r, "Deleting the invoice");
+      await patch("pm_invoice", id, (x) => { x.nickel = { ...(x.nickel || {}), deleted: new Date().toISOString() }; });
+      return { ok: true };
+    }
+    if (op === "invoice.update") {
+      const args: Obj = { invoiceId: iid }; if (/^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate))) args.dueDate = S(body.dueDate);
+      if (Object.keys(args).length === 1) throw new Error("Nothing to change");
+      const r = await tool("update_invoice", args, ask(`Change ${inv.no}'s due date in Nickel`));
+      if (!r.ok) return refused(r, "Updating the invoice");
+      await patch("pm_invoice", id, (x) => { if (args.dueDate) x.due = args.dueDate; });
+      return { ok: true };
+    }
+    if (op === "invoice.record") {
+      const pay = (inv.payments || []).find((p: Obj) => p.id === S(body.paymentId)); if (!pay) throw new Error("Payment not found");
+      if (pay.nkExt || pay.nkId) return { ok: true, already: true };
+      const g = await read("get_invoice", { invoiceId: iid }), out = cIn(g && g.amountOutstanding); if (!(out > 0)) return { ok: true, already: true };
+      const amt = Math.min(cents(pay.amount), out), args: Obj = { invoiceId: iid, amountInCents: amt };
+      if (day(pay.date) && day(pay.date) < today()) args.paidDate = day(pay.date);
+      const r = await tool("record_invoice_payment", args, ask(`Mark ${inv.no} paid in Nickel: ${money(amt)} by ${pay.method || "check"}`));
+      if (!r.ok) return refused(r, "Recording the payment");
+      const ext = newId(r.data, "externalPaymentId") || "recorded";
+      await patch("pm_invoice", id, (x) => { const p2 = (x.payments || []).find((p: Obj) => p.id === pay.id); if (p2) p2.nkExt = ext; });
+      return { ok: true };
+    }
+    const c = (map.customers || {})[S(inv.ownerId)] || {}, cust = c.id ? await read("get_customer", { customerId: c.id }) : null;
+    const m = ((cust && cust.paymentMethodsOnFile) || []).find((x: Obj) => x.id === S(body.methodId)); if (!m) throw new Error("That payment method isn't on file in Nickel");
+    const r = await tool("charge_payment_methods_on_file", { charges: [{ paymentMethodOnFileId: m.id, invoiceId: iid }] }, ask(`Charge ${inv.no} to the owner's account on file`));
+    if (!r.ok) return refused(r, "The charge");
+    await syncPmInvoice(id, (await docData("pm_invoice", id)) || inv, { left: 6 });
+    return { ok: true };
+  }
+
+  if (op === "project.delete" || op === "project.record" || op === "project.charge") {
+    const pid = S(body.propertyId), key = `${S(body.unitId)}|${Number(body.no) || 0}`;
+    const p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
+    const g = (p.register || {})[key] || {}, nk = g.nickel || {}; if (!nk.invoiceId) throw new Error("This invoice isn't in Nickel");
+    const name = nk.number || `${p.name} invoice ${Number(body.no)}`;
+    if (op === "project.delete") {
+      const r = await tool("delete_invoice", { invoiceId: nk.invoiceId }, ask(`Delete ${name} in Nickel (and QuickBooks, through Nickel)`));
+      if (!r.ok) return refused(r, "Deleting the invoice");
+      await patch("pj_property", pid, (x) => { const r2 = (x.register || {})[key]; if (!r2) return; r2.nickelOld = { ...(r2.nickel || {}), deleted: new Date().toISOString() }; if (r2.link && r2.nickel && r2.link === r2.nickel.url) delete r2.link; delete r2.nickel; });
+      return { ok: true };
+    }
+    const inv = await read("get_invoice", { invoiceId: nk.invoiceId }), out = cIn(inv && inv.amountOutstanding);
+    if (!(out > 0)) return { ok: true, already: true };
+    if (op === "project.record") {
+      const args: Obj = { invoiceId: nk.invoiceId, amountInCents: out };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(S(g.datePaid)) && S(g.datePaid) < today()) args.paidDate = S(g.datePaid);
+      const r = await tool("record_invoice_payment", args, ask(`Mark ${name} paid in Nickel: ${money(out)}${g.ref ? " (" + S(g.ref).slice(0, 40) + ")" : ""}`));
+      if (!r.ok) return refused(r, "Recording the payment");
+    } else {
+      const cust = await read("get_customer", { customerId: S(inv.customerId) });
+      const m = ((cust && cust.paymentMethodsOnFile) || []).find((x: Obj) => x.id === S(body.methodId)); if (!m) throw new Error("That payment method isn't on file in Nickel");
+      const r = await tool("charge_payment_methods_on_file", { charges: [{ paymentMethodOnFileId: m.id, invoiceId: nk.invoiceId }] }, ask(`Charge ${name} (${money(out)}) to the owner's account on file`));
+      if (!r.ok) return refused(r, "The charge");
+    }
+    const fresh = await docData("pj_property", pid); await syncProject(pid, key, ((fresh && fresh.register) || {})[key] || g, { left: 6 });
+    return { ok: true };
+  }
+
+  if (op === "owner.autopay") {
+    const o = (await ownersList()).find((x) => x.id === S(body.ownerId)); if (!o) throw new Error("Owner not found");
+    const c = (map.customers || {})[o.id]; if (!c || !c.id) throw new Error("Add the owner to Nickel first");
+    const to = ((body.emails || []) as unknown[]).map((e) => S(e).trim()).filter(isEmail).slice(0, 5); if (!to.length && isEmail(o.email)) to.push(S(o.email).trim());
+    if (!to.length) throw new Error("Add the owner's email");
+    const req: Obj = { customerId: c.id, emails: to }; if (S(body.memo).trim()) req.memo = S(body.memo).trim().slice(0, 240);
+    const r = await tool("request_payment_method_on_file", { requests: [req] }, ask(`Email ${S(o.name || o.company)} Nickel's form to put a bank account on file`));
+    if (!r.ok) return refused(r, "The request");
+    await saveMap((m) => { m.customers[o.id] = { ...(m.customers[o.id] || {}), autopayAsked: new Date().toISOString() }; });
+    return { ok: true };
+  }
+
+  if (op === "vendor.update") {
+    const v = (await vendorsList()).find((x) => x.id === S(body.vendorId)); if (!v) throw new Error("Vendor not found");
+    const nv = (map.vendors || {})[v.id]; if (!nv || !nv.id) throw new Error("Add the vendor to Nickel first");
+    const cur = ((map.nickelVendors || []) as Obj[]).find((x) => x.id === nv.id) || nv, low = (e: unknown) => S(e).trim().toLowerCase();
+    const args: Obj = { vendorId: nv.id };
+    if (S(v.name).trim() && S(v.name).trim() !== S(cur.name)) args.name = S(v.name).trim();
+    if (isEmail(v.email) && !(cur.emails || []).map(low).includes(low(v.email))) args.emails = [...(cur.emails || []).filter(isEmail), S(v.email).trim()];
+    if (S(v.address).trim() && S(v.city).trim() && S(v.state).trim() && /^\d{5}$/.test(S(v.zip).trim()) && [["address", "address"], ["city", "city"], ["state", "state"], ["zip", "zip"]].some(([a, k]) => low(v[a]) !== low(cur[k])))
+      Object.assign(args, { street: S(v.address).trim(), city: S(v.city).trim(), state: S(v.state).trim(), zip: S(v.zip).trim() });
+    if (Object.keys(args).length === 1) return { ok: true, already: true, nothing: true };
+    const r = await tool("update_vendor", args, ask(`Update ${v.name} in Nickel`));
+    if (!r.ok) return refused(r, "Updating the vendor");
+    await saveMap((m) => { const x = m.vendors[v.id]; if (x) { if (args.name) x.name = args.name; if (args.emails) x.emails = args.emails; }
+      const y = ((m.nickelVendors || []) as Obj[]).find((z) => z.id === nv.id); if (y) { if (args.name) y.name = args.name; if (args.emails) y.emails = args.emails; if (args.street) Object.assign(y, { address: args.street, city: args.city, state: args.state, zip: args.zip }); } });
+    return { ok: true };
+  }
+
+  if (op === "deposit.apply") {
+    const transferId = S(body.transferId), amt = Math.round(Number(body.amountC) || 0);
+    if (!/^[A-Za-z0-9_-]{6,80}$/.test(transferId) || !(amt > 0)) throw new Error("Pick the check and the amount");
+    let iid = "", label = "", after: () => Promise<unknown> = async () => {};
+    if (body.kind === "pm") {
+      const id = S(body.invoiceId), inv = await docData("pm_invoice", id); iid = S(inv && inv.nickel && inv.nickel.invoiceId); label = S(inv && inv.no);
+      after = async () => syncPmInvoice(id, (await docData("pm_invoice", id)) || inv || {}, { left: 6 });
+    } else {
+      const pid = S(body.propertyId), key = `${S(body.unitId)}|${Number(body.no) || 0}`, p = await docData("pj_property", pid), g = p && (p.register || {})[key];
+      iid = S(g && g.nickel && g.nickel.invoiceId); label = S(g && g.nickel && g.nickel.number) || `${S(p && p.name)} invoice ${Number(body.no)}`;
+      after = async () => { const f = await docData("pj_property", pid); return syncProject(pid, key, ((f && f.register) || {})[key], { left: 6 }); };
+    }
+    if (!iid) throw new Error("That invoice isn't in Nickel");
+    const r = await tool("apply_check_deposit_to_invoice", { transferId, invoiceId: iid, amountInCents: amt }, ask(`Apply ${money(amt)} from the deposited check to ${label}`));
+    if (!r.ok) return refused(r, "Applying the check");
+    await after();
+    return { ok: true };
+  }
+
+  /* ---- project expenses: bill a vendor in Nickel and pay it, from the transaction ---- */
+  if (op === "txn.bill" || op === "txn.pay") {
+    const pid = S(body.propertyId), tid = S(body.txnId), p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
+    const t = (p.transactions || []).find((x: Obj) => x.id === tid); if (!t) throw new Error("Transaction not found");
+    const amt = cents(t.amount); if (!(amt > 0)) throw new Error("The expense has no amount");
+    const setTxn = (fn: (x: Obj) => void) => patch("pj_property", pid, (x) => { const y = (x.transactions || []).find((z: Obj) => z.id === tid); if (y) fn(y); });
+    if (op === "txn.bill") {
+      if (t.nickelBill && t.nickelBill.billId) return { ok: true, already: true };
+      const nvId = S(body.nickelVendorId), nv = ((map.nickelVendors || []) as Obj[]).find((x) => x.id === nvId); if (!nv) throw new Error("Pick the vendor in Nickel");
+      const m = S(p.name).match(/^\s*(\d+)\s+([A-Za-z]+)/), ref = S(body.ref).trim().slice(0, 40) || (m ? `${m[1]} ${m[2]}`.toUpperCase() : S(p.name).toUpperCase().slice(0, 30));
+      const desc = `${S(p.name)} — ${S(t.desc || "Project expense")}`.slice(0, 200);
+      const due = /^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate)) ? S(body.dueDate) : today();
+      const args: Obj = { vendorId: nv.id, amountInCents: amt, dueDate: due, description: desc, invoiceNumber: ref };
+      const qb = await qbStatus();
+      if (qb.connected && nv.synced && acct.nkProjBillExp) args.lines = { categories: [{ id: acct.nkProjBillExp, amountCents: amt, description: desc }] };
+      const r = await tool("create_bill", args, ask(`Add the ${nv.name} bill (${money(amt)}) to Nickel`));
+      if (!r.ok) return refused(r, "Adding the bill");
+      let nbid = newId(r.data, "billId");
+      if (!nbid) { try { const f = items(await read("search_bills", { invoiceNumbers: [ref] })).find((x) => x.vendorId === nv.id && Number(x.amountInCents) === amt); nbid = f ? f.id : ""; } catch { /* below */ } }
+      if (!nbid) throw new Error("Nickel added the bill but didn't say its id. Pay it in Nickel.");
+      await setTxn((y) => { y.nickelBill = { billId: nbid, vendorId: nv.id, vendor: S(nv.name), ref, at: new Date().toISOString(), by, qb: !!args.lines }; });
+      return { ok: true, nickelId: nbid };
+    }
+    if (!(await payers()).includes(by)) throw new Error("You're not on the payments list, so you can't send money.");
+    const nb = t.nickelBill || {}; if (!nb.billId) throw new Error("Add the bill to Nickel first");
+    if (t.nickelPay && t.nickelPay.id && !t.nickelPay.dismissed) return { ok: true, already: true };
+    const from = S(body.payFrom), pf = await payFrom(); if (!pf.some((x) => x.id === from)) throw new Error("Pick the account to pay from");
+    const nv = ((map.nickelVendors || []) as Obj[]).find((x) => x.id === nb.vendorId); if (!nv || !(nv.payout || []).length) throw new Error(`${S(nb.vendor) || "The vendor"} has no bank account or check address in Nickel`);
+    const row: Obj = { billId: nb.billId, vendorId: nv.id, merchantPaymentMethodId: from, vendorPayoutMethodId: nv.payout[0].id };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(S(body.arrivalDate)) && S(body.arrivalDate) > today()) row.arrivalDate = S(body.arrivalDate);
+    const r = await tool("pay_bill", { bills: [row] }, ask(`Pay ${S(nv.name)} ${money(amt)} (${S(p.name)})`));
+    if (!r.ok) return refused(r, "The payment");
+    const res = JSON.stringify(r.data || {});
+    const payId = (res.match(/"(?:billPaymentId|paymentId)":"([^"]+)"/) || [])[1] || "";
+    const errM = (res.match(/"(?:error|reason)":"([^"]{3,200})"/) || [])[1] || "";
+    if (!payId && errM) { await setTxn((y) => { y.nickelBill = { ...(y.nickelBill || {}), failed: errM.slice(0, 200) }; }); return { ok: false, error: `Nickel didn't send it: ${errM}` }; }
+    const info = payId ? await billPaymentInfo(payId) : null;
+    await setTxn((y) => {
+      y.nickelBill = { ...(y.nickelBill || {}), paymentId: payId, paidAt: new Date().toISOString(), paidBy: by, scheduled: row.arrivalDate || "" };
+      y.nickelPay = { id: payId, url: S(info && info.url), link: S(info && info.link), date: today(), to: S(nv.name), status: S((info && info.delivery) || "PROCESSING"), bill: nb.ref || "" };
+      if (!S(y.link).trim() && info && info.url) { y.link = info.url; y.linkFromNickel = true; }
+    });
+    return { ok: true, paymentId: payId };
   }
 
   throw new Error("Unknown action");
 }
 
 /* ====================================================================
-   REFRESH: payments that cleared, invoices paid, vendors who sent bank details (read-only)
+   SYNC (read-only in Nickel): paid status, payments and their receipts
    ==================================================================== */
-async function refresh() {
-  if (!TOKEN) return { changed: 0, skipped: "no token" };
-  let changed = 0;
-  try { await syncMatches(); } catch (_) { /* next time */ }
-  const bills = await (await rest("docs?select=id,data&kind=eq.pm_bill&deleted=is.false&data->>status=eq.paying")).json();
-  for (const row of bills) {
-    const nb = ((row.data.pay || {}).nickel || {}).billId || (row.data.nickel || {}).billId; if (!nb) continue;
-    try {
-      const st = await read("get_bill", { billId: nb });
-      if (S(st && st.paidStatus).toUpperCase() !== "PAID") continue;
-      await updateDoc("pm_bill", row.id, (x) => { if (x.status !== "paying") return false; x.status = "paid"; x.pay = { ...(x.pay || {}), date: S(st.paidDate).slice(0, 10) || today(), cleared: true, approval: false }; });
-      changed++;
-    } catch (_) { /* next hour */ }
+const cIn = (m: any) => Number((m && m.amountInCents) || 0);
+const day = (s: unknown) => S(s).slice(0, 10);
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+type Budget = { left: number };
+const spend = (b: Budget) => b.left-- > 0;
+// change a record only when something really changed (keeps versions quiet)
+async function patch(kind: string, id: string, fn: (x: Obj) => void): Promise<boolean> {
+  let changed = false;
+  await updateDoc(kind, id, (x) => { const before = JSON.stringify(x); fn(x); changed = JSON.stringify(x) !== before; return changed ? undefined : false; });
+  return changed;
+}
+// Nickel's receipt for a vendor payment (a PDF anyone with the link can open), with delivery status
+async function billPaymentInfo(id: string): Promise<Obj | null> {
+  try {
+    const p = await read("get_bill_payment", { billPaymentId: id }); if (!p) return null;
+    const d = p.delivery || {}, st = S(d.status || p.status).toUpperCase();
+    return { id, url: S(p.pdfUrl), link: S(p.dashboardUrl), amountC: cIn(p), method: S(p.deliveryMethod), delivery: st, eta: day(d.estimatedArrivalDate), deliveredAt: day(d.settledAt), failed: S(p.failureReason || d.failureReason), final: ["DEPOSITED", "FAILED", "RETURNED", "CANCELLED", "CANCELED"].includes(st) };
+  } catch { return null; }
+}
+// find the payment Nickel sent for a bill when the console didn't keep its id (paid in Nickel's dashboard)
+async function findBillPayment(nb: Obj): Promise<string> {
+  try {
+    const rows = items(await read("search_payment_activities", { source: "PAYABLE", customerName: S(nb.vendorName).slice(0, 60), pageSize: 40 }));
+    const ref = S(nb.reference || nb.invoiceNumber).toUpperCase(), amt = cIn(nb.amountPaid) || cIn(nb);
+    const hit = rows.filter((r) => r.entityId && Number(r.amountInCents) === amt && !/CANCEL|FAIL|REJECT/i.test(S(r.status)))
+      .sort((a, b) => (S(b.billNumber).toUpperCase() === ref ? 1 : 0) - (S(a.billNumber).toUpperCase() === ref ? 1 : 0) || S(b.createdAt).localeCompare(S(a.createdAt)))[0];
+    return hit ? S(hit.entityId) : "";
+  } catch { return ""; }
+}
+async function syncBill(id: string, b: Obj, bud: Budget): Promise<boolean> {
+  const nbId = S((b.nickel || {}).billId); if (!nbId || !spend(bud)) return false;
+  let nb: Obj; try { nb = (await read("get_bill", { billId: nbId })) || {}; } catch { return false; }
+  const ps = S(nb.paidStatus).toUpperCase(), sched = (nb.scheduledPayments || [])[0] || null;
+  const extC = (nb.externalPayments || []).reduce((a: number, e: Obj) => a + cIn(e.amount || e), 0), paidC = cIn(nb.amountPaid);
+  const viaNickel = paidC > extC || !!sched;
+  let rc: Obj | null = (b.pay || {}).receipt || null;
+  if ((ps === "PAID" || ps === "PARTIALLY_PAID" || paidC > 0) && viaNickel && !(rc && rc.final) && spend(bud)) {
+    const pid = S((b.pay || {}).paymentId || (rc && rc.id)) || await findBillPayment(nb);
+    if (pid) rc = (await billPaymentInfo(pid)) || rc;
   }
-  const invs = await (await rest("docs?select=id,data&kind=eq.pm_invoice&deleted=is.false&data->>status=eq.sent")).json();
-  for (const row of invs) {
-    const iid = (row.data.nickel || {}).invoiceId; if (!iid) continue;
-    try {
-      const g = await read("get_invoice", { invoiceId: iid });
-      const paidC = Number((g && g.amountPaid && g.amountPaid.amountInCents) || 0);
-      const viaNk = (x: Obj) => (x.payments || []).filter((p: Obj) => p.by === "Nickel").reduce((a: number, p: Obj) => a + cents(p.amount), 0);
-      if (paidC <= viaNk(row.data)) continue;
-      await updateDoc("pm_invoice", row.id, (x) => {
-        const k = viaNk(x); if (paidC <= k) return false;
-        x.payments = (x.payments || []).concat([{ id: "pay_nk_" + Date.now(), amount: (paidC - k) / 100, date: S(g.paidDate).slice(0, 10) || today(), method: "Nickel", by: "Nickel" }]);
-        const tot = (x.lines || []).reduce((a: number, l: Obj) => a + cents(l.amount) + cents(l.fee || 0), 0), got = (x.payments || []).reduce((a: number, p: Obj) => a + cents(p.amount), 0);
-        if (got >= tot) x.status = "paid";
-      });
-      changed++;
-    } catch (_) { /* next hour */ }
-  }
-  // project invoices created in Nickel: mark paid when the owner pays
-  const projs = await (await rest("docs?select=id,data&kind=eq.pj_property&deleted=is.false")).json();
-  for (const row of projs) {
-    for (const [key, g] of Object.entries((row.data.register || {}) as Obj)) {
-      const iid = g && g.nickel && g.nickel.invoiceId; if (!iid || g.paid) continue;
-      try {
-        const inv = await read("get_invoice", { invoiceId: iid });
-        const paidC = Number((inv && inv.amountPaid && inv.amountPaid.amountInCents) || 0), outC = Number((inv && inv.amountOutstanding && inv.amountOutstanding.amountInCents) || 0);
-        if (!(paidC > 0) || outC > 0) { if (paidC !== Number(g.nickel.paidC || 0)) await updateDoc("pj_property", row.id, (x) => { const r2 = (x.register || {})[key]; if (!r2 || !r2.nickel) return false; r2.nickel.paidC = paidC; }); continue; }
-        await updateDoc("pj_property", row.id, (x) => { const r2 = (x.register || {})[key]; if (!r2 || r2.paid) return false; r2.paid = true; r2.datePaid = S(inv.paidDate).slice(0, 10) || today(); if (!r2.ref) r2.ref = "Nickel"; r2.nickel = { ...(r2.nickel || {}), paidC }; });
-        changed++;
-      } catch (_) { /* next hour */ }
+  return patch("pm_bill", id, (x) => {
+    if (x.status === "void") return;
+    x.pay = x.pay || null;
+    if (ps === "PAID") {
+      if (x.status !== "paid") { x.status = "paid"; x.pay = { ...(x.pay || {}), method: viaNickel ? "Nickel" : (x.pay && x.pay.method) || "Recorded in Nickel", date: day(nb.paidDate) || today(), by: (x.pay && x.pay.by) || "Nickel", approval: false }; }
+      else if (viaNickel && x.pay && x.pay.method === "Nickel" && nb.paidDate) x.pay.date = day(nb.paidDate);
+    } else if (sched || ps === "SCHEDULED") {
+      if (x.status === "open") x.status = "paying";
+      if (x.status === "paying") x.pay = { ...(x.pay || {}), method: "Nickel", by: (x.pay && x.pay.by) || "Nickel", date: (x.pay && x.pay.date) || today(), scheduled: day(sched && (sched.estimatedArrivalDate || sched.withdrawalDate)) || (x.pay && x.pay.scheduled) || "", scheduledId: S(sched && sched.id) || (x.pay && x.pay.scheduledId) || "" };
+    } else if (ps === "UNPAID" && x.status === "paying" && paidC === 0 && x.pay && Date.now() - Date.parse(x.pay.at || x.updatedAt || 0) > 36e5 && !(rc && !rc.final && !rc.failed)) {
+      x.status = "open"; x.pay = { ...(x.pay || {}), canceled: true };     // cancelled or failed in Nickel: back to To pay
     }
+    if (rc) { x.pay = x.pay || {}; x.pay.receipt = rc; if (rc.failed && x.status === "paying") { x.status = "open"; x.pay.failed = true; x.pay.failReason = rc.failed; } }
+    if (S((x.nickel || {}).status) !== ps) x.nickel = { ...(x.nickel || {}), status: ps };
+  });
+}
+// every payment Nickel holds for an invoice, with the receipt for each one paid through Nickel
+async function invoicePayments(g: Obj, prior: Obj[], bud: Budget): Promise<Obj[]> {
+  const out: Obj[] = [];
+  for (const p of (g.payments || [])) {
+    const st = S(p.status).toUpperCase(); if (/FAIL|CANCEL|REFUNDED/.test(st)) continue;
+    const old = (prior || []).find((x) => x.id === p.id) || {};
+    let url = S(old.url), link = S(old.link), disb = S(old.disbursement);
+    if ((!url || disb !== "DEPOSITED") && spend(bud)) { try { const d = await read("get_payment", { paymentId: p.id }); url = S(d && d.pdfUrl) || url; link = S(d && d.dashboardUrl) || link; disb = S(d && d.disbursement && d.disbursement.status).toUpperCase() || disb; } catch { /* next hour */ } }
+    out.push({ id: S(p.id), amountC: cIn(p), date: day(p.createdAt), method: S(p.method).toLowerCase() === "ach" ? "Nickel · bank (ACH)" : S(p.method).toLowerCase() === "card" ? "Nickel · card" : "Nickel" + (p.method ? " · " + S(p.method) : ""), status: st, url, link, disbursement: disb });
   }
-  await saveMap((m) => { m.lastRefresh = new Date().toISOString(); });
-  return { changed };
+  for (const e of (g.externalPayments || [])) out.push({ id: S(e.id), external: true, amountC: cIn(e.amount || e), date: day(e.paidDate || e.createdAt), method: "Recorded in Nickel", status: "RECORDED" });
+  return out;
+}
+async function syncPmInvoice(id: string, inv: Obj, bud: Budget): Promise<boolean> {
+  const iid = S((inv.nickel || {}).invoiceId); if (!iid || (inv.nickel || {}).deleted || !spend(bud)) return false;
+  let g: Obj; try { g = (await read("get_invoice", { invoiceId: iid })) || {}; } catch { return false; }
+  const pays = await invoicePayments(g, (inv.nickel || {}).payments || [], bud);
+  return patch("pm_invoice", id, (x) => {
+    const nk = x.nickel = { ...(x.nickel || {}) };
+    nk.payments = pays; nk.status = S(g.status).toUpperCase(); nk.paidC = cIn(g.amountPaid); nk.outstandingC = cIn(g.amountOutstanding);
+    if (g.url && !nk.url) nk.url = S(g.url);
+    if (nk.status === "CANCELED") nk.canceled = true; else delete nk.canceled;
+    // the invoice's payments here: what was entered by hand stays; Nickel's own are listed once each
+    const keep = (x.payments || []).filter((p: Obj) => !(p.by === "Nickel" && (p.nkId || /^pay_nk_/.test(S(p.id)) || p.nkExt)));
+    for (const p of pays) {
+      if (p.external) { const mine = keep.find((k: Obj) => k.nkExt === p.id) || keep.find((k: Obj) => k.nkExt === "recorded" && cents(k.amount) === p.amountC) || keep.find((k: Obj) => !k.nkExt && !k.nkId && cents(k.amount) === p.amountC); if (mine) { mine.nkExt = p.id; continue; } }
+      keep.push({ id: (p.external ? "nkx_" : "nk_") + p.id, [p.external ? "nkExt" : "nkId"]: p.id, amount: p.amountC / 100, date: p.date || today(), method: p.method, by: "Nickel", receipt: p.url || "", pending: !p.external && p.status !== "SUCCEEDED" });
+    }
+    x.payments = keep;
+    const tot = (x.lines || []).reduce((a: number, l: Obj) => a + cents(l.amount) + cents(l.fee || 0), 0), got = keep.reduce((a: number, p: Obj) => a + cents(p.amount), 0);
+    if (x.status === "draft" && pays.length) x.status = "sent";
+    if (x.status === "sent" && tot > 0 && got >= tot) x.status = "paid";
+  });
+}
+async function syncProject(pid: string, key: string, gIn: Obj, bud: Budget): Promise<boolean> {
+  const iid = S(gIn && gIn.nickel && gIn.nickel.invoiceId); if (!iid || !spend(bud)) return false;
+  let inv: Obj; try { inv = (await read("get_invoice", { invoiceId: iid })) || {}; } catch { return false; }
+  const pays = await invoicePayments(inv, gIn.nickel.payments || [], bud);
+  const paidC = cIn(inv.amountPaid), outC = cIn(inv.amountOutstanding), stN = S(inv.status).toUpperCase();
+  return patch("pj_property", pid, (x) => {
+    const r2 = (x.register || {})[key]; if (!r2 || !r2.nickel || r2.nickel.invoiceId !== iid) return;
+    const nk = r2.nickel; nk.payments = pays; nk.paidC = paidC; nk.outstandingC = outC; nk.status = stN; if (inv.url && !nk.url) nk.url = S(inv.url);
+    if (stN === "CANCELED") nk.canceled = true; else delete nk.canceled;
+    if (paidC > 0 && outC === 0) {
+      if (!r2.paid) { r2.paid = true; r2.datePaid = day(inv.paidDate) || today(); }
+      if (!r2.ref) { const m = pays.filter((p) => !p.external).length ? pays.find((p) => !p.external)!.method.replace("Nickel · ", "Nickel ") : "Recorded in Nickel"; r2.ref = m; }
+      nk.done = pays.every((p) => p.external || (p.url && p.disbursement === "DEPOSITED")) || undefined;
+    }
+    nk.openInNickel = r2.paid && outC > 0 ? outC : undefined;
+    for (const k of Object.keys(nk)) if (nk[k] === undefined) delete nk[k];
+    if (r2.link === undefined && nk.url) r2.link = nk.url;
+  });
+}
+// console bills that are already in Nickel (added there by hand): link them when vendor and amount match exactly one
+async function linkBills(bud: Budget, map: Obj): Promise<number> {
+  const rows = await (await rest("docs?select=id,data&kind=eq.pm_bill&deleted=is.false&data->>status=eq.open")).json();
+  const all = await (await rest("docs?select=id,data&kind=eq.pm_bill&deleted=is.false")).json();
+  const taken = new Set(all.map((r: Obj) => S((r.data.nickel || {}).billId)).filter(Boolean)), vendors = await vendorsList();
+  let n = 0;
+  for (const row of rows) {
+    const b = row.data; if ((b.nickel || {}).billId || b.nickelTried === today()) continue;
+    const v = vendorOf(vendors, b), nv = v && (map.vendors || {})[v.id]; if (!nv || !nv.id) continue;
+    if (!spend(bud)) break;
+    const amt = cents(b.amount);
+    let found: Obj[] = []; try { found = items(await read("search_bills", { vendorName: S(nv.name).slice(0, 60), minAmountInCents: amt, maxAmountInCents: amt, pageSize: 10 })).filter((x) => x.vendorId === nv.id && !taken.has(S(x.id))); } catch { continue; }
+    if (found.length === 1) { taken.add(found[0].id); n++; await patch("pm_bill", row.id, (x) => { x.nickel = { billId: S(found[0].id), ref: S(found[0].reference || found[0].invoiceNumber), linked: true, at: new Date().toISOString() }; }); }
+    else await patch("pm_bill", row.id, (x) => { x.nickelTried = today(); });
+  }
+  return n;
+}
+// project expenses PHD paid through Nickel: attach Nickel's payment receipt to the matching transaction
+// (same amount, within 45 days, and the vendor or the property named on the Nickel bill). Read-only in Nickel.
+async function projExpenses(bud: Budget): Promise<number> {
+  const since = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10), acts: Obj[] = [];
+  for (let page = 1; page <= 4; page++) {
+    let d: Obj; try { d = await read("search_payment_activities", { source: "PAYABLE", startDate: since, endDate: today(), page, pageSize: 100 }); } catch { break; }
+    acts.push(...items(d).filter((r) => r.entityId && !/CANCEL|FAIL|REJECT|RETURN/i.test(S(r.status))));
+    if (!d || !d.hasMore) break;
+  }
+
+  const projs = await (await rest("docs?select=id,data&kind=eq.pj_property&deleted=is.false")).json();
+  const used = new Set<string>(); for (const row of projs) for (const t of (row.data.transactions || [])) if (t && t.nickelPay && t.nickelPay.id) used.add(S(t.nickelPay.id));
+  const placeKey = (name: string) => { const m = S(name).match(/^\s*(\d+)\s+([A-Za-z]+)/); return m ? nkey(m[1] + m[2]) : ""; };
+  let n = 0;
+  for (const row of projs) {
+    const pk = placeKey(row.data.name), found: Obj = {}, upd: Obj = {};
+    for (const t of (row.data.transactions || [])) {
+      const n = t && t.nickelPay; if (!n || !n.id || n.dismissed || (n.url && /DEPOSITED|FAILED|RETURNED|CANCEL/.test(S(n.status)))) continue;
+      if (!spend(bud)) break;
+      const info = await billPaymentInfo(S(n.id)); if (info) upd[t.id] = { url: info.url || S(n.url), link: info.link || S(n.link), status: S(info.delivery) };
+    }
+    for (const t of (row.data.transactions || [])) {
+      if (!t || !t.id || (t.nickelPay && t.nickelPay.id) || t.deleted || !(Number(t.amount) > 0) || !t.date) continue;
+      const amt = cents(t.amount), tDay = Date.parse(S(t.date)); if (!(tDay > Date.now() - 130 * 864e5)) continue;
+      const v = nkey(t.vendor);
+      const hits = acts.filter((a) => Number(a.amountInCents) === amt && !used.has(S(a.entityId)) && Math.abs(Date.parse(S(a.createdAt)) - tDay) <= 45 * 864e5 && (() => {
+        const who = nkey(a.counterpartyName), what = nkey(S(a.billNumber) + " " + S(a.billReason) + " " + S(a.description));
+        return (v.length > 2 && who && (who.includes(v) || v.includes(who))) || (pk.length > 3 && what.includes(pk));
+      })());
+      if (hits.length !== 1) continue;
+      const a = hits[0]; used.add(S(a.entityId));
+      const info = spend(bud) ? await billPaymentInfo(S(a.entityId)) : null;
+      found[t.id] = { id: S(a.entityId), url: S(info && info.url), link: S(a.dashboardUrl), date: day(a.createdAt), to: S(a.counterpartyName), status: S((info && info.delivery) || a.status).toUpperCase(), bill: S(a.billNumber) };
+    }
+    if (Object.keys(upd).length && await patch("pj_property", row.id, (x) => { for (const t of (x.transactions || [])) { const u = upd[t.id]; if (u && t.nickelPay && t.nickelPay.id) { Object.assign(t.nickelPay, u); if (!S(t.link).trim() && u.url) { t.link = u.url; t.linkFromNickel = true; } } } })) n += Object.keys(upd).length;
+    if (!Object.keys(found).length) continue;
+    if (await patch("pj_property", row.id, (x) => { for (const t of (x.transactions || [])) { const f = found[t.id]; if (f && !(t.nickelPay && t.nickelPay.id)) { t.nickelPay = f; if (!S(t.link).trim() && f.url) { t.link = f.url; t.linkFromNickel = true; } } } })) n += Object.keys(found).length;
+  }
+  return n;
+}
+async function refresh(only?: Obj) {
+  if (!TOKEN) return { changed: 0, skipped: "no token" };
+  let changed = 0; const bud: Budget = { left: only ? 12 : 140 };
+  const map = await nkMap();
+  if (!only) { try { await syncMatches(); } catch (_) { /* next time */ } }
+  const want = (k: string, id: string) => !only || (only.kind === k && only.id === id);
+  // vendor bills
+  const bills = (await (await rest("docs?select=id,data&kind=eq.pm_bill&deleted=is.false&data->nickel->>billId=not.is.null")).json()).filter((r: Obj) => (r.data.nickel || {}).billId);
+  const recent = (b: Obj) => Date.now() - Date.parse(S((b.pay || {}).date || b.updatedAt || 0)) < 60 * 864e5;
+  const billTodo = bills.filter((r: Obj) => want("bill", r.id) && (["open", "paying"].includes(r.data.status) || (r.data.status === "paid" && (r.data.pay || {}).method === "Nickel" && !((r.data.pay || {}).receipt || {}).final && recent(r.data))))
+    .sort((a: Obj, b: Obj) => (a.data.status === "paying" ? 0 : 1) - (b.data.status === "paying" ? 0 : 1));
+  for (const r of billTodo) { try { if (await syncBill(r.id, r.data, bud)) changed++; } catch (_) { /* next hour */ } }
+  // owner invoices
+  const invs = (await (await rest("docs?select=id,data&kind=eq.pm_invoice&deleted=is.false&data->nickel->>invoiceId=not.is.null")).json()).filter((r: Obj) => (r.data.nickel || {}).invoiceId);
+  for (const r of invs) {
+    const x = r.data; if (!want("pmInvoice", r.id)) continue;
+    const settled = x.status === "paid" && ((x.nickel || {}).payments || []).every((p: Obj) => p.external || (p.url && p.disbursement === "DEPOSITED"));
+    if (x.status === "void" || (settled && !only)) continue;
+    try { if (await syncPmInvoice(r.id, x, bud)) changed++; } catch (_) { /* next hour */ }
+  }
+  // project invoices
+  const projs = await (await rest("docs?select=id,data&kind=eq.pj_property&deleted=is.false")).json();
+  for (const row of projs) for (const [key, g] of Object.entries((row.data.register || {}) as Obj)) {
+    if (!g || !g.nickel || !g.nickel.invoiceId || g.nickel.deleted) continue;
+    if (only ? !(only.kind === "project" && only.id === row.id && (!only.key || only.key === key)) : (g.nickel.done && g.paid)) continue;
+    try { if (await syncProject(row.id, key, g, bud)) changed++; } catch (_) { /* next hour */ }
+  }
+  if (!only) { try { changed += await linkBills(bud, map); } catch (_) { /* next hour */ } }
+  if (!only || only.kind === "expenses") { try { changed += await projExpenses(only ? { left: 30 } : bud); } catch (_) { /* next hour */ } }
+  if (!only) await saveMap((m) => { m.lastRefresh = new Date().toISOString(); });
+  return { changed, more: bud.left <= 0 };
+}
+
+/* ====================================================================
+   READING FOR THE PAYMENTS PAGE: balances, money in and out, receipts, deposited checks
+   ==================================================================== */
+async function activity(body: Obj) {
+  let balances: Obj[] = [];
+  try { balances = items(await read("list_nickel_banking_accounts")).map((a) => ({ id: S(a.id), name: S(a.nickname) || "Nickel account", last4: S(a.accountNumberLast4), balanceC: cIn(a.balance), holdsC: cIn(a.pendingCardHolds), link: S(a.dashboardUrl) })); } catch { /* not on Nickel Banking */ }
+  const args: Obj = { page: Math.max(1, Number(body.page) || 1), pageSize: 25 };
+  if (["RECEIVABLE", "PAYABLE", "REFUND", "RETURN", "DEPOSIT", "WITHDRAWAL", "FEE", "INTEREST"].includes(S(body.source))) args.source = S(body.source);
+  if (S(body.q).trim()) args.customerName = S(body.q).trim().slice(0, 60);
+  const d = await read("search_payment_activities", args);
+  const rows = items(d).map((r) => ({ id: S(r.id), entityId: S(r.entityId), source: S(r.source), status: S(r.status), at: S(r.createdAt), amountC: Number(r.amountInCents) || 0, who: S(r.counterpartyName), what: S(r.invoiceLabel || r.billNumber), desc: S(r.description).slice(0, 220), link: S(r.dashboardUrl), account: S(r.nickelBalanceAccount && r.nickelBalanceAccount.nickname) }));
+  return { balances, items: rows, hasMore: !!(d && d.hasMore), total: Number(d && d.totalResults) || rows.length };
+}
+async function receipt(body: Obj) {
+  const id = S(body.id); if (!/^[A-Za-z0-9_-]{6,64}$/.test(id)) throw new Error("Missing payment id");
+  const d = S(body.source) === "PAYABLE" ? await read("get_bill_payment", { billPaymentId: id }) : await read("get_payment", { paymentId: id });
+  return { url: S(d && d.pdfUrl), link: S(d && d.dashboardUrl) };
+}
+async function deposits() {
+  try {
+    const d = await read("list_check_deposits", { unappliedOnly: true, limit: 30 });
+    return { items: items(d).map((x) => ({ transferId: S(x.transferId), payer: S(x.payerName || x.payer || (x.payer && x.payer.name)), amountC: cIn(x.amount) || Number(x.amountInCents) || 0, unappliedC: cIn(x.unappliedAmount) || Number(x.unappliedAmountInCents) || 0, status: S(x.status), at: day(x.createdAt || x.depositedAt), memo: S(x.description || x.memo).slice(0, 120) })).filter((x) => x.transferId) };
+  } catch (e) { return { items: [], note: String((e as Error).message || e) }; }
+}
+async function customerInfo(body: Obj) {
+  const c = ((await nkMap()).customers || {})[S(body.ownerId)] || {}; if (!c.id) return { customer: null };
+  const d = await read("get_customer", { customerId: c.id });
+  return { customer: { id: c.id, name: S(d && d.name), emails: (d && d.emails) || [], url: S(d && d.dashboardUrl), onFile: (((d && d.paymentMethodsOnFile) || []) as Obj[]).map((m) => ({ id: S(m.id), label: [S(m.type || m.kind).replace(/_/g, " ").toLowerCase(), S(m.bankName || m.brand), (m.last4 || m.accountNumberLastFour) ? "····" + S(m.last4 || m.accountNumberLastFour) : ""].filter(Boolean).join(" ") || "Account on file" })), autopayAsked: S(c.autopayAsked) } };
+}
+// project invoices already in Nickel (made by hand before the console): link them by their number
+async function linkProject(body: Obj) {
+  const pid = S(body.propertyId), p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
+  const list = ((Array.isArray(body.items) ? body.items : []) as Obj[]).slice(0, 80).map((i) => ({ key: `${S(i.unitId)}|${Number(i.no) || 0}`, number: S(i.number).trim().toUpperCase() }))
+    .filter((i) => /^[A-Z0-9 #._\/-]{3,21}$/.test(i.number) && !((((p.register || {})[i.key] || {}).nickel || {}).invoiceId));
+  if (!list.length) return { linked: 0 };
+  const found: Obj[] = [];
+  for (const pre of [...new Set(list.map((i) => pjPrefix(i.number)))].slice(0, 4)) { try { found.push(...await readAll("search_invoices", { query: pre }, 3)); } catch { /* none */ } }
+  const map = await nkMap(), named = (id: string) => S(((map.nickelCustomers || []) as Obj[]).find((x) => x.id === id)?.name);
+  const hits = list.map((i) => ({ i, inv: found.filter((x) => S(x.name).trim().toUpperCase() === i.number && S(x.status).toUpperCase() !== "CANCELED").sort((a, b) => S(b.createdAt).localeCompare(S(a.createdAt)))[0] })).filter((h) => h.inv);
+  if (!hits.length) return { linked: 0 };
+  let n = 0;
+  await patch("pj_property", pid, (x) => {
+    x.register = x.register || {};
+    const used = new Set(Object.values(x.register as Obj).map((g: Obj) => g && g.nickel && g.nickel.invoiceId).filter(Boolean));
+    for (const h of hits) {
+      if (used.has(h.inv.id)) continue;
+      const g = x.register[h.i.key] = x.register[h.i.key] || {}; if (g.nickel && g.nickel.invoiceId) continue;
+      g.nickel = { invoiceId: S(h.inv.id), url: S(h.inv.url), number: S(h.inv.name), customer: named(h.inv.customerId), customerId: S(h.inv.customerId), amountC: cIn(h.inv), linked: true, at: new Date().toISOString(), qb: !!h.inv.quickBooksSynced };
+      if (!g.link && h.inv.url) g.link = S(h.inv.url);
+      used.add(h.inv.id); n++;
+    }
+  });
+  const fresh = await docData("pj_property", pid), bud: Budget = { left: 40 };
+  for (const h of hits) { const g = ((fresh && fresh.register) || {})[h.i.key]; if (g && g.nickel && g.nickel.invoiceId === h.inv.id) { try { await syncProject(pid, h.i.key, g, bud); } catch { /* next hour */ } } }
+  return { linked: n };
 }
 
 /* ====================================================================
@@ -637,6 +1038,12 @@ async function handle(req: Request): Promise<Response> {
         return json({ ok: true });
       }
       case "nickel.refresh": return done(await refresh());
+      case "nk.sync": return done(await refresh({ kind: S(body.kind), id: S(body.id), key: S(body.key) || undefined }));
+      case "nk.linkProject": return done(await linkProject(body));
+      case "nk.activity": return json(await activity(body));
+      case "nk.receipt": return json(await receipt(body));
+      case "nk.deposits": return json(await deposits());
+      case "nk.customer": return json(await customerInfo(body));
       default: return json({ error: "Unknown mode" }, 400);
     }
   } catch (e) {
