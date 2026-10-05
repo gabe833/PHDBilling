@@ -43,7 +43,7 @@ const CFG = {
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
-  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error'];
+  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -197,7 +197,7 @@ function handleBlob_(blob, o){
   const hash = hash_(blob);
   if(o.seen.has(hash)){                                  // exact same file is already in the inbox
     if(o.existing){ o.existing.setName('DUPLICATE - ' + o.existing.getName()); o.existing.moveTo(folderByName_(rootFolder_(), CFG.UNFILED_FOLDER)); }
-    return;
+    return null;
   }
   o.seen.add(hash);
   const row = {id:Utilities.getUuid().slice(0,8), status:'pending', source:o.source, from:o.from || '', subject:o.subject || '', file_hash:hash};
@@ -220,6 +220,7 @@ function handleBlob_(blob, o){
   else file = folder.createFile(blob.setName(name));
   row.file_id = file.getId(); row.file_url = file.getUrl(); row.file_name = name;
   appendRow_(row);
+  return row;
 }
 
 /* ============================ Claude ============================ */
@@ -249,7 +250,9 @@ Rules:
 - total is the final amount charged, including tax, as a positive number. If it is a refund, return or credit, set is_credit true and keep total positive.
 - description: 2–6 words naming what was bought, like "Kitchen faucet" or "Door hardware" — no vendor name, no order numbers.
 - vendor: the store or company name as people say it (e.g. "Lowe's", "Home Depot", "Amazon").
-- date: the transaction/purchase date as YYYY-MM-DD.
+- date: the transaction/purchase date (for a vendor invoice, the invoice date) as YYYY-MM-DD.
+- due_date: for a vendor invoice or bill, the payment due date as YYYY-MM-DD if one is printed (or computable from terms like "Net 30"); otherwise empty.
+- For a vendor invoice, total is the balance due, and order_no is the invoice number.
 - is_receipt false for marketing, shipping-only notices, quotes/estimates, or anything that is not a charge or credit.`});
 
   const tool = {
@@ -261,6 +264,7 @@ Rules:
         is_receipt:{type:'boolean'},
         vendor:{type:'string'},
         date:{type:'string', description:'YYYY-MM-DD'},
+        due_date:{type:'string', description:'YYYY-MM-DD or empty'},
         total:{type:'number'},
         is_credit:{type:'boolean'},
         description:{type:'string'},
@@ -323,6 +327,7 @@ function clean_(x, props){
     is_receipt: x.is_receipt !== false,
     vendor: s(x.vendor).slice(0, 80),
     date: /^\d{4}-\d{2}-\d{2}$/.test(s(x.date)) ? s(x.date) : '',
+    due_date: /^\d{4}-\d{2}-\d{2}$/.test(s(x.due_date)) ? s(x.due_date) : '',
     total: Math.round(Math.abs(Number(x.total) || 0) * 100) / 100,
     is_credit: x.is_credit === true,
     description: s(x.description).slice(0, 80),
@@ -397,6 +402,25 @@ function doPost(e){
         return json_({ok:true});
       }
       return json_({ok:false, error:'not found'});
+    }
+    if(b.action === 'upload'){
+      // a bill or receipt uploaded in the console: read it the same way as an emailed one
+      const name = safeName_(String(b.name || 'Upload').replace(/\.[a-z0-9]{2,5}$/i, '')) + ((String(b.name || '').match(/\.[a-z0-9]{2,5}$/i) || ['.pdf'])[0]).toLowerCase();
+      const mime = String(b.mime || '').toLowerCase();
+      if(!MIME_OK[mime]) return json_({ok:false, error:'Upload a PDF, JPG or PNG'});
+      const blob = Utilities.newBlob(Utilities.base64Decode(String(b.data || '')), mime, name);
+      if(!blob.getBytes().length) return json_({ok:false, error:'The file was empty'});
+      ensureHeaders_();
+      const seen = seenHashes_(), hash = hash_(blob);
+      if(seen.has(hash)){
+        const old = readRows_().find(r => String(r.file_hash) === hash);
+        return json_({ok:true, duplicate:true, item:old ? publicRow_(old) : null});
+      }
+      const kind = b.kind === 'paid' ? 'a receipt for something already paid' : 'a vendor bill or invoice we need to pay';
+      const row = handleBlob_(blob, {seen:seen, source:'Upload', from:String(b.by || '').slice(0, 80), subject:name,
+        context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name});
+      if(!row) return json_({ok:true, duplicate:true, item:null});
+      return json_({ok:true, item:publicRow_(row)});
     }
     if(b.action === 'retry'){
       // re-run extraction for an item that errored (e.g. after fixing the API key)
@@ -476,9 +500,18 @@ function fileName_(r, blob){
 function sheet_(){ return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SHEET_ID')).getSheets()[0]; }
 function sheetUrl_(){ try{ return SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SHEET_ID')).getUrl(); }catch(e){ return ''; } }
 function appendRow_(r){
+  ensureHeaders_();
   r.id = r.id || Utilities.getUuid().slice(0, 8);
   r.received_at = new Date();
   sheet_().appendRow(HEADERS.map(h => r[h] == null ? '' : r[h]));
+}
+// sheets made before a column was added get its header written once
+let headersChecked_ = false;
+function ensureHeaders_(){
+  if(headersChecked_) return;
+  const sh = sheet_(), have = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+  HEADERS.forEach((h, i) => { if(String(have[i] || '') !== h && have.indexOf(h) < 0) sh.getRange(1, i + 1).setValue(h).setFontWeight('bold'); });
+  headersChecked_ = true;
 }
 function readRows_(){
   const data = sheet_().getDataRange().getValues(); const H = data.shift() || [];
@@ -512,7 +545,8 @@ function publicRow_(r){
     total:Number(r.total) || 0, is_credit:r.is_credit === true || r.is_credit === 'TRUE',
     description:r.description, property_id:r.property_id, property_name:r.property_name, unit_id:r.unit_id, unit_name:r.unit_name,
     confidence:r.confidence, reason:r.reason, line_items:(function(){ try{ return JSON.parse(r.line_items || '[]'); }catch(e){ return []; } })(),
-    order_no:r.order_no, notes:r.notes, error:r.error};
+    order_no:r.order_no, notes:r.notes, error:r.error,
+    due_date:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r.due_date || '')};
 }
 
 /* =====================================================================

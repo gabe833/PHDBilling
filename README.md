@@ -146,10 +146,17 @@ On a project invoice, **Email owner** writes the email the way the office sends 
 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one. The script sends at most 60 emails a day (change `MAX_PER_DAY` if needed).
 
+### 7c. Add a bill by uploading the vendor's invoice
+**Add bill** (or N) on the property management side opens an upload window. Drop in the vendor's invoice — PDF, JPG or PNG, several at once — or drag the file anywhere on the Bills or Today page. Choose **Bills to pay** or **Already paid (receipts)**.
+
+Each file is read the same way as an emailed receipt (vendor, amount, invoice date, due date, invoice number, property) and saved to the receipt inbox's Drive folder. When the property and amount are clear, the bill is created right away with the file attached, and the file is moved into the property's folder. If the property isn't clear, the bill form opens filled in — pick the property and save. A file that was already uploaded, or that matches a bill you already have (same property and amount, same invoice number or vendor within 20 days), is flagged instead of added twice. Refunds and credits go to the receipt inbox. **Enter by hand** is still there for bills with no paperwork.
+
+This uses the receipt inbox script, so after updating the console, update the script once: open the receipt inbox's Apps Script project → replace **Code.gs** with `apps-script/Code.gs` → Save → **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL and key stay the same.
+
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)
-**Today** (top of the left menu on both sides) lists what needs doing across projects and property management, each with the button that does it. **Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
+**Today** (top of the left menu on both sides) lists what needs doing, each with the button that does it. On the Projects side: invoices to send, invoices waiting on owners (with a reminder button after two weeks), receipts to review and checks to apply. On the Property mgmt side: rent collected and who's late, bills to pay and payments on the way, owner payouts to send, owner invoices, month close and owner statements, leases and deposits, and bills paid in the last week. **Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
 - **Money in & out:** Nickel balances, every payment in and out with a **Receipt** button (Nickel's PDF) and a link to the console record it belongs to, and **Deposited checks to apply**. A check you deposited in Nickel can be put toward any open owner or project invoice without moving money again.
 - **Setup:** where vendors are paid from, who can send money, and which QuickBooks accounts and products Nickel codes things to.
 
