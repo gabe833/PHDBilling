@@ -1,9 +1,11 @@
 /**
  * PHD Receipt Inbox — Google Apps Script
  * ------------------------------------------------------------------
- * Watches two places for receipts and invoices:
- *   1. Gmail label  "Receipts/Inbox"   (forward receipts, or let a Gmail filter label them)
- *   2. Drive folder "PHD Receipts/_Drop here"  (phone photos, scans, downloaded PDFs)
+ * Runs in billing@phdproperties.realestate. Watches three places for receipts and invoices:
+ *   1. Mail sent to PMBilling@  (property management) or ProjectBilling@ (renovation projects),
+ *      the two aliases of billing@ — the alias decides which side of the console it belongs to
+ *   2. Gmail label  "Receipts/Inbox"   (anything else you label or forward to billing@ itself)
+ *   3. Drive folder "PHD Receipts/_Drop here"  (phone photos, scans, downloaded PDFs)
  *
  * For each one it:
  *   · asks Claude to read vendor, date, total, items and guess the property/unit
@@ -33,8 +35,16 @@ const CFG = {
   /* Senders allowed to put receipts in the inbox. Your own address is always allowed.
      Add the exact addresses you forward from, and vendor domains that email e-receipts. */
   ALLOWED_SENDERS: [
-    'gabe@phdproperties.realestate', 'peter@phdproperties.realestate',
+    'gabe@phdproperties.realestate', 'peter@phdproperties.realestate', 'billing@phdproperties.realestate',
   ],
+  /* The two billing aliases. Mail to one of them is read even from a sender who isn't listed above
+     (vendors send invoices there directly); nothing is added to the books until it's approved in the console. */
+  ALIASES: {
+    pm: 'pmbilling@phdproperties.realestate',
+    projects: 'projectbilling@phdproperties.realestate'
+  },
+  ALIAS_ANY_SENDER: true,
+  ALIAS_LOOKBACK: '30d',
   ALLOWED_DOMAINS: [
     'lowes.com', 'homedepot.com', 'amazon.com', 'costco.com', 'sherwin.com',
     'truevalue.com', 'ferguson.com', 'quickbooks.com', 'intuit.com'
@@ -43,7 +53,7 @@ const CFG = {
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
-  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date'];
+  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -121,7 +131,13 @@ function processGmail_(budget){
   const me = Session.getEffectiveUser().getEmail().toLowerCase();
   const seen = seenHashes_();
   let used = 0;
-  const threads = inL.getThreads(0, 10);
+  // labeled threads, plus anything sent to the two billing aliases that hasn't been handled yet
+  const threads = inL.getThreads(0, 10), ids = new Set(threads.map(t => t.getId())), labeled = new Set(ids);
+  const al = [CFG.ALIASES.pm, CFG.ALIASES.projects].filter(Boolean);
+  if(al.length){
+    const q = '{' + al.map(a => 'to:' + a + ' deliveredto:' + a).join(' ') + '} -label:' + CFG.LABEL_DONE.replace(/\//g, '-') + ' -label:' + CFG.LABEL_SKIP.replace(/\//g, '-') + ' -in:sent -in:drafts newer_than:' + CFG.ALIAS_LOOKBACK;
+    try{ GmailApp.search(q, 0, 15).forEach(t => { if(!ids.has(t.getId())){ ids.add(t.getId()); threads.push(t); } }); }catch(e){ Logger.log('Alias search failed: ' + e); }
+  }
   for(const th of threads){
     if(used >= budget) break;
     for(const msg of th.getMessages()){
@@ -131,7 +147,9 @@ function processGmail_(budget){
       if(seen.has(msgKey)) continue;
       const from = String(msg.getFrom() || '');
       const addr = (from.match(/<([^>]+)>/) || [null, from])[1].trim().toLowerCase();
-      if(!senderAllowed_(addr, me)){
+      if(addr === me && !sideOf_(msg) && !labeled.has(th.getId())){ seen.add(msgKey); continue; }   // billing@'s own replies in an alias thread
+      const side = sideOf_(msg);
+      if(!senderAllowed_(addr, me) && !(side && CFG.ALIAS_ANY_SENDER)){
         // shown in the console (not hidden) so a missing sender is obvious
         appendRow_({status:'error', source:'email', from:addr, subject:msg.getSubject(), file_hash:msgKey, notes:msg.getId(),
           error:`Sender ${addr} isn't on the allowed list. Add it to ALLOWED_SENDERS in the script (or forward from ${me}), then press Try reading again.`});
@@ -141,11 +159,13 @@ function processGmail_(budget){
       try{
         const atts = msg.getAttachments({includeInlineImages:false, includeAttachments:true})
           .filter(a => MIME_OK[normMime_(a)] && a.getSize() > 3000);   // skip logos/signature images
-        const context = `Email from ${addr}\nSubject: ${msg.getSubject()}\nDate: ${msg.getDate().toISOString().slice(0,10)}`;
+        const context = `Email from ${addr}\nSubject: ${msg.getSubject()}\nDate: ${msg.getDate().toISOString().slice(0,10)}` +
+          (side ? `\nSent to the ${side === 'pm' ? 'property management (rentals)' : 'renovation projects'} billing address.` : '');
+        const emailText = String(msg.getPlainBody() || '').replace(/\n{3,}/g, '\n\n').slice(0, 6000);
         if(atts.length){
           for(const a of atts){
             if(used >= budget) break;
-            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen});
+            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText});
             used++;
           }
         } else {
@@ -155,7 +175,7 @@ function processGmail_(budget){
           try{ file = HtmlService.createHtmlOutput(msg.getBody()).getAs('application/pdf'); }
           catch(e){ file = Utilities.newBlob(text, 'text/plain'); }
           file.setName((msg.getSubject() || 'Receipt').replace(/[\\/:*?"<>|]+/g, '-') + (file.getContentType() === 'application/pdf' ? '.pdf' : '.txt'));
-          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, bodyText:text || '(empty email)'});
+          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, bodyText:text || '(empty email)'});
           used++;
         }
       }catch(err){
@@ -167,6 +187,7 @@ function processGmail_(budget){
     // move the thread along once all its messages are handled
     const allDone = th.getMessages().every(m => seen.has('msg:' + m.getId()));
     if(allDone){ th.removeLabel(inL); th.addLabel(doneL); }
+    else if(used >= budget) break;
   }
   return used;
 }
@@ -200,12 +221,13 @@ function handleBlob_(blob, o){
     return null;
   }
   o.seen.add(hash);
-  const row = {id:Utilities.getUuid().slice(0,8), status:'pending', source:o.source, from:o.from || '', subject:o.subject || '', file_hash:hash};
+  const row = {id:Utilities.getUuid().slice(0,8), status:'pending', source:o.source, from:o.from || '', subject:o.subject || '', file_hash:hash,
+    side:o.side || '', email_text:String(o.emailText || '').slice(0, 4000)};
   const kind = MIME_OK[normMime_(blob)] || (o.bodyText ? 'text' : null);
   try{
     if(kind === 'image' && blob.getBytes().length > CFG.MAX_IMAGE_BYTES) throw new Error('Photo is over 5 MB — retake at a lower resolution or send as PDF');
     if(kind === 'document' && blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('PDF is over 25 MB');
-    const x = extract_(blob, kind, o.context, o.bodyText);
+    const x = extract_(blob, kind, o.context, o.bodyText, o.side, o.emailText);
     Object.assign(row, x);
     if(!x.is_receipt){ row.status = 'rejected'; row.error = 'Did not look like a receipt or invoice' + (x.notes ? ' — ' + x.notes : ''); }
   }catch(err){
@@ -224,8 +246,10 @@ function handleBlob_(blob, o){
 }
 
 /* ============================ Claude ============================ */
-function extract_(blob, kind, context, bodyText){
-  const props = knownProperties_();
+function extract_(blob, kind, context, bodyText, side, emailText){
+  const all = knownProperties_();
+  const sideOfProp = p => p.side || (/\(managed rental\)\s*$/.test(p.name || '') ? 'pm' : 'projects');
+  const props = side ? all.filter(p => sideOfProp(p) === side) : all;
   const propList = props.length
     ? props.map(p => `- id "${p.id}": ${p.name}${p.address ? ' (' + p.address + ')' : ''}; units: ${(p.units || []).map(u => `"${u.id}" = ${u.name}`).join(', ') || 'single unit'}`).join('\n')
     : '(no property list yet — leave property_id empty)';
@@ -233,6 +257,7 @@ function extract_(blob, kind, context, bodyText){
   if(bodyText){
     content.push({type:'text', text:'<email_body>\n' + bodyText + '\n</email_body>'});
   } else {
+    if(emailText) content.push({type:'text', text:'<email_the_file_came_with>\n' + emailText + '\n</email_the_file_came_with>'});
     const data = Utilities.base64Encode(blob.getBytes());
     content.push(kind === 'document'
       ? {type:'document', source:{type:'base64', media_type:'application/pdf', data}}
@@ -247,7 +272,8 @@ Properties we manage — choose property_id and unit_id ONLY from this list, usi
 ${propList}
 
 Rules:
-- total is the final amount charged, including tax, as a positive number. If it is a refund, return or credit, set is_credit true and keep total positive.
+- total is the final amount for the WHOLE invoice or receipt, including tax, as a positive number: the grand Total, Amount due or Balance due. Read every page — on multi-page invoices the total is usually on the last page. Never use one line item, a subtotal of one section, or a labor-only amount as the total. If the email the file came with states the invoice amount, the total must agree with it; if they differ, use the invoice's grand total and say so in notes. If it is a refund, return or credit, set is_credit true and keep total positive.
+- line_items: every charged line (labor, materials, services) with its amount, so the lines add up to the total.
 - description: 2–6 words naming what was bought, like "Kitchen faucet" or "Door hardware" — no vendor name, no order numbers.
 - vendor: the store or company name as people say it (e.g. "Lowe's", "Home Depot", "Amazon").
 - date: the transaction/purchase date (for a vendor invoice, the invoice date) as YYYY-MM-DD.
@@ -280,7 +306,27 @@ Rules:
     }
   };
   const out = callClaude_(content, tool);
-  return clean_(out, props);
+  return checkTotal_(clean_(out, props), emailText || bodyText || '');
+}
+/* A total that equals one line while the lines add up to more was read from part of the invoice:
+   use the full amount when the lines (or the email) back it up, and always say what changed. */
+function checkTotal_(x, emailText){
+  if(!x || !x.is_receipt) return x;
+  let items = []; try{ items = JSON.parse(x.line_items || '[]'); }catch(e){}
+  const amts = items.map(li => Math.round((Number(li.amount) || 0) * 100)).filter(a => a > 0);
+  const sum = amts.reduce((a, b) => a + b, 0), tot = Math.round(x.total * 100);
+  const inEmail = (String(emailText).match(/\$\s?\d{1,3}(,\d{3})*(\.\d{2})?/g) || []).map(m => Math.round(Number(m.replace(/[$,\s]/g, '')) * 100));
+  const note = t => { x.notes = (x.notes ? x.notes + ' · ' : '') + t; };
+  if(amts.length >= 2 && sum > tot + 1 && amts.indexOf(tot) >= 0){
+    x.total = sum / 100; x.confidence = x.confidence === 'high' ? 'medium' : x.confidence;
+    note('Total set to the sum of the lines ($' + (sum / 100).toFixed(2) + '); it was first read as one line ($' + (tot / 100).toFixed(2) + ')');
+  } else if(inEmail.length && inEmail.indexOf(tot) < 0 && inEmail.indexOf(sum) >= 0 && sum > tot){
+    x.total = sum / 100; x.confidence = 'medium';
+    note('Total set to $' + (sum / 100).toFixed(2) + ', the amount in the email and the sum of the lines');
+  } else if(amts.length >= 2 && Math.abs(sum - tot) > 1){
+    x.confidence = 'low'; note('The lines add up to $' + (sum / 100).toFixed(2) + ', not $' + (tot / 100).toFixed(2) + ' — check the total');
+  }
+  return x;
 }
 
 function callClaude_(content, tool){
@@ -378,7 +424,7 @@ function doPost(e){
     if(b.action === 'config'){
       // the console sends its property list so Claude can guess property and unit
       const list = (Array.isArray(b.properties) ? b.properties : []).slice(0, 200).map(p => ({
-        id:String(p.id).slice(0, 40), name:String(p.name || '').slice(0, 80), address:String(p.address || '').slice(0, 120),
+        id:String(p.id).slice(0, 40), name:String(p.name || '').slice(0, 80), address:String(p.address || '').slice(0, 120), side:p.side === 'pm' ? 'pm' : p.side === 'projects' ? 'projects' : '',
         units:(Array.isArray(p.units) ? p.units : []).slice(0, 40).map(u => ({id:String(u.id).slice(0, 40), name:String(u.name || '').slice(0, 40)}))
       }));
       PropertiesService.getScriptProperties().setProperty('PROPERTIES', JSON.stringify(list));
@@ -423,7 +469,7 @@ function doPost(e){
         return json_({ok:true, duplicate:true, item:old ? publicRow_(old) : null});
       }
       const kind = b.kind === 'paid' ? 'a receipt for something already paid' : 'a vendor bill or invoice we need to pay';
-      const row = handleBlob_(blob, {seen:seen, source:'Upload', from:String(b.by || '').slice(0, 80), subject:name,
+      const row = handleBlob_(blob, {seen:seen, source:'Upload', from:String(b.by || '').slice(0, 80), subject:name, side:b.side === 'projects' ? 'projects' : b.side === 'pm' ? 'pm' : '',
         context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name});
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
@@ -448,7 +494,8 @@ function doPost(e){
         const f = DriveApp.getFileById(data[i][col('file_id')]);
         const blob = f.getBlob(), kind = MIME_OK[normMime_(blob)];
         let x;
-        try{ x = extract_(blob, kind, 'Re-read of ' + f.getName()); x.status = 'pending'; x.error = ''; }
+        const side = col('side') >= 0 ? String(data[i][col('side')] || '') : '', et = col('email_text') >= 0 ? String(data[i][col('email_text')] || '') : '';
+        try{ x = extract_(blob, kind, 'Re-read of ' + f.getName() + (data[i][col('subject')] ? '\nEmail subject: ' + data[i][col('subject')] : ''), null, side, et); x.status = 'pending'; x.error = ''; }
         catch(err){ x = {status:'error', error:String(err.message || err).slice(0, 400)}; }
         Object.keys(x).forEach(k => { if(col(k) >= 0) sh.getRange(i + 1, col(k) + 1).setValue(x[k]); });
         return json_({ok:true});
@@ -468,6 +515,14 @@ function tokenOk_(t){
   return diff === 0;
 }
 function json_(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+// which billing alias a message was sent to: 'pm', 'projects' or ''
+function sideOf_(msg){
+  let h = '';
+  try{ h = [msg.getTo(), msg.getCc(), msg.getBcc(), msg.getHeader('Delivered-To'), msg.getHeader('X-Original-To'), msg.getHeader('X-Forwarded-To')].join(',').toLowerCase(); }catch(e){}
+  if(CFG.ALIASES.pm && h.indexOf(CFG.ALIASES.pm) >= 0) return 'pm';
+  if(CFG.ALIASES.projects && h.indexOf(CFG.ALIASES.projects) >= 0) return 'projects';
+  return '';
+}
 function senderAllowed_(addr, me){
   if(!addr) return false;
   if(addr === me) return true;
@@ -552,6 +607,7 @@ function publicRow_(r){
     description:r.description, property_id:r.property_id, property_name:r.property_name, unit_id:r.unit_id, unit_name:r.unit_name,
     confidence:r.confidence, reason:r.reason, line_items:(function(){ try{ return JSON.parse(r.line_items || '[]'); }catch(e){ return []; } })(),
     order_no:r.order_no, notes:r.notes, error:r.error,
+    side:String(r.side || ''),
     due_date:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r.due_date || '')};
 }
 

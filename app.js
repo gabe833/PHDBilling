@@ -3528,8 +3528,8 @@ async function inboxPost(body){
 
 /* Send the property list so Claude can guess property and unit. Only when it changed. */
 async function inboxSyncConfig(force){
-  const list = live().map(p => ({id:p.id, name:p.name, address:p.address || "", units:p.units.map(u => ({id:u.id, name:u.name}))}))
-    .concat(pmLiveProps().map(p => ({id:p.id, name:p.name + " (managed rental)", address:p.address || "", units:[]})));
+  const list = live().map(p => ({id:p.id, name:p.name, address:p.address || "", side:"projects", units:p.units.map(u => ({id:u.id, name:u.name}))}))
+    .concat(pmLiveProps().map(p => ({id:p.id, name:p.name + " (managed rental)", address:p.address || "", side:"pm", units:[]})));
   const sig = JSON.stringify(list);
   let last = ""; try{ last = localStorage.getItem(INBOX_KEY + "-cfg") || ""; }catch(e){}
   if(!force && last === sig) return;
@@ -3574,8 +3574,18 @@ function pgInbox(){
   if(INBOX.err){
     v.appendChild(elm("div","card ib-err",`<b>Couldn't reach the inbox.</b> <span>${esc(INBOX.err)}</span>`));
   }
-  const items = INBOX.items;
+  const sideOf = i => i.side || (pmProp(i.property_id) ? "pm" : S.properties.some(p => p.id === i.property_id) ? "projects" : "");
+  const F = S.ui.ibSide || (S.ui.mode === "pm" ? "pm" : "projects");
+  const cnt = k => INBOX.items.filter(i => (i.status === "pending" || i.status === "error") && (k === "all" || sideOf(i) === k || !sideOf(i))).length;
+  const items = INBOX.items.filter(i => F === "all" || sideOf(i) === F || !sideOf(i));
   const pend = items.filter(i => i.status === "pending"), errs = items.filter(i => i.status === "error");
+  if(INBOX.items.length){
+    const seg = elm("div","sc-bar");
+    seg.innerHTML = `<div class="sc-seg">${[["pm","Property management"],["projects","Projects"],["all","All"]].map(([k, l]) => `<button data-sd="${k}" class="${F === k ? "on" : ""}">${l} <span>${cnt(k)}</span></button>`).join("")}</div>
+      <span class="muted" style="font-size:12.5px">Mail to <b>PMBilling@</b> lands under Property management, <b>ProjectBilling@</b> under Projects.</span>`;
+    seg.querySelectorAll("[data-sd]").forEach(b => b.onclick = () => { S.ui.ibSide = b.dataset.sd; persistUi(); render(); });
+    v.appendChild(seg);
+  }
   if(!items.length){
     v.appendChild(elm("div","card",`<div class="empty"><b>${INBOX.loading ? "Checking the inbox…" : INBOX.last ? "Inbox zero" : INBOX.err ? "Not reachable right now" : "Loading…"}</b>
       <p style="max-width:52ch;margin:0 auto">Forward a receipt to your receipts address, or drop a PDF or photo into <b>PHD Receipts / _Drop here</b> in Google Drive. New receipts show up here within about five minutes.</p>
@@ -3634,7 +3644,7 @@ function inboxCard(it){
     <div class="ib-top">
       <div class="ib-src">${icon(it.source === "drive" ? "download" : "mail")}
         <div><b>${esc(it.vendor || it.subject || it.file_name || "Receipt")}</b>
-        <span>${esc([it.source === "drive" ? "Dropped in Drive" : (it.from || "Email"), it.received_at ? fdateS(String(it.received_at).slice(0,10)) : "", it.order_no ? "Order " + it.order_no : ""].filter(Boolean).join(" · "))}</span></div></div>
+        <span>${esc([it.source === "drive" ? "Dropped in Drive" : it.source === "Upload" ? "Uploaded" + (it.from ? " by " + it.from : "") : (it.from || "Email"), it.side === "pm" ? "to PMBilling@" : it.side === "projects" ? "to ProjectBilling@" : "", it.received_at ? fdateS(String(it.received_at).slice(0,10)) : "", it.order_no ? "Invoice " + it.order_no : ""].filter(Boolean).join(" · "))}</span></div></div>
       ${isErr ? `<span class="tag red">Couldn't read</span>` : `<span class="tag ${conf}" title="${esc(it.reason || "")}">${it.confidence === "high" ? "Confident match" : it.confidence === "medium" ? "Likely match" : "Check the details"}</span>`}
       ${it.file_url ? `<a class="btn sm" href="${esc(it.file_url)}" target="_blank" rel="noopener">${icon("file")} Open receipt</a>` : ""}
       ${preview ? `<button class="btn sm ghost" data-x="prev">${INBOX.open[it.id] ? "Hide preview" : "Preview"}</button>` : ""}
@@ -3645,8 +3655,9 @@ function inboxCard(it){
       <div class="ib-form">
         <div class="f2">
           <label class="fld"><span>Property</span><select data-f="propId"><option value="">Choose…</option>
-            <optgroup label="Project billing">${live().map(p => `<option value="${p.id}" ${p.id === d.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</optgroup>
-            ${pmLiveProps().length ? `<optgroup label="Property management — adds a bill">${pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(p => `<option value="${p.id}" ${p.id === d.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</optgroup>` : ""}</select></label>
+            ${it.side === "pm" ? "" : `<optgroup label="Project billing">${live().map(p => `<option value="${p.id}" ${p.id === d.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</optgroup>`}
+            ${pmLiveProps().length ? `<optgroup label="Property management — adds a bill">${pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(p => `<option value="${p.id}" ${p.id === d.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</optgroup>` : ""}
+            ${it.side === "pm" ? `<optgroup label="Project billing">${live().map(p => `<option value="${p.id}" ${p.id === d.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</optgroup>` : ""}</select></label>
           ${pmp ? `<label class="fld"><span>Month</span><select data-f="pmMonth">${[...new Set([inboxPmMonth(), ...pmMonths().slice(-3)])].sort().reverse().map(mm => `<option value="${mm}" ${(d.pmMonth || inboxPmMonth()) === mm ? "selected" : ""}>${monthLabel(mm)}${(pmState().meta[mm] || {}).closed ? " (closed)" : ""}</option>`).join("")}</select></label>` : `<label class="fld"><span>Unit</span><select data-f="unit" ${prop ? "" : "disabled"}>`}
             ${pmp ? "" : (prop ? (prop.units.length > 1 ? `<option value="">Choose…</option>` : "") + prop.units.map(u => `<option value="${u.id}" ${u.id === d.unit ? "selected" : ""}>${esc(u.name)}</option>`).join("")
                    + (prop.units.length > 1 ? `<option value="split" ${d.unit === "split" ? "selected" : ""}>Split — default split</option>` : "") : `<option>—</option>`) + "</select></label>"}
@@ -3672,7 +3683,7 @@ function inboxCard(it){
     </div>
     ${INBOX.open[it.id] && preview ? `<div class="ib-prev"><iframe src="${esc(preview)}" title="Receipt preview" loading="lazy"></iframe></div>` : ""}
     <div class="ib-foot">
-      ${isErr ? `<button class="btn sm" data-x="retry">Try reading again</button>` : ""}
+      <button class="btn sm${isErr ? "" : " ghost"}" data-x="retry">${isErr ? "Try reading again" : "Read again"}</button>
       <button class="btn sm ghost danger" data-x="reject">Not billable — dismiss</button>
       <span style="flex:1"></span>
       <button class="btn sm" data-x="edit" ${inboxReady(d) ? "" : "disabled"}>Approve & open</button>
@@ -4557,7 +4568,7 @@ function pmRowSheet(m, pid, focus){
             <select data-ik="feeMode" ${ro ? "disabled" : ""}><option value="auto" ${(it.feeMode || (it.fee != null ? "custom" : "auto")) === "auto" ? "selected" : ""}>${prop.adminRate ?? 10}% fee</option>
               <option value="none" ${it.feeMode === "none" ? "selected" : ""}>No fee</option>
               <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
-            <div class="pm-item-x">${it.link ? `<a href="${esc(it.link)}" target="_blank" rel="noopener" class="btn sm ghost">Receipt</a>` : ""}${ro ? "" : `<button class="btn sm ghost" data-del="${i}">✕</button>`}</div>
+            <div class="pm-item-x">${stmtLine(it).link ? `<a href="${esc(stmtLine(it).link)}" target="_blank" rel="noopener" class="btn sm ghost">${it.link ? "Receipt" : "Invoice"}</a>` : ""}${ro ? "" : `<button class="btn sm ghost" data-del="${i}">✕</button>`}</div>
             ${ro ? "" : `<input type="url" class="pm-link" data-ik="link" value="${esc(it.link || "")}" placeholder="Receipt link (optional)">`}
           </div>`).join("") || `<p class="muted" style="font-size:12.5px;margin:0">No repairs this month.</p>`}</div>
         ${ro ? "" : `<button class="btn sm" id="addItem">${icon("plus")} Add repair</button>`}
@@ -5106,7 +5117,7 @@ function pmStatementHTML(m, ids, groupsList){
         <table class="zebra"><thead><tr><th style="width:92px">Date</th><th>Description</th><th style="width:150px">Vendor</th><th class="r" style="width:110px">Amount</th></tr></thead>
         <tbody>
           <tr><td class="dt"></td><td>Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="sub">of ${usd(cents(row.rentDue))} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(c.recv)}</td></tr>
-          ${items.map(it => `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(it.memo || "Repair")}${it.link ? ` <a href="${esc(it.link)}">receipt</a>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`).join("")}
+          ${items.map(it => { const L = stmtLine(it); return `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(L.title)}${L.detail ? `<br><span class="sub">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}">invoice</a>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`; }).join("")}
           ${!items.length && c.repairsC ? `<tr><td class="dt"></td><td>Repairs</td><td class="vn"></td><td class="r">−${usd(c.repairsC)}</td></tr>` : ""}
           ${c.otherC ? `<tr><td class="dt"></td><td>Other income</td><td class="vn"></td><td class="r">${usd(c.otherC)}</td></tr>` : ""}
           ${(row.adjustments || []).map(a => `<tr><td class="dt"></td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
@@ -5378,7 +5389,7 @@ function pgPmProperty(){
   const selM = S.ui.pmPropM;
   const md = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null, L = md && md.lease, bldg = !!(L && L.combined);
   $("#pgCrumb").textContent = "Properties"; $("#pgTitle").textContent = p.name; $("#pgSub").textContent = p.address && p.address !== p.name ? p.address : "";
-  actions([["All properties", () => go("pmProps"), "ghost"], ["Statement", () => printDoc(pmStatementHTML(selM, [p.id]))], ["Edit property", () => pmPropSheet(p.id)]]);
+  actions([["All properties", () => go("pmProps"), "ghost"], ["Statement", () => printDoc(pmStatementHTML(selM, [p.id]))], ["Email statement", () => pmRow(selM, p.id) ? stmtEmailSheet(selM, p.id) : toast(`No ${monthLabel(selM)} statement for this property`)], ["Edit property", () => pmPropSheet(p.id)]]);
   const v = $("#view");
 
   // what needs doing, first
@@ -5501,8 +5512,8 @@ function pgPmProperty(){
     const vend = {}; items.forEach(it => { const k = it.vendor || "Other"; vend[k] = (vend[k] || 0) + cents(it.amount); });
     inner = `<div class="pp-vend">${Object.entries(vend).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => `<span>${esc(k)} <b class="num">${usd0(c)}</b></span>`).join("")}<span class="muted" style="margin-left:auto">Total <b class="num">${usd(items.reduce((a, it) => a + cents(it.amount), 0))}</b></span></div>
       <table class="tbl pp-tbl"><thead><tr><th>Date</th><th>Vendor</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
-      ${items.slice(0, 80).map(it => `<tr><td class="muted nw">${it.date ? esc(pmDY(it.date)) : esc(monthShort(it.month))}</td><td class="nw">${esc(it.vendor || "—")}</td><td class="pp-what">${esc(it.memo || "")}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
-        <td class="r">${it.link ? `<a href="${esc(it.link)}" target="_blank" rel="noopener">Receipt</a>` : ""}</td></tr>`).join("")}</tbody></table>`;
+      ${items.slice(0, 80).map(it => `<tr><td class="muted nw">${it.date ? esc(pmDY(it.date)) : esc(monthShort(it.month))}</td><td class="nw">${esc(it.vendor || "—")}</td><td class="pp-what">${esc(stmtLine(it).title)}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
+        <td class="r">${stmtLine(it).link ? `<a href="${esc(stmtLine(it).link)}" target="_blank" rel="noopener">${it.link ? "Receipt" : "Invoice"}</a>` : ""}</td></tr>`).join("")}</tbody></table>`;
   } else {
     inner = `<div class="pp-two">
       <div><div class="label pp-sub">Vendor bills</div>${mdh.bills.length ? `<table class="tbl pp-tbl"><tbody>${mdh.bills.slice(0, 30).map(x => `<tr><td class="muted nw">${esc(pmDY(x.date))}</td><td><b>${esc(x.vendor || "—")}</b><div class="pp-what muted">${esc(x.memo || "")}</div></td>
@@ -6100,9 +6111,9 @@ async function stmtCall(body, get){
   if(!j.ok) throw new Error(j.error === "unauthorized" ? "The statements key wasn't accepted — paste it again from the script's log" : (j.error || "Statements script error"));
   return j;
 }
-const STMT_TPL_DEFAULT = {subject:"Owner Statement – {address}", body:`Hello {first},
+const STMT_TPL_DEFAULT = {subject:"Owner Statement – {address} – {month}", body:`Hello {first},
 
-Attached is your latest owner statement for {address}. It includes the recent income, expenses, and activity for the property.
+Attached is your owner statement for {address} for {month}. It includes the income, expenses, and activity for the property that month.
 
 Please let us know if you have any questions. Thank you for your continued business. 
 
@@ -6111,7 +6122,8 @@ Sincerely,
 PHD Property Management`};
 const stmtTpl = () => Object.assign({}, STMT_TPL_DEFAULT, (pmSettings() || {}).stmtTpl || {});
 const stmtFill = (t, first, addr, m) => String(t || "").replace(/Hello \{first\},/g, first ? `Hello ${first},` : "Hello,").replace(/\{first\}/g, first || "").replace(/\{address\}/g, addr).replace(/\{month\}/g, m ? monthLabel(m) : "");
-const STMT_SUBJECT = (addr, m) => stmtFill(stmtTpl().subject, "", addr, m);
+// the subject always says which month (a saved wording without {month} gets it added)
+const STMT_SUBJECT = (addr, m) => { const s = stmtFill(stmtTpl().subject, "", addr, m); return m && !s.includes(monthLabel(m)) ? `${s} – ${monthLabel(m)}` : s; };
 const STMT_BODY = (first, addr, m) => stmtFill(stmtTpl().body, first, addr, m);
 // this month's email for one property: the standard wording, or what was typed for it in the console
 function stmtEdits(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.emailEdits = mm.emailEdits || {}; return mm.emailEdits; }
@@ -6163,7 +6175,7 @@ function pmStatementPdfHTML(m, pid){
   const neg = x => "−" + usd(Math.abs(x));
   const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;
   const lines = [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))]
-    .concat(items.map(it => line(d(it.date), esc(it.memo || "Repair"), esc(it.vendor || ""), neg(cents(it.amount)))))
+    .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}" style="color:#1D5C57">invoice</a>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
     .concat(!items.length && c.repairsC ? [line("", "Repairs", "", neg(c.repairsC))] : [])
     .concat(c.otherC ? [line("", "Other income", "", usd(c.otherC))] : [])
     .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
@@ -6256,7 +6268,8 @@ function pmStatementMailSheet(m){
   cands.forEach(x => { if(!x.why && !x.done) sel[x.p.id] = true; });
   const draw = (busy, note) => {
     const ready = cands.filter(x => !x.why), n = ready.filter(x => sel[x.p.id]).length, blocked = cands.filter(x => x.why);
-    sh.innerHTML = `<div class="sheet-h"><div><h3>Email statements · ${monthLabel(m)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">One email per property from pm@, with its statement attached as a PDF. Check or edit any of them first, then send from here or save them as Gmail drafts.</div></div>
+    const months = [...new Set(pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly)).concat([m]))].sort().reverse();
+    sh.innerHTML = `<div class="sheet-h"><div><h3 class="sm-title">Email statements · <select id="smMonth" aria-label="Statement month">${months.map(mm => `<option value="${mm}" ${mm === m ? "selected" : ""}>${monthLabel(mm)}${(pmState().meta[mm] || {}).closed ? "" : " (open)"}</option>`).join("")}</select></h3><div class="muted" style="font-size:12.5px;margin-top:3px">One email per property from pm@, with its statement attached as a PDF. Check or edit any of them first, then send from here or save them as Gmail drafts.</div></div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
         ${!stmtConn() ? `<div class="sm-setup"><b>Connect the statements mailbox</b>
@@ -6280,6 +6293,7 @@ function pmStatementMailSheet(m){
       <div class="sheet-f"><button class="btn ghost sm" id="smAll" ${busy ? "disabled" : ""}>${n === ready.length ? "Select none" : "Select all"}</button><span style="flex:1"></span>
         <button class="btn" id="shCancel">Close</button><button class="btn" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Save ${n} as Gmail draft${n === 1 ? "" : "s"}`}</button><button class="btn primary" id="smSend" ${!n || busy || !stmtConn() ? "disabled" : ""}>Send ${n} now</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    $("#smMonth").onchange = e => pmStatementMailSheet(e.target.value);
     sh.querySelectorAll("[data-s]").forEach(i => i.onchange = () => { sel[i.dataset.s] = i.checked; draw(); });
     sh.querySelectorAll("[data-fn]").forEach(i => {
       i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); };
@@ -6363,6 +6377,7 @@ function stmtEmailSheet(m, pid){
       <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
       <div class="bm-prev" id="sePrev"></div>
       <div class="se-att">${icon("file")} <a href="#" id="sePdf">${esc(stmtFileName(x.p, m))}</a><span class="muted">attached</span></div>
+      ${stmtLinesBlock(x.row)}
       <label class="ps-chk"><input type="checkbox" id="seTpl"> Use this subject and message for every owner statement from now on</label>
       ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !sig ? `<p class="help">No Gmail signature found for pm@ — add the Gmail API service in the script to include it.</p>` : ""}
     </div>
@@ -6374,6 +6389,7 @@ function stmtEmailSheet(m, pid){
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${html(body.value)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
   [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
   $("#sePdf").onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, pid)); };
+  stmtWireLines(sh, x.row);
   const keep = () => {
     snapshot();
     const E = stmtEdits(m), addr = stmtAddr(x.p), std = {subject:STMT_SUBJECT(addr, m), body:STMT_BODY(x.first, addr, m)};
@@ -6381,7 +6397,7 @@ function stmtEmailSheet(m, pid){
     if(sub.value !== std.subject) e.subject = sub.value; if(body.value !== std.body) e.body = body.value;
     E[pid] = e;
     if($("#seTpl").checked){
-      const un = t => String(t).split(addr).join("{address}").replace(x.first ? new RegExp("Hello " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^$/, "Hello {first},");
+      const un = t => String(t).split(addr).join("{address}").split(monthLabel(m)).join("{month}").replace(x.first ? new RegExp("Hello " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^$/, "Hello {first},");
       S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtTpl:{subject:un(sub.value), body:un(body.value)}});
       delete e.subject; delete e.body;
     }
@@ -6400,6 +6416,72 @@ function stmtEmailSheet(m, pid){
     }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from pm@" : "Save as Gmail draft"; }
   };
   $("#seSend").onclick = () => go(true); $("#seDraft").onclick = () => go(false);
+}
+
+/* ---------- statement lines: say what the money was for ----------
+   Each repair line on a statement gets a plain description: the kind of work (from the vendor and
+   MagicDoor's account, before the line's own wording) and the detail. "August Bi-Weekly Turn Maintenance 1"
+   from Salty Blades Lawn Care reads "Lawn care — August bi-weekly service, visit 1". Anything can be
+   rewritten for the statement without touching the books (it's kept on the line as stmtDesc). */
+const STMT_CATS = [
+  [/lawn|landscap|\bmow|blades|yard|grass|tree|shrub|irrigat/i, "Lawn care"],
+  [/pest|extermin|termite|\bbugs?\b|rodent|mosquito/i, "Pest control"],
+  [/plumb|drain|sewer|septic|water heater|leak|faucet|toilet/i, "Plumbing"],
+  [/hvac|heating|cooling|air cond|\ba\/c\b|furnace|heat pump|\bduct/i, "HVAC"],
+  [/electric(?!ity bill)|outlet|breaker|wiring/i, "Electrical"],
+  [/clean|maid|janitor|carpet/i, "Cleaning"],
+  [/paint/i, "Painting"],
+  [/roof|gutter/i, "Roofing & gutters"],
+  [/appliance|fridge|refrigerator|washer|dryer|dishwasher|stove|oven|microwave/i, "Appliance repair"],
+  [/locksmith|rekey|\block(s|out)?\b/i, "Locks & keys"],
+  [/\bpool\b/i, "Pool service"],
+  [/trash|junk|haul|dumpster|debris/i, "Trash & hauling"],
+  [/inspect/i, "Inspection"],
+  [/insurance/i, "Insurance"],
+  [/\bhoa\b|homeowners? assoc|association dues/i, "HOA dues"],
+  [/utilit|water bill|power bill|dominion energy|charleston water/i, "Utilities"],
+  [/\bturn(over)?\b|make.?ready|move.?out/i, "Turnover"]
+];
+function stmtCat(s){ for(const [re, c] of STMT_CATS) if(re.test(s || "")) return c; return ""; }
+const STMT_VAGUE = /^(turn(over)?\s*)?(repairs?|maintenance|misc\w*|work|labor|services?|materials?|bill|invoice|general)$/i;
+function stmtLine(it){
+  const f = it.mdLine && typeof mdReady === "function" && mdReady() ? mdLineById(it.mdLine) : null;
+  const files = f && f.b && Array.isArray(f.b.files) ? f.b.files : [];
+  const link = it.link || (it.mdLink) || (files.find(x => x.url) || {}).url || "";
+  if(it.stmtDesc) return {title:it.stmtDesc, detail:"", link, vague:false, auto:false};
+  const text = String(it.memo || (f && f.li && f.li.text) || "").replace(/\s+/g, " ").trim();
+  const memo = f && f.b && f.b.memo && f.b.memo.trim() !== text ? f.b.memo.trim() : "";
+  const cat = stmtCat(`${it.vendor || ""} ${f && f.li ? f.li.account : ""}`) || stmtCat(`${text} ${memo}`);
+  let d = text;
+  if(cat && cat !== "Turnover") d = d.replace(/\bturn\s+(maintenance|service)\b/ig, "service").replace(/\bturn\b\s*/ig, "");
+  d = d.replace(/\bbi-?weekly\b/ig, "bi-weekly").replace(/\b(maintenance|service)\s+#?(\d{1,2})\b/i, "service, visit $2").replace(/\s{2,}/g, " ").trim();
+  const core = d.replace(/^turn(over)?\s*/i, "");
+  let title;
+  if(!cat) title = d || "Repair";
+  else if(!d || STMT_VAGUE.test(d) || STMT_VAGUE.test(core)) title = cat === "Turnover" ? `Turnover ${(core || "repairs").toLowerCase()}` : cat;
+  else if(d.toLowerCase().includes(cat.toLowerCase().split(/[\s&]/)[0])) title = d;
+  else title = `${cat} — ${d}`;
+  const vague = (!text || STMT_VAGUE.test(text) || STMT_VAGUE.test(core)) && !memo;
+  return {title, detail:memo, link, vague, auto:true};
+}
+function stmtLinesBlock(row){
+  const items = (row && row.repairItems) || [];
+  if(!items.length) return "";
+  const need = items.filter(it => stmtLine(it).vague).length;
+  return `<div class="sl-h"><b>Lines on the statement</b><span class="muted">${need ? `${need} could say more — add what was done` : "how each charge reads to the owner"}</span></div>
+    <div class="sl-list">${items.map((it, i) => { const L = stmtLine(it), auto = it.stmtDesc ? stmtLine(Object.assign({}, it, {stmtDesc:""})).title : L.title;
+      return `<div class="sl-r${L.vague ? " vague" : ""}"><div class="sl-m"><span class="num">${usd(cents(it.amount))}</span><span class="muted">${esc(it.vendor || "")}${it.date ? " · " + esc(fdateS(it.date)) : ""}</span>${L.link ? `<a href="${esc(L.link)}" target="_blank" rel="noopener" class="sl-inv">Invoice</a>` : ""}</div>
+        <input type="text" data-sl="${i}" data-auto="${esc(auto)}" value="${esc(it.stmtDesc || auto)}" aria-label="Description on the statement">
+        ${L.detail ? `<div class="help">${esc(L.detail)}</div>` : ""}${L.vague ? `<div class="help" style="color:var(--gold)">MagicDoor only says “${esc(it.memo || "Repairs")}”. Say what was repaired, e.g. “Turnover — replaced kitchen faucet, patched and painted bedroom walls”.</div>` : ""}</div>`; }).join("")}</div>`;
+}
+function stmtWireLines(sh, row){
+  sh.querySelectorAll("[data-sl]").forEach(inp => inp.onchange = () => {
+    const it = row.repairItems[Number(inp.dataset.sl)]; if(!it) return;
+    snapshot(); it.stmtDesc = inp.value.trim(); if(!it.stmtDesc || it.stmtDesc === inp.dataset.auto) delete it.stmtDesc;
+    if(typeof pmTouch === "function") pmTouch(row);
+    commit(); toast("Statement line updated");
+    const r = inp.closest(".sl-r"); if(r) r.classList.toggle("vague", !it.stmtDesc && stmtLine(it).vague);
+  });
 }
 
 /* =====================================================================
@@ -7838,7 +7920,7 @@ async function buPump(){
       f.state = "working"; buRedraw();
       try{
         const data = await buBase64(f.file);
-        const r = await inboxPost({action:"upload", name:f.name, mime:f.mime, data, kind:f.kind, by:billWho()});
+        const r = await inboxPost({action:"upload", name:f.name, mime:f.mime, data, kind:f.kind, by:billWho(), side:"pm"});
         f.item = r.item || null; delete f.file;
         buHandle(f, r.duplicate);
       }catch(e){ f.state = "error"; f.msg = /Failed to fetch|NetworkError/i.test(e.message) ? "Couldn't reach the receipt inbox. Check your connection and try again." : e.message; }

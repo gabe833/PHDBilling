@@ -125,6 +125,10 @@ Late rent, evictions, deposit returns after a move-out, and PM fees that differ 
 ### 7. Owner statement emails (from pm@)
 Month close → **Email statements** lists one email per property from **pm@phdproperties.realestate**, with the statement attached as a PDF. Open **Preview & edit** on any of them to see exactly what the owner gets and change the wording. Then **Send from pm@**, or **Save as Gmail draft** to send from Gmail yourself. From the list you can **Send N now** for everyone ticked, or **Send draft** for one already waiting in Gmail. Tick "Use this subject and message for every owner statement from now on" to change the standard wording. Sent emails keep the label **AutoDraft/Owner Statements**. Closing a month still makes drafts automatically unless you switch that off.
 
+- **Any month:** pick the month at the top of the Email statements window (or open a property → **Email statement** for the month shown) to send or resend a past statement.
+- **Subject:** always ends with the month and year ("Owner Statement – 31 Radcliffe Street – October 2026").
+- **Clear lines:** each repair line reads as the kind of work plus the detail — the vendor and MagicDoor's account decide the kind, so "August Bi-Weekly Turn Maintenance 1" from Salty Blades Lawn Care shows as "Lawn care — August bi-weekly service, visit 1". In **Preview & edit**, **Lines on the statement** lets you rewrite any line for the owner without changing the books; lines that only say "Repairs" or "Turn repairs" are highlighted so you can say what was done. When MagicDoor has the vendor's invoice for a bill, the line links to it.
+
 1. Sign in to Google as **pm@phdproperties.realestate** → script.google.com → New project → paste `apps-script/Statements.gs` → Save.
 2. To include pm@'s Gmail signature: **Services (+)** → **Gmail API** → Add.
 3. Run **setup()** and allow access. The log shows the console key.
@@ -152,6 +156,22 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 - Header shortcuts: the **Drive** logo opens that property's receipt folder, **Gmail** opens the emails about it in pm@ (property management) or billing@ (projects), and the pin opens the address in Maps. Owners get a Gmail button to write to them from the right mailbox.
 - Buttons that open an outside app carry its logo: Gmail for anything that emails, Nickel for paying and invoicing, Drive or Sheets for files. Hover an email address to write in Gmail or copy it.
 - On Today, **Show N more** expands a section in place. Long pages get a back-to-top button.
+
+### 6b. Receipt inbox in billing@ (PMBilling@ and ProjectBilling@)
+The receipt inbox runs in **billing@phdproperties.realestate**. Mail sent to its two aliases is read automatically, about every five minutes:
+- **PMBilling@phdproperties.realestate** → property management. The property is matched only against managed rentals, and it shows under **Property management** in the Receipt inbox.
+- **ProjectBilling@phdproperties.realestate** → renovation projects. Matched only against project properties, shown under **Projects**.
+
+Vendors can send invoices to those addresses directly, and Peter (or anyone) can forward them. Mail to the aliases is read from any sender; nothing reaches the books until someone approves it in the console. Each invoice is read as a whole: the total is the invoice's grand total, checked against the line items and against the amount in the email it came with. If the total was first read as one line, it's corrected and the note says so. **Read again** on any receipt re-reads it with these rules.
+
+**Moving it from gabe@ to billing@ (once):**
+1. In gabe@'s receipt-inbox Apps Script project: **Project Settings → Script properties**, copy the values (`ANTHROPIC_API_KEY`, `MODEL` if set, and `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `BACKUP_TOKEN`, `DIGEST_TO` if you use them). Then **Triggers** → delete its triggers, so gabe@ stops reading mail. Approve or dismiss anything still waiting in the Receipt inbox first.
+2. Sign in as **billing@** → script.google.com → New project → paste `apps-script/Code.gs` → Save. Set the time zone to Eastern (Project Settings) and paste the script properties from step 1.
+3. Run **setup()** and allow access (Gmail, Drive, Sheets). It makes the labels, the **PHD Receipts** folder and the inbox sheet in billing@'s Drive, and prints the console key. If you used them before, also run **setupBackup()** and **setupDigest()**.
+4. **Deploy → New deployment → Web app** · Execute as **Me (billing@)** · Who has access **Anyone** → copy the URL.
+5. In the console: **Receipt inbox → Disconnect**, then paste the new URL and key.
+
+Receipts already filed stay in gabe@'s Drive; their links keep working for anyone they're shared with.
 
 ### 7c. Add a bill by uploading the vendor's invoice
 **Add bill** (or N) on the property management side opens an upload window. Drop in the vendor's invoice — PDF, JPG or PNG, several at once — or drag the file anywhere on the Bills or Today page. Choose **Bills to pay** or **Already paid (receipts)**.

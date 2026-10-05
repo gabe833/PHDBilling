@@ -150,8 +150,27 @@ function cleanOwner(o: Obj) {
 }
 
 // bills, distributions and renewals: money and dates by property, no bank or tenant details
+// files attached to a bill (the vendor's invoice): only an id, a file name and a link, wherever MagicDoor keeps them
+const FILE_KEY = /(file|attach|document|upload|invoice|receipt|image|photo)/i;
+function findFiles(x: unknown, depth = 0, out: { id: string; name: string; url: string }[] = []) {
+  if (!x || typeof x !== "object" || depth > 3) return out;
+  for (const [k, v] of Object.entries(x as Obj)) {
+    if (!v || typeof v !== "object" || !FILE_KEY.test(k)) { if (v && typeof v === "object" && k === "lineItems") (v as Obj[]).forEach((li) => findFiles(li, depth + 1, out)); continue; }
+    const list = Array.isArray(v) ? v : [v];
+    for (const f of list as Obj[]) {
+      if (!f || typeof f !== "object") continue;
+      const url = S(f.url || f.fileUrl || f.downloadUrl || f.signedUrl || f.link || f.uri || f.path || "");
+      const id = S(f.id || f.fileId || f.attachmentId || f.documentId || "");
+      const name = S(f.name || f.fileName || f.filename || f.originalName || f.originalFileName || f.title || "").slice(0, 160);
+      if (id || /^https?:/.test(url)) out.push({ id, name, url: /^https?:/.test(url) ? url : "" });
+      else findFiles(f, depth + 1, out);
+    }
+  }
+  return out;
+}
 function cleanBill(x: Obj, vendors: Record<string, string>, accounts: Record<string, string>) {
   return {
+    files: findFiles(x).slice(0, 10), ref: S(x.reference || x.billNumber || x.invoiceNumber || x.number || "").slice(0, 60),
     id: S(x.id), date: D(x.billDate), due: D(x.dueDate), status: S(x.status), company: B(x.companyBill),
     vendor: vendors[S(x.vendorId)] || "", memo: S(x.memo).slice(0, 200), total: N(x.totalAmount), owed: N(x.dueAmount),
     lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || "" })),
@@ -198,9 +217,20 @@ async function sync() {
     if (r.status === 200 && Array.isArray(r.body)) (r.body as Obj[]).forEach((a) => accounts[S(a.id)] = S(a.name));
   } catch (e) { notes.push("Chart of accounts: " + String((e as Error).message || e)); }
   const cutDay = cut + "-01";
+  const shapes: Obj = { billDetail: {} };
   try {
     const raw = await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => vendors[S(v.id)] = nameOf(v)));
     bills = raw.map((x) => cleanBill(x, vendors, accounts)).filter((x) => x.date && x.date >= cutDay && x.status !== "voided" && x.status !== "rejected");
+    shapes.billList = mergeShapes(raw.slice(0, 40).map((x) => typeOf("", x)));
+    // one bill's detail and file addresses: field names and status codes only
+    const recent = raw.filter((x) => D(x.billDate)).sort((a, b) => S(b.billDate).localeCompare(S(a.billDate))).slice(0, 2);
+    for (const b of recent) {
+      for (const suffix of ["", "/files", "/attachments", "/documents"]) {
+        const p = `/company-app/vendors/bills/${S(b.id)}${suffix}`;
+        try { const r = await mdGet(p); (shapes.billDetail as Obj)[suffix || "detail"] = r.status === 200 ? { status: 200, ...describe(r.body) } : { status: r.status }; }
+        catch (e) { (shapes.billDetail as Obj)[suffix || "detail"] = { status: "failed" }; }
+      }
+    }
   } catch (e) { notes.push("Vendor bills: " + String((e as Error).message || e)); }
   try { dists = (await listAll("/company-app/owners/distributions")).map(cleanDistribution).filter((x) => x.date && x.date >= cutDay); }
   catch (e) { notes.push("Owner distributions: " + String((e as Error).message || e)); }
@@ -215,7 +245,7 @@ async function sync() {
     owners: owners.map(cleanOwner),
     fees: Object.entries(feeMap).map(([k, amount]) => { const [propertyId, month] = k.split("|"); return { propertyId, month, amount }; }),
     bills, distributions: dists, renewals,
-    notes, took: 0,
+    shapes, notes, took: 0,
   };
   snap.took = Math.round((Date.now() - t0) / 100) / 10;
   await saveSnapshot(snap);
