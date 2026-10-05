@@ -132,6 +132,17 @@ Month close → **Email statements** makes one Gmail draft per property in **pm@
 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one.
 
+### 7b. Project invoice emails (sent from billing@)
+On a project invoice, **Email owner** writes the email the way the office sends it ("Hi Ken, … Here is the project invoice link for 3108 Terry Dr: 3108TERRY-002"). The invoice number links to the pay link. You see it and can edit it in the console, with a live preview, then press **Send from billing@** or **Save as Gmail draft**. Sent emails sit in billing@'s Sent folder with the label **Console/Project Invoices**, and the invoice shows when and to whom it went. Tick "Use this subject and message for future invoice emails" to change the standard wording.
+
+1. Sign in to Google as **billing@phdproperties.realestate** → script.google.com → New project → paste `apps-script/ProjectInvoices.gs` → Save.
+2. To include billing@'s Gmail signature: left sidebar → **Services (+)** → **Gmail API** → Add.
+3. Run **setup()** and allow access. The log shows the console key.
+4. Deploy → New deployment → **Web app** · Execute as **Me** · Who has access **Anyone** → copy the URL.
+5. In the console: open any project invoice → **Email owner** → paste the URL and key → Connect (once for the office).
+
+The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one. The script sends at most 60 emails a day (change `MAX_PER_DAY` if needed).
+
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)

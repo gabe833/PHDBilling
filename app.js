@@ -7307,6 +7307,11 @@ function pjQbWhy(p, inv){
   if(c.id && !c.synced) return "this owner isn't linked to QuickBooks in Nickel";
   return "";
 }
+// the billing@ email for this invoice: sent, or a draft waiting in Gmail
+function pjMailLine(reg){
+  const m = reg.email; if(!m) return "";
+  return `<p class="help" style="margin:8px 0 0">${m.sent ? `${icon("mail")} Emailed ${esc(fdateS(String(m.at).slice(0, 10)))} to ${esc(m.to)} from billing@` : `${icon("mail")} Draft waiting in billing@'s Gmail (to ${esc(m.to)}) — send it there, or email it from here`}</p>`;
+}
 // a Nickel payment line: amount, how, when, clearing / deposited, receipt
 function nkPayLine(x){
   const st = String(x.status || "").toUpperCase(), clearing = !x.external && st && st !== "SUCCEEDED";
@@ -7325,7 +7330,8 @@ function pjNickelPanel(p, unit, inv){
       ${pays.length ? `<div class="iv-pay">${pays.map(nkPayLine).join(" ")}</div>` : ""}
       ${nk.url && !nk.canceled ? `<div class="pj-nk-link"><input type="text" readonly value="${esc(nk.url)}" aria-label="Pay link"><button class="btn sm" data-pj="copy">Copy pay link</button><a class="btn sm ghost" href="${esc(nk.url)}" target="_blank" rel="noopener">Open</a></div>`
         : !nk.canceled ? `<p class="help">Nickel didn't return a pay link. Open the invoice in Nickel to copy it.</p>` : ""}
-      ${canAct ? `<div class="pj-nk-tools">${nk.sentTo ? `<button class="btn sm" data-pj="send">Email again</button>` : `<button class="btn sm" data-pj="send">Email it from Nickel</button>`}
+      ${pjMailLine(reg)}
+      ${canAct ? `<div class="pj-nk-tools"><button class="btn sm ${reg.email && reg.email.sent ? "" : "primary"}" data-pj="mail">${reg.email && reg.email.sent ? "Email owner again" : "Email owner"}</button><button class="btn sm ghost" data-pj="send" title="Nickel's own invoice email instead of the billing@ email">${nk.sentTo ? "Nickel's email again" : "Send Nickel's email"}</button>
         ${onFile.length ? `<button class="btn sm" data-pj="charge">Charge account on file</button>` : ""}
         ${paidHere ? `<button class="btn sm primary" data-pj="record">Mark paid in Nickel too</button>` : ""}
         <button class="btn sm ghost danger" data-pj="del">Delete in Nickel</button></div>` : ""}
@@ -7336,6 +7342,7 @@ function pjNickelPanel(p, unit, inv){
     const why = pjQbWhy(p, inv);
     box.innerHTML = `<div class="pj-nk-h"><b>QuickBooks + Nickel pay link</b><span class="muted">${why ? esc(why[0].toUpperCase() + why.slice(1)) + "." : "Creates this invoice in QuickBooks (through Nickel) and gets the owner's pay link."}</span></div>
       <div class="pj-nk-link"><button class="btn sm primary" data-pj="create" ${why === "Nickel isn't connected" ? "disabled" : ""}>Create in QuickBooks + get pay link</button>${why && why !== "Nickel isn't connected" ? `<button class="btn sm ghost" data-pj="setup">Payments setup</button>` : ""}</div>
+      ${reg.link ? `${pjMailLine(reg)}<div class="pj-nk-tools"><button class="btn sm" data-pj="mail">Email owner the invoice link</button></div>` : ""}
       ${reg.nickelOld && reg.nickelOld.deleted ? `<p class="help">${esc(reg.nickelOld.number || "The earlier one")} was deleted in Nickel ${esc(fdateS(String(reg.nickelOld.deleted).slice(0, 10)))}.</p>` : ""}`;
   } else {
     box.innerHTML = `<div class="pj-nk-h"><span class="muted">Lock this invoice to create it in QuickBooks and get a Nickel pay link.</span></div>`;
@@ -7345,6 +7352,8 @@ function pjNickelPanel(p, unit, inv){
   if(q("setup")) q("setup").onclick = () => paySetup();
   if(q("create")) q("create").onclick = () => pjCreateSheet(p, unit, inv);
   if(q("send")) q("send").onclick = () => pjSendSheet(p, unit, inv);
+  if(q("mail")) q("mail").onclick = () => pjEmailSheet(p, unit, inv);
+  if(reg.email && !reg.email.sent) setTimeout(() => bmCheckDraft(p, unit, inv), 0);
   if(q("sync")) q("sync").onclick = async e => { e.preventDefault(); e.target.textContent = "Checking…";
     try{ const r = await payCall("nk.sync", {kind:"project", id:p.id, key}); toast(r.changed ? "Updated from Nickel" : "Nothing new in Nickel"); render(); }catch(er){ toast(er.message); e.target.textContent = "Check Nickel"; } };
   if(q("charge")) q("charge").onclick = () => { const cust = nkOwner(p.ownerId);
@@ -7519,6 +7528,154 @@ function pjTxnNickelBlock(p, t){
     const x = pjTxnNickelBlock(p, t); if(x) b.appendChild(x);
   };
 })();
+
+/* =====================================================================
+   PROJECT INVOICE EMAILS — from billing@phdproperties.realestate.
+   The console writes the email the way the office sends them ("Hi Ken, …
+   Here is the project invoice link for 3108 Terry Dr: 3108TERRY-002"),
+   you read and edit it here, then it's sent from billing@'s Gmail by a
+   small Google script installed in that account (apps-script/
+   ProjectInvoices.gs), or saved there as a draft. Nothing is sent until
+   you press Send.
+   ===================================================================== */
+const BM_KEY = "phd-billmail-conn";
+const BM_DEFAULT = {
+  subject: "{address}{unit} - Invoice #{no}",
+  body: `Hi {first},
+
+I hope you're doing well!
+
+Here is the project invoice link for {property}{unit}:
+{link}
+
+Please let me know if you have any questions regarding the invoices or payment.
+
+Sincerely,`
+};
+function bmConn(){
+  if(typeof Cloud !== "undefined" && Cloud.ready){ const v = S.billMail; return v && v.url && v.token ? v : null; }
+  try{ const v = JSON.parse(localStorage.getItem(BM_KEY) || "null"); if(v && v.url && v.token) return v; }catch(e){}
+  return null;
+}
+function bmSave(patch){
+  const next = Object.assign({}, S.billMail || {}, patch);
+  if(typeof Cloud !== "undefined" && Cloud.ready){ snapshot(); S.billMail = next; commit(); return; }
+  S.billMail = next; try{ localStorage.setItem(BM_KEY, JSON.stringify(next)); }catch(e){}
+}
+async function bmCall(body, get){
+  const c = bmConn(); if(!c) throw new Error("Connect billing@ first");
+  const r = get ? await fetch(c.url + (c.url.includes("?") ? "&" : "?") + new URLSearchParams(Object.assign({token:c.token}, body)).toString(), {redirect:"follow"})
+                : await fetch(c.url, {method:"POST", redirect:"follow", body:JSON.stringify(Object.assign({token:c.token}, body))});
+  let j; try{ j = await r.json(); }catch(e){ throw new Error("The billing@ script didn't answer — check the web app URL and that it's deployed with access for Anyone"); }
+  if(!j.ok) throw new Error(j.error === "unauthorized" ? "The billing@ key wasn't accepted — paste it again from the script's log" : (j.error || "billing@ script error"));
+  return j;
+}
+const BM_ABBR = /\b(st|dr|rd|ave|ln|blvd|ct|pl|cir|hwy|pkwy|ter|trl)$/i;
+// what the template's {words} become for one invoice
+function bmFields(p, unit, inv){
+  const o = ownerRec(p), reg = inv.reg || {}, nk = reg.nickel || {};
+  const name = String(p.name || "").trim();
+  return {
+    first: (o && typeof stmtFirstName === "function" && stmtFirstName(o)) || "there",
+    property: name,
+    address: BM_ABBR.test(name) ? name + "." : name,
+    unit: p.units.length > 1 ? ` - ${unit.name}` : "",
+    no: String(inv.no),
+    number: nk.number || (typeof pjInvNumber === "function" ? pjInvNumber(p, unit, inv) : `Invoice ${inv.no}`),
+    url: (nk.url && !nk.canceled) ? nk.url : (reg.link || ""),
+    amount: usd(inv.totalC)
+  };
+}
+const bmFill = (tpl, f) => String(tpl || "").replace(/\{(first|property|address|unit|no|number|amount)\}/g, (_, k) => f[k] || "");
+// the body as an email: paragraphs, and {link} as the invoice number linked to the pay link
+function bmHTML(body, f){
+  const linkHtml = f.url ? `<a href="${esc(f.url)}">${esc(f.number)}</a>` : esc(f.number);
+  return bmFill(body, f).split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${par.split("{link}").map(x => esc(x).replace(/\n/g, "<br>")).join(linkHtml)}</p>`).join("");
+}
+const bmText = (body, f) => bmFill(body, f).replace(/\{link\}/g, f.url ? `${f.number} (${f.url})` : f.number);
+
+function pjEmailSheet(p, unit, inv){
+  const sh = $("#sheet"), o = ownerRec(p), f = bmFields(p, unit, inv), reg = inv.reg || {}, c = bmConn(), tpl = Object.assign({}, BM_DEFAULT, (S.billMail || {}).template || {});
+  const to = o ? [o.email].filter(Boolean).join(", ") : "", cc = o ? String(o.cc || "").split(/[,;\s]+/).filter(e => /@/.test(e)).join(", ") : "";
+  const sig = c && c.signature, prior = reg.email;
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Email invoice ${esc(f.no)} to the owner</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(f.unit)} · ${usd(inv.totalC)} · from ${esc((c && c.mailbox) || "billing@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${!c ? `<div class="sm-setup"><b>Connect billing@ (once for the office)</b>
+          <p class="help" style="margin:6px 0 10px">In the billing@phdproperties.realestate Google account, install <code>apps-script/ProjectInvoices.gs</code> (steps at the top of the file), deploy it as a web app, then paste its URL and the key from its log.</p>
+          <label class="fld"><span>Web app URL</span><input type="text" id="bmUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
+          <label class="fld"><span>Console key</span><input type="password" id="bmTok" autocomplete="off"></label>
+          <button class="btn primary sm" id="bmConn" type="button">Connect</button> <span id="bmMsg" class="muted" style="font-size:12.5px;margin-left:8px"></span></div>` : ""}
+      ${prior ? `<div class="pm-banner" style="background:var(--panel-2)">${prior.sent ? "Emailed" : "Draft saved in Gmail"} ${esc(fdateS(String(prior.at).slice(0, 10)))} to ${esc(prior.to)}${prior.by ? " by " + esc(typeof cloudWhoSafe === "function" ? cloudWhoSafe(prior.by) : prior.by) : ""}.</div>` : ""}
+      ${!f.url ? `<div class="pm-banner">This invoice has no pay link yet. Create it in QuickBooks + Nickel first, or paste the invoice link on the invoice.</div>` : ""}
+      <div class="f2"><label class="fld"><span>To</span><input type="text" id="bmTo" value="${esc(to)}"></label><label class="fld"><span>Cc</span><input type="text" id="bmCc" value="${esc(cc)}"></label></div>
+      <label class="fld"><span>Subject</span><input type="text" id="bmSub" value="${esc(bmFill(tpl.subject, f))}"></label>
+      <label class="fld"><span>Message <span class="muted" style="font-weight:400">· <code>{link}</code> is the invoice number, linked to the pay link</span></span><textarea id="bmBody" rows="10">${esc(bmFill(tpl.body, f))}</textarea></label>
+      <div class="bm-prev-h"><b>Preview</b><span class="muted">what ${esc(f.first === "there" ? "the owner" : f.first)} will see</span></div>
+      <div class="bm-prev" id="bmPrev"></div>
+      <label class="ps-chk"><input type="checkbox" id="bmPdf"> Attach the invoice PDF</label>
+      <label class="ps-chk"><input type="checkbox" id="bmTpl"> Use this subject and message for future invoice emails</label>
+      ${c ? `<p class="help">Sent from ${esc(c.mailbox || "billing@")} as “${esc(c.fromName || "PHD Billing")}”${sig ? ", with billing@'s Gmail signature" : ". No Gmail signature was found — add the Gmail API service in the script to include it"}. <a href="#" id="bmDisc">Change connection</a></p>` : ""}
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn" id="bmDraft" ${c ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="bmSend" ${c ? "" : "disabled"}>Send from billing@</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  const body = $("#bmBody"), sub = $("#bmSub"), prev = $("#bmPrev");
+  // the subject/body as typed keep their filled-in words; {link} stays a token so the link is always right
+  const draw = () => { prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc((c && c.fromName) || "PHD Billing")} &lt;${esc((c && c.mailbox) || "billing@phdproperties.realestate")}&gt; · to ${esc($("#bmTo").value)}</div><div class="bm-body">${bmHTML(body.value, f)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
+    prev.querySelectorAll("a").forEach(a => { a.target = "_blank"; a.rel = "noopener"; }); };
+  [body, sub, $("#bmTo")].forEach(x => x.oninput = draw); draw();
+  const cn = $("#bmConn"); if(cn) cn.onclick = async () => {
+    const url = $("#bmUrl").value.trim(), token = $("#bmTok").value.trim(), msg = $("#bmMsg");
+    if(!/^https:\/\/script\.google\.com\/macros\//.test(url)) return msg.textContent = "Paste the web app URL (it starts with https://script.google.com/macros/)";
+    if(token.length < 20) return msg.textContent = "Paste the key from the script's log";
+    msg.textContent = "Checking…";
+    const prevConn = S.billMail; S.billMail = Object.assign({}, S.billMail || {}, {url, token});
+    try{ const j = await bmCall({action:"ping"}, true); S.billMail = prevConn; bmSave({url, token, mailbox:j.mailbox || "", fromName:j.fromName || "", signature:j.signature || ""}); toast(`Connected — emails go out from ${j.mailbox}`); pjEmailSheet(p, unit, inv); }
+    catch(e){ S.billMail = prevConn; msg.textContent = e.message; }
+  };
+  const dc = $("#bmDisc"); if(dc) dc.onclick = e => { e.preventDefault(); if(confirm("Disconnect billing@? You can paste a new URL and key afterwards.")){ bmSave({url:"", token:""}); pjEmailSheet(p, unit, inv); } };
+  const go = async send => {
+    const to = $("#bmTo").value.split(/[,;\s]+/).filter(e => /@/.test(e)), ccs = $("#bmCc").value.split(/[,;\s]+/).filter(e => /@/.test(e));
+    if(!to.length) return toast("Add the owner's email");
+    if(send && !f.url && !confirm("This invoice has no pay link. Send it anyway?")) return;
+    if(send && !confirm(`Send this email to ${to.join(", ")} from ${(c && c.mailbox) || "billing@"} now?`)) return;
+    const btn = send ? $("#bmSend") : $("#bmDraft"); btn.disabled = true; btn.textContent = send ? "Sending…" : "Saving…";
+    try{
+      if($("#bmTpl").checked) bmSave({template:{subject:bmUnfill(sub.value, f), body:bmUnfill(body.value, f)}});
+      // a fresh signature each time (picks up changes made in Gmail)
+      const req = {action:send ? "send" : "draft", to:to.join(","), cc:ccs.join(","), subject:sub.value, html:bmHTML(body.value, f), text:bmText(body.value, f)};
+      if($("#bmPdf").checked){ req.pdfHtml = invoiceDocHTML(p, unit, inv); req.fileName = `${f.number} - ${p.name}${f.unit}`; }
+      const r = await bmCall(req);
+      snapshot(); const g = P().register[pjKey(unit, inv)] = P().register[pjKey(unit, inv)] || {};
+      g.email = {sent:!!r.sent, drafted:!!r.drafted, to:to.join(", "), subject:sub.value, at:r.at || new Date().toISOString(), by:billWho(), threadId:r.threadId || "", from:r.from || ""};
+      if(r.sent && !g.dateSent) g.dateSent = todayISO();
+      commit(); closeSheet();
+      toast(r.sent ? `Emailed to ${to.join(", ")} from ${r.from || "billing@"}` : `Draft saved in ${r.from || "billing@"}'s Gmail`); render();
+    }catch(e){ toast(e.message); btn.disabled = false; btn.textContent = send ? "Send from billing@" : "Save as Gmail draft"; }
+  };
+  $("#bmSend").onclick = () => go(true);
+  $("#bmDraft").onclick = () => go(false);
+}
+// turn a typed message back into a template (so the next invoice gets its own name, number and link)
+function bmUnfill(text, f){
+  let t = String(text);
+  const rx = v => new RegExp("(^|[^A-Za-z0-9])" + v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![A-Za-z0-9])", "g");
+  [["number", f.number], ["address", f.address], ["property", f.property], ["first", f.first !== "there" ? f.first : ""]].forEach(([k, v]) => { if(v && v.length > 1) t = t.replace(rx(v), (m, pre) => pre + `{${k}}`); });
+  if(f.unit) t = t.split(f.unit).join("{unit}");
+  return t.replace(/Invoice #\d+/g, "Invoice #{no}");
+}
+// did a saved draft get sent from Gmail? (checked when the invoice is opened)
+const BM_CHECKED = {};
+function bmCheckDraft(p, unit, inv){
+  const g = (inv.reg || {}).email; if(!g || g.sent || !g.threadId || !bmConn() || BM_CHECKED[g.threadId]) return;
+  BM_CHECKED[g.threadId] = true;
+  bmCall({action:"status", items:[{id:"x", threadId:g.threadId}]}).then(r => {
+    const s = (r.results || [])[0] || {}; if(s.state !== "sent" && s.state !== "deleted") return;
+    snapshot(); const x = P().register[pjKey(unit, inv)]; if(!x || !x.email) return;
+    if(s.state === "sent"){ x.email.sent = true; x.email.drafted = false; x.email.at = s.at || x.email.at; if(!x.dateSent) x.dateSent = String(s.at || todayISO()).slice(0, 10); }
+    else delete x.email;
+    commit(); render();
+  }).catch(() => {});
+}
 
 /* =====================================================================
    PAYMENTS (shared by both sides) — Nickel balances, money in and out with
@@ -7849,6 +8006,7 @@ function cloudDocs(){
   out.set("shared/main", {owners:S.owners || [], order:S.properties.map(p => p.id), inboxDone:S.inboxDone || {}});
   if(S.inboxConn) out.set("shared/inbox", S.inboxConn);
   if(S.stmtConn) out.set("shared/stmtmail", S.stmtConn);
+  if(S.billMail) out.set("shared/billmail", S.billMail);
   if(S.pmVendors) out.set("shared/vendors", S.pmVendors);
   if(S.acct) out.set("shared/accounting", S.acct);
   if(S.pmSettings) out.set("shared/pmsettings", S.pmSettings);
@@ -7875,6 +8033,7 @@ function cloudApply(kind, id, data, deleted){
     if(Array.isArray(data.order)){ const pos = new Map(data.order.map((x, i) => [x, i])); S.properties.sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9)); }
   } else if(kind === "shared" && id === "inbox"){ S.inboxConn = deleted ? null : data; }
   else if(kind === "shared" && id === "stmtmail"){ S.stmtConn = deleted ? null : data; }
+  else if(kind === "shared" && id === "billmail"){ S.billMail = deleted ? null : data; }
   else if(kind === "shared" && id === "vendors"){ S.pmVendors = deleted ? null : data; }
   else if(kind === "shared" && id === "accounting"){ S.acct = deleted ? null : data; }
   else if(kind === "shared" && id === "nickel"){ S.nk = deleted ? null : data; }        // written only by the payments function
@@ -7900,7 +8059,7 @@ function cloudLabel(kind, id, data){
   if(kind === "pm_deposit"){ const p = pmProp(id); return `deposits for ${p ? p.name : "a property"}`; }
   if(kind === "pm_bill"){ const p = data && pmProp(data.propertyId); return `a bill${data && data.vendor ? " from " + data.vendor : ""}${p ? " · " + p.name : ""}`; }
   if(kind === "pm_invoice") return `owner invoice ${(data && data.no) || ""}`.trim();
-  if(kind === "shared") return {main:"owners", inbox:"inbox settings", pmsettings:"alert rules", alerts:"alerts (snoozed/dismissed)", magicdoor:"MagicDoor data", mdlinks:"MagicDoor links and updates", vendors:"vendors", accounting:"QuickBooks settings", stmtmail:"statement mailbox", nickel:"Nickel updates"}[id] || id;
+  if(kind === "shared") return {main:"owners", inbox:"inbox settings", pmsettings:"alert rules", alerts:"alerts (snoozed/dismissed)", magicdoor:"MagicDoor data", mdlinks:"MagicDoor links and updates", vendors:"vendors", accounting:"QuickBooks settings", stmtmail:"statement mailbox", billmail:"billing@ email settings", nickel:"Nickel updates"}[id] || id;
   return kind;
 }
 
@@ -8222,7 +8381,7 @@ function cloudRestore(d, name){
   if(typed !== "RESTORE") return;
   snapshot();
   const keepUi = S.ui, keepActive = S.activeId;
-  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.stmtConn = null; S.pmVendors = null; S.acct = null; S.pmSettings = null; S.pmAlerts = {}; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
+  S = seedState(); S.properties = []; S.owners = []; S.inboxDone = {}; S.inboxConn = null; S.stmtConn = null; S.billMail = null; S.pmVendors = null; S.acct = null; S.pmSettings = null; S.pmAlerts = {}; S.pm = {properties:[], rows:{}, meta:{}, deposits:{}};
   const main = d.docs.find(r => r.kind === "shared" && r.id === "main");
   d.docs.filter(r => !r.deleted && !(r.kind === "shared" && r.id === "main")).forEach(r => cloudApply(r.kind, r.id, r.data, false));
   if(main && !main.deleted) cloudApply("shared", "main", main.data, false);
