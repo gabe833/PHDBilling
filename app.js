@@ -6693,6 +6693,7 @@ function pgPmBills(){
   if(selIds.length) acts.push(nickelOn() ? [`Pay ${selIds.length} selected`, () => billPaySheet(selIds), "primary"] : [`Mark ${selIds.length} paid`, () => billManualSheet(selIds), "primary"]);
   actions(acts);
   payStatusThenRedraw("pmBills");
+  billDropZone($("#view"));
   payRefreshSoon(); if(nkImportVendors()){ setTimeout(render, 0); return; } nkMatchSoon("pmBills");
   const v = $("#view");
 
@@ -6724,7 +6725,7 @@ function pgPmBills(){
       <input type="text" id="bqM" placeholder="What for (e.g. replaced water heater)" aria-label="What for">
       <select id="bqR" aria-label="Owner"><option value="deduct">Deduct from payout</option><option value="invoice">Invoice owner</option><option value="phd">PHD expense</option></select>
       <button class="btn primary" id="bqGo">Add</button></div>
-    <div class="bl-qh"><span id="bqHint" class="muted"></span><a href="#" id="bqMore">More details…</a></div>`;
+    <div class="bl-qh"><span id="bqHint" class="muted"></span><a href="#" id="bqUp">Upload an invoice instead</a><a href="#" id="bqMore">More details…</a></div>`;
   v.appendChild(qa);
   const qr = qa.querySelector("#bqR"); if(last.recover) qr.value = last.recover;
   const hint = () => { const p = pmProp(qa.querySelector("#bqP").value), o = p && ownerById(p.ownerId);
@@ -6743,6 +6744,7 @@ function pgPmBills(){
   };
   qa.querySelector("#bqGo").onclick = addQuick;
   qa.querySelectorAll("input").forEach(i => i.onkeydown = e => { if(e.key === "Enter") addQuick(); });
+  qa.querySelector("#bqUp").onclick = e => { e.preventDefault(); billUploadSheet(); };
   qa.querySelector("#bqMore").onclick = e => { e.preventDefault(); billSheet(null, {propertyId:qa.querySelector("#bqP").value, vendor:qa.querySelector("#bqV").value, amount:qa.querySelector("#bqA").value, date:qa.querySelector("#bqD").value, memo:qa.querySelector("#bqM").value, recover:qr.value}); };
 
   /* ---- list ---- */
@@ -6761,7 +6763,7 @@ function pgPmBills(){
   const list = all.filter(fn).filter(b => !q || `${b.vendor} ${b.memo} ${b.billNo} ${(pmProp(b.propertyId) || {}).name || ""} ${b.category}`.toLowerCase().includes(q))
     .sort((a, b) => f === "paid" ? String((b.pay || {}).date || "").localeCompare((a.pay || {}).date || "") : String(a.due || a.date).localeCompare(b.due || b.date));
   const card = elm("div","card");
-  if(!list.length){ card.innerHTML = `<div class="empty"><b>${f === "open" ? "No bills waiting" : "Nothing here"}</b><p>${f === "open" ? "Add one above — it takes a few seconds." : "Try another filter."}</p></div>`; v.appendChild(card); return; }
+  if(!list.length){ card.innerHTML = `<div class="empty"><b>${f === "open" ? "No bills waiting" : "Nothing here"}</b><p>${f === "open" ? "Add one above, or drop the vendor's invoice anywhere on this page." : "Try another filter."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl bl-tbl");
   const canSel = f === "open" || f === "due";
   t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>Owner</th><th></th></tr></thead>
@@ -6822,7 +6824,10 @@ function billSheet(id, preset){
       if(!(b.amount > 0)) return toast("Enter the amount");
       if(!pmProp(b.propertyId).ownerId && b.recover !== "phd") b.recover = "phd";
       const saved = billSave(b, isNew);
+      const fromUpload = isNew && saved.inbox && typeof billUploadDone === "function";
+      if(fromUpload){ commit(); billUploadDone(saved); }
       closeSheet(); toast(isNew ? `Bill added — ${usd(cents(saved.amount))} from ${saved.vendor}` : "Bill saved", true); render();
+      if(fromUpload && BU.files.some(f => f.bill === saved.id)) setTimeout(() => billUploadSheet(null, true), 60);
     };
     const vd = $("#bsVoid"); if(vd) vd.onclick = () => {
       if(b.status !== "void" && b.invoiceId && invById(b.invoiceId) && invById(b.invoiceId).status !== "draft") return toast("It's on a sent invoice — void the invoice first");
@@ -7759,6 +7764,170 @@ function bmCheckDraft(p, unit, inv){
 }
 
 /* =====================================================================
+   ADD BILL BY UPLOAD — drop a vendor invoice or receipt (PDF or photo).
+   It goes to the receipt inbox script, which reads it with Claude the
+   same way it reads emailed receipts and files it in Drive. When the
+   property and amount are clear, the bill is created right away;
+   otherwise the bill form opens filled in for you to finish.
+   ===================================================================== */
+const BU = {files:[], kind:"topay", prop:"", busy:false};
+const BU_TYPES = {"application/pdf":25, "image/jpeg":5, "image/png":5, "image/webp":5, "image/gif":5};   // MB limits
+
+function billUploadSheet(files, keep){
+  if(!keep) BU.files = BU.files.filter(f => f.state === "working" || f.state === "queued");
+  const sh = $("#sheet"), conn = inboxConn();
+  const props = pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const draw = () => {
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Add a bill</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Upload the vendor's invoice — it's read and the bill is filled in for you</div></div>
+        <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${conn ? "" : `<div class="pm-banner">Reading uploads uses the receipt inbox, which isn't connected yet. <button class="btn sm" id="buConn" style="margin-left:6px">Connect it</button></div>`}
+        <div class="bu-seg sc-seg"><button data-k="topay" class="${BU.kind === "topay" ? "on" : ""}">Bills to pay</button><button data-k="paid" class="${BU.kind === "paid" ? "on" : ""}">Already paid (receipts)</button></div>
+        <label class="bu-drop ${conn ? "" : "dis"}" id="buDrop">
+          <input type="file" id="buFile" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple ${conn ? "" : "disabled"}>
+          ${icon("file")}<b>Drop invoices here or choose files</b><span>PDF, JPG or PNG · several at once is fine</span>
+        </label>
+        <label class="fld" style="margin-top:12px"><span>Property</span><select id="buProp"><option value="">Find it from the invoice</option>${props.map(p => `<option value="${p.id}" ${BU.prop === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+          <span class="help">Leave this to have the property read from the service address, job name or PO.</span></label>
+        ${BU.files.length ? `<div class="sectl">Uploads</div><div class="bu-list">${BU.files.map((f, i) => buRow(f, i)).join("")}</div>` : ""}
+      </div>
+      <div class="sheet-f"><button class="btn ghost" id="buHand">Enter by hand</button><span style="flex:1"></span>
+        ${BU.files.some(f => f.bill) ? `<button class="btn" id="buSee">See bills</button>` : ""}<button class="btn primary" id="shCancel">Done</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = () => { closeSheet(); if(S.ui.view === "pmBills" || S.ui.view === "today") render(); };
+    sh.querySelectorAll(".bu-seg [data-k]").forEach(b => b.onclick = () => { BU.kind = b.dataset.k; draw(); });
+    const ps = sh.querySelector("#buProp"); ps.onchange = () => { BU.prop = ps.value; };
+    const c = sh.querySelector("#buConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
+    sh.querySelector("#buHand").onclick = () => billSheet(null, BU.prop ? {propertyId:BU.prop} : {});
+    const see = sh.querySelector("#buSee"); if(see) see.onclick = () => { closeSheet(); S.ui.mode = "pm"; S.ui.billF = BU.kind === "paid" ? "paid" : "open"; go("pmBills"); };
+    const inp = sh.querySelector("#buFile"); inp.onchange = () => { buAdd([...inp.files], draw); inp.value = ""; };
+    const dz = sh.querySelector("#buDrop");
+    dz.ondragover = e => { e.preventDefault(); dz.classList.add("over"); };
+    dz.ondragleave = () => dz.classList.remove("over");
+    dz.ondrop = e => { e.preventDefault(); dz.classList.remove("over"); if(conn) buAdd([...e.dataTransfer.files], draw); };
+    sh.querySelectorAll("[data-bu]").forEach(b => b.onclick = () => buAct(b.dataset.bu, Number(b.dataset.i), draw));
+  };
+  BU.redraw = draw;
+  draw(); openPanel();
+  if(files && files.length && conn) buAdd(files, draw);
+}
+function buRow(f, i){
+  const it = f.item || {}, b = f.bill && billById(f.bill), p = b && pmProp(b.propertyId);
+  const name = `<div class="bu-n">${esc(f.name)}</div>`;
+  if(f.state === "working" || f.state === "queued") return `<div class="bu-r"><span class="bu-spin" aria-hidden="true"></span><div class="bu-t">${name}<span>${f.state === "queued" ? "Waiting…" : "Reading the invoice…"}</span></div></div>`;
+  if(f.state === "done" && b) return `<div class="bu-r ok"><span class="bu-ic">✓</span><div class="bu-t"><b>${esc(b.vendor)} · ${usd(cents(b.amount))}</b><span>${esc(p ? p.name : "")}${b.due ? ` · due ${esc(fdateS(b.due))}` : ""}${b.status === "paid" ? " · paid" : " · to pay"}${b.billNo ? ` · #${esc(b.billNo)}` : ""}</span></div><button class="btn sm" data-bu="open" data-i="${i}">Open</button></div>`;
+  if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t">${name}<span>${esc(f.msg)}</span></div>${f.dupeOf ? `<button class="btn sm ghost" data-bu="dupe" data-i="${i}">Open it</button>` : ""}${f.item ? `<button class="btn sm" data-bu="anyway" data-i="${i}">Add anyway</button>` : ""}</div>`;
+  if(f.state === "finish") return `<div class="bu-r warn"><span class="bu-ic">…</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${it.total ? " · " + usd(cents(it.total)) : ""}</b><span>${esc(f.msg)}</span></div><button class="btn sm primary" data-bu="finish" data-i="${i}">Finish</button></div>`;
+  if(f.state === "inbox") return `<div class="bu-r warn"><span class="bu-ic">…</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${it.total ? " · " + usd(cents(it.total)) : ""}</b><span>${esc(f.msg)}</span></div><button class="btn sm" data-bu="inbox" data-i="${i}">Receipt inbox</button></div>`;
+  return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t">${name}<span>${esc(f.msg || "Couldn't read it")}</span></div>${f.item && f.item.file_url ? `<button class="btn sm" data-bu="hand" data-i="${i}">Enter by hand</button>` : ""}</div>`;
+}
+function buAdd(files, draw){
+  files.forEach(file => {
+    const mime = (file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : (file.type || "").toLowerCase();
+    const f = {name:file.name, file, mime, kind:BU.kind, prop:BU.prop, state:"queued"};
+    if(!BU_TYPES[mime]){ f.state = "error"; f.msg = "Upload a PDF, JPG or PNG"; }
+    else if(file.size > BU_TYPES[mime] * 1024 * 1024){ f.state = "error"; f.msg = mime === "application/pdf" ? "PDF is over 25 MB" : "Photo is over 5 MB — use a smaller photo or a PDF"; }
+    BU.files.push(f);
+  });
+  draw(); buPump();
+}
+async function buPump(){
+  if(BU.busy) return; BU.busy = true;
+  try{
+    let f;
+    while((f = BU.files.find(x => x.state === "queued"))){
+      f.state = "working"; buRedraw();
+      try{
+        const data = await buBase64(f.file);
+        const r = await inboxPost({action:"upload", name:f.name, mime:f.mime, data, kind:f.kind, by:billWho()});
+        f.item = r.item || null; delete f.file;
+        buHandle(f, r.duplicate);
+      }catch(e){ f.state = "error"; f.msg = /Failed to fetch|NetworkError/i.test(e.message) ? "Couldn't reach the receipt inbox. Check your connection and try again." : e.message; }
+      buRedraw();
+    }
+  } finally { BU.busy = false; }
+}
+function buRedraw(){ if(BU.redraw && $("#sheet").classList.contains("on") && $("#buDrop")) BU.redraw(); }
+function buBase64(file){
+  return new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1] || ""); rd.onerror = () => rej(new Error("Couldn't read the file")); rd.readAsDataURL(file); });
+}
+// decide what to do with what was read
+function buHandle(f, duplicate, force){
+  const it = f.item;
+  if(!it){ f.state = "dupe"; f.msg = "This exact file was uploaded or emailed before."; return; }
+  const made = billList().find(b => b.inbox === it.id && b.status !== "void");
+  if(made){ f.state = "dupe"; f.msg = "Already added as a bill."; f.dupeOf = made.id; f.item = null; return; }
+  if(it.status === "error"){ f.state = "error"; f.msg = it.error || "Couldn't read it"; return; }
+  if(it.status === "rejected" && !force){ f.state = "error"; f.msg = (it.error || "Didn't look like an invoice or receipt") + (it.file_url ? ". It's saved in Drive — enter it by hand if it's a bill." : ""); return; }
+  if(it.is_credit){ f.state = "inbox"; f.msg = "This is a refund or credit — finish it in the receipt inbox."; return; }
+  const pid = f.prop || (pmProp(it.property_id) ? it.property_id : "");
+  const p = pid && pmProp(pid);
+  if(!p){ f.state = "finish"; f.msg = it.property_name ? `Matched to ${it.property_name}, which isn't a managed rental — pick the property` : "Couldn't tell which property — pick it and save"; return; }
+  if(!(Number(it.total) > 0)){ f.state = "finish"; f.msg = "Couldn't read the amount — check it and save"; return; }
+  if(!force){
+    const amtC = cents(it.total), dn = PMCore.dayNum(it.date || todayISO());
+    const twin = billList().find(b => b.status !== "void" && b.propertyId === p.id && cents(b.amount) === amtC &&
+      ((it.order_no && b.billNo && String(b.billNo).trim() === String(it.order_no).trim()) || (buVk(b.vendor) === buVk(it.vendor) && Math.abs(PMCore.dayNum(b.date || todayISO()) - dn) <= 20)));
+    if(twin){ f.state = "dupe"; f.msg = `Looks like the ${twin.vendor} bill for ${usd(amtC)} you already have (${fdateS(twin.date)}).`; f.dupeOf = twin.id; return; }
+  }
+  f.bill = buCreate(f, p).id; f.state = "done";
+}
+const buVk = v => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^the/, "").slice(0, 8);
+function buFileName(it, p, b){
+  const ext = ((it.file_name || "").match(/\.[a-z0-9]{2,4}$/i) || [".pdf"])[0];
+  return `${String(b.date || "").replace(/-/g, "")} - ${p.name} - ${b.memo || "Bill"} - ${b.vendor || ""}`.replace(/\s+-\s*$/, "") + ext;
+}
+function buPreset(it, f){
+  const paid = f.kind === "paid";
+  return {propertyId:f.prop || (pmProp(it.property_id) ? it.property_id : ""), vendor:it.vendor || "", amount:it.total || "", date:it.date || todayISO(), due:paid ? "" : (it.due_date || ""),
+    memo:it.description || "", billNo:it.order_no || "", receipt:it.file_url ? {url:it.file_url, name:it.file_name || f.name} : null, source:"Upload", inbox:it.id,
+    status:paid ? "paid" : "open", pay:paid ? {method:"Card / receipt", date:it.date || todayISO(), ref:"", by:billWho(), at:new Date().toISOString()} : null};
+}
+function buCreate(f, p){
+  const it = f.item, pre = buPreset(it, f);
+  pre.propertyId = p.id; pre.recover = p.ownerId ? ((S.ui.billLast || {}).recover && S.ui.billLast.recover !== "phd" ? S.ui.billLast.recover : "deduct") : "phd";
+  if(pre.status === "paid") pre.deductMonth = typeof inboxPmMonth === "function" ? inboxPmMonth() : undefined;
+  const b = billNew(pre);
+  billSave(b, true);
+  commit();
+  billUploadDone(b);
+  return b;
+}
+// tell the inbox sheet the receipt became a bill, and file it under the property in Drive
+function billUploadDone(b){
+  if(!b || !b.inbox) return;
+  const p = pmProp(b.propertyId); if(!p) return;
+  const fileName = b.receipt && b.receipt.url ? buFileName({file_name:b.receipt.name}, p, b) : "";
+  if(fileName && b.receipt.name !== fileName){ const live = billById(b.id); if(live && live.receipt){ live.receipt.name = fileName; commit(); } }
+  const msg = {decision:"approved", txnId:("bill:" + b.id).slice(0, 40), propertyName:p.name, fileName};
+  inboxDone()[b.inbox] = {txn:msg.txnId, msg};
+  if(typeof INBOX !== "undefined"){ INBOX.items = INBOX.items.filter(x => x.id !== b.inbox); delete INBOX.draft[b.inbox]; }
+  BU.files.forEach(f => { if(f.item && f.item.id === b.inbox && f.state !== "done"){ f.state = "done"; f.bill = b.id; } });
+  inboxPost(Object.assign({action:"decide", id:b.inbox}, msg)).then(() => { delete inboxDone()[b.inbox]; Store.save(S); }).catch(() => {});
+}
+function buAct(a, i, draw){
+  const f = BU.files[i]; if(!f) return;
+  if(a === "open" && f.bill) return billSheet(f.bill);
+  if(a === "dupe" && f.dupeOf) return billSheet(f.dupeOf);
+  if(a === "anyway"){ buHandle(f, false, true); return draw(); }
+  if(a === "inbox"){ closeSheet(); go("inbox"); return; }
+  if(a === "finish" || a === "hand"){
+    const pre = f.item ? buPreset(f.item, f) : {};
+    if(a === "hand" && f.item){ pre.vendor = pre.vendor || ""; }
+    return billSheet(null, pre);
+  }
+}
+
+// drag a file over a page: the upload sheet opens with it
+function billDropZone(host){
+  if(!host || host._buDrop) return; host._buDrop = true;
+  const ok = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  host.addEventListener("dragover", e => { if(!ok(e) || $("#sheet").classList.contains("on")) return; e.preventDefault(); host.classList.add("bu-over"); });
+  host.addEventListener("dragleave", e => { if(e.target === host) host.classList.remove("bu-over"); });
+  host.addEventListener("drop", e => { host.classList.remove("bu-over"); if(!ok(e) || $("#sheet").classList.contains("on")) return; e.preventDefault();
+    if(S.ui.view !== "pmBills") return; billUploadSheet([...e.dataTransfer.files]); });
+}
+
+/* =====================================================================
    PAYMENTS (shared by both sides) — Nickel balances, money in and out with
    receipts, deposited checks, and the setup. Plus the Nickel bits on the
    Owner page. Reading needs no confirmation; anything that changes Nickel
@@ -7971,93 +8140,188 @@ setInterval(() => {
 }, 60e3);
 
 /* =====================================================================
-   TODAY — one place to start: what needs doing across projects and
-   property management, each line with the button that does it.
+   TODAY — one place to start, per side. On the Projects side: invoices
+   to send and money owed on projects. On the PM side: rent, bills,
+   payouts, owner invoices, statements and month close. Each line has
+   the button that does it.
    ===================================================================== */
 function pgToday(){
-  $("#pgCrumb").textContent = ""; $("#pgTitle").textContent = "Today";
+  const pm = S.ui.mode === "pm";
+  $("#pgCrumb").textContent = pm ? "Property management" : "Projects"; $("#pgTitle").textContent = "Today";
   $("#pgSub").textContent = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric"});
+  const acts = [];
+  if(payOnline()) acts.push(["Check Nickel now", async e => { const b = e.target.closest("button"); b.disabled = true; b.textContent = "Checking…";
+    try{ const r = await payCall("nickel.refresh"); PAYV.data = null; PAYV.deps = null; toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date"); }catch(er){ toast(er.message); } render(); }, "ghost"]);
+  actions(acts);
   if(payOnline()){
-    actions([["Check Nickel now", async e => { const b = e.target.closest("button"); b.disabled = true; b.textContent = "Checking…";
-      try{ const r = await payCall("nickel.refresh"); PAYV.data = null; PAYV.deps = null; toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date"); }catch(er){ toast(er.message); } render(); }, "ghost"]]);
     payStatusThenRedraw("today");
     if(!PAYV.deps && !PAYV.depsLoading){ PAYV.depsLoading = true; payCall("nk.deposits", {}, {noSave:true}).then(r => { PAYV.deps = r; }).catch(() => { PAYV.deps = {items:[]}; }).finally(() => { PAYV.depsLoading = false; if(S.ui.view === "today") render(); }); }
   }
-  const v = $("#view"), today = todayISO(), soon = PMCore.isoOf(PMCore.dayNum(today) + 7);
-  const hasPm = pmState().properties.length > 0;
+  if(typeof inboxConn === "function" && inboxConn() && !INBOX.tried && !INBOX.loading) inboxRefresh(true).then(() => { if(S.ui.view === "today") render(); });
+  const v = $("#view");
+  if(pm){ if(!pmState().properties.length) return pmEmpty(); billDropZone(v); todayPm(v); }
+  else todayProjects(v);
+}
 
-  // ---------- what's waiting ----------
-  const bills = hasPm ? billList() : [], open = bills.filter(b => b.status === "open"), paying = bills.filter(b => b.status === "paying");
-  const dueSoon = open.filter(b => (b.due || b.date || "") <= soon);
-  const toInv = bills.filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId);
-  const invs = hasPm ? invList() : [], unpaid = invs.filter(x => x.status === "sent" && invTotals(x).dueC > 0);
-  const overdue = unpaid.filter(x => x.due && x.due < today);
-  const pr = portfolioRoll();
-  const ready = [], sentOut = [];
-  live().forEach(p => { const C = ALL[p.id]; if(!C) return;
-    p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
-      const st = String(inv.status || "");
-      if(st.startsWith("Ready")) ready.push({p, u, inv});
-      else if(st === "Sent") sentOut.push({p, u, inv});
-    })); });
-  const deps = (PAYV.deps && PAYV.deps.items) || [];
-
-  const hero = elm("div","card pf-hero td-hero");
-  hero.innerHTML = `
-    <div class="pf-cell" data-go2="pmBills"><div class="label">Bills to pay</div><div class="pf-v">${usd(open.reduce((a, b) => a + cents(b.amount), 0))}</div><div class="pf-note">${open.length ? `${open.length} bill${open.length === 1 ? "" : "s"}${dueSoon.length ? `, ${dueSoon.length} due this week` : ""}` : "Nothing waiting"}</div></div>
-    <div class="pf-cell" data-go2="portfolio"><div class="label">Project invoices ready to send</div><div class="pf-v a">${usd(pr.readyC)}</div><div class="pf-note">${ready.length ? `${ready.length} invoice${ready.length === 1 ? "" : "s"}` : "None ready"}</div></div>
-    <div class="pf-cell" data-go2="portfolio"><div class="label">Project invoices awaiting payment</div><div class="pf-v">${usd(pr.sentC)}</div><div class="pf-note">${sentOut.length ? `${sentOut.length} sent` : "Nothing outstanding"}</div></div>
-    <div class="pf-cell" data-go2="pmInvoices"><div class="label">Owed by owners (management)</div><div class="pf-v a">${usd(unpaid.reduce((a, x) => a + invTotals(x).dueC, 0))}</div><div class="pf-note">${unpaid.length ? `${unpaid.length} unpaid${overdue.length ? `, ${overdue.length} overdue` : ""}` : "All paid"}${toInv.length ? ` · ${toInv.length} bill${toInv.length === 1 ? "" : "s"} to invoice` : ""}</div></div>`;
-  hero.querySelectorAll("[data-go2]").forEach(c => { c.style.cursor = "pointer"; c.onclick = () => go(c.dataset.go2); });
-  v.appendChild(hero);
-
+/* ---------- shared pieces ---------- */
+function tdCols(v){
   const cols = elm("div","td-cols"); v.appendChild(cols);
   const left = elm("div","td-col"), right = elm("div","td-col"); cols.appendChild(left); cols.appendChild(right);
-  const section = (host, title, rows, empty) => {
-    const c = elm("div","card td-card");
-    c.innerHTML = `<div class="card-h"><h3>${title}</h3>${rows.length ? `<span class="muted td-n">${rows.length}</span>` : ""}</div>` +
-      (rows.length ? `<div class="td-list">${rows.slice(0, 8).map((r, i) => `<div class="td-r"><div class="td-t"><b>${r.t}</b><span>${r.s || ""}</span></div>${r.amt != null ? `<b class="num td-amt">${r.amt}</b>` : ""}${r.btn ? `<button class="btn sm ${r.primary ? "primary" : ""}" data-i="${i}">${r.btn}</button>` : ""}</div>`).join("")}${rows.length > 8 ? `<div class="td-more">${rows.length - 8} more</div>` : ""}</div>`
-        : `<div class="td-empty">${empty}</div>`);
-    c.querySelectorAll("[data-i]").forEach(b => b.onclick = () => rows[Number(b.dataset.i)].fn());
-    host.appendChild(c); return c;
-  };
-  const openInv = (p, u, inv) => () => { S.ui.mode = "projects"; go("invoices", p.id); S.ui.unit = u.id; S.ui.open = S.ui.open || {}; S.ui.open[u.id + "|" + inv.no] = true; persistUi(); render(); };
+  return [left, right];
+}
+// a card with rows: {t, s, amt, btn, primary, fn, cls}
+function tdSection(host, title, rows, empty, head){
+  const c = elm("div","card td-card");
+  c.innerHTML = `<div class="card-h"><h3>${title}</h3>${rows.length ? `<span class="muted td-n">${rows.length}</span>` : ""}${head ? `<button class="btn sm ghost" style="margin-left:auto" data-hd>${head[0]}</button>` : ""}</div>` +
+    (rows.length ? `<div class="td-list">${rows.slice(0, 8).map((r, i) => `<div class="td-r ${r.cls || ""}"><div class="td-t"><b>${r.t}</b><span>${r.s || ""}</span></div>${r.amt != null ? `<b class="num td-amt">${r.amt}</b>` : ""}${r.btn ? `<button class="btn sm ${r.primary ? "primary" : ""}" data-i="${i}">${r.btn}</button>` : ""}</div>`).join("")}${rows.length > 8 ? `<div class="td-more">${rows.length - 8} more${head ? "" : ""}</div>` : ""}</div>`
+      : `<div class="td-empty">${empty}</div>`);
+  c.querySelectorAll("[data-i]").forEach(b => b.onclick = () => rows[Number(b.dataset.i)].fn());
+  const h = c.querySelector("[data-hd]"); if(h) h.onclick = head[1];
+  host.appendChild(c); return c;
+}
+function tdHero(v, cells){
+  const hero = elm("div","card pf-hero td-hero");
+  hero.innerHTML = cells.map((c, i) => `<div class="pf-cell" data-c="${i}"><div class="label">${c.label}</div><div class="pf-v ${c.cls || ""}"${c.style ? ` style="${c.style}"` : ""}>${c.v}</div>${c.meter != null ? `<div class="pm-meter"><i style="width:${c.meter}%"></i></div>` : ""}<div class="pf-note">${c.note}</div></div>`).join("");
+  hero.querySelectorAll("[data-c]").forEach(el => { const c = cells[Number(el.dataset.c)]; if(c.fn){ el.style.cursor = "pointer"; el.onclick = c.fn; } });
+  v.appendChild(hero);
+}
+const tdPlural = (n, w, ws) => `${n} ${n === 1 ? w : (ws || w + "s")}`;
+function tdDeposits(host){
+  const deps = (PAYV.deps && PAYV.deps.items) || [];
+  if(deps.length) tdSection(host, "Deposited checks to apply", deps.map(x => ({t:esc(x.payer || "Check"), s:`Deposited ${x.at ? fdateS(x.at) : ""} · not on an invoice yet`, amt:usd(x.unappliedC || x.amountC), btn:"Apply", primary:true, fn:() => nkApplyDepositSheet(x)})), "");
+}
+function tdInbox(host, pm){
+  if(typeof inboxConn !== "function" || !inboxConn()) return;
+  const pmIds = new Set(pmState().properties.map(p => p.id)), prjIds = new Set(live().map(p => p.id));
+  const items = INBOX.items.filter(i => i.status === "pending").filter(i => pm ? (pmIds.has(i.property_id) || !prjIds.has(i.property_id)) : prjIds.has(i.property_id));
+  if(!items.length) return;
+  tdSection(host, "Receipts to review", items.map(i => ({t:`${esc(i.vendor || "Receipt")} · ${esc(i.property_name || "No property yet")}`, s:`${esc(i.description || "")}${i.date ? ` · ${fdateS(i.date)}` : ""}${i.source ? ` · ${esc(i.source === "Upload" ? "uploaded" : i.source)}` : ""}`,
+    amt:i.total ? usd(cents(i.total)) : null, btn:"Review", fn:() => go("inbox")})), "", ["Receipt inbox", () => go("inbox")]);
+}
 
-  // projects
-  section(left, "Project invoices to send", ready.map(({p, u, inv}) => {
-    const nk = inv.reg && inv.reg.nickel;
-    return {t:`${esc(p.name)}${p.units.length > 1 ? " · " + esc(u.name) : ""} · invoice ${inv.no}`, s:nk && nk.invoiceId ? "In QuickBooks · pay link ready" : inv.locked ? "Locked — create it in QuickBooks next" : "Lock it, then create it in QuickBooks", amt:usd(inv.totalC), btn:nk && nk.invoiceId ? "Email owner" : "Open", primary:true,
-      fn:nk && nk.invoiceId && typeof pjEmailSheet === "function" ? () => pjEmailSheet(p, u, inv) : openInv(p, u, inv)};
-  }), "Nothing ready to send. New invoices appear here as soon as they fill up.");
-  section(left, "Waiting on owners", sentOut.map(({p, u, inv}) => {
-    const reg = inv.reg || {}, nk = reg.nickel || {};
-    return {t:`${esc(p.name)}${p.units.length > 1 ? " · " + esc(u.name) : ""} · invoice ${inv.no}`, s:`Sent${reg.dateSent ? " " + fdateS(reg.dateSent) : ""}${nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}`, amt:usd(nk.outstandingC != null ? nk.outstandingC : inv.totalC), btn:"Open", fn:openInv(p, u, inv)};
+/* ---------- Projects ---------- */
+function todayProjects(v){
+  const today = todayISO(), pr = portfolioRoll(), ready = [], sentOut = [], paidM = [];
+  live().forEach(p => { const C = ALL[p.id]; if(!C) return;
+    p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
+      const st = String(inv.status || ""), reg = inv.reg || {};
+      if(st.startsWith("Ready")) ready.push({p, u, inv});
+      else if(st === "Sent") sentOut.push({p, u, inv});
+      else if(st === "Paid" && String(reg.datePaid || (reg.nickel || {}).paidAt || "").slice(0, 7) === today.slice(0, 7)) paidM.push({p, u, inv});
+    })); });
+  const age = x => x.inv.reg && x.inv.reg.dateSent ? PMCore.dayNum(today) - PMCore.dayNum(String(x.inv.reg.dateSent).slice(0, 10)) : 0;
+  sentOut.sort((a, b) => age(b) - age(a));
+  const old = sentOut.filter(x => age(x) > 30);
+  const owedC = x => { const nk = (x.inv.reg || {}).nickel || {}; return nk.outstandingC != null ? nk.outstandingC : x.inv.totalC; };
+  tdHero(v, [
+    {label:"Ready to send", v:usd(pr.readyC), cls:"a", note:ready.length ? tdPlural(ready.length, "invoice") : "None ready", fn:() => go("portfolio")},
+    {label:"Awaiting payment", v:usd(sentOut.reduce((a, x) => a + owedC(x), 0)), note:sentOut.length ? `${sentOut.length} sent${old.length ? `, ${old.length} over 30 days` : ""}` : "Nothing outstanding", fn:() => go("portfolio")},
+    {label:`Paid · ${monthLabel(today.slice(0, 7)).split(" ")[0]}`, v:usd(paidM.reduce((a, x) => a + (x.inv.totalC || 0), 0)), cls:"g", note:paidM.length ? tdPlural(paidM.length, "invoice") : "None yet this month", fn:() => go("portfolio")},
+    {label:"Active projects", v:String(live().length), note:"Open the portfolio", fn:() => go("portfolio")}
+  ]);
+  const [left, right] = tdCols(v);
+  const openInv = (p, u, inv) => () => { go("invoices", p.id); S.ui.unit = u.id; S.ui.open = S.ui.open || {}; S.ui.open[u.id + "|" + inv.no] = true; persistUi(); render(); };
+  const label = ({p, u, inv}) => `${esc(p.name)}${p.units.length > 1 ? " · " + esc(u.name) : ""} · invoice ${inv.no}`;
+  tdSection(left, "Invoices to send", ready.map(x => {
+    const nk = x.inv.reg && x.inv.reg.nickel;
+    return {t:label(x), s:nk && nk.invoiceId ? "In Nickel · pay link ready — email the owner" : x.inv.locked ? "Locked — create it in Nickel next" : "Lock it, then create it in Nickel", amt:usd(x.inv.totalC), btn:nk && nk.invoiceId ? "Email owner" : "Open", primary:true,
+      fn:nk && nk.invoiceId && typeof pjEmailSheet === "function" ? () => pjEmailSheet(x.p, x.u, x.inv) : openInv(x.p, x.u, x.inv)};
+  }), "Nothing ready to send. New invoices show up here as soon as they fill up.");
+  tdSection(left, "Waiting on owners", sentOut.map(x => {
+    const reg = x.inv.reg || {}, nk = reg.nickel || {}, d = age(x);
+    return {t:label(x), s:`Sent${reg.dateSent ? " " + fdateS(reg.dateSent) : ""}${d > 30 ? ` · ${d} days ago` : ""}${nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}`, cls:d > 30 ? "late" : "", amt:usd(owedC(x)),
+      btn:d > 14 && nk.invoiceId && typeof pjEmailSheet === "function" ? "Remind" : "Open", fn:d > 14 && nk.invoiceId && typeof pjEmailSheet === "function" ? () => pjEmailSheet(x.p, x.u, x.inv) : openInv(x.p, x.u, x.inv)};
   }), "No project invoices waiting on payment.");
+  tdInbox(right, false);
+  tdDeposits(right);
+  if(paidM.length) tdSection(right, "Paid this month", paidM.map(x => ({t:label(x), s:`Paid${(x.inv.reg || {}).datePaid ? " " + fdateS(x.inv.reg.datePaid) : ""}`, amt:usd(x.inv.totalC), btn:"Open", fn:openInv(x.p, x.u, x.inv)})), "");
+  if(!right.children.length) tdSection(right, "Receipts and checks", [], "No receipts waiting and no deposited checks to apply.");
+}
 
-  // property management
-  if(hasPm){
-    section(right, "Bills to pay", open.slice().sort((a, b) => String(a.due || a.date).localeCompare(String(b.due || b.date))).map(b => ({
-      t:esc(b.vendor || "Vendor"), s:`${esc((pmProp(b.propertyId) || {}).name || "")}${b.due ? ` · due ${fdateS(b.due)}${b.due < today ? " (late)" : ""}` : ""}`, amt:usd(cents(b.amount)), btn:"Open",
-      fn:() => { S.ui.mode = "pm"; go("pmBills"); setTimeout(() => billSheet(b.id), 40); }
-    })).concat(paying.length ? [{t:`${paying.length} payment${paying.length === 1 ? "" : "s"} on the way`, s:"Marked paid automatically when Nickel finishes", btn:"See bills", fn:() => { S.ui.mode = "pm"; go("pmBills"); }}] : []), "No bills waiting. Add one with N or from the receipt inbox.");
-    section(right, "Owner invoices", toInv.length ? [{t:`${toInv.length} bill${toInv.length === 1 ? "" : "s"} to invoice`, s:"Put them on owner invoices", btn:"Invoice", primary:true, fn:() => { S.ui.mode = "pm"; go("pmInvoices"); }}].concat(overdue.map(x => ({t:`${esc(x.no)} · ${esc((ownerById(x.ownerId) && ownerLabel(ownerById(x.ownerId))) || "")}`, s:`Overdue since ${fdateS(x.due)}`, amt:usd(invTotals(x).dueC), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.invOpen = x.id; S.ui.invF = "all"; go("pmInvoices"); }})))
-      : overdue.map(x => ({t:`${esc(x.no)} · ${esc((ownerById(x.ownerId) && ownerLabel(ownerById(x.ownerId))) || "")}`, s:`Overdue since ${fdateS(x.due)}`, amt:usd(invTotals(x).dueC), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.invOpen = x.id; S.ui.invF = "all"; go("pmInvoices"); }})), "No overdue owner invoices.");
-    // owner statements for the latest closed month
-    const closedMs = Object.values(pmState().meta || {}).filter(m => m && m.closed && m.month && !String(m.closedBy || "").startsWith("Imported")).map(m => m.month).sort();
-    const lastM = closedMs[closedMs.length - 1];
-    if(lastM && typeof stmtCandidates === "function"){
-      const c = stmtCandidates(lastM), notSent = c.filter(x => !x.why && !(x.done && x.done.state === "sent"));
-      if(notSent.length) section(right, "Owner statements", [{t:`${monthLabel(lastM)} · ${notSent.length} not sent yet`, s:`${c.filter(x => x.done && x.done.state === "sent").length} of ${c.filter(x => !x.why).length} sent from pm@`, btn:"Email statements", primary:true, fn:() => pmStatementMailSheet(lastM)}], "");
-    }
-    const al = pmAlerts().filter(a => a.level !== "info");
-    if(al.length){
-      const c = elm("div","card td-card");
-      c.innerHTML = `<div class="card-h"><h3>Rent &amp; leases</h3><span class="muted td-n">${al.length}</span><button class="btn sm ghost" style="margin-left:auto" id="tdAll">Action center</button></div><div class="al-list">${al.slice(0, 6).map(pmAlertRowHTML).join("")}</div>`;
-      pmWireAlerts(c, al.slice(0, 6)); right.appendChild(c);
-      c.querySelector("#tdAll").onclick = () => { S.ui.mode = "pm"; go("pmAlerts"); };
-    }
+/* ---------- Property management ---------- */
+function todayPm(v){
+  const today = todayISO(), soon = PMCore.isoOf(PMCore.dayNum(today) + 7), m = thisMonth(), set = pmSettings();
+  const toPm = (view, extra) => () => { S.ui.mode = "pm"; if(extra) extra(); go(view); };
+  // rent and payouts for this month
+  const props = pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const rowsM = pmMonthRows(m).filter(x => !x.row.detailOnly), monthOn = rowsM.length ? m : (pmMonths().slice(-1)[0] || m);
+  let dueC = 0, recvC = 0; const late = [], payouts = [];
+  props.forEach(p => { const r = pmRow(monthOn, p.id); if(!r || r.detailOnly) return; const c = pmCalc(r, p);
+    dueC += c.dueC; recvC += Math.min(c.recv, c.dueC || c.recv);
+    if(pmLiveStatus(monthOn, p) === "late"){ const L = monthOn === thisMonth() && !c.recv ? pmMdLease(p) : null; late.push({p, c, owed:L && L.balance > 0 ? cents(L.balance) : c.dueC - c.recv}); }
+    if(c.recv > 0 && c.payoutC > 0 && !r.paidOut && !r.locked) payouts.push({p, c}); });
+  const pct = dueC ? Math.round(recvC / dueC * 100) : 0;
+  // bills
+  const bills = billList(), open = bills.filter(b => b.status === "open"), paying = bills.filter(b => b.status === "paying");
+  const dueSoon = open.filter(b => (b.due || b.date || "") <= soon), lateB = open.filter(b => b.due && b.due < today);
+  const paidWk = bills.filter(b => b.status === "paid" && b.pay && b.pay.date && PMCore.dayNum(today) - PMCore.dayNum(String(b.pay.date).slice(0, 10)) <= 7);
+  // owner invoices
+  const toInv = bills.filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId);
+  const invs = invList(), unpaid = invs.filter(x => x.status === "sent" && invTotals(x).dueC > 0), overdue = unpaid.filter(x => x.due && x.due < today);
+  const drafts = invs.filter(x => x.status === "draft");
+
+  tdHero(v, [
+    {label:`Rent · ${monthLabel(monthOn).split(" ")[0]}`, v:`${pct}%`, meter:pct, note:`${usd(recvC)} of ${usd(dueC)}${late.length ? ` · ${late.length} late` : ""}`, fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)},
+    {label:"Bills to pay", v:usd(open.reduce((a, b) => a + cents(b.amount), 0)), style:lateB.length ? "color:var(--red)" : "", note:open.length ? `${tdPlural(open.length, "bill")}${dueSoon.length ? `, ${dueSoon.length} due this week` : ""}` : "Nothing waiting", fn:toPm("pmBills", () => S.ui.billF = "open")},
+    {label:"Payouts to send", v:String(payouts.length), style:payouts.length ? "color:var(--gold)" : "", note:payouts.length ? usd(payouts.reduce((a, x) => a + x.c.payoutC, 0)) : "None waiting", fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)},
+    {label:"Owed by owners", v:usd(unpaid.reduce((a, x) => a + invTotals(x).dueC, 0)), cls:"a", note:unpaid.length ? `${unpaid.length} unpaid${overdue.length ? `, ${overdue.length} overdue` : ""}` : toInv.length ? `${tdPlural(toInv.length, "bill")} to invoice` : "All paid", fn:toPm("pmInvoices")}
+  ]);
+  const [left, right] = tdCols(v);
+
+  // bills to pay, soonest first; payments on the way after
+  const billRows = open.slice().sort((a, b) => String(a.due || a.date).localeCompare(String(b.due || b.date))).map(b => {
+    const st = billStatus(b), p = pmProp(b.propertyId);
+    return {t:esc(b.vendor || "Vendor"), s:`${esc(p ? p.name : "")}${b.due ? ` · due ${fdateS(b.due)}` : ""}${b.memo ? ` · ${esc(b.memo)}` : ""}`, cls:st.k === "overdue" || st.k === "failed" ? "late" : "",
+      amt:usd(cents(b.amount)), btn:typeof nickelOn === "function" && nickelOn() ? "Pay" : "Open", primary:b.due && b.due <= soon, fn:() => typeof nickelOn === "function" && nickelOn() ? billPaySheet([b.id]) : billSheet(b.id)};
+  });
+  tdSection(left, "Bills to pay", billRows, "No bills waiting. Drop a vendor's invoice here to add one.", ["Upload invoice", () => billUploadSheet()]);
+  if(paying.length) tdSection(left, "Payments on the way", paying.map(b => { const p = pmProp(b.propertyId), rc = (b.pay || {}).receipt || {};
+    return {t:esc(b.vendor || "Vendor"), s:`${esc(p ? p.name : "")} · ${esc(billStatus(b).label)}${rc.eta ? ` · arrives ${fdateS(rc.eta)}` : ""}`, amt:usd(cents(b.amount)), btn:"Open", fn:() => billSheet(b.id)}; }), "");
+
+  // rent: who's late
+  if(late.length) tdSection(left, "Rent late", late.sort((a, b) => b.owed - a.owed).map(x => ({t:esc(x.p.name), s:`${monthLabel(monthOn)}${x.p.tenants ? ` · ${esc(x.p.tenants)}` : ""}`, cls:"late", amt:usd(x.owed), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.pmMonth = monthOn; go("pmMonth"); setTimeout(() => pmRowSheet(monthOn, x.p.id), 40); }})), "");
+
+  // payouts
+  if(payouts.length) tdSection(left, "Owner payouts to send", payouts.map(x => { const o = ownerById(x.p.ownerId);
+    return {t:esc(x.p.name), s:`${esc(o ? ownerLabel(o) : "No owner on file")} · ${monthLabel(monthOn)}`, amt:usd(x.c.payoutC), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.pmMonth = monthOn; go("pmMonth"); setTimeout(() => pmRowSheet(monthOn, x.p.id), 40); }}; }), "");
+
+  tdInbox(left, true);
+
+  // owner invoices
+  const invRow = x => ({t:`${esc(x.no)} · ${esc((ownerById(x.ownerId) && ownerLabel(ownerById(x.ownerId))) || "")}`, s:x.status === "draft" ? "Draft — not sent yet" : x.due && x.due < today ? `Overdue since ${fdateS(x.due)}` : `Sent${x.sentAt ? " " + fdateS(String(x.sentAt).slice(0, 10)) : ""}${x.due ? ` · due ${fdateS(x.due)}` : ""}`,
+    cls:x.due && x.due < today && x.status !== "draft" ? "late" : "", amt:usd(invTotals(x).dueC), btn:"Open", fn:toPm("pmInvoices", () => { S.ui.invOpen = x.id; S.ui.invF = "all"; })});
+  const invRows = (toInv.length ? [{t:`${tdPlural(toInv.length, "bill")} to put on owner invoices`, s:usd(toInv.reduce((a, b) => a + cents(b.amount) + billFeeC(b), 0)) + " including admin fees", btn:"Invoice", primary:true, fn:toPm("pmInvoices")}] : [])
+    .concat(drafts.map(invRow), overdue.map(invRow), unpaid.filter(x => !overdue.includes(x)).map(invRow));
+  tdSection(right, "Owner invoices", invRows, "Nothing to invoice and no unpaid owner invoices.");
+
+  // month close + statements
+  const metaOn = pmState().meta[monthOn] || {}, recorded = rowsM.filter(x => { const c = pmCalc(x.row, x.prop); return c.recv > 0 || c.dueC <= 0; }).length;
+  const prevM = monthAdd(m, -1), prevMeta = pmState().meta[prevM] || {}, prevRows = pmMonthRows(prevM).filter(x => !x.row.detailOnly);
+  const closeRows = [];
+  if(prevRows.length && !prevMeta.closed) closeRows.push({t:`${monthLabel(prevM)} is still open`, s:"Close it once payouts are sent — statements go out from pm@ when it closes", btn:"Close month", primary:true, cls:+today.slice(8, 10) > 10 ? "late" : "", fn:toPm("pmMonth", () => S.ui.pmMonth = prevM)});
+  if(rowsM.length) closeRows.push({t:`${monthLabel(monthOn)} · ${metaOn.closed ? "closed" : "open"}`, s:`Rent recorded for ${recorded} of ${rowsM.length} · ${tdPlural(payouts.length, "payout")} to send`, btn:"Month close", fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)});
+  else closeRows.push({t:`${monthLabel(m)} isn't started`, s:"Starting it sets rent due and recurring charges", btn:"Start month", primary:true, fn:toPm("pmMonth", () => S.ui.pmMonth = m)});
+  const closedMs = Object.values(pmState().meta || {}).filter(x => x && x.closed && x.month && !String(x.closedBy || "").startsWith("Imported")).map(x => x.month).sort();
+  const lastM = closedMs[closedMs.length - 1];
+  if(lastM && typeof stmtCandidates === "function"){
+    const c = stmtCandidates(lastM), ok = c.filter(x => !x.why), sent = ok.filter(x => x.done && x.done.state === "sent"), drafted = ok.filter(x => x.done && x.done.state === "draft");
+    if(ok.length && sent.length < ok.length) closeRows.push({t:`Owner statements · ${monthLabel(lastM)}`, s:`${sent.length} of ${ok.length} sent from pm@${drafted.length ? ` · ${drafted.length} waiting as drafts` : ""}`, btn:"Email statements", primary:true, fn:() => pmStatementMailSheet(lastM)});
+    else if(ok.length) closeRows.push({t:`Owner statements · ${monthLabel(lastM)}`, s:`All ${ok.length} sent from pm@`, btn:"See them", fn:() => pmStatementMailSheet(lastM)});
   }
-  if(deps.length) section(left, "Deposited checks to apply", deps.map(x => ({t:esc(x.payer || "Check"), s:`Deposited ${x.at ? fdateS(x.at) : ""} · not on an invoice yet`, amt:usd(x.unappliedC || x.amountC), btn:"Apply", primary:true, fn:() => nkApplyDepositSheet(x)})), "");
+  tdSection(right, "Month close", closeRows, "");
+
+  // alerts other than the ones shown above
+  const shown = new Set(["late", "payout", "inbox"]);
+  const al = pmAlerts().filter(a => a.level !== "info" && !shown.has(a.type));
+  if(al.length){
+    const c = elm("div","card td-card");
+    c.innerHTML = `<div class="card-h"><h3>Leases, deposits &amp; more</h3><span class="muted td-n">${al.length}</span><button class="btn sm ghost" style="margin-left:auto" id="tdAll">Action center</button></div><div class="al-list">${al.slice(0, 6).map(pmAlertRowHTML).join("")}</div>`;
+    pmWireAlerts(c, al.slice(0, 6)); right.appendChild(c);
+    c.querySelector("#tdAll").onclick = toPm("pmAlerts");
+  }
+  tdDeposits(right);
+  if(paidWk.length) tdSection(right, "Paid in the last 7 days", paidWk.sort((a, b) => String(b.pay.date).localeCompare(String(a.pay.date))).map(b => ({t:esc(b.vendor || "Vendor"), s:`${esc((pmProp(b.propertyId) || {}).name || "")} · ${fdateS(String(b.pay.date).slice(0, 10))} · ${esc(b.pay.method || "")}`, amt:usd(cents(b.amount)),
+    btn:b.pay.receipt && b.pay.receipt.url ? "Receipt" : "Open", fn:() => b.pay.receipt && b.pay.receipt.url ? window.open(b.pay.receipt.url, "_blank", "noopener") : billSheet(b.id)})), "");
 }
 
 /* =====================================================================
@@ -8126,7 +8390,7 @@ function renderNavPM(){
   if(Cloud.ready) mk("team", "Team", "user", `<i class="badge">${Cloud.online.length ? Cloud.online.length + 1 + " on" : ""}</i>`);
 }
 /* "N" in property management jumps to the next unpaid rent box */
-function pmQuick(){ if(S.ui.view === "pmMonth") return pmQuickRent(); go("pmBills"); setTimeout(() => { const p = $("#bqP"); if(p){ (p.value ? $("#bqV") : p).focus(); } }, 40); }
+function pmQuick(){ if(S.ui.view === "pmMonth") return pmQuickRent(); billUploadSheet(); }
 function pmQuickRent(){
   if(S.ui.view !== "pmMonth") go("pmMonth");
   setTimeout(() => {
