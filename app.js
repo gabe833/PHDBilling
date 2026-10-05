@@ -4709,7 +4709,7 @@ function pgPmProps(){
       <td>${rentNow(p)}</td>
       <td class="r num">${p.rent ? usd(cents(p.rent)) : "—"}</td>
       <td class="r num">${c ? usd(c.payoutC) : `<span class="muted">—</span>`}</td><td class="r num">${held ? usd(held) : `<span class="muted">—</span>`}</td><td class="act"><span class="sc-go">›</span></td>`;
-    tr.onclick = () => pmOpenProperty(p.id);
+    tr.dataset.pmid = p.id; tr.onclick = () => pmOpenProperty(p.id);
     tb.appendChild(tr);
   });
   t.appendChild(tb);
@@ -5292,7 +5292,7 @@ function pgPmHome(){
         <div class="pmc-s">${esc(own || "No owner on file")}${p.tenants ? " · " + esc(p.tenants) : ""}</div>
         <div class="pmc-m"><span class="num">${p.rent ? usd0(cents(p.rent)) : "—"}<small>/mo</small></span><span class="tag ${s1.cls}">${s1.label}${st[p.id] === "partial" && c ? " " + usd0(c.recv) : ""}</span>${po}</div>
         <div class="pmc-f">${p.status !== "active" ? esc(PM_STATUS[p.status]) + (p.statusSince ? ` since ${esc(fdateS(p.statusSince))}` : "") : left == null ? `<span class="muted">No lease end on file</span>` : left < 0 ? `<span style="color:var(--gold)">Lease ended ${esc(fdateS(p.leaseEnd))}</span>` : `Lease ends ${esc(fdateS(p.leaseEnd))}${left <= set.renewalDays ? ` <span style="color:var(--gold)">· ${left}d</span>` : ""}`}</div>`;
-      card.onclick = () => pmOpenProperty(p.id);
+      card.dataset.pmid = p.id; card.onclick = () => pmOpenProperty(p.id);
       grid.appendChild(card);
     });
     board.appendChild(grid);
@@ -6769,7 +6769,7 @@ function pgPmBills(){
   t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>Owner</th><th></th></tr></thead>
     <tbody>${list.map(b => { const p = pmProp(b.propertyId), st = billStatus(b);
       return `<tr data-b="${b.id}">${canSel ? `<td class="nw" data-nos><input type="checkbox" data-sel="${b.id}" ${sel[b.id] ? "checked" : ""}></td>` : ""}
-        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <span class="mark grey" title="Receipt attached">📎</span>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}</div></td>
+        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
         <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
@@ -6799,7 +6799,7 @@ function billSheet(id, preset){
         <label class="fld"><span>What for</span><input type="text" data-k="memo" value="${esc(b.memo)}" placeholder="e.g. Replaced kitchen faucet"></label>
         <div class="f2"><label class="fld"><span>Category</span><select data-k="category">${BILL_CATS.map(c => `<option ${c === b.category ? "selected" : ""}>${c}</option>`).join("")}</select></label>
           <label class="fld"><span>Vendor's invoice #</span><input type="text" data-k="billNo" value="${esc(b.billNo)}"></label></div>
-        <label class="fld"><span>Receipt or invoice link</span><input type="text" data-rc value="${esc((b.receipt && b.receipt.url) || "")}" placeholder="Paste a Google Drive or Dropbox link"><span class="help">Receipts emailed to the receipt inbox are linked automatically.</span></label>
+        <label class="fld"><span>Receipt or invoice link</span><div class="fld-row"><input type="text" data-rc value="${esc((b.receipt && b.receipt.url) || "")}" placeholder="Paste a Google Drive or Dropbox link">${b.receipt && b.receipt.url ? `<a class="btn" href="${esc(b.receipt.url)}" target="_blank" rel="noopener">Open</a>` : ""}</div><span class="help">Receipts emailed to the receipt inbox are linked automatically.</span></label>
 
         <div class="sectl">Owner</div>
         <div class="bl-rec">${Object.entries(BILL_REC).map(([k, l]) => `<label class="${b.recover === k ? "on" : ""} ${lockedOwner ? "dis" : ""}"><input type="radio" name="rec" value="${k}" ${b.recover === k ? "checked" : ""} ${lockedOwner || (k !== "phd" && !(o)) ? "disabled" : ""}> ${l}</label>`).join("")}</div>
@@ -8164,6 +8164,7 @@ function pgToday(){
 }
 
 /* ---------- shared pieces ---------- */
+const TD_OPEN = {};   // sections showing every row
 function tdCols(v){
   const cols = elm("div","td-cols"); v.appendChild(cols);
   const left = elm("div","td-col"), right = elm("div","td-col"); cols.appendChild(left); cols.appendChild(right);
@@ -8173,9 +8174,10 @@ function tdCols(v){
 function tdSection(host, title, rows, empty, head){
   const c = elm("div","card td-card");
   c.innerHTML = `<div class="card-h"><h3>${title}</h3>${rows.length ? `<span class="muted td-n">${rows.length}</span>` : ""}${head ? `<button class="btn sm ghost" style="margin-left:auto" data-hd>${head[0]}</button>` : ""}</div>` +
-    (rows.length ? `<div class="td-list">${rows.slice(0, 8).map((r, i) => `<div class="td-r ${r.cls || ""}"><div class="td-t"><b>${r.t}</b><span>${r.s || ""}</span></div>${r.amt != null ? `<b class="num td-amt">${r.amt}</b>` : ""}${r.btn ? `<button class="btn sm ${r.primary ? "primary" : ""}" data-i="${i}">${r.btn}</button>` : ""}</div>`).join("")}${rows.length > 8 ? `<div class="td-more">${rows.length - 8} more${head ? "" : ""}</div>` : ""}</div>`
+    (rows.length ? `<div class="td-list">${rows.slice(0, (TD_OPEN[title] ? 999 : 8)).map((r, i) => `<div class="td-r ${r.cls || ""}"><div class="td-t"><b>${r.t}</b><span>${r.s || ""}</span></div>${r.amt != null ? `<b class="num td-amt">${r.amt}</b>` : ""}${r.btn ? `<button class="btn sm ${r.primary ? "primary" : ""}" data-i="${i}">${r.btn}</button>` : ""}</div>`).join("")}${rows.length > 8 ? `<button type="button" class="td-more" data-more>${TD_OPEN[title] ? "Show fewer" : `Show ${rows.length - 8} more`}</button>` : ""}</div>`
       : `<div class="td-empty">${empty}</div>`);
   c.querySelectorAll("[data-i]").forEach(b => b.onclick = () => rows[Number(b.dataset.i)].fn());
+  const mo = c.querySelector("[data-more]"); if(mo) mo.onclick = () => { TD_OPEN[title] = !TD_OPEN[title]; const y = window.scrollY; render(); window.scrollTo(0, y); };
   const h = c.querySelector("[data-hd]"); if(h) h.onclick = head[1];
   host.appendChild(c); return c;
 }
@@ -8839,6 +8841,269 @@ function cloudRestore(d, name){
   commit();
   toast(`Restored from ${name || "backup"} (${when}) — saving for everyone…`);
 }
+
+/* =====================================================================
+   NAVIGATION & FINISHING TOUCHES
+   - Back arrow in the header (and the browser's back/forward, Alt+←):
+     returns to the page you came from, at the same scroll position,
+     with the row you opened briefly highlighted.
+   - Previous / next property on a property page ([ and ] keys too).
+   - Small Google Drive, Gmail, Google Sheets and Nickel logos on the
+     buttons that open those apps, and quick links in the header:
+     the property's receipt folder in Drive, its emails in Gmail, the map.
+   - Hover an email address to write in Gmail or copy it.
+   - A back-to-top button on long pages.
+   ===================================================================== */
+const NAV = {stack:[], cur:null, restoring:false, quiet:false, lastEl:null};
+const MAIL_PM = () => ((typeof stmtConn === "function" && stmtConn()) || {}).mailbox || "pm@phdproperties.realestate";
+const MAIL_BILL = () => ((typeof bmConn === "function" && bmConn()) || {}).mailbox || "billing@phdproperties.realestate";
+
+/* ---------- brand marks (tiny, inline) ---------- */
+const BRAND_SVG = {
+  drive:`<svg viewBox="0 0 87.3 78" aria-hidden="true"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>`,
+  gmail:`<svg viewBox="52 42 88 66" aria-hidden="true"><path fill="#4285f4" d="M58 108h14V74L52 59v43c0 3.32 2.69 6 6 6"/><path fill="#34a853" d="M120 108h14c3.32 0 6-2.69 6-6V59l-20 15"/><path fill="#fbbc04" d="M120 48v26l20-15v-8c0-7.42-8.47-11.65-14.4-7.2"/><path fill="#ea4335" d="M72 74V48l24 18 24-18v26L96 92"/><path fill="#c5221f" d="M52 51v8l20 15V48l-5.6-4.2c-5.94-4.45-14.4-.22-14.4 7.2"/></svg>`,
+  sheets:`<svg viewBox="0 0 20 24" aria-hidden="true"><path fill="#0F9D58" d="M2 0h11l7 7v15a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2z"/><path fill="#87CEAC" d="M13 0v5a2 2 0 0 0 2 2h5z"/><path fill="#fff" d="M4.5 11h11v8h-11zm1.6 1.5v1.8h3.1v-1.8zm4.7 0v1.8h3.1v-1.8zm-4.7 3.2v1.8h3.1v-1.8zm4.7 0v1.8h3.1v-1.8z"/></svg>`,
+  nickel:`<svg viewBox="0 0 20 20" aria-hidden="true"><rect width="20" height="20" rx="5" fill="#2A1F1F"/><rect x="4.4" y="4.4" width="11.2" height="11.2" rx="4" fill="#fff"/><circle cx="10" cy="10" r="2.4" fill="#2A1F1F"/></svg>`,
+  maps:`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 14.5s-4.5-4.1-4.5-7.6a4.5 4.5 0 0 1 9 0c0 3.5-4.5 7.6-4.5 7.6z"/><circle cx="8" cy="6.9" r="1.6"/></svg>`,
+  copy:`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 5.5V3.9c0-.9-.7-1.4-1.4-1.4H3.9c-.8 0-1.4.6-1.4 1.4v5.2c0 .8.6 1.4 1.4 1.4h1.6"/></svg>`
+};
+const brandIc = k => `<span class="brand-ic b-${k}">${BRAND_SVG[k]}</span>`;
+const gmailSearch = (acct, q) => `https://mail.google.com/mail/u/${encodeURIComponent(acct)}/#search/${encodeURIComponent(q)}`;
+const gmailCompose = (acct, to, su) => `https://mail.google.com/mail/u/${encodeURIComponent(acct)}/?view=cm&fs=1&to=${encodeURIComponent(to || "")}${su ? "&su=" + encodeURIComponent(su) : ""}`;
+const mapsUrl = q => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+
+/* ---------- receipt folders in Drive (from the receipt inbox script) ---------- */
+const DRV = {data:null, loading:false, failed:false};
+function drvLoad(){
+  if(DRV.data || DRV.loading || DRV.failed || typeof inboxConn !== "function" || !inboxConn()) return;
+  DRV.loading = true;
+  inboxGet({action:"folders"}).then(j => { DRV.data = {root:j.root || "", sheet:j.sheet || "", map:{}}; (j.folders || []).forEach(f => DRV.data.map[drvKey(f.name)] = f.url); })
+    .catch(() => { DRV.failed = true; }).finally(() => { DRV.loading = false; navTools(); });
+}
+const drvKey = s => String(s || "").replace(/[\\/:*?"<>|#%]+/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
+// the property's folder, or a Drive search for it until the script is updated
+function drvFolder(name){
+  const k = drvKey(name), m = DRV.data && DRV.data.map;
+  if(m && k){ if(m[k]) return {url:m[k], exact:true}; const hit = Object.keys(m).find(x => x.startsWith(k) || k.startsWith(x) && x.length > 6); if(hit) return {url:m[hit], exact:true}; }
+  return {url:`https://drive.google.com/drive/search?q=${encodeURIComponent('"' + String(name || "").split(",")[0] + '"')}`, exact:false};
+}
+
+/* ---------- back stack ---------- */
+const navKey = s => s ? JSON.stringify([s.view, s.activeId, s.ui.mode, s.ui.pmPropId || "", s.ui.ownerId || ""]) : "";
+function navSnap(){ let ui = {}; try{ ui = JSON.parse(JSON.stringify(S.ui)); }catch(e){} return {ui, activeId:S.activeId, view:S.ui.view, title:$("#pgTitle").textContent || "", crumb:$("#pgCrumb").textContent || ""}; }
+function navPath(el){
+  const v = $("#view"), p = [];
+  while(el && el !== v){ const par = el.parentElement; if(!par) return null; p.unshift([...par.children].indexOf(el)); el = par; }
+  return el === v ? p : null;
+}
+function navFind(p){ if(!p || !p.length) return null; let el = $("#view"); for(const i of p){ el = el && el.children[i]; } return el || null; }
+document.addEventListener("click", e => {
+  const t = e.target.closest && e.target.closest("#view tr, #view .td-r, #view .pmc, #view [data-pp], #view [data-pmid], #view [data-b], #view .al-r, #view li");
+  NAV.lastEl = t || (e.target.closest && e.target.closest("#view .card")) || null;
+}, true);
+
+const navGo0 = go;
+go = function(view, propId){
+  const from = NAV.restoring || NAV.quiet ? null : NAV.cur, y = window.scrollY, loc = NAV.lastEl && document.contains(NAV.lastEl) ? navPath(NAV.lastEl) : null;
+  NAV.lastEl = null;
+  const r = navGo0(view, propId);
+  if(from && navKey(NAV.cur) !== navKey(from)){
+    from.y = y; from.loc = loc; from.h = false;
+    try{ history.pushState({phd:1}, ""); from.h = true; }catch(e){}
+    NAV.stack.push(from); if(NAV.stack.length > 40) NAV.stack.shift();
+    navBackBtn();
+  }
+  return r;
+};
+function navRestore(s){
+  NAV.restoring = true;
+  try{
+    Object.keys(s.ui).forEach(k => { if(!/Last$/.test(k)) S.ui[k] = s.ui[k]; });
+    if(s.activeId && typeof ALL !== "undefined" && ALL[s.activeId]) S.activeId = s.activeId;
+    navGo0(s.view, s.activeId && ALL[s.activeId] ? s.activeId : undefined);
+  } finally { NAV.restoring = false; }
+  requestAnimationFrame(() => {
+    window.scrollTo(0, s.y || 0);
+    const el = navFind(s.loc);
+    if(el && el !== $("#view")){
+      const r = el.getBoundingClientRect();
+      if(r.bottom < 70 || r.top > window.innerHeight - 40) el.scrollIntoView({block:"center"});
+      el.classList.remove("nav-flash"); void el.offsetWidth; el.classList.add("nav-flash");
+      setTimeout(() => el.classList.remove("nav-flash"), 1700);
+    }
+  });
+  navBackBtn();
+}
+function navBack(){
+  const s = NAV.stack[NAV.stack.length - 1]; if(!s) return;
+  if(s.h){ try{ history.back(); return; }catch(e){} }
+  NAV.stack.pop(); navRestore(s);
+}
+window.addEventListener("popstate", () => {
+  const s = NAV.stack.pop(); if(!s) return;
+  if($("#sheet").classList.contains("on")) closeSheet();
+  navRestore(s);
+});
+function navBackBtn(){
+  let b = $("#navBack");
+  if(!b){
+    b = elm("button","nav-back"); b.id = "navBack"; b.type = "button";
+    b.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.8 3.5 5.3 8l4.5 4.5"/></svg>`;
+    b.onclick = navBack;
+    const t = $("#topbar .hd-title"); t.parentNode.insertBefore(b, t);
+  }
+  const s = NAV.stack[NAV.stack.length - 1];
+  b.hidden = !s;
+  if(s){ const lbl = s.title || s.crumb || "previous page"; b.title = `Back to ${lbl}`; b.setAttribute("aria-label", `Back to ${lbl}`); }
+}
+
+/* ---------- property page: previous / next in the list you came from ---------- */
+const navPmOpen0 = pmOpenProperty;
+pmOpenProperty = function(id){
+  const ids = [...new Set([...document.querySelectorAll("#view [data-pp], #view [data-pmid], #view [data-pmp]")].map(e => e.dataset.pp || e.dataset.pmid || e.dataset.pmp).filter(x => pmProp(x)))];
+  if(ids.length > 1 && ids.includes(id) && S.ui.view !== "pmProperty") S.ui.pmPropOrder = ids;
+  return navPmOpen0(id);
+};
+function navPmOrder(){
+  const o = (S.ui.pmPropOrder || []).filter(id => pmProp(id));
+  if(o.includes(S.ui.pmPropId)) return o;
+  return pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(p => p.id);
+}
+function navPmStep(d){
+  const o = navPmOrder(), i = o.indexOf(S.ui.pmPropId); if(i < 0 || !o.length) return;
+  const id = o[(i + d + o.length) % o.length];
+  S.ui.pmPropId = id; NAV.quiet = true;
+  try{ go("pmProperty"); } finally { NAV.quiet = false; }
+}
+document.addEventListener("keydown", e => {
+  if(e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test((e.target.tagName || "")) || e.target.isContentEditable) return;
+  if($("#sheet").classList.contains("on") || $("#cmdk").classList.contains("on")) return;
+  if(S.ui.view === "pmProperty" && (e.key === "[" || e.key === "]")){ e.preventDefault(); navPmStep(e.key === "]" ? 1 : -1); }
+});
+
+/* ---------- header quick links ---------- */
+function navTools(){
+  const box = $("#pgActions"); if(!box) return;
+  const old = box.querySelector(".hd-tools"); if(old) old.remove();
+  const L = [], v = S.ui.view;
+  const link = (k, href, title, label) => L.push(`<a class="tool ${label ? "wl" : ""}" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(title)}" aria-label="${esc(title)}">${brandIc(k)}${label ? `<span>${esc(label)}</span>` : ""}</a>`);
+  let pager = "";
+  if(v === "pmProperty" && typeof pmProp === "function" && pmProp(S.ui.pmPropId)){
+    drvLoad();
+    const p = pmProp(S.ui.pmPropId), o = ownerById(p.ownerId), street = String(p.address || p.name).split(",")[0];
+    const order = navPmOrder(), i = order.indexOf(p.id);
+    if(order.length > 1 && i >= 0){
+      const prev = pmProp(order[(i - 1 + order.length) % order.length]), next = pmProp(order[(i + 1) % order.length]);
+      pager = `<div class="pager" role="group" aria-label="Other properties"><button type="button" data-step="-1" title="Previous: ${esc(prev.name)}  [" aria-label="Previous property">‹</button><span>${i + 1} of ${order.length}</span><button type="button" data-step="1" title="Next: ${esc(next.name)}  ]" aria-label="Next property">›</button></div>`;
+    }
+    const f = drvFolder(p.name);
+    link("drive", f.url, f.exact ? `Receipts for ${p.name} in Drive` : `Search Drive for ${street}`);
+    const q = [`"${street}"`].concat(o && o.email ? String(o.email).split(/[,;\s]+/).filter(Boolean) : []).join(" OR ");
+    link("gmail", gmailSearch(MAIL_PM(), q), `Emails about ${street} in ${MAIL_PM()}`);
+    if(p.address || p.name) link("maps", mapsUrl(p.address || p.name), "Open in Maps");
+  } else if(["overview","txns","invoices","scope","settings"].includes(v) && typeof P === "function"){
+    drvLoad();
+    const p = P(), street = String(p.address || p.name).split(",")[0], o = typeof ownerById === "function" && p.ownerId ? ownerById(p.ownerId) : null;
+    const f = drvFolder(p.name);
+    link("drive", f.url, f.exact ? `Receipts for ${p.name} in Drive` : `Search Drive for ${street}`);
+    const q = [`"${street}"`].concat(o && o.email ? String(o.email).split(/[,;\s]+/).filter(Boolean) : []).join(" OR ");
+    link("gmail", gmailSearch(MAIL_BILL(), q), `Invoice emails for ${street} in ${MAIL_BILL()}`);
+    link("maps", mapsUrl(p.address || p.name), "Open in Maps");
+  } else if(v === "owners" && S.ui.ownerId && ownerById(S.ui.ownerId)){
+    const o = ownerById(S.ui.ownerId), em = String(o.email || "").split(/[,;\s]+/).filter(Boolean);
+    const pmSide = typeof pmState === "function" && pmState().properties.some(p => p.ownerId === o.id);
+    const acct = pmSide ? MAIL_PM() : MAIL_BILL();
+    if(em.length){ link("gmail", gmailCompose(acct, em.join(","), ""), `Write to ${ownerLabel(o)} from ${acct}`); L.push(`<a class="tool" href="${esc(gmailSearch(acct, em.join(" OR ")))}" target="_blank" rel="noopener" title="${esc(`Past emails with ${ownerLabel(o)}`)}" aria-label="Past emails"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg></a>`); }
+    link("nickel", typeof NICKEL_APP !== "undefined" ? NICKEL_APP : "https://app.nickel.com", "Open Nickel");
+  } else if(v === "pmBills" || v === "pmVendors"){
+    drvLoad();
+    if(DRV.data && DRV.data.root) link("drive", DRV.data.root, "Receipts and invoices in Drive");
+    link("nickel", NICKEL_APP, "Open Nickel");
+  } else if(v === "pmInvoices" || v === "payments" || v === "pmPaySetup"){
+    link("nickel", NICKEL_APP, "Open Nickel");
+  } else if(v === "inbox"){
+    drvLoad();
+    if(DRV.data && DRV.data.root) link("drive", DRV.data.root, "Receipt folders in Drive");
+    if(DRV.data && DRV.data.sheet) link("sheets", DRV.data.sheet, "Receipt log in Google Sheets");
+  }
+  if(!L.length && !pager) return;
+  const g = elm("div","hd-tools"); g.innerHTML = pager + (L.length ? `<div class="tools">${L.join("")}</div>` : "");
+  g.querySelectorAll("[data-step]").forEach(b => b.onclick = () => navPmStep(Number(b.dataset.step)));
+  box.insertBefore(g, box.firstChild);
+}
+
+/* ---------- logos on buttons that open Drive, Gmail or Nickel ---------- */
+function brandOf(el){
+  const h = (el.getAttribute("href") || "").toLowerCase(), t = (el.textContent || "").replace(/\s+/g, " ").trim();
+  if(/drive\.google|docs\.google\.com\/(document|file)/.test(h)) return "drive";
+  if(/docs\.google\.com\/spreadsheets/.test(h)) return "sheets";
+  if(/mail\.google|^mailto:/.test(h)) return "gmail";
+  if(/nickel/.test(h)) return "nickel";
+  if(/nickel/i.test(t) || /^create in quickbooks/i.test(t) || el.id === "vnAsk" || el.dataset.rc != null) return "nickel";
+  if(/^(email|send|remind|save (as|\d+ as) gmail|save .*draft)/i.test(t)) return "gmail";
+  if(/^pay(\b| \d)/i.test(t) && typeof nickelOn === "function" && nickelOn()) return "nickel";
+  return null;
+}
+function navBrandify(root){
+  if(!root) return;
+  root.querySelectorAll(".btn:not([data-br]), a[href]:not(.btn):not([data-br])").forEach(el => {
+    el.dataset.br = "1";
+    if(el.closest(".hd-tools") || el.closest(".bu-drop")) return;
+    if(!el.classList.contains("btn")){
+      const h = el.getAttribute("href") || "";
+      if(/^mailto:/i.test(h) && !el.closest(".no-mini")) return navMailMini(el);
+      const k = /docs\.google\.com\/spreadsheets/.test(h) ? "sheets" : /drive\.google|docs\.google/.test(h) ? "drive" : /nickel/i.test(h) ? "nickel" : "";
+      if(k && !el.querySelector("svg") && !el.closest(".mini-acts")) el.insertAdjacentHTML("afterbegin", brandIc(k));
+      return;
+    }
+    const mh = el.getAttribute("href") || "";
+    if(/^mailto:/i.test(mh)){   // email buttons open Gmail from the right mailbox
+      const [to, qs] = mh.replace(/^mailto:/i, "").split("?"), su = new URLSearchParams(qs || "").get("subject") || "";
+      el.setAttribute("href", gmailCompose(S.ui.mode === "pm" ? MAIL_PM() : MAIL_BILL(), decodeURIComponent(to), su)); el.target = "_blank"; el.rel = "noopener";
+    }
+    const k = brandOf(el); if(!k) return;
+    const first = el.querySelector("svg.ic"); if(first) first.remove();
+    el.insertAdjacentHTML("afterbegin", brandIc(k));
+    el.classList.add("has-brand");
+  });
+}
+// hover an email address: write in Gmail from the right mailbox, or copy it
+function navMailMini(a){
+  const addr = decodeURIComponent((a.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0]); if(!addr) return;
+  const acct = S.ui.mode === "pm" ? MAIL_PM() : MAIL_BILL();
+  const w = elm("span","mini-acts");
+  w.innerHTML = `<a class="mini" href="${esc(gmailCompose(acct, addr, ""))}" target="_blank" rel="noopener" title="Write in Gmail from ${esc(acct)}" data-br="1">${BRAND_SVG.gmail}</a><button type="button" class="mini" title="Copy ${esc(addr)}" data-br="1">${BRAND_SVG.copy}</button>`;
+  w.querySelector("button").onclick = e => { e.preventDefault(); e.stopPropagation(); navCopy(addr); };
+  w.querySelector("a").onclick = e => e.stopPropagation();
+  a.insertAdjacentElement("afterend", w);
+}
+function navCopy(text){
+  const done = () => toast(`Copied ${text}`);
+  try{ navigator.clipboard.writeText(text).then(done, () => { navCopyOld(text); done(); }); }catch(e){ navCopyOld(text); done(); }
+}
+function navCopyOld(text){ const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); try{ document.execCommand("copy"); }catch(e){} t.remove(); }
+let navBrandQ = 0;
+const navBrandSoon = () => { if(navBrandQ) return; navBrandQ = requestAnimationFrame(() => { navBrandQ = 0; navBrandify($("#view")); navBrandify($("#sheet")); navBrandify($("#pgActions")); }); };
+new MutationObserver(navBrandSoon).observe($("#view"), {childList:true, subtree:true});
+new MutationObserver(navBrandSoon).observe($("#sheet"), {childList:true, subtree:true});
+new MutationObserver(navBrandSoon).observe($("#pgActions"), {childList:true});
+
+/* ---------- back to top ---------- */
+(function(){
+  const b = elm("button","to-top"); b.type = "button"; b.title = "Back to top"; b.setAttribute("aria-label", "Back to top");
+  b.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 9.8 8 5.3l4.5 4.5"/></svg>`;
+  b.onclick = () => window.scrollTo({top:0, behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+  document.body.appendChild(b);
+  let q = 0; window.addEventListener("scroll", () => { if(q) return; q = requestAnimationFrame(() => { q = 0; b.classList.toggle("on", window.scrollY > 900); }); }, {passive:true});
+})();
+
+/* ---------- after every render ---------- */
+const navRender0 = render;
+render = function(){
+  const r = navRender0.apply(this, arguments);
+  try{ NAV.cur = navSnap(); navTools(); navBackBtn(); navBrandSoon(); }catch(e){ console.warn(e); }
+  return r;
+};
 
 /* ===================== BOOT ===================== */
 function chip(){

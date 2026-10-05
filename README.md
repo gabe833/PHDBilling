@@ -146,12 +146,19 @@ On a project invoice, **Email owner** writes the email the way the office sends 
 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one. The script sends at most 60 emails a day (change `MAX_PER_DAY` if needed).
 
+### Getting around
+- **Back arrow** (left of the page title, or the browser's back button / Alt+←) returns to the page you came from at the same spot, with the row you opened highlighted for a moment.
+- On a property page, **‹ ›** (or the **[** and **]** keys) step through the properties in the list you opened it from.
+- Header shortcuts: the **Drive** logo opens that property's receipt folder, **Gmail** opens the emails about it in pm@ (property management) or billing@ (projects), and the pin opens the address in Maps. Owners get a Gmail button to write to them from the right mailbox.
+- Buttons that open an outside app carry its logo: Gmail for anything that emails, Nickel for paying and invoicing, Drive or Sheets for files. Hover an email address to write in Gmail or copy it.
+- On Today, **Show N more** expands a section in place. Long pages get a back-to-top button.
+
 ### 7c. Add a bill by uploading the vendor's invoice
 **Add bill** (or N) on the property management side opens an upload window. Drop in the vendor's invoice — PDF, JPG or PNG, several at once — or drag the file anywhere on the Bills or Today page. Choose **Bills to pay** or **Already paid (receipts)**.
 
 Each file is read the same way as an emailed receipt (vendor, amount, invoice date, due date, invoice number, property) and saved to the receipt inbox's Drive folder. When the property and amount are clear, the bill is created right away with the file attached, and the file is moved into the property's folder. If the property isn't clear, the bill form opens filled in — pick the property and save. A file that was already uploaded, or that matches a bill you already have (same property and amount, same invoice number or vendor within 20 days), is flagged instead of added twice. Refunds and credits go to the receipt inbox. **Enter by hand** is still there for bills with no paperwork.
 
-This uses the receipt inbox script, so after updating the console, update the script once: open the receipt inbox's Apps Script project → replace **Code.gs** with `apps-script/Code.gs` → Save → **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL and key stay the same.
+This uses the receipt inbox script (which also tells the Drive buttons where each property's folder is), so after updating the console, update the script once: open the receipt inbox's Apps Script project → replace **Code.gs** with `apps-script/Code.gs` → Save → **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL and key stay the same.
 
 ---
 

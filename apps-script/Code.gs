@@ -356,6 +356,12 @@ function doGet(e){
   if(!tokenOk_(p.token)) return json_({ok:false, error:'unauthorized'});
   const action = p.action || 'list';
   if(action === 'ping') return json_({ok:true, sheet:sheetUrl_(), model:PropertiesService.getScriptProperties().getProperty('MODEL')});
+  if(action === 'folders'){
+    // where receipts are filed in Drive, so the console's Drive buttons open the right folder
+    const root = rootFolder_(), out = [], it = root.getFolders();
+    while(it.hasNext() && out.length < 400){ const f = it.next(); out.push({name:f.getName(), url:f.getUrl()}); }
+    return json_({ok:true, root:root.getUrl(), sheet:sheetUrl_(), folders:out});
+  }
   if(action === 'list'){
     const rows = readRows_().filter(r => r.status === 'pending' || r.status === 'error' || (p.all === '1' && r.status));
     return json_({ok:true, items:rows.map(publicRow_)});
