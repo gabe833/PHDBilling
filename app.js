@@ -4568,7 +4568,7 @@ function pmRowSheet(m, pid, focus){
             <select data-ik="feeMode" ${ro ? "disabled" : ""}><option value="auto" ${(it.feeMode || (it.fee != null ? "custom" : "auto")) === "auto" ? "selected" : ""}>${prop.adminRate ?? 10}% fee</option>
               <option value="none" ${it.feeMode === "none" ? "selected" : ""}>No fee</option>
               <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
-            <div class="pm-item-x">${stmtLine(it).link ? `<a href="${esc(stmtLine(it).link)}" target="_blank" rel="noopener" class="btn sm ghost">${it.link ? "Receipt" : "Invoice"}</a>` : ""}${ro ? "" : `<button class="btn sm ghost" data-del="${i}">✕</button>`}</div>
+            <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}">✕</button>`}</div>
             ${ro ? "" : `<input type="url" class="pm-link" data-ik="link" value="${esc(it.link || "")}" placeholder="Receipt link (optional)">`}
           </div>`).join("") || `<p class="muted" style="font-size:12.5px;margin:0">No repairs this month.</p>`}</div>
         ${ro ? "" : `<button class="btn sm" id="addItem">${icon("plus")} Add repair</button>`}
@@ -5513,7 +5513,7 @@ function pgPmProperty(){
     inner = `<div class="pp-vend">${Object.entries(vend).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => `<span>${esc(k)} <b class="num">${usd0(c)}</b></span>`).join("")}<span class="muted" style="margin-left:auto">Total <b class="num">${usd(items.reduce((a, it) => a + cents(it.amount), 0))}</b></span></div>
       <table class="tbl pp-tbl"><thead><tr><th>Date</th><th>Vendor</th><th>What</th><th class="r">Amount</th><th></th></tr></thead><tbody>
       ${items.slice(0, 80).map(it => `<tr><td class="muted nw">${it.date ? esc(pmDY(it.date)) : esc(monthShort(it.month))}</td><td class="nw">${esc(it.vendor || "—")}</td><td class="pp-what">${esc(stmtLine(it).title)}${it.recurring ? ' <span class="mark grey">recurring</span>' : ""}</td><td class="r num">${usd(cents(it.amount))}</td>
-        <td class="r">${stmtLine(it).link ? `<a href="${esc(stmtLine(it).link)}" target="_blank" rel="noopener">${it.link ? "Receipt" : "Invoice"}</a>` : ""}</td></tr>`).join("")}</tbody></table>`;
+        <td class="r">${stmtInvLink(stmtLine(it), "")}</td></tr>`).join("")}</tbody></table>`;
   } else {
     inner = `<div class="pp-two">
       <div><div class="label pp-sub">Vendor bills</div>${mdh.bills.length ? `<table class="tbl pp-tbl"><tbody>${mdh.bills.slice(0, 30).map(x => `<tr><td class="muted nw">${esc(pmDY(x.date))}</td><td><b>${esc(x.vendor || "—")}</b><div class="pp-what muted">${esc(x.memo || "")}</div></td>
@@ -6168,14 +6168,15 @@ function stmtCandidates(m){
 }
 
 /* The statement as a PDF-safe page: plain tables and system fonts, so Google's converter lays it out exactly. */
-function pmStatementPdfHTML(m, pid){
+function pmStatementPdfHTML(m, pid, opts){
+  opts = opts || {};
   const p = pmProp(pid), row = pmRow(m, pid), c = pmCalc(row, p), o = p.ownerId ? ownerById(p.ownerId) : null;
   const items = row.repairItems || [], addr = o ? ownerAddressLines(o) : [];
   const d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
   const neg = x => "−" + usd(Math.abs(x));
   const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;
   const lines = [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))]
-    .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}" style="color:#1D5C57">invoice</a>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
+    .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}" style="color:#1D5C57">invoice</a>` : L.mdFile && opts.attach ? ` <span class="m">· invoice attached</span>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
     .concat(!items.length && c.repairsC ? [line("", "Repairs", "", neg(c.repairsC))] : [])
     .concat(c.otherC ? [line("", "Other income", "", usd(c.otherC))] : [])
     .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
@@ -6225,18 +6226,22 @@ function pmStatementPdfHTML(m, pid){
 async function stmtMakeDrafts(m, list, opts){
   opts = opts || {};
   if(!stmtConn()) throw new Error("Connect the statements mailbox first (Month close → Email statements).");
-  const done = [], failed = [];
-  for(let i = 0; i < list.length; i += 10){
-    const batch = list.slice(i, i + 10);
+  const done = [], failed = [], attach = opts.attach != null ? opts.attach : stmtAttachOn(), step = attach ? 3 : 10;
+  for(let i = 0; i < list.length; i += step){
+    const batch = list.slice(i, i + step);
     if(opts.progress) opts.progress(i, list.length);
-    const items = batch.map(x => {
-      const c = stmtCompose(m, x);
-      return {id:x.p.id, to:c.to, cc:String(c.cc || "").split(/[,;\s]+/).filter(stmtEmailOk).join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id), fileName:stmtFileName(x.p, m)};
-    });
+    const items = [];
+    for(const x of batch){
+      const c = stmtCompose(m, x), extra = attach ? await stmtInvoiceFiles(x.row) : [];
+      items.push({id:x.p.id, to:c.to, cc:String(c.cc || "").split(/[,;\s]+/).filter(stmtEmailOk).join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id, {attach:extra.length > 0}), fileName:stmtFileName(x.p, m), extra});
+    }
     let res;
     try{ res = await stmtCall({action:opts.send ? "send" : "drafts", items}); }
     catch(e){ batch.forEach(x => failed.push({x, error:e.message})); if(/Connect|key|answer/.test(e.message)) break; continue; }
-    (res.results || []).forEach(r => { const x = batch.find(b => b.p.id === r.id); if(!x) return; r.ok ? done.push({x, r}) : failed.push({x, error:r.error || "failed"}); });
+    (res.results || []).forEach(r => { const x = batch.find(b => b.p.id === r.id); if(!x) return;
+      const want = (items.find(it => it.id === r.id) || {}).extra || [];
+      if(r.ok && want.length && r.attached == null) r.note = "the pm@ script needs updating to attach invoices";
+      r.ok ? done.push({x, r}) : failed.push({x, error:r.error || "failed"}); });
   }
   if(done.length){
     snapshot();
@@ -6288,6 +6293,7 @@ function pmStatementMailSheet(m){
             <span class="sm-acts">${x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm ghost" data-pv="${x.p.id}" type="button">${stmtCompose(m, x).edited ? "Edited · open" : "Preview & edit"}</button></span></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
           <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
+        <label class="sm-auto"><input type="checkbox" id="smAttach" ${stmtAttachOn() ? "checked" : ""}> Attach the vendors' invoices from MagicDoor to each statement</label>
         <label class="sm-auto"><input type="checkbox" id="smAuto" ${set.autoDrafts !== false ? "checked" : ""}> Make these drafts automatically when a month is closed</label>
       </div>
       <div class="sheet-f"><button class="btn ghost sm" id="smAll" ${busy ? "disabled" : ""}>${n === ready.length ? "Select none" : "Select all"}</button><span style="flex:1"></span>
@@ -6328,6 +6334,7 @@ function pmStatementMailSheet(m){
     };
     const chg = $("#smChange"); if(chg) chg.onclick = e => { e.preventDefault(); if(confirm("Disconnect the statements mailbox? You can paste a new URL and key afterwards.")){ setStmtConn(null); draw(); } };
     $("#smAuto").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {autoDrafts:e.target.checked}); commit(); };
+    $("#smAttach").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtAttach:e.target.checked}); commit(); };
     const run = async send => {
       const list = cands.filter(x => !x.why && sel[x.p.id]);
       if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?\n\nEach goes to its owner with the statement PDF attached. Open "Preview & edit" first if you want to check one.`)) return;
@@ -6337,7 +6344,8 @@ function pmStatementMailSheet(m){
         cands = stmtCandidates(m).map(x => Object.assign(x, {first:(list.find(l => l.p.id === x.p.id) || x).first})); sel = {};
         failed.forEach(f => sel[f.x.p.id] = true);
         const fe = failed.length && /unknown action/i.test(failed[0].error) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : failed.length ? failed[0].error : "";
-        draw(null, `${done.length ? (send ? `${done.length} sent from ${esc((done[0].r.from) || "pm@")}.` : `${done.length} draft${done.length === 1 ? "" : "s"} waiting in Gmail${done[0] && done[0].r.from ? " — " + esc(done[0].r.from) + " → Drafts" : ""}.`) : ""}${failed.length ? ` ${failed.length} didn't go: ${esc(fe)}` : ""}`);
+        const upd = done.some(d => d.r.note) ? " Invoices weren't attached — update the pm@ script (apps-script/Statements.gs) and deploy a new version." : "";
+        draw(null, `${done.length ? (send ? `${done.length} sent from ${esc((done[0].r.from) || "pm@")}.` : `${done.length} draft${done.length === 1 ? "" : "s"} waiting in Gmail${done[0] && done[0].r.from ? " — " + esc(done[0].r.from) + " → Drafts" : ""}.`) : ""}${failed.length ? ` ${failed.length} didn't go: ${esc(fe)}` : ""}${upd}`);
         toast(done.length ? (send ? `${done.length} statement${done.length === 1 ? "" : "s"} sent` : `${done.length} Gmail draft${done.length === 1 ? "" : "s"} created`) : "Nothing was sent", true);
       }catch(e){ draw(null, esc(e.message)); }
     };
@@ -6377,6 +6385,7 @@ function stmtEmailSheet(m, pid){
       <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
       <div class="bm-prev" id="sePrev"></div>
       <div class="se-att">${icon("file")} <a href="#" id="sePdf">${esc(stmtFileName(x.p, m))}</a><span class="muted">attached</span></div>
+      ${stmtMdFiles(x.row).length ? `<label class="se-att"><input type="checkbox" id="seAttach" ${stmtAttachOn() ? "checked" : ""}> Also attach ${stmtMdFiles(x.row).length} vendor invoice${stmtMdFiles(x.row).length === 1 ? "" : "s"} from MagicDoor</label>` : ""}
       ${stmtLinesBlock(x.row)}
       <label class="ps-chk"><input type="checkbox" id="seTpl"> Use this subject and message for every owner statement from now on</label>
       ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !sig ? `<p class="help">No Gmail signature found for pm@ — add the Gmail API service in the script to include it.</p>` : ""}
@@ -6388,7 +6397,7 @@ function stmtEmailSheet(m, pid){
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${html(body.value)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
   [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
-  $("#sePdf").onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, pid)); };
+  $("#sePdf").onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, pid, {attach:!!($("#seAttach") && $("#seAttach").checked)})); };
   stmtWireLines(sh, x.row);
   const keep = () => {
     snapshot();
@@ -6410,7 +6419,8 @@ function stmtEmailSheet(m, pid){
     const b = $(send ? "#seSend" : "#seDraft"); b.disabled = true; b.textContent = send ? "Sending…" : "Saving…";
     try{
       const item = Object.assign({}, x, {to:to.join(",")});
-      const {done, failed} = await stmtMakeDrafts(m, [item], {send});
+      const {done, failed} = await stmtMakeDrafts(m, [item], {send, attach:!!($("#seAttach") && $("#seAttach").checked)});
+      if(done.length && done[0].r.note) toast("Sent without the invoices — update the pm@ script to attach them");
       if(failed.length) throw new Error(/unknown action/i.test(failed[0].error) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : failed[0].error);
       toast(send ? `Sent to ${to.join(", ")}` : "Draft saved in pm@'s Gmail"); pmStatementMailSheet(m);
     }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from pm@" : "Save as Gmail draft"; }
@@ -6447,8 +6457,9 @@ const STMT_VAGUE = /^(turn(over)?\s*)?(repairs?|maintenance|misc\w*|work|labor|s
 function stmtLine(it){
   const f = it.mdLine && typeof mdReady === "function" && mdReady() ? mdLineById(it.mdLine) : null;
   const files = f && f.b && Array.isArray(f.b.files) ? f.b.files : [];
-  const link = it.link || (it.mdLink) || (files.find(x => x.url) || {}).url || "";
-  if(it.stmtDesc) return {title:it.stmtDesc, detail:"", link, vague:false, auto:false};
+  const link = it.link || (files.find(x => x.url) || {}).url || "";
+  const mdFile = !link && files.length && f.b.id ? {billId:f.b.id, fileId:files[0].id || "", name:files[0].name || ""} : null;
+  if(it.stmtDesc) return {title:it.stmtDesc, detail:"", link, mdFile, vague:false, auto:false};
   const text = String(it.memo || (f && f.li && f.li.text) || "").replace(/\s+/g, " ").trim();
   const memo = f && f.b && f.b.memo && f.b.memo.trim() !== text ? f.b.memo.trim() : "";
   const cat = stmtCat(`${it.vendor || ""} ${f && f.li ? f.li.account : ""}`) || stmtCat(`${text} ${memo}`);
@@ -6462,7 +6473,7 @@ function stmtLine(it){
   else if(d.toLowerCase().includes(cat.toLowerCase().split(/[\s&]/)[0])) title = d;
   else title = `${cat} — ${d}`;
   const vague = (!text || STMT_VAGUE.test(text) || STMT_VAGUE.test(core)) && !memo;
-  return {title, detail:memo, link, vague, auto:true};
+  return {title, detail:memo, link, mdFile, vague, auto:true};
 }
 function stmtLinesBlock(row){
   const items = (row && row.repairItems) || [];
@@ -6470,7 +6481,7 @@ function stmtLinesBlock(row){
   const need = items.filter(it => stmtLine(it).vague).length;
   return `<div class="sl-h"><b>Lines on the statement</b><span class="muted">${need ? `${need} could say more — add what was done` : "how each charge reads to the owner"}</span></div>
     <div class="sl-list">${items.map((it, i) => { const L = stmtLine(it), auto = it.stmtDesc ? stmtLine(Object.assign({}, it, {stmtDesc:""})).title : L.title;
-      return `<div class="sl-r${L.vague ? " vague" : ""}"><div class="sl-m"><span class="num">${usd(cents(it.amount))}</span><span class="muted">${esc(it.vendor || "")}${it.date ? " · " + esc(fdateS(it.date)) : ""}</span>${L.link ? `<a href="${esc(L.link)}" target="_blank" rel="noopener" class="sl-inv">Invoice</a>` : ""}</div>
+      return `<div class="sl-r${L.vague ? " vague" : ""}"><div class="sl-m"><span class="num">${usd(cents(it.amount))}</span><span class="muted">${esc(it.vendor || "")}${it.date ? " · " + esc(fdateS(it.date)) : ""}</span>${stmtInvLink(L, "sl-inv")}${L.mdFile && (L.vague || !it.stmtDesc) ? `<button type="button" class="btn sm ghost sl-read" data-rd="${i}">Describe from invoice</button>` : ""}</div>
         <input type="text" data-sl="${i}" data-auto="${esc(auto)}" value="${esc(it.stmtDesc || auto)}" aria-label="Description on the statement">
         ${L.detail ? `<div class="help">${esc(L.detail)}</div>` : ""}${L.vague ? `<div class="help" style="color:var(--gold)">MagicDoor only says “${esc(it.memo || "Repairs")}”. Say what was repaired, e.g. “Turnover — replaced kitchen faucet, patched and painted bedroom walls”.</div>` : ""}</div>`; }).join("")}</div>`;
 }
@@ -6482,6 +6493,67 @@ function stmtWireLines(sh, row){
     commit(); toast("Statement line updated");
     const r = inp.closest(".sl-r"); if(r) r.classList.toggle("vague", !it.stmtDesc && stmtLine(it).vague);
   });
+  sh.querySelectorAll("[data-rd]").forEach(b => b.onclick = async () => {
+    const i = Number(b.dataset.rd), it = row.repairItems[i], inp = sh.querySelector(`[data-sl="${i}"]`); if(!it || !inp) return;
+    b.disabled = true; b.textContent = "Reading the invoice…";
+    try{ inp.value = await stmtDescribe(it); inp.dispatchEvent(new Event("change")); b.textContent = "Done"; }
+    catch(e){ toast(e.message); b.disabled = false; b.textContent = "Describe from invoice"; }
+  });
+}
+
+/* ---------- the vendor's invoice from MagicDoor ---------- */
+const MDF = {cache:new Map()};
+const stmtAttachOn = () => pmSettings().stmtAttach !== false;
+function stmtInvLink(L, cls){
+  if(L.link) return `<a href="${esc(L.link)}" target="_blank" rel="noopener" class="${cls || ""}">Invoice</a>`;
+  if(L.mdFile) return `<a href="#" data-mdf="${esc(L.mdFile.billId)}|${esc(L.mdFile.fileId)}" class="${cls || ""}" title="The vendor's invoice in MagicDoor">Invoice</a>`;
+  return "";
+}
+// the MagicDoor files on a month's repair lines (one per bill)
+function stmtMdFiles(row){
+  const seen = new Set(), out = [];
+  ((row && row.repairItems) || []).forEach(it => { const L = stmtLine(it); if(L.mdFile && !seen.has(L.mdFile.billId)){ seen.add(L.mdFile.billId); out.push(L.mdFile); } });
+  return out;
+}
+async function mdBillFile(billId, fileId){
+  const k = billId + "|" + fileId;
+  if(MDF.cache.has(k)) return MDF.cache.get(k);
+  if(typeof Cloud === "undefined" || !Cloud.ready) throw new Error("Opening MagicDoor files works in the hosted console");
+  const p = Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billFile", billId, fileId}}).then(({data, error}) => {
+    if(error) throw new Error(error.message || "Couldn't reach MagicDoor");
+    if(!data || !data.ok) throw new Error((data && data.error) || "MagicDoor didn't send the file");
+    return data;
+  });
+  MDF.cache.set(k, p); p.catch(() => MDF.cache.delete(k));
+  return p;
+}
+function mdBlobUrl(f){
+  const bin = atob(f.data), u = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([u], {type:f.mime || "application/pdf"}));
+}
+async function stmtInvoiceFiles(row){
+  const out = [];
+  for(const f of stmtMdFiles(row).slice(0, 6)){
+    try{ const x = await mdBillFile(f.billId, f.fileId); if(x.size <= 8 * 1024 * 1024) out.push({name:x.name || f.name || "Invoice", mime:x.mime, data:x.data}); }catch(e){ /* the statement still goes; the file is skipped */ }
+  }
+  return out;
+}
+document.addEventListener("click", async e => {
+  const a = e.target.closest && e.target.closest("[data-mdf]"); if(!a) return;
+  e.preventDefault(); e.stopPropagation();
+  const [billId, fileId] = a.dataset.mdf.split("|"), w = window.open("", "_blank");
+  if(w) w.document.write("<p style='font:14px system-ui;padding:24px;color:#555'>Getting the invoice from MagicDoor…</p>");
+  try{ const f = await mdBillFile(billId, fileId); const url = mdBlobUrl(f); if(w) w.location.href = url; else window.open(url, "_blank"); }
+  catch(er){ if(w) w.close(); toast(er.message); }
+}, true);
+// read the vendor's invoice and say what was done, for a line that only says "Repairs"
+async function stmtDescribe(it){
+  const L = stmtLine(it); if(!L.mdFile) throw new Error("No invoice in MagicDoor for this line");
+  if(!inboxConn()) throw new Error("Connect the receipt inbox first — it reads the invoice");
+  const f = await mdBillFile(L.mdFile.billId, L.mdFile.fileId);
+  const r = await inboxPost({action:"describe", name:f.name, mime:f.mime, data:f.data, vendor:it.vendor || "", amount:it.amount, text:it.memo || ""});
+  if(!r.description) throw new Error("The invoice didn't say");
+  return r.description;
 }
 
 /* =====================================================================

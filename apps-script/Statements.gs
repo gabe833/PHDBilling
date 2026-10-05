@@ -60,7 +60,7 @@ function doPost(e){
 }
 
 /* ---------- the drafts ---------- */
-// items: [{id, to, cc, subject, body, html, fileName}] — the statement page becomes the PDF attachment
+// items: [{id, to, cc, subject, body, html, fileName, extra:[{name, mime, data(base64)}]}] — the statement page becomes the PDF attachment
 function makeDrafts_(items, send){
   const list = Array.isArray(items) ? items.slice(0, CFG.MAX_PER_CALL) : [];
   const me = Session.getEffectiveUser().getEmail(), label = label_();
@@ -73,19 +73,28 @@ function makeDrafts_(items, send){
       const body = String(it.body || '').slice(0, 5000);
       const name = safeName_(String(it.fileName || 'Owner Statement').replace(/\.pdf$/i, '')) + '.pdf';
       const pdf = Utilities.newBlob(String(it.html || ''), MimeType.HTML, 'statement.html').getAs(MimeType.PDF).setName(name);
+      // the vendors' invoices from MagicDoor, when the console sends them along (PDF or image, 8 MB each, 6 at most)
+      const extra = (Array.isArray(it.extra) ? it.extra : []).slice(0, 6).map(f => {
+        const mime = String(f && f.mime || ''), ok = /^(application\/pdf|image\/(jpeg|png|gif|webp))$/.test(mime);
+        if(!ok || !f.data) return null;
+        const bytes = Utilities.base64Decode(String(f.data));
+        if(bytes.length > 8 * 1024 * 1024) return null;
+        const ext = mime === 'application/pdf' ? '.pdf' : '.' + mime.split('/')[1].replace('jpeg', 'jpg');
+        return Utilities.newBlob(bytes, mime, safeName_(String(f.name || 'Invoice').replace(/\.[a-z0-9]{2,5}$/i, '')) + ext);
+      }).filter(Boolean);
       const sig = signature_();
-      const opts = {attachments:[pdf], name:CFG.FROM_NAME, htmlBody:bodyHtml_(body) + (sig ? '<br>' + sig : '')};
+      const opts = {attachments:[pdf].concat(extra), name:CFG.FROM_NAME, htmlBody:bodyHtml_(body) + (sig ? '<br>' + sig : '')};
       if(cc) opts.cc = cc;
       if(send) count_();
       const d = GmailApp.createDraft(to, subject, body, opts);
       if(send){
         const msg = d.send();
         let threadId = ''; try{ const th = msg.getThread(); threadId = th.getId(); th.addLabel(label); }catch(e){}
-        return {id:it.id, ok:true, sent:true, threadId:threadId, at:new Date().toISOString(), from:me};
+        return {id:it.id, ok:true, sent:true, threadId:threadId, at:new Date().toISOString(), from:me, attached:extra.length};
       }
       let labeled = true, threadId = '';
       try{ const th = d.getMessage().getThread(); threadId = th.getId(); th.addLabel(label); }catch(e){ labeled = false; }   // the draft still counts if labelling hiccups
-      return {id:it.id, ok:true, draftId:d.getId(), threadId:threadId, from:me, labeled:labeled};
+      return {id:it.id, ok:true, draftId:d.getId(), threadId:threadId, from:me, labeled:labeled, attached:extra.length};
     }catch(err){ return {id:it.id, ok:false, error:String(err.message || err).slice(0, 300)}; }
   });
   return {ok:true, mailbox:me, results:results};

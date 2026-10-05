@@ -14,6 +14,7 @@
 //   sync      read MagicDoor and save the snapshot        (Team members, or the hourly schedule)
 //   discover  field-name report, no values                (Team members)
 //   probe     field-name report for more addresses        (Team members)
+//   billFile  one bill's attached file (vendor invoice)   (Team members) {billId, fileId}
 //
 // Secrets (Edge Functions → Secrets):  MAGICDOOR_API_KEY
 // Supabase provides SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY.
@@ -161,7 +162,7 @@ function findFiles(x: unknown, depth = 0, out: { id: string; name: string; url: 
       if (!f || typeof f !== "object") continue;
       const url = S(f.url || f.fileUrl || f.downloadUrl || f.signedUrl || f.link || f.uri || f.path || "");
       const id = S(f.id || f.fileId || f.attachmentId || f.documentId || "");
-      const name = S(f.name || f.fileName || f.filename || f.originalName || f.originalFileName || f.title || "").slice(0, 160);
+      const name = S(f.name || f.fileName || f.filename || f.originalName || f.originalFileName || f.title || f.description || "").slice(0, 160);
       if (id || /^https?:/.test(url)) out.push({ id, name, url: /^https?:/.test(url) ? url : "" });
       else findFiles(f, depth + 1, out);
     }
@@ -217,19 +218,19 @@ async function sync() {
     if (r.status === 200 && Array.isArray(r.body)) (r.body as Obj[]).forEach((a) => accounts[S(a.id)] = S(a.name));
   } catch (e) { notes.push("Chart of accounts: " + String((e as Error).message || e)); }
   const cutDay = cut + "-01";
-  const shapes: Obj = { billDetail: {} };
+  const shapes: Obj = {};
   try {
     const raw = await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => vendors[S(v.id)] = nameOf(v)));
     bills = raw.map((x) => cleanBill(x, vendors, accounts)).filter((x) => x.date && x.date >= cutDay && x.status !== "voided" && x.status !== "rejected");
     shapes.billList = mergeShapes(raw.slice(0, 40).map((x) => typeOf("", x)));
-    // one bill's detail and file addresses: field names and status codes only
-    const recent = raw.filter((x) => D(x.billDate)).sort((a, b) => S(b.billDate).localeCompare(S(a.billDate))).slice(0, 2);
-    for (const b of recent) {
-      for (const suffix of ["", "/files", "/attachments", "/documents"]) {
-        const p = `/company-app/vendors/bills/${S(b.id)}${suffix}`;
-        try { const r = await mdGet(p); (shapes.billDetail as Obj)[suffix || "detail"] = r.status === 200 ? { status: 200, ...describe(r.body) } : { status: r.status }; }
-        catch (e) { (shapes.billDetail as Obj)[suffix || "detail"] = { status: "failed" }; }
-      }
+    // how one bill's attached files come back (field names only)
+    const withFile = raw.find((x) => Array.isArray(x.files) && (x.files as unknown[]).length);
+    if (withFile) {
+      try {
+        const r = await mdGet(`/company-app/vendors/bills/${S(withFile.id)}`);
+        const h = r.status === 200 ? ((r.body as Obj)?.hydratedFiles as unknown[]) : null;
+        shapes.hydratedFiles = h ? mergeShapes(h.slice(0, 3).map((x) => typeOf("", x))) : { status: r.status };
+      } catch { shapes.hydratedFiles = { status: "failed" }; }
     }
   } catch (e) { notes.push("Vendor bills: " + String((e as Error).message || e)); }
   try { dists = (await listAll("/company-app/owners/distributions")).map(cleanDistribution).filter((x) => x.date && x.date >= cutDay); }
@@ -424,6 +425,60 @@ async function probe(paths: string[]) {
   return out;
 }
 
+// ---------- a bill's attached file (the vendor's invoice), for people on the team ----------
+// MagicDoor lists a bill's files as {fileId, description}; the bill's own record has them "hydrated" with a link.
+// The file comes back as base64 so the console can open it, attach it to an owner statement, or have it read.
+const MAX_FILE = 15 * 1024 * 1024;
+function urlsIn(x: unknown, out: string[] = [], depth = 0): string[] {
+  if (!x || typeof x !== "object" || depth > 4) return out;
+  for (const [k, v] of Object.entries(x as Obj)) {
+    if (typeof v === "string" && /^https?:\/\//.test(v) && !/thumb/i.test(k)) out.push(v);
+    else if (v && typeof v === "object") urlsIn(v, out, depth + 1);
+  }
+  return out;
+}
+const b64 = (buf: ArrayBuffer) => { const u = new Uint8Array(buf); let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+async function fetchFile(url: string): Promise<{ ok: boolean; status: number; mime: string; data: string; size: number }> {
+  const own = url.startsWith(API);
+  const r = await fetch(url, { headers: own ? { Authorization: "Bearer " + (await mdToken()) } : {}, signal: AbortSignal.timeout(30000) });
+  const mime = (r.headers.get("content-type") || "").split(";")[0].trim();
+  if (!r.ok || /json|html/.test(mime)) { await r.body?.cancel(); return { ok: false, status: r.status, mime, data: "", size: 0 }; }
+  const buf = await r.arrayBuffer();
+  if (buf.byteLength > MAX_FILE) return { ok: false, status: 413, mime, data: "", size: buf.byteLength };
+  return { ok: true, status: 200, mime: mime || "application/pdf", data: b64(buf), size: buf.byteLength };
+}
+async function billFile(billId: string, fileId: string) {
+  if (!/^\d{1,20}$/.test(billId) || (fileId && !/^\d{1,20}$/.test(fileId))) return { error: "Bad bill or file id" };
+  const r = await mdGet(`/company-app/vendors/bills/${billId}`);
+  if (r.status !== 200) return { error: `MagicDoor answered ${r.status} for this bill` };
+  const bill = r.body as Obj, list = ((bill.hydratedFiles as Obj[]) || []), plain = ((bill.files as Obj[]) || []);
+  const pick = list.find((f) => !fileId || [f.id, f.fileId, (f.file as Obj | undefined)?.id].map(S).includes(fileId)) || list[0];
+  const meta = plain.find((f) => S(f.fileId) === fileId) || plain[0] || {};
+  const name = S(pick && (pick.fileName || pick.name || pick.originalFileName || ((pick.file as Obj | undefined)?.fileName)) || meta.description || "Invoice").slice(0, 160);
+  const tried: unknown[] = [];
+  for (const url of [...new Set(urlsIn(pick))]) {
+    const f = await fetchFile(url); tried.push({ host: new URL(url).host, status: f.status, mime: f.mime });
+    if (f.ok) return { ok: true, name, mime: f.mime, data: f.data, size: f.size };
+  }
+  const fid = fileId || S(meta.fileId);
+  for (const p of [`/company-app/files/${fid}`, `/company-app/files/${fid}/download`, `/company-app/files/${fid}/url`]) {
+    if (!fid) break;
+    const t = await mdToken();
+    const x = await fetch(API + p, { headers: { Authorization: "Bearer " + t }, signal: AbortSignal.timeout(30000) });
+    const mime = (x.headers.get("content-type") || "").split(";")[0].trim();
+    tried.push({ path: p.replace(fid, "{id}"), status: x.status, mime });
+    if (!x.ok) { await x.body?.cancel(); continue; }
+    if (/json/.test(mime)) {
+      const j = await x.json().catch(() => null);
+      for (const url of urlsIn(j)) { const f = await fetchFile(url); if (f.ok) return { ok: true, name, mime: f.mime, data: f.data, size: f.size }; }
+      continue;
+    }
+    const buf = await x.arrayBuffer();
+    if (buf.byteLength && buf.byteLength <= MAX_FILE) return { ok: true, name, mime: mime || "application/pdf", data: b64(buf), size: buf.byteLength };
+  }
+  return { error: "MagicDoor didn't hand over this file", tried, shape: pick ? typeOf("", pick) : null };
+}
+
 // ---------- who may call ----------
 async function isStaff(req: Request): Promise<boolean> {
   const auth = req.headers.get("authorization") || "";
@@ -448,7 +503,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
   try {
-    const { mode } = await req.json().catch(() => ({ mode: "" }));
+    const body = await req.json().catch(() => ({})) as Obj;
+    const mode = S(body.mode);
     if (mode === "sync" && await isSchedule(req)) return json(await sync());
     if (!(await isStaff(req))) return json({ error: "Not on the team list" }, 403);
     if (mode === "ping") { await mdToken(); return json({ ok: true }); }
@@ -464,6 +520,7 @@ Deno.serve(async (req) => {
       return json({ at: new Date().toISOString(), auth: "ok", endpoints: out });
     }
     if (mode === "probe") return json({ at: new Date().toISOString(), endpoints: await probe(MORE) });
+    if (mode === "billFile") return json(await billFile(S(body.billId), S(body.fileId)));
     return json({ error: "Unknown mode" }, 400);
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 502);

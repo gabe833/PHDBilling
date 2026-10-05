@@ -474,6 +474,22 @@ function doPost(e){
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
     }
+    if(b.action === 'describe'){
+      // one vendor invoice (from MagicDoor, via the console): say in a line what work was done, for an owner statement
+      const mime = String(b.mime || '').toLowerCase(), kind = MIME_OK[mime];
+      if(!kind) return json_({ok:false, error:'Only PDF or image invoices can be read'});
+      const bytes = Utilities.base64Decode(String(b.data || ''));
+      if(!bytes.length || bytes.length > (kind === 'image' ? CFG.MAX_IMAGE_BYTES : CFG.MAX_PDF_BYTES)) return json_({ok:false, error:'The invoice file is empty or too large to read'});
+      const content = [kind === 'document'
+        ? {type:'document', source:{type:'base64', media_type:'application/pdf', data:Utilities.base64Encode(bytes)}}
+        : {type:'image', source:{type:'base64', media_type:mime, data:Utilities.base64Encode(bytes)}},
+        {type:'text', text:`This is a vendor's invoice for work at a rental property. Vendor: ${String(b.vendor || '').slice(0, 80)}. Amount on our books: $${Number(b.amount) || 0}. Our books only say: "${String(b.text || '').slice(0, 120)}".
+Call the describe_work tool once with one short line (under 110 characters) an owner would understand, saying what was done: the kind of work and the main items, e.g. "Turnover — replaced kitchen faucet, patched and painted bedroom walls" or "Lawn care — bi-weekly mowing and edging, August". No prices, no vendor name, no invoice numbers.`}];
+      const tool = {name:'describe_work', description:'One-line description of the work on the invoice.', input_schema:{type:'object', properties:{description:{type:'string'}}, required:['description']}};
+      const out = callClaude_(content, tool);
+      const d = String(out && out.description || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 140);
+      return json_({ok:true, description:d});
+    }
     if(b.action === 'retry'){
       // re-run extraction for an item that errored (e.g. after fixing the API key)
       const sh = sheet_(), data = sh.getDataRange().getValues(), H = data[0], col = k => H.indexOf(k);
