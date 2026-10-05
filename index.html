@@ -14,7 +14,7 @@
   <aside class="rail">
     <div class="brand">
       <div class="mk">P</div>
-      <div class="wm"><b>PHD Billing</b><span>Owner billing console</span></div>
+      <div class="wm"><b>PHD Billing</b><span>PHD Properties</span></div>
     </div>
     <div class="mode-sw" id="modeSw" role="group" aria-label="Workspace"></div>
     <div class="switch-wrap">
@@ -32,24 +32,23 @@
 
   <div class="main">
     <header class="topbar" id="topbar">
-      <button class="cmd-trigger" id="cmdTrigger">
-        <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
-        <span>Search amounts, vendors, properties…</span><kbd id="cmdKey">⌘K</kbd>
-      </button>
-      <div class="quick">
-        <div class="presence" id="presence"></div>
-        <button class="btn" id="qReconcile">Reconcile</button>
-        <button class="btn primary" id="qAdd">New transaction <kbd>N</kbd></button>
-      </div>
-    </header>
-    <div class="pagehead">
-      <div>
+      <div class="hd-title">
         <div class="crumb" id="pgCrumb"></div>
         <h1 class="page-title" id="pgTitle"></h1>
         <div class="page-sub" id="pgSub"></div>
       </div>
-      <div class="grow" id="pgActions"></div>
-    </div>
+      <div class="hd-right">
+        <div class="grow" id="pgActions"></div>
+        <span class="hd-div" aria-hidden="true"></span>
+        <div class="presence" id="presence"></div>
+        <button class="cmd-trigger" id="cmdTrigger" aria-label="Search">
+          <svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
+          <span>Search</span><kbd id="cmdKey">⌘K</kbd>
+        </button>
+        <button class="btn" id="qReconcile" hidden>Reconcile</button>
+        <button class="btn primary" id="qAdd">New transaction <kbd>N</kbd></button>
+      </div>
+    </header>
     <div class="content" id="view"></div>
   </div>
 </div>

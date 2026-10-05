@@ -122,13 +122,16 @@ Late rent, evictions, deposit returns after a move-out, and PM fees that differ 
 
 ---
 
-### 7. Owner statement emails (Gmail drafts from pm@)
-Month close → **Email statements** makes one Gmail draft per property in **pm@phdproperties.realestate**'s Gmail, with the statement attached as a PDF and the label **AutoDraft/Owner Statements**. Nothing is sent until someone opens the draft and presses Send. Closing a month makes them automatically (switch off in the same window).
+### 7. Owner statement emails (from pm@)
+Month close → **Email statements** lists one email per property from **pm@phdproperties.realestate**, with the statement attached as a PDF. Open **Preview & edit** on any of them to see exactly what the owner gets and change the wording. Then **Send from pm@**, or **Save as Gmail draft** to send from Gmail yourself. From the list you can **Send N now** for everyone ticked, or **Send draft** for one already waiting in Gmail. Tick "Use this subject and message for every owner statement from now on" to change the standard wording. Sent emails keep the label **AutoDraft/Owner Statements**. Closing a month still makes drafts automatically unless you switch that off.
 
 1. Sign in to Google as **pm@phdproperties.realestate** → script.google.com → New project → paste `apps-script/Statements.gs` → Save.
-2. Run **setup()** and allow access. The log shows the console key.
-3. Deploy → New deployment → **Web app** · Execute as **Me** · Who has access **Anyone** → copy the URL.
-4. In the console: Month close → Email statements → paste the URL and key → Connect.
+2. To include pm@'s Gmail signature: **Services (+)** → **Gmail API** → Add.
+3. Run **setup()** and allow access. The log shows the console key.
+4. Deploy → New deployment → **Web app** · Execute as **Me** · Who has access **Anyone** → copy the URL.
+5. In the console: Month close → Email statements → paste the URL and key → Connect.
+
+**Already installed?** Paste the new version of `Statements.gs`, add the Gmail API service if you want the signature, then Deploy → **Manage deployments** → pencil → Version: **New version** → Deploy. The URL and key stay the same. Until then, saving drafts works but sending from the console says to update the script.
 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one.
 
@@ -146,7 +149,7 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)
-**Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
+**Today** (top of the left menu on both sides) lists what needs doing across projects and property management, each with the button that does it. **Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
 - **Money in & out:** Nickel balances, every payment in and out with a **Receipt** button (Nickel's PDF) and a link to the console record it belongs to, and **Deposited checks to apply**. A check you deposited in Nickel can be put toward any open owner or project invoice without moving money again.
 - **Setup:** where vendors are paid from, who can send money, and which QuickBooks accounts and products Nickel codes things to.
 

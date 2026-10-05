@@ -908,6 +908,30 @@ async function projExpenses(bud: Budget): Promise<number> {
   }
   return n;
 }
+// project invoices made by hand in Nickel: link them by number every hour (same numbering as the console:
+// 3282HARTWELL-006 · 120SMITH-B-001), so nobody has to open the invoice for its status to come in
+const PJ_STREET = /\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|blvd|boulevard|ct|court|way|pl|place|cir|circle|hwy|highway|pkwy|parkway|ter|terrace|trl|trail)\b\.?/gi;
+function pjNumber(p: Obj, unit: Obj, no: number): string {
+  const base = (S(p.qbPrefix) || S(p.name).replace(PJ_STREET, "")).toUpperCase().replace(/[^A-Z0-9]/g, "") || "INV";
+  const u = (p.units || []).length > 1 ? S(unit.name).replace(/^unit\s*/i, "").toUpperCase().replace(/[^A-Z0-9]/g, "") : "";
+  const tail = `${u ? "-" + u : ""}-${String(no).padStart(3, "0")}`;
+  return base.slice(0, 21 - tail.length) + tail;
+}
+async function linkAllProjects(): Promise<number> {
+  const projs = await (await rest("docs?select=id,data&kind=eq.pj_property&deleted=is.false")).json();
+  let n = 0;
+  for (const row of projs) {
+    const p = row.data, items: Obj[] = [];
+    for (const [key, g] of Object.entries((p.register || {}) as Obj)) {
+      if (!g || (g.nickel && g.nickel.invoiceId) || !(g.frozen || g.dateSent || g.paid || g.lock)) continue;
+      const [unitId, noS] = key.split("|"), unit = (p.units || []).find((u: Obj) => u.id === unitId), no = Number(noS);
+      if (unit && no > 0) items.push({ unitId, no, number: pjNumber(p, unit, no) });
+    }
+    if (!items.length) continue;
+    try { n += (await linkProject({ propertyId: row.id, items })).linked || 0; } catch (_) { /* next hour */ }
+  }
+  return n;
+}
 async function refresh(only?: Obj) {
   if (!TOKEN) return { changed: 0, skipped: "no token" };
   let changed = 0; const bud: Budget = { left: only ? 12 : 140 };
@@ -936,6 +960,7 @@ async function refresh(only?: Obj) {
     try { if (await syncProject(row.id, key, g, bud)) changed++; } catch (_) { /* next hour */ }
   }
   if (!only) { try { changed += await linkBills(bud, map); } catch (_) { /* next hour */ } }
+  if (!only || only.kind === "projects") { try { changed += await linkAllProjects(); } catch (_) { /* next hour */ } }
   if (!only || only.kind === "expenses") { try { changed += await projExpenses(only ? { left: 30 } : bud); } catch (_) { /* next hour */ } }
   if (!only) await saveMap((m) => { m.lastRefresh = new Date().toISOString(); });
   return { changed, more: bud.left <= 0 };

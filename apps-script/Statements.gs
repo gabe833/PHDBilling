@@ -1,25 +1,30 @@
 /* =====================================================================
-   PHD Billing — owner statement drafts (Google Apps Script)
+   PHD Billing — owner statement emails (Google Apps Script)
    ---------------------------------------------------------------------
    Install this in the pm@phdproperties.realestate Google account — the
    mailbox for all property-management email. The console sends each
-   owner statement here and this script saves it as a Gmail DRAFT in
-   pm@'s Gmail, with the statement attached as a PDF. Nothing is ever sent:
-   someone opens pm@'s Drafts, checks each one and presses Send.
+   owner statement here and this script sends it from pm@'s Gmail, or saves
+   it as a Gmail DRAFT there, with the statement attached as a PDF. You read
+   and edit each email in the console first; nothing is sent until you
+   press Send there (or send the draft from Gmail).
 
    One-time setup (signed in as pm@phdproperties.realestate):
      1. script.google.com → New project → paste this file → Save.
-     2. Run setup() once and allow access. The log prints the console key.
-     3. Deploy → New deployment → Web app.
+     2. Optional, to add pm@'s Gmail signature: Services (+) → Gmail API → Add.
+     3. Run setup() once and allow access. The log prints the console key.
+     4. Deploy → New deployment → Web app.
           Execute as: Me (pm@phdproperties.realestate)
           Who has access: Anyone
         Copy the web app URL.
-     4. In the console: Month close → Email statements → paste the URL and key.
+     5. In the console: Month close → Email statements → paste the URL and key.
+   Updating an existing install: paste the new version, then Deploy → Manage
+   deployments → edit (pencil) → Version: New version → Deploy. The URL stays.
    ===================================================================== */
 const CFG = {
   FROM_NAME: 'PHD Property Management',   // the name owners see next to pm@'s address
   LABEL: 'AutoDraft/Owner Statements',     // every statement draft gets this Gmail label (it stays on after sending)
-  MAX_PER_CALL: 10
+  MAX_PER_CALL: 10,
+  MAX_SENT_PER_DAY: 150                     // a safety cap on emails sent from the console per day
 };
 
 /* ---------- one-time setup ---------- */
@@ -40,21 +45,23 @@ function newKey_(){ return Utilities.getUuid().replace(/-/g, '') + Utilities.get
 function doGet(e){
   const p = (e && e.parameter) || {};
   if(!keyOk_(p.token)) return json_({ok:false, error:'unauthorized'});
-  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail()});
+  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail(), fromName:CFG.FROM_NAME, signature:signature_(), canSend:true});
   return json_({ok:false, error:'unknown action'});
 }
 function doPost(e){
   let b = {};
   try{ b = JSON.parse((e && e.postData && e.postData.contents) || '{}'); }catch(err){ return json_({ok:false, error:'bad json'}); }
   if(!keyOk_(b.token)) return json_({ok:false, error:'unauthorized'});
-  if(b.action === 'drafts') return json_(makeDrafts_(b.items));
+  if(b.action === 'drafts') return json_(makeDrafts_(b.items, false));
+  if(b.action === 'send') return json_(makeDrafts_(b.items, true));
+  if(b.action === 'sendDraft') return json_(sendDraft_(b.items));
   if(b.action === 'status') return json_({ok:true, results:status_(b.items)});
   return json_({ok:false, error:'unknown action'});
 }
 
 /* ---------- the drafts ---------- */
 // items: [{id, to, cc, subject, body, html, fileName}] — the statement page becomes the PDF attachment
-function makeDrafts_(items){
+function makeDrafts_(items, send){
   const list = Array.isArray(items) ? items.slice(0, CFG.MAX_PER_CALL) : [];
   const me = Session.getEffectiveUser().getEmail(), label = label_();
   const results = list.map(it => {
@@ -66,15 +73,46 @@ function makeDrafts_(items){
       const body = String(it.body || '').slice(0, 5000);
       const name = safeName_(String(it.fileName || 'Owner Statement').replace(/\.pdf$/i, '')) + '.pdf';
       const pdf = Utilities.newBlob(String(it.html || ''), MimeType.HTML, 'statement.html').getAs(MimeType.PDF).setName(name);
-      const opts = {attachments:[pdf], name:CFG.FROM_NAME, htmlBody:bodyHtml_(body)};
+      const sig = signature_();
+      const opts = {attachments:[pdf], name:CFG.FROM_NAME, htmlBody:bodyHtml_(body) + (sig ? '<br>' + sig : '')};
       if(cc) opts.cc = cc;
+      if(send) count_();
       const d = GmailApp.createDraft(to, subject, body, opts);
+      if(send){
+        const msg = d.send();
+        let threadId = ''; try{ const th = msg.getThread(); threadId = th.getId(); th.addLabel(label); }catch(e){}
+        return {id:it.id, ok:true, sent:true, threadId:threadId, at:new Date().toISOString(), from:me};
+      }
       let labeled = true, threadId = '';
       try{ const th = d.getMessage().getThread(); threadId = th.getId(); th.addLabel(label); }catch(e){ labeled = false; }   // the draft still counts if labelling hiccups
       return {id:it.id, ok:true, draftId:d.getId(), threadId:threadId, from:me, labeled:labeled};
     }catch(err){ return {id:it.id, ok:false, error:String(err.message || err).slice(0, 300)}; }
   });
   return {ok:true, mailbox:me, results:results};
+}
+// send drafts made earlier (items: [{id, draftId}])
+function sendDraft_(items){
+  const me = Session.getEffectiveUser().getEmail();
+  return {ok:true, mailbox:me, results:(Array.isArray(items) ? items.slice(0, CFG.MAX_PER_CALL) : []).map(it => {
+    try{ count_(); const msg = GmailApp.getDraft(String(it.draftId)).send(); return {id:it.id, ok:true, sent:true, threadId:msg.getThread().getId(), at:new Date().toISOString(), from:me}; }
+    catch(err){ return {id:it.id, ok:false, error:'That draft is gone from Gmail (sent or deleted there). ' + String(err.message || err).slice(0, 200)}; }
+  })};
+}
+// pm@'s Gmail signature (needs the Gmail API service; without it, no signature is added)
+function signature_(){
+  try{
+    if(typeof Gmail === 'undefined') return '';
+    const me = Session.getEffectiveUser().getEmail();
+    const list = Gmail.Users.Settings.SendAs.list('me').sendAs || [];
+    const s = list.find(x => String(x.sendAsEmail).toLowerCase() === me.toLowerCase()) || list.find(x => x.isDefault) || {};
+    return String(s.signature || '');
+  }catch(e){ return ''; }
+}
+function count_(){
+  const props = PropertiesService.getScriptProperties(), day = Utilities.formatDate(new Date(), 'America/New_York', 'yyyy-MM-dd');
+  const cur = JSON.parse(props.getProperty('COUNT') || '{}'), n = cur.day === day ? cur.n : 0;
+  if(n >= CFG.MAX_SENT_PER_DAY) throw new Error('Daily limit reached (' + CFG.MAX_SENT_PER_DAY + ' emails). Raise MAX_SENT_PER_DAY in the script if this is expected.');
+  props.setProperty('COUNT', JSON.stringify({day:day, n:n + 1}));
 }
 // where each statement email stands now: still a draft, sent, or deleted (so the console shows the truth)
 // items: [{id, draftId, threadId}]

@@ -12,9 +12,9 @@ function toast(m, withUndo){
 /* ===================== chrome ===================== */
 function render(){
   const p = P();
-  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.mode === "pm";
+  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.mode === "pm";
   renderModeSwitch();
-  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : p.name;
+  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : p.name;
   $("#swSub").textContent  = portfolioView
     ? `${live().length} propert${live().length===1?"y":"ies"}`
     : `${usd0(cents(p.invoiceTarget))} cap · ${p.feePct}% fee`;
@@ -45,12 +45,13 @@ function render(){
     pmVendors:["Property management", "Vendors", ""],
     pmPaySetup:["Shared", "Payments", ""],
     payments: ["Shared", "Payments", ""],
+    today:    ["", "Today", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, settings:pgSettings})[S.ui.view] || pgOverview)();
   chip();
 }
 function actions(list){
@@ -59,7 +60,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team"].includes(view)) S.ui.mode = "projects";
+  else if(!["owners","inbox","team","payments","today"].includes(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -80,6 +81,7 @@ function renderNav(){
     b.onclick = () => go(k); n.appendChild(b);
   };
   const pr = portfolioRoll();
+  mk("today", "Today", "bolt");
   mk("portfolio", "All properties", "grid", pr.issues ? `<i class="badge alert">${pr.issues}</i>` : `<i class="badge">${pr.props}</i>`);
   { const nOwn = (S.owners||[]).filter(ownerLabel).length;
     mk("owners", "Owners", "user", `<i class="badge">${nOwn}</i>`);
@@ -6098,16 +6100,25 @@ async function stmtCall(body, get){
   if(!j.ok) throw new Error(j.error === "unauthorized" ? "The statements key wasn't accepted — paste it again from the script's log" : (j.error || "Statements script error"));
   return j;
 }
-const STMT_SUBJECT = addr => `Owner Statement – ${addr}`;
-const STMT_BODY = (first, addr) => `Hello${first ? " " + first : ""},
+const STMT_TPL_DEFAULT = {subject:"Owner Statement – {address}", body:`Hello {first},
 
-Attached is your latest owner statement for ${addr}. It includes the recent income, expenses, and activity for the property.
+Attached is your latest owner statement for {address}. It includes the recent income, expenses, and activity for the property.
 
 Please let us know if you have any questions. Thank you for your continued business. 
 
 Sincerely,
 
-PHD Property Management`;
+PHD Property Management`};
+const stmtTpl = () => Object.assign({}, STMT_TPL_DEFAULT, (pmSettings() || {}).stmtTpl || {});
+const stmtFill = (t, first, addr, m) => String(t || "").replace(/Hello \{first\},/g, first ? `Hello ${first},` : "Hello,").replace(/\{first\}/g, first || "").replace(/\{address\}/g, addr).replace(/\{month\}/g, m ? monthLabel(m) : "");
+const STMT_SUBJECT = (addr, m) => stmtFill(stmtTpl().subject, "", addr, m);
+const STMT_BODY = (first, addr, m) => stmtFill(stmtTpl().body, first, addr, m);
+// this month's email for one property: the standard wording, or what was typed for it in the console
+function stmtEdits(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.emailEdits = mm.emailEdits || {}; return mm.emailEdits; }
+function stmtCompose(m, x){
+  const e = ((pmState().meta[m] || {}).emailEdits || {})[x.p.id] || {}, addr = stmtAddr(x.p);
+  return {to:e.to || x.to, cc:e.cc != null ? e.cc : x.cc.join(", "), subject:e.subject || STMT_SUBJECT(addr, m), body:e.body || STMT_BODY(x.first, addr, m), edited:!!(e.subject || e.body)};
+}
 const STMT_CO = /\b(llc|l\.l\.c|inc|corp|corporation|trust|properties|property|holdings|company|co|lp|llp|ltd|group|investments?|buyers|homes|realty|partners|capital|estate|enterprises|ventures|management)\b/i;
 // Owner name → the first name for "Hello ___". A name typed in the Email statements window is kept on the owner and wins.
 //   "Ford Smith / Brad Home Buyers LLC" → Ford · "Chris Murphy -Gallagher Holdings LLC" → Chris
@@ -6207,18 +6218,19 @@ async function stmtMakeDrafts(m, list, opts){
     const batch = list.slice(i, i + 10);
     if(opts.progress) opts.progress(i, list.length);
     const items = batch.map(x => {
-      const addr = stmtAddr(x.p);
-      return {id:x.p.id, to:x.to, cc:x.cc.join(","), subject:STMT_SUBJECT(addr), body:STMT_BODY(x.first, addr), html:pmStatementPdfHTML(m, x.p.id), fileName:stmtFileName(x.p, m)};
+      const c = stmtCompose(m, x);
+      return {id:x.p.id, to:c.to, cc:String(c.cc || "").split(/[,;\s]+/).filter(stmtEmailOk).join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id), fileName:stmtFileName(x.p, m)};
     });
     let res;
-    try{ res = await stmtCall({action:"drafts", items}); }
+    try{ res = await stmtCall({action:opts.send ? "send" : "drafts", items}); }
     catch(e){ batch.forEach(x => failed.push({x, error:e.message})); if(/Connect|key|answer/.test(e.message)) break; continue; }
     (res.results || []).forEach(r => { const x = batch.find(b => b.p.id === r.id); if(!x) return; r.ok ? done.push({x, r}) : failed.push({x, error:r.error || "failed"}); });
   }
   if(done.length){
     snapshot();
     const D = stmtDrafted(m), by = (typeof Cloud !== "undefined" && Cloud.email) || "";
-    done.forEach(({x, r}) => D[x.p.id] = {at:new Date().toISOString(), to:x.to, by, from:r.from || "", draftId:r.draftId || "", threadId:r.threadId || "", state:"draft"});
+    done.forEach(({x, r}) => D[x.p.id] = r.sent ? {at:r.at || new Date().toISOString(), sentAt:r.at || new Date().toISOString(), to:stmtCompose(m, x).to, by, from:r.from || "", threadId:r.threadId || "", state:"sent", fromConsole:true}
+      : {at:new Date().toISOString(), to:stmtCompose(m, x).to, by, from:r.from || "", draftId:r.draftId || "", threadId:r.threadId || "", state:"draft"});
     commit();
   }
   return {done, failed};
@@ -6244,7 +6256,7 @@ function pmStatementMailSheet(m){
   cands.forEach(x => { if(!x.why && !x.done) sel[x.p.id] = true; });
   const draw = (busy, note) => {
     const ready = cands.filter(x => !x.why), n = ready.filter(x => sel[x.p.id]).length, blocked = cands.filter(x => x.why);
-    sh.innerHTML = `<div class="sheet-h"><div><h3>Email statements · ${monthLabel(m)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">One Gmail draft per property, with its statement attached as a PDF. Nothing is sent — open Gmail, check each draft and press Send.</div></div>
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Email statements · ${monthLabel(m)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">One email per property from pm@, with its statement attached as a PDF. Check or edit any of them first, then send from here or save them as Gmail drafts.</div></div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
         ${!stmtConn() ? `<div class="sm-setup"><b>Connect the statements mailbox</b>
@@ -6260,13 +6272,13 @@ function pmStatementMailSheet(m){
             <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" value="${esc(x.first)}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
             ${x.done ? (x.done.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
                 : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
-            <button class="btn sm ghost" data-pv="${x.p.id}" type="button">Preview</button></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
+            <span class="sm-acts">${x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm ghost" data-pv="${x.p.id}" type="button">${stmtCompose(m, x).edited ? "Edited · open" : "Preview & edit"}</button></span></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
           <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
         <label class="sm-auto"><input type="checkbox" id="smAuto" ${set.autoDrafts !== false ? "checked" : ""}> Make these drafts automatically when a month is closed</label>
       </div>
       <div class="sheet-f"><button class="btn ghost sm" id="smAll" ${busy ? "disabled" : ""}>${n === ready.length ? "Select none" : "Select all"}</button><span style="flex:1"></span>
-        <button class="btn" id="shCancel">Close</button><button class="btn primary" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Create ${n} Gmail draft${n === 1 ? "" : "s"}`}</button></div>`;
+        <button class="btn" id="shCancel">Close</button><button class="btn" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Save ${n} as Gmail draft${n === 1 ? "" : "s"}`}</button><button class="btn primary" id="smSend" ${!n || busy || !stmtConn() ? "disabled" : ""}>Send ${n} now</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     sh.querySelectorAll("[data-s]").forEach(i => i.onchange = () => { sel[i.dataset.s] = i.checked; draw(); });
     sh.querySelectorAll("[data-fn]").forEach(i => {
@@ -6278,7 +6290,16 @@ function pmStatementMailSheet(m){
         sh.querySelectorAll("[data-fn]").forEach(j => { const y = cands.find(c => c.p.id === j.dataset.fn); if(y && y.o && y.o.id === x.o.id && j !== i) j.value = y.first; });
       };
     });
-    sh.querySelectorAll("[data-pv]").forEach(b => b.onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, b.dataset.pv)); });
+    sh.querySelectorAll("[data-pv]").forEach(b => b.onclick = e => { e.preventDefault(); stmtEmailSheet(m, b.dataset.pv); });
+    sh.querySelectorAll("[data-sd]").forEach(b => b.onclick = async e => { e.preventDefault();
+      const x = cands.find(c => c.p.id === b.dataset.sd), rec = x && x.done; if(!rec) return;
+      if(!confirm(`Send the Gmail draft to ${rec.to} from ${(stmtConn() || {}).mailbox || "pm@"} now?`)) return;
+      b.disabled = true; b.textContent = "Sending…";
+      try{ const r = ((await stmtCall({action:"sendDraft", items:[{id:x.p.id, draftId:rec.draftId}]})).results || [])[0] || {};
+        if(!r.ok) throw new Error(r.error || "Couldn't send it");
+        snapshot(); Object.assign(stmtDrafted(m)[x.p.id], {state:"sent", sentAt:r.at, threadId:r.threadId || rec.threadId, fromConsole:true}); commit();
+        cands = stmtCandidates(m).map(y => Object.assign(y, {first:(cands.find(c => c.p.id === y.p.id) || y).first})); draw(null, `Sent to ${esc(rec.to)}.`); toast("Statement sent");
+      }catch(er){ draw(null, esc(/unknown action/i.test(er.message) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : er.message)); } });
     sh.querySelectorAll("[data-ow]").forEach(b => b.onclick = () => { closeSheet(); openOwner(b.dataset.ow); });
     sh.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
     $("#smAll").onclick = () => { const all = n !== ready.length; ready.forEach(x => sel[x.p.id] = all); draw(); };
@@ -6288,22 +6309,26 @@ function pmStatementMailSheet(m){
       if(token.length < 32){ msg.textContent = "The key looks too short."; return; }
       msg.textContent = "Checking…";
       const prev = stmtConn(); setStmtConn({url, token});
-      try{ const j = await stmtCall({action:"ping"}, true); setStmtConn({url, token, mailbox:j.mailbox || ""}); toast(`Connected — drafts will be saved in ${j.mailbox}`, true); draw(); }
+      try{ const j = await stmtCall({action:"ping"}, true); setStmtConn({url, token, mailbox:j.mailbox || "", signature:j.signature || "", fromName:j.fromName || "", canSend:!!j.canSend}); toast(`Connected — drafts will be saved in ${j.mailbox}`, true); draw(); }
       catch(e){ setStmtConn(prev); msg.textContent = e.message; }
     };
     const chg = $("#smChange"); if(chg) chg.onclick = e => { e.preventDefault(); if(confirm("Disconnect the statements mailbox? You can paste a new URL and key afterwards.")){ setStmtConn(null); draw(); } };
     $("#smAuto").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {autoDrafts:e.target.checked}); commit(); };
-    $("#smGo").onclick = async () => {
+    const run = async send => {
       const list = cands.filter(x => !x.why && sel[x.p.id]);
-      draw("Creating drafts…");
+      if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?\n\nEach goes to its owner with the statement PDF attached. Open "Preview & edit" first if you want to check one.`)) return;
+      draw(send ? "Sending…" : "Creating drafts…");
       try{
-        const {done, failed} = await stmtMakeDrafts(m, list, {progress:(i, t) => { const b = $("#smGo"); if(b) b.textContent = `Creating ${i + 1}–${Math.min(i + 10, t)} of ${t}…`; }});
+        const {done, failed} = await stmtMakeDrafts(m, list, {send, progress:(i, t) => { const b = $(send ? "#smSend" : "#smGo"); if(b) b.textContent = `${send ? "Sending" : "Creating"} ${i + 1}–${Math.min(i + 10, t)} of ${t}…`; }});
         cands = stmtCandidates(m).map(x => Object.assign(x, {first:(list.find(l => l.p.id === x.p.id) || x).first})); sel = {};
         failed.forEach(f => sel[f.x.p.id] = true);
-        draw(null, `${done.length ? `${done.length} draft${done.length === 1 ? "" : "s"} waiting in Gmail${done[0] && done[0].r.from ? " — " + esc(done[0].r.from) + " → Drafts" : ""}.` : ""}${failed.length ? ` ${failed.length} couldn't be made: ${esc(failed[0].error)}` : ""}`);
-        toast(done.length ? `${done.length} Gmail draft${done.length === 1 ? "" : "s"} created` : "No drafts were created", true);
+        const fe = failed.length && /unknown action/i.test(failed[0].error) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : failed.length ? failed[0].error : "";
+        draw(null, `${done.length ? (send ? `${done.length} sent from ${esc((done[0].r.from) || "pm@")}.` : `${done.length} draft${done.length === 1 ? "" : "s"} waiting in Gmail${done[0] && done[0].r.from ? " — " + esc(done[0].r.from) + " → Drafts" : ""}.`) : ""}${failed.length ? ` ${failed.length} didn't go: ${esc(fe)}` : ""}`);
+        toast(done.length ? (send ? `${done.length} statement${done.length === 1 ? "" : "s"} sent` : `${done.length} Gmail draft${done.length === 1 ? "" : "s"} created`) : "Nothing was sent", true);
       }catch(e){ draw(null, esc(e.message)); }
     };
+    $("#smGo").onclick = () => run(false);
+    $("#smSend").onclick = () => run(true);
   };
   draw(); openPanel();
   // check Gmail: drafts someone deleted are freed up, sent ones say "Sent"
@@ -6321,6 +6346,60 @@ async function stmtAutoOnClose(m){
     const {done, failed} = await stmtMakeDrafts(m, list);
     toast(`${done.length} owner statement draft${done.length === 1 ? "" : "s"} ready in Gmail${failed.length ? ` · ${failed.length} couldn't be made (Owner statements → Email shows why)` : ""}`, true);
   }catch(e){ toast("Statement drafts: " + e.message); }
+}
+
+/* ---------- one statement email: see it, edit it, send it ---------- */
+function stmtEmailSheet(m, pid){
+  const sh = $("#sheet"), x = stmtCandidates(m).find(c => c.p.id === pid); if(!x) return;
+  const c = stmtCompose(m, x), conn = stmtConn() || {}, rec = x.done;
+  const sig = conn.signature || "";
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Owner statement · ${esc(x.p.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${monthLabel(m)} · from ${esc(conn.mailbox || "pm@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${rec ? `<div class="pm-banner" style="background:var(--panel-2)">${rec.state === "sent" ? `Sent ${esc(fdateS(String(rec.sentAt || rec.at).slice(0, 10)))} to ${esc(rec.to)}.` : `A draft is waiting in Gmail (made ${esc(fdateS(String(rec.at).slice(0, 10)))}). Sending from here makes a fresh email with what's below.`}</div>` : ""}
+      ${x.why ? `<div class="pm-banner">${esc(x.why)}</div>` : ""}
+      <div class="f2"><label class="fld"><span>To</span><input type="text" id="seTo" value="${esc(c.to)}"></label><label class="fld"><span>Cc</span><input type="text" id="seCc" value="${esc(c.cc)}"></label></div>
+      <label class="fld"><span>Subject</span><input type="text" id="seSub" value="${esc(c.subject)}"></label>
+      <label class="fld"><span>Message</span><textarea id="seBody" rows="11">${esc(c.body)}</textarea></label>
+      <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
+      <div class="bm-prev" id="sePrev"></div>
+      <div class="se-att">${icon("file")} <a href="#" id="sePdf">${esc(stmtFileName(x.p, m))}</a><span class="muted">attached</span></div>
+      <label class="ps-chk"><input type="checkbox" id="seTpl"> Use this subject and message for every owner statement from now on</label>
+      ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !sig ? `<p class="help">No Gmail signature found for pm@ — add the Gmail API service in the script to include it.</p>` : ""}
+    </div>
+    <div class="sheet-f"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
+  openPanel();
+  $("#shClose").onclick = closeSheet; $("#seBack").onclick = () => pmStatementMailSheet(m);
+  const sub = $("#seSub"), body = $("#seBody"), prev = $("#sePrev");
+  const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
+  const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${html(body.value)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
+  [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
+  $("#sePdf").onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, pid)); };
+  const keep = () => {
+    snapshot();
+    const E = stmtEdits(m), addr = stmtAddr(x.p), std = {subject:STMT_SUBJECT(addr, m), body:STMT_BODY(x.first, addr, m)};
+    const e = {to:$("#seTo").value.trim(), cc:$("#seCc").value.trim()};
+    if(sub.value !== std.subject) e.subject = sub.value; if(body.value !== std.body) e.body = body.value;
+    E[pid] = e;
+    if($("#seTpl").checked){
+      const un = t => String(t).split(addr).join("{address}").replace(x.first ? new RegExp("Hello " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^$/, "Hello {first},");
+      S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtTpl:{subject:un(sub.value), body:un(body.value)}});
+      delete e.subject; delete e.body;
+    }
+    commit();
+  };
+  const go = async send => {
+    keep();
+    const to = $("#seTo").value.split(/[,;\s]+/).filter(stmtEmailOk); if(!to.length) return toast("Add the owner's email");
+    if(send && !confirm(`Send this statement to ${to.join(", ")} from ${conn.mailbox || "pm@"} now?`)) return;
+    const b = $(send ? "#seSend" : "#seDraft"); b.disabled = true; b.textContent = send ? "Sending…" : "Saving…";
+    try{
+      const item = Object.assign({}, x, {to:to.join(",")});
+      const {done, failed} = await stmtMakeDrafts(m, [item], {send});
+      if(failed.length) throw new Error(/unknown action/i.test(failed[0].error) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : failed[0].error);
+      toast(send ? `Sent to ${to.join(", ")}` : "Draft saved in pm@'s Gmail"); pmStatementMailSheet(m);
+    }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from pm@" : "Save as Gmail draft"; }
+  };
+  $("#seSend").onclick = () => go(true); $("#seDraft").onclick = () => go(false);
 }
 
 /* =====================================================================
@@ -6457,7 +6536,7 @@ async function payPull(keys){
     cloudApply(kind, id, data.data, data.deleted);
     Cloud.synced.set(key, {json:JSON.stringify(data.data), version:data.version, deleted:data.deleted});
   }
-  render();
+  recalc(); render();
 }
 let PAY = {status:null, loading:false, err:""};
 async function payStatus(force){
@@ -6612,7 +6691,6 @@ function pgPmBills(){
   const selIds = Object.keys(sel).filter(id => sel[id] && billById(id) && billById(id).status === "open");
   const acts = [];
   if(selIds.length) acts.push(nickelOn() ? [`Pay ${selIds.length} selected`, () => billPaySheet(selIds), "primary"] : [`Mark ${selIds.length} paid`, () => billManualSheet(selIds), "primary"]);
-  acts.push(["Add bill", () => billSheet(null), selIds.length ? "" : "primary"]);
   actions(acts);
   payStatusThenRedraw("pmBills");
   payRefreshSoon(); if(nkImportVendors()){ setTimeout(render, 0); return; } nkMatchSoon("pmBills");
@@ -7377,6 +7455,9 @@ function pjAutoLink(p){
   const items = [];
   p.units.forEach(u => (C.units[u.id] || []).forEach(inv => { const g = (p.register || {})[pjKey(u, inv)] || {}; if(!(g.nickel && g.nickel.invoiceId) && (inv.locked || g.dateSent || g.paid)) items.push({unitId:u.id, no:inv.no, number:pjInvNumber(p, u, inv)}); }));
   PJ_LINKED[p.id] = todayISO();
+  // and bring in the latest from Nickel for this property's open invoices
+  if(Object.values(p.register || {}).some(g => g && g.nickel && g.nickel.invoiceId && !(g.paid && g.nickel.done)))
+    payCall("nk.sync", {kind:"project", id:p.id}, {noSave:true}).catch(() => {});
   if(!items.length) return;
   payCall("nk.linkProject", {propertyId:p.id, items}, {noSave:true}).then(r => { if(r.linked){ toast(`${r.linked} invoice${r.linked === 1 ? "" : "s"} matched to Nickel`); render(); } }).catch(() => {});
 }
@@ -7875,11 +7956,115 @@ function ownerNickelCard(o){
   };
 })();
 
+/* ---------- background: keep everything current without anyone opening it ----------
+   The server checks Nickel every hour. While the console is open, it also asks for a
+   check when the last one is over 20 minutes old (one tab at a time, silently). */
+let NK_BG = 0;
+setInterval(() => {
+  try{
+    if(!payOnline() || !S.nk || Date.now() - NK_BG < 20 * 60e3) return;
+    const last = Date.parse(S.nk.lastRefresh || 0) || 0; if(Date.now() - last < 20 * 60e3) return;
+    if(document.hidden) return;
+    NK_BG = Date.now();
+    payCall("nickel.refresh", {}, {noSave:true}).then(() => { PAYV.data = null; }).catch(() => {});
+  }catch(e){}
+}, 60e3);
+
+/* =====================================================================
+   TODAY — one place to start: what needs doing across projects and
+   property management, each line with the button that does it.
+   ===================================================================== */
+function pgToday(){
+  $("#pgCrumb").textContent = ""; $("#pgTitle").textContent = "Today";
+  $("#pgSub").textContent = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric"});
+  if(payOnline()){
+    actions([["Check Nickel now", async e => { const b = e.target.closest("button"); b.disabled = true; b.textContent = "Checking…";
+      try{ const r = await payCall("nickel.refresh"); PAYV.data = null; PAYV.deps = null; toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date"); }catch(er){ toast(er.message); } render(); }, "ghost"]]);
+    payStatusThenRedraw("today");
+    if(!PAYV.deps && !PAYV.depsLoading){ PAYV.depsLoading = true; payCall("nk.deposits", {}, {noSave:true}).then(r => { PAYV.deps = r; }).catch(() => { PAYV.deps = {items:[]}; }).finally(() => { PAYV.depsLoading = false; if(S.ui.view === "today") render(); }); }
+  }
+  const v = $("#view"), today = todayISO(), soon = PMCore.isoOf(PMCore.dayNum(today) + 7);
+  const hasPm = pmState().properties.length > 0;
+
+  // ---------- what's waiting ----------
+  const bills = hasPm ? billList() : [], open = bills.filter(b => b.status === "open"), paying = bills.filter(b => b.status === "paying");
+  const dueSoon = open.filter(b => (b.due || b.date || "") <= soon);
+  const toInv = bills.filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId);
+  const invs = hasPm ? invList() : [], unpaid = invs.filter(x => x.status === "sent" && invTotals(x).dueC > 0);
+  const overdue = unpaid.filter(x => x.due && x.due < today);
+  const pr = portfolioRoll();
+  const ready = [], sentOut = [];
+  live().forEach(p => { const C = ALL[p.id]; if(!C) return;
+    p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
+      const st = String(inv.status || "");
+      if(st.startsWith("Ready")) ready.push({p, u, inv});
+      else if(st === "Sent") sentOut.push({p, u, inv});
+    })); });
+  const deps = (PAYV.deps && PAYV.deps.items) || [];
+
+  const hero = elm("div","card pf-hero td-hero");
+  hero.innerHTML = `
+    <div class="pf-cell" data-go2="pmBills"><div class="label">Bills to pay</div><div class="pf-v">${usd(open.reduce((a, b) => a + cents(b.amount), 0))}</div><div class="pf-note">${open.length ? `${open.length} bill${open.length === 1 ? "" : "s"}${dueSoon.length ? `, ${dueSoon.length} due this week` : ""}` : "Nothing waiting"}</div></div>
+    <div class="pf-cell" data-go2="portfolio"><div class="label">Project invoices ready to send</div><div class="pf-v a">${usd(pr.readyC)}</div><div class="pf-note">${ready.length ? `${ready.length} invoice${ready.length === 1 ? "" : "s"}` : "None ready"}</div></div>
+    <div class="pf-cell" data-go2="portfolio"><div class="label">Project invoices awaiting payment</div><div class="pf-v">${usd(pr.sentC)}</div><div class="pf-note">${sentOut.length ? `${sentOut.length} sent` : "Nothing outstanding"}</div></div>
+    <div class="pf-cell" data-go2="pmInvoices"><div class="label">Owed by owners (management)</div><div class="pf-v a">${usd(unpaid.reduce((a, x) => a + invTotals(x).dueC, 0))}</div><div class="pf-note">${unpaid.length ? `${unpaid.length} unpaid${overdue.length ? `, ${overdue.length} overdue` : ""}` : "All paid"}${toInv.length ? ` · ${toInv.length} bill${toInv.length === 1 ? "" : "s"} to invoice` : ""}</div></div>`;
+  hero.querySelectorAll("[data-go2]").forEach(c => { c.style.cursor = "pointer"; c.onclick = () => go(c.dataset.go2); });
+  v.appendChild(hero);
+
+  const cols = elm("div","td-cols"); v.appendChild(cols);
+  const left = elm("div","td-col"), right = elm("div","td-col"); cols.appendChild(left); cols.appendChild(right);
+  const section = (host, title, rows, empty) => {
+    const c = elm("div","card td-card");
+    c.innerHTML = `<div class="card-h"><h3>${title}</h3>${rows.length ? `<span class="muted td-n">${rows.length}</span>` : ""}</div>` +
+      (rows.length ? `<div class="td-list">${rows.slice(0, 8).map((r, i) => `<div class="td-r"><div class="td-t"><b>${r.t}</b><span>${r.s || ""}</span></div>${r.amt != null ? `<b class="num td-amt">${r.amt}</b>` : ""}${r.btn ? `<button class="btn sm ${r.primary ? "primary" : ""}" data-i="${i}">${r.btn}</button>` : ""}</div>`).join("")}${rows.length > 8 ? `<div class="td-more">${rows.length - 8} more</div>` : ""}</div>`
+        : `<div class="td-empty">${empty}</div>`);
+    c.querySelectorAll("[data-i]").forEach(b => b.onclick = () => rows[Number(b.dataset.i)].fn());
+    host.appendChild(c); return c;
+  };
+  const openInv = (p, u, inv) => () => { S.ui.mode = "projects"; go("invoices", p.id); S.ui.unit = u.id; S.ui.open = S.ui.open || {}; S.ui.open[u.id + "|" + inv.no] = true; persistUi(); render(); };
+
+  // projects
+  section(left, "Project invoices to send", ready.map(({p, u, inv}) => {
+    const nk = inv.reg && inv.reg.nickel;
+    return {t:`${esc(p.name)}${p.units.length > 1 ? " · " + esc(u.name) : ""} · invoice ${inv.no}`, s:nk && nk.invoiceId ? "In QuickBooks · pay link ready" : inv.locked ? "Locked — create it in QuickBooks next" : "Lock it, then create it in QuickBooks", amt:usd(inv.totalC), btn:nk && nk.invoiceId ? "Email owner" : "Open", primary:true,
+      fn:nk && nk.invoiceId && typeof pjEmailSheet === "function" ? () => pjEmailSheet(p, u, inv) : openInv(p, u, inv)};
+  }), "Nothing ready to send. New invoices appear here as soon as they fill up.");
+  section(left, "Waiting on owners", sentOut.map(({p, u, inv}) => {
+    const reg = inv.reg || {}, nk = reg.nickel || {};
+    return {t:`${esc(p.name)}${p.units.length > 1 ? " · " + esc(u.name) : ""} · invoice ${inv.no}`, s:`Sent${reg.dateSent ? " " + fdateS(reg.dateSent) : ""}${nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}`, amt:usd(nk.outstandingC != null ? nk.outstandingC : inv.totalC), btn:"Open", fn:openInv(p, u, inv)};
+  }), "No project invoices waiting on payment.");
+
+  // property management
+  if(hasPm){
+    section(right, "Bills to pay", open.slice().sort((a, b) => String(a.due || a.date).localeCompare(String(b.due || b.date))).map(b => ({
+      t:esc(b.vendor || "Vendor"), s:`${esc((pmProp(b.propertyId) || {}).name || "")}${b.due ? ` · due ${fdateS(b.due)}${b.due < today ? " (late)" : ""}` : ""}`, amt:usd(cents(b.amount)), btn:"Open",
+      fn:() => { S.ui.mode = "pm"; go("pmBills"); setTimeout(() => billSheet(b.id), 40); }
+    })).concat(paying.length ? [{t:`${paying.length} payment${paying.length === 1 ? "" : "s"} on the way`, s:"Marked paid automatically when Nickel finishes", btn:"See bills", fn:() => { S.ui.mode = "pm"; go("pmBills"); }}] : []), "No bills waiting. Add one with N or from the receipt inbox.");
+    section(right, "Owner invoices", toInv.length ? [{t:`${toInv.length} bill${toInv.length === 1 ? "" : "s"} to invoice`, s:"Put them on owner invoices", btn:"Invoice", primary:true, fn:() => { S.ui.mode = "pm"; go("pmInvoices"); }}].concat(overdue.map(x => ({t:`${esc(x.no)} · ${esc((ownerById(x.ownerId) && ownerLabel(ownerById(x.ownerId))) || "")}`, s:`Overdue since ${fdateS(x.due)}`, amt:usd(invTotals(x).dueC), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.invOpen = x.id; S.ui.invF = "all"; go("pmInvoices"); }})))
+      : overdue.map(x => ({t:`${esc(x.no)} · ${esc((ownerById(x.ownerId) && ownerLabel(ownerById(x.ownerId))) || "")}`, s:`Overdue since ${fdateS(x.due)}`, amt:usd(invTotals(x).dueC), btn:"Open", fn:() => { S.ui.mode = "pm"; S.ui.invOpen = x.id; S.ui.invF = "all"; go("pmInvoices"); }})), "No overdue owner invoices.");
+    // owner statements for the latest closed month
+    const closedMs = Object.values(pmState().meta || {}).filter(m => m && m.closed && m.month && !String(m.closedBy || "").startsWith("Imported")).map(m => m.month).sort();
+    const lastM = closedMs[closedMs.length - 1];
+    if(lastM && typeof stmtCandidates === "function"){
+      const c = stmtCandidates(lastM), notSent = c.filter(x => !x.why && !(x.done && x.done.state === "sent"));
+      if(notSent.length) section(right, "Owner statements", [{t:`${monthLabel(lastM)} · ${notSent.length} not sent yet`, s:`${c.filter(x => x.done && x.done.state === "sent").length} of ${c.filter(x => !x.why).length} sent from pm@`, btn:"Email statements", primary:true, fn:() => pmStatementMailSheet(lastM)}], "");
+    }
+    const al = pmAlerts().filter(a => a.level !== "info");
+    if(al.length){
+      const c = elm("div","card td-card");
+      c.innerHTML = `<div class="card-h"><h3>Rent &amp; leases</h3><span class="muted td-n">${al.length}</span><button class="btn sm ghost" style="margin-left:auto" id="tdAll">Action center</button></div><div class="al-list">${al.slice(0, 6).map(pmAlertRowHTML).join("")}</div>`;
+      pmWireAlerts(c, al.slice(0, 6)); right.appendChild(c);
+      c.querySelector("#tdAll").onclick = () => { S.ui.mode = "pm"; go("pmAlerts"); };
+    }
+  }
+  if(deps.length) section(left, "Deposited checks to apply", deps.map(x => ({t:esc(x.payer || "Check"), s:`Deposited ${x.at ? fdateS(x.at) : ""} · not on an invoice yet`, amt:usd(x.unappliedC || x.amountC), btn:"Apply", primary:true, fn:() => nkApplyDepositSheet(x)})), "");
+}
+
 /* =====================================================================
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
-const SHARED_VIEWS = new Set(["owners","inbox","team","payments"]);
+const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today"]);
 const PM_VIEWS = new Set(["pmBills","pmInvoices","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
@@ -7906,6 +8091,7 @@ function renderNavPM(){
   };
   const P2 = pmState(), m = pmCurrentMonth(), al = P2.properties.length ? pmAlerts() : [];
   const urgent = al.filter(a => a.level === "urgent").length, act = al.filter(a => a.level !== "info").length;
+  mk("today", "Today", "bolt");
   n.appendChild(elm("div","nav-head","Property management"));
   const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
   mk("pmBills", "Bills", "receipt", nOpen ? `<i class="badge">${nOpen}</i>` : null);
@@ -8122,7 +8308,7 @@ Cloud.conflict = async function(kind, id){
   recalc(); Cloud.remoteDirty = true;
   toast(`${cloudWho(data.updated_by)} changed ${cloudLabel(kind, id, data.data)} at the same moment — their version was kept. Please redo your last change there.`);
 };
-const cloudWho = email => { if(!email || email === "MagicDoor sync") return "MagicDoor sync"; if(email === Cloud.email) return "You (another tab)"; const m = (Cloud.staff || []).find(s => s.email === email); return (m && m.name) || email.split("@")[0]; };
+const cloudWho = email => { if(email === "MagicDoor sync") return "MagicDoor sync"; if(!email) return "The hourly sync"; if(email === Cloud.email) return "You (another tab)"; const m = (Cloud.staff || []).find(s => s.email === email); return (m && m.name) || email.split("@")[0]; };
 
 /* ---------- live updates from everyone else ---------- */
 Cloud.onRemote = function(row){
