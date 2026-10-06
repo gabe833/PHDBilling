@@ -4561,6 +4561,10 @@ function pmRowSheet(m, pid, focus){
   row.repairItems = row.repairItems || []; row.adjustments = row.adjustments || [];
   const closed = !!(pmState().meta[m] || {}).closed, ro = closed || row.locked;
   const sh = $("#sheet");
+  const kept = [];          // MagicDoor bills taken off this statement in this sheet (saved with the row)
+  let ask = -1;             // which MagicDoor item is asking "why off the statement?"
+  const keptList = () => typeof mdLinks === "function" ? Object.entries(mdLinks().skip || {}).filter(([, x]) => x && !x.keep && x.pid === pid && x.month === m) : [];
+  const SKIP_WHY = {project:"Project expense — billed on the project invoice", other:"Not the owner's cost"};
   const num = (k, label, help) => `<label class="fld"><span>${label}</span><input type="number" step="0.01" data-k="${k}" value="${has(row[k]) ? row[k] : ""}" ${ro ? "disabled" : ""}>${help ? `<span class="help">${help}</span>` : ""}</label>`;
   const draw = () => {
     const c = pmCalc(row, prop);
@@ -4584,10 +4588,14 @@ function pmRowSheet(m, pid, focus){
             <select data-ik="feeMode" ${ro ? "disabled" : ""}><option value="auto" ${(it.feeMode || (it.fee != null ? "custom" : "auto")) === "auto" ? "selected" : ""}>${prop.adminRate ?? 10}% fee</option>
               <option value="none" ${it.feeMode === "none" ? "selected" : ""}>No fee</option>
               <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
-            <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}">✕</button>`}</div>
+            <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}" title="${it.mdLine ? "Take this MagicDoor bill off the statement" : "Remove"}">✕</button>`}</div>
+            ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
+            ${it.mdLine && ask === i ? `<div class="pm-ask"><span>Keep this MagicDoor bill off the owner statement?</span><button class="btn sm primary" data-why="project">Project expense</button><button class="btn sm" data-why="other">Not the owner's cost</button><button class="btn sm ghost" data-why="">Cancel</button></div>` : ""}
             ${ro ? "" : `<input type="url" class="pm-link" data-ik="link" value="${esc(it.link || "")}" placeholder="Receipt link (optional)">`}
           </div>`).join("") || `<p class="muted" style="font-size:12.5px;margin:0">No repairs this month.</p>`}</div>
         ${ro ? "" : `<button class="btn sm" id="addItem">${icon("plus")} Add repair</button>`}
+        ${(() => { const ks = keptList().filter(([id]) => !kept.some(k => k.it.mdLine === id)).concat(kept.map(k => [k.it.mdLine, {why:k.why, vendor:k.it.vendor, amount:k.it.amount, memo:k.it.memo, pending:true}]));
+          return ks.length ? `<div class="pm-kept"><div class="label">Kept off this statement · ${ks.length} MagicDoor bill${ks.length === 1 ? "" : "s"}</div>${ks.map(([id, x]) => `<div class="pm-kept-r"><span><b>${esc(x.vendor || "Bill")}</b> ${esc(x.memo || "")}<div class="muted">${x.why === "project" ? (x.pjName ? `On the ${esc(x.pjName)} project${x.pjDesc ? " · " + esc(x.pjDesc.slice(0, 60)) : ""}${x.auto ? " · matched automatically" : ""}` : "Project expense") : "Not the owner's cost"}${x.pending ? " · saves with this month" : ""}</div></span><span class="num">${usd(cents(x.amount))}</span>${ro || x.pending ? "" : `<button class="btn sm ghost" data-restore="${esc(id)}">Put back</button>`}</div>`).join("")}</div>` : ""; })()}
         ${has(row.repairs) && Math.abs(cents(row.repairs) - c.itemsC) > 1 ? `<p class="help">Workbook total ${usd(cents(row.repairs))}; the itemised detail adds to ${usd(c.itemsC)}.</p>` : ""}
         <div class="sectl" style="margin-top:14px">Adjustments to the owner</div>
         ${row.adjustments.map((a, i) => `<div class="pm-add"><input type="number" step="0.01" data-aj="${i}" data-ak="amount" value="${a.amount ?? ""}" ${ro ? "disabled" : ""}><input type="text" data-aj="${i}" data-ak="note" value="${esc(a.note || "")}" placeholder="Why (required)" ${ro ? "disabled" : ""}>${ro ? "" : `<button class="btn sm ghost" data-ajdel="${i}">✕</button>`}</div>`).join("")}
@@ -4648,10 +4656,25 @@ function pmRowSheet(m, pid, focus){
         draw();
       });
       const del = el.querySelector("[data-del]");
-      if(del) del.onclick = () => { row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; draw(); };
+      if(del) del.onclick = () => {
+        if(row.repairItems[i] && row.repairItems[i].mdLine){ ask = ask === i ? -1 : i; return draw(); }
+        row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; draw(); };
+      el.querySelectorAll("[data-why]").forEach(b => b.onclick = () => {
+        ask = -1;
+        if(b.dataset.why){ kept.push({it:row.repairItems[i], why:b.dataset.why}); row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; }
+        draw(); });
     });
     const ai = $("#addItem"); if(ai) ai.onclick = () => { row.repairItems.push({id:uid(), date:new Date().toISOString().slice(0,10), vendor:"", memo:"", amount:null, feeMode:"auto", link:""}); draw();
       const last = sh.querySelectorAll('.pm-item [data-ik="vendor"]'); if(last.length) last[last.length - 1].focus(); };
+    sh.querySelectorAll("[data-restore]").forEach(b => b.onclick = () => {
+      const id = b.dataset.restore, x = (mdLinks().skip || {})[id]; if(!x) return;
+      snapshot(); mdLinks().skip[id] = {keep:true, at:todayISO(), by:(typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || "", pid, month:m}; commit();   // stays on the statement, even if it looks like a project cost
+      const f = typeof mdLineById === "function" && mdReady() ? mdLineById(id) : null;
+      if(f && !row.repairItems.some(it => it.mdLine === id)){
+        const memo = PMCore.mdLineMemo(f.li, f.b) || "MagicDoor bill";
+        row.repairItems.push({id:uid(), date:f.b.date, vendor:f.b.vendor || "", memo, mdMemo:memo, amount:f.li.amount, feeMode:"auto", mdLine:id, mdBill:f.b.id, source:"MagicDoor"});
+      }
+      toast("Put back — save to keep it on this statement"); draw(); });
     const aa = $("#addAdj"); if(aa) aa.onclick = () => { row.adjustments.push({amount:null, note:""}); draw(); };
     sh.querySelectorAll("[data-aj]").forEach(inp => inp.onchange = () => { const a = row.adjustments[+inp.dataset.aj];
       a[inp.dataset.ak] = inp.dataset.ak === "amount" ? (inp.value === "" ? null : Math.round(Number(inp.value) * 100) / 100) : inp.value; draw(); });
@@ -4660,7 +4683,9 @@ function pmRowSheet(m, pid, focus){
       if(row.adjustments.some(a => has(a.amount) && !String(a.note || "").trim())) return toast("Every adjustment needs a reason");
       row.adjustments = row.adjustments.filter(a => has(a.amount));
       row.repairItems = row.repairItems.filter(it => has(it.amount) || it.vendor || it.memo);
-      pmCommitRow(m, pid, row, false); closeSheet(); toast(`${prop.name} saved`, true);
+      if(kept.length){ const L = mdLinks(), by = (typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || "";
+        kept.forEach(({it, why}) => { L.skip[it.mdLine] = {why, at:todayISO(), by, pid, month:m, vendor:it.vendor || "", amount:it.amount, memo:it.memo || "", billId:it.mdBill || ""}; }); }
+      pmCommitRow(m, pid, row, false); if(kept.length) commit(); closeSheet(); toast(`${prop.name} saved${kept.length ? ` · ${kept.length} kept off the statement` : ""}`, true);
     };
   };
   draw();
@@ -5595,7 +5620,7 @@ function pgPmSettings(){
    ===================================================================== */
 ICON_PATHS.sync = '<path d="M13 5.6A5.3 5.3 0 0 0 3.4 4.6L2.4 5.8"/><path d="M2.4 2.6v3.2h3.2"/><path d="M3 10.4a5.3 5.3 0 0 0 9.6 1l1-1.2"/><path d="M13.6 13.4v-3.2h-3.2"/>';
 
-function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; return S.mdLinks; }
+function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; S.mdLinks.skip = S.mdLinks.skip || {}; return S.mdLinks; }
 function mdRowCount(pid){ let n = 0; for(const r of Object.values(pmState().rows)) if(r.propertyId === pid && !r.deleted) n++; return n; }
 function mdReady(){ return !!(S.md && Array.isArray(S.md.units)); }
 let _mdxCache = null;
@@ -5664,10 +5689,37 @@ function mdMemoSynced(it, mdTexts){
 function mdVendorKey(v){ return String(v || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
 // MagicDoor numbers a bill's first line as the bill's id + 1; used only for items saved before the bill id was kept
 function mdBillOfLine(lineId){ try{ return /^\d{6,}$/.test(String(lineId || "")) ? String(BigInt(lineId) - 1n) : ""; }catch(e){ return ""; } }
+// who entered a MagicDoor bill, for showing next to it ("" until a sync has recorded it)
+function mdBillWho(lineId){
+  const f = lineId && mdReady() ? mdLineById(lineId) : null; if(!f || !f.b || !(f.b.by || f.b.created)) return "";
+  const st = (S.md.staff || []).find(x => x.id === f.b.by);
+  return `Entered in MagicDoor${f.b.by ? " by " + (st ? st.name : "staff #" + String(f.b.by).slice(-4)) : ""}${f.b.created ? " · " + fdateS(f.b.created) : ""}`;
+}
+// The project side's properties (the console keeps them in S.properties; the MagicDoor function passes them as S.pj)
+function mdProjects(){ return (S && (S.pj || S.properties)) || []; }
+// A MagicDoor bill on a property that is also a project, matching one of that project's expenses (same amount, close
+// in date, same vendor or a large amount), is a project cost: it's billed to the owner on the project invoice, so it
+// never goes on the owner statement as well. Returns {pj, t} or null.
+function mdProjectMatch(p, li, b, used){
+  const keys = new Set([p.name, p.address].concat(p.aliases || []).map(PMCore.normAddr).filter(Boolean));
+  const days = iso => iso ? PMCore.dayNum(String(iso).slice(0, 10)) : null;
+  const when = [b && b.due, b && b.date, li && li.date].map(days).filter(x => x != null);
+  for(const pj of mdProjects()){
+    if(pj.archived || pj.deleted || !(pj.transactions || []).length) continue;
+    if(![pj.name, pj.address].map(PMCore.normAddr).some(k => k && keys.has(k))) continue;
+    const vk = mdVendorKey((b && b.vendor) || (li && li.vendor)).slice(0, 4);
+    const t = pj.transactions.find(t => !used.has(pj.id + "|" + t.id) && cents(t.amount) > 0 && cents(t.amount) === cents(li.amount)
+      && (!when.length || !t.date || when.some(d => Math.abs(d - days(t.date)) <= 150))
+      && ((vk && mdVendorKey(t.vendor).slice(0, 4) === vk) || cents(li.amount) >= 10000));
+    if(t){ used.add(pj.id + "|" + t.id); return {pj, t}; }
+  }
+  return null;
+}
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]}, newOwners = {};
+  const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     return (S.owners || []).find(o => (o.mdId && o.mdId === mo.id) || (em && String(o.email || "").toLowerCase() === em) || (nm && String(o.name || o.company || "").toLowerCase().replace(/\s+/g, " ").trim() === nm)) || newOwners[mo.id] || null;
@@ -5726,6 +5778,12 @@ function mdPlan(){
       if(!rr || rr.locked || rr.detailOnly || mt.closed) return;
       const items = rr.repairItems || [], orphans = [];
       items.forEach(it => { if(!it.mdLine) return; const f = mdLineById(it.mdLine);
+        // kept off owner statements (a project expense, or not the owner's cost): take it back out
+        if(SK[it.mdLine] && !SK[it.mdLine].keep){ out.skips.push({p, row:rr, it, why:SK[it.mdLine].why}); return; }
+        if(f && it.source === "MagicDoor" && !SK[it.mdLine] && PMCore.mdIsRepairLine(f.li, f.b)){
+          const pm = mdProjectMatch(p, Object.assign({date:f.b.date}, f.li), f.b, usedTx);
+          if(pm){ out.skips.push({p, row:rr, it, why:"project", auto:true, pj:pm.pj, t:pm.t, li:f.li, b:f.b}); return; }
+        }
         if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it); return; }
         if(!PMCore.mdIsRepairLine(f.li, f.b)){ out.unbills.push({p, row:rr, it}); return; }
         // MagicDoor's description changed (and nobody retyped it here): follow it
@@ -5739,7 +5797,9 @@ function mdPlan(){
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
-        if(have.has(li.id)) return;
+        if(have.has(li.id) || (SK[li.id] && !SK[li.id].keep)) return;
+        const pm = SK[li.id] ? null : mdProjectMatch(p, li, (mdLineById(li.id) || {}).b, usedTx);
+        if(pm){ out.skips.push({p, row:rr, it:null, why:"project", auto:true, pj:pm.pj, t:pm.t, li, b:(mdLineById(li.id) || {}).b}); return; }
         const o = orphans.find(i => !claimed.has(i) && oldBill(i) === li.billId) || orphans.find(i => !claimed.has(i) && !i.mdBill && same(i, li));
         if(o){ claimed.add(o); out.relinks.push({p, row:rr, it:o, li, memo:mdMemoSynced(o, [li.memo]) ? li.memo : null}); return; }
         // already typed in by hand (same amount)? link it instead of adding a second copy
@@ -5753,7 +5813,7 @@ function mdPlan(){
         if(d){ claimed.add(o); claimed.add(d); const f = mdLineById(d.mdLine), want = PMCore.mdLineMemo(f.li, f.b);
           out.dupes.push({p, row:rr, keep:o, drop:d, li:f.li, billId:f.b.id, memo:mdMemoSynced(o, [d.memo, f.li.text, f.b.memo]) ? want : null}); return; }
         // the bill itself was deleted in MagicDoor
-        if(o.mdBill && !(S.md.bills || []).some(b => b.id === o.mdBill)){ claimed.add(o); out.gone.push({p, row:rr, it:o}); }
+        if(!o.mdBill || !(S.md.bills || []).some(b => b.id === o.mdBill)){ claimed.add(o); out.gone.push({p, row:rr, it:o}); }
       });
       const dropped = new Set(out.dupes.filter(x => x.row === rr).map(x => x.drop));
       if(dropped.size) out.memos = out.memos.filter(x => !dropped.has(x.it));
@@ -5885,6 +5945,15 @@ function mdApply(opts){
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: removed MagicDoor's admin-fee line ${usd(cents(it.amount))} — the console adds the 10% admin fee itself`});
   });
+  (plan.skips || []).forEach(({p, row, it, why, auto, pj, t, li, b}) => {
+    const lineId = it ? it.mdLine : li.id;
+    if(auto && !L.skip[lineId]) L.skip[lineId] = {why:"project", auto:true, at:today, pid:p.id, month:row.month, vendor:(b && b.vendor) || (it && it.vendor) || "", amount:li.amount, memo:(it && it.memo) || PMCore.mdLineMemo(li, b), billId:b && b.id, pjId:pj.id, pjTxn:t.id, pjName:pj.name, pjDesc:t.desc || "", pjDate:t.date || ""};
+    if(!it) return;
+    row.repairItems = row.repairItems.filter(i => i !== it);
+    if(typeof pmTouch === "function") pmTouch(row);
+    const s = L.skip[lineId] || {};
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: took ${it.vendor || "a bill"} ${usd(cents(it.amount))} off the owner statement — ${s.why === "project" ? `project expense${s.pjName ? ` (on the ${s.pjName} project${s.pjDesc ? ": " + s.pjDesc.slice(0, 40) : ""})` : ""}` : "not the owner's cost"}`});
+  });
   const memoTxt = (a, b) => `“${String(a || "").slice(0, 50)}” → “${String(b || "").slice(0, 50)}”`;
   (plan.memos || []).forEach(({p, row, it, memo, billId}) => {
     const was = it.memo; it.memo = memo; it.mdMemo = memo; if(billId) it.mdBill = billId;
@@ -5968,7 +6037,7 @@ function pgPmMd(){
 
   // automatic updates + log
   const org = mdOrganizePlan(), orgN = mdOrganizeCount();
-  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length, pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
+  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length, pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
@@ -6085,11 +6154,12 @@ function mdPreviewSheet(plan){
     ${plan.props.length ? `<div class="label" style="margin-top:12px">Properties</div>${plan.props.map(({p, ch}) => `<div class="md-pv"><b>${esc(p.name)}</b>${Object.entries(ch).map(([k, c]) =>
       `<div class="md-pv-r"><span>${esc(c.label)}</span><span class="muted">${esc(k === "ownerId" ? "none" : k === "rent" ? usd(cents(c.from || 0)) : String(c.from || "—"))}</span><span>→ ${esc(k === "ownerId" ? (c.to.name || "") : k === "rent" ? usd(cents(c.to)) : String(c.to))}</span></div>`).join("")}</div>`).join("")}` : ""}
     ${plan.rows.length ? `<div class="label" style="margin-top:12px">Rent to record</div>${plan.rows.map(r => `<div class="md-pv-r"><span>${esc(r.p.name)}</span><span class="muted">${r.lastPayment ? "paid " + esc(fdateS(r.lastPayment)) : "credit"}</span><span class="num">${usd(cents(r.amount))}</span></div>`).join("")}` : ""}
-    ${(plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length) ? `<div class="label" style="margin-top:12px">Bills edited in MagicDoor</div>${[
+    ${(plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length) ? `<div class="label" style="margin-top:12px">Bills edited in MagicDoor</div>${[
         ...plan.memos.map(x => [x.p.name, `${x.it.vendor || ""} · “${x.memo}”`, x.it.amount]),
         ...plan.relinks.map(x => [x.p.name, `${x.it.vendor || ""} · ${x.memo ? "“" + x.memo + "”" : "relinked"}`, x.li.amount]),
         ...plan.dupes.map(x => [x.p.name, `${x.keep.vendor || ""} · duplicate removed${x.memo ? " · “" + x.memo + "”" : ""}`, x.keep.amount]),
-        ...plan.gone.map(x => [x.p.name, `${x.it.vendor || ""} · deleted in MagicDoor`, x.it.amount])
+        ...plan.gone.map(x => [x.p.name, `${x.it.vendor || ""} · deleted in MagicDoor`, x.it.amount]),
+        ...plan.skips.filter(x => x.it).map(x => [x.p.name, `${x.it.vendor || ""} · off the owner statement (${x.why === "project" ? "project expense" : "not the owner's"})`, x.it.amount])
       ].map(([a, b, c]) => `<div class="md-pv-r"><span>${esc(a)}</span><span class="muted">${esc(b)}</span><span class="num">${usd(cents(c))}</span></div>`).join("")}` : ""}
     ${plan.bills.length ? `<div class="label" style="margin-top:12px">Vendor bills to add as repairs</div>${plan.bills.map(b => `<div class="md-pv-r"><span>${esc(b.p.name)}</span><span class="muted">${esc(fdateS(b.li.date))} · ${esc(b.li.vendor || "")}${b.twin ? " · matches one already entered" : ""}</span><span class="num">${usd(cents(b.li.amount))}</span></div>`).join("")}` : ""}
     ${plan.payouts.length ? `<div class="label" style="margin-top:12px">Owner payouts sent in MagicDoor</div>${plan.payouts.map(x => `<div class="md-pv-r"><span>${esc(x.p.name)}</span><span class="muted">${esc(monthLabel(x.row.month))} · ${esc(fdateS(x.date))}</span><span class="num">${usd(cents(x.amount))}</span></div>`).join("")}` : ""}
@@ -8751,6 +8821,10 @@ function todayPm(v){
   ]);
   const [left, right] = tdCols(v);
 
+  // MagicDoor bills at a rental that's also a project: a person says where each one belongs
+  const srt = typeof mdSortList === "function" ? mdSortList() : [];
+  if(srt.length) tdSection(left, "MagicDoor bills to sort", srt.map(r => ({t:`${esc(r.vendor || "Bill")} · ${esc(r.prop)}`, s:`${r.memo ? esc(r.memo) + " · " : ""}project or rental?`,
+    amt:usd(cents(r.amount)), btn:"Sort", primary:true, fn:() => mdSortSheet(r.lineId)})), "");
   // bills to pay, soonest first; payments on the way after
   const billRows = open.slice().sort((a, b) => String(a.due || a.date).localeCompare(String(b.due || b.date))).map(b => {
     const st = billStatus(b), p = pmProp(b.propertyId);

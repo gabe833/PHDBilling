@@ -174,6 +174,8 @@ function cleanBill(x: Obj, vendors: Record<string, string>, accounts: Record<str
     files: findFiles(x).slice(0, 10), ref: S(x.reference || x.billNumber || x.invoiceNumber || x.number || "").slice(0, 60),
     id: S(x.id), date: D(x.billDate), due: D(x.dueDate), status: S(x.status), company: B(x.companyBill),
     vendor: vendors[S(x.vendorId)] || "", memo: S(x.memo).slice(0, 200), total: N(x.totalAmount), owed: N(x.dueAmount),
+    // who entered it in MagicDoor (a staff id, resolved to a name from MagicDoor's team list when it's available) and when
+    by: S(((x.creator || {}) as Obj).propertyManagerId || ((x.creator || {}) as Obj).id), byType: S(((x.creator || {}) as Obj).type), bySource: S(((x.creator || {}) as Obj).source).slice(0, 40), created: S(x.created).slice(0, 19),
     lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || "" })),
   };
 }
@@ -237,6 +239,16 @@ async function sync() {
   catch (e) { notes.push("Owner distributions: " + String((e as Error).message || e)); }
   try { renewals = (await listAll("/company-app/leases/renewals")).map(cleanRenewal); }
   catch (e) { notes.push("Renewals: " + String((e as Error).message || e)); }
+  // MagicDoor staff names (only id and name), so a bill can say who entered it
+  const staff: { id: string; name: string }[] = [];
+  for (const path of ["/company-app/property-managers", "/company-app/users", "/company-app/team-members"]) {
+    try {
+      const r = await mdGet(path);
+      const list = r.status === 200 ? (Array.isArray(r.body) ? r.body as Obj[] : (((r.body as Obj)?.items as Obj[]) || [])) : [];
+      list.forEach((u) => { const name = nameOf(u); [u.id, u.propertyManagerId, u.userId].map(S).filter(Boolean).forEach((id) => { if (name && !staff.some((x) => x.id === id)) staff.push({ id, name: name.slice(0, 80) }); }); });
+      if (staff.length) break;
+    } catch { /* not available on this account */ }
+  }
   const keepEnded = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);   // ended leases kept 120 days (deposit returns)
   const snap = {
     v: 1, syncedAt: new Date().toISOString(),
@@ -245,7 +257,7 @@ async function sync() {
     leases: leases.map(cleanLease).filter((l) => !l.draft && (!l.ended || (l.end && l.end >= keepEnded))),
     owners: owners.map(cleanOwner),
     fees: Object.entries(feeMap).map(([k, amount]) => { const [propertyId, month] = k.split("|"); return { propertyId, month, amount }; }),
-    bills, distributions: dists, renewals,
+    bills, distributions: dists, renewals, staff,
     shapes, notes, took: 0,
   };
   snap.took = Math.round((Date.now() - t0) / 100) / 10;
@@ -284,7 +296,7 @@ type Doc = { kind: string; id: string; data: Obj; version: number };
 async function loadDocs(): Promise<Doc[]> {
   const out: Doc[] = [];
   for (let from = 0; ; from += 1000) {
-    const r = await rest("docs?select=kind,id,data,version&deleted=is.false&or=(kind.in.(pm_property,pm_row,pm_meta,pm_deposit),and(kind.eq.shared,id.in.(main,mdlinks)))&order=kind,id",
+    const r = await rest("docs?select=kind,id,data,version&deleted=is.false&or=(kind.in.(pm_property,pm_row,pm_meta,pm_deposit,pj_property),and(kind.eq.shared,id.in.(main,mdlinks)))&order=kind,id",
       { headers: srvHeaders({ "Range-Unit": "items", Range: `${from}-${from + 999}` }) });
     const page = await r.json() as Doc[];
     out.push(...page);
@@ -300,8 +312,9 @@ async function applyToConsole(snap: Obj) {
   const docs = await loadDocs();
   const before = new Map<string, Doc>(docs.map((d) => [d.kind + "/" + d.id, d]));
   const main = before.get("shared/main"), links = before.get("shared/mdlinks");
-  const state: Obj & { pm: { properties: Obj[]; rows: Record<string, Obj>; meta: Record<string, Obj>; deposits: Record<string, Obj> } } = {
+  const state: Obj & { pm: { properties: Obj[]; rows: Record<string, Obj>; meta: Record<string, Obj>; deposits: Record<string, Obj> }; pj: Obj[] } = {
     pm: { properties: [], rows: {}, meta: {}, deposits: {} },
+    pj: [],                                                     // project properties: only read, to keep project costs off owner statements
     owners: structuredClone((main?.data?.owners as Obj[]) || []),
     md: snap,
     mdLinks: structuredClone(links?.data || { links: {}, ignore: {}, auto: true, appliedAt: "", log: [] }),
@@ -312,6 +325,7 @@ async function applyToConsole(snap: Obj) {
     else if (d.kind === "pm_row") state.pm.rows[d.id] = v;
     else if (d.kind === "pm_meta") state.pm.meta[d.id] = v;
     else if (d.kind === "pm_deposit") state.pm.deposits[d.id] = v;
+    else if (d.kind === "pj_property") state.pj.push(v);
   }
   if (!state.pm.properties.length) return { changes: 0, note: "no properties yet" };
   const changes = runApply(state, todayNY());

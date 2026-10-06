@@ -198,6 +198,15 @@ The row stays on the property's transaction list with an orange **To charge → 
 
 Open back-charges also appear on **Today** and in the Monday "bills not paid" email. To get them in the email, update the receipt-inbox script in billing@ with the new `apps-script/Code.gs` (same steps as 7c).
 
+### 7e. MagicDoor bills that aren't the owner's monthly cost
+The MagicDoor sync brings vendor bills into the owner statement as repairs. On a property that is also a project (like 27 Smith St), a bill that matches one of the project's expenses (same amount, close in date, same vendor) is kept off the statement automatically. It's billed to the owner on the project invoice, and putting it on the statement as well would charge the owner twice.
+
+For any other MagicDoor bill that shouldn't be on the statement, open the month (Properties → the property → the month) and click **✕** on the bill. Then choose **Project expense** or **Not the owner's cost**, and Save. The sync leaves it off from then on.
+
+Everything kept off is listed under **Kept off this statement** in that month, with **Put back** to undo. Each MagicDoor bill also shows who entered it in MagicDoor and when.
+
+Editing a bill in MagicDoor updates it here. It isn't added a second time, and a bill deleted or voided in MagicDoor comes off open months.
+
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)

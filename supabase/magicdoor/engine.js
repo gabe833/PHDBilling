@@ -391,7 +391,7 @@ const blankOwner = () => { const o = {}; OWNER_FIELDS.forEach(k => o[k] = ""); r
 function cleanOwner(o){ OWNER_FIELDS.forEach(k => { if(typeof o[k] !== "string") o[k] = o[k] == null ? "" : String(o[k]); }); if(!o.id) o.id = uid(); return o; }
 function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = "MagicDoor sync"; }
 const commit = () => {}, toast = () => {};
-function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; return S.mdLinks; }
+function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; S.mdLinks.skip = S.mdLinks.skip || {}; return S.mdLinks; }
 function mdRowCount(pid){ let n = 0; for(const r of Object.values(pmState().rows)) if(r.propertyId === pid && !r.deleted) n++; return n; }
 function mdReady(){ return !!(S.md && Array.isArray(S.md.units)); }
 function mdx(){
@@ -422,10 +422,27 @@ function mdMemoSynced(it, mdTexts){
 }
 function mdVendorKey(v){ return String(v || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
 function mdBillOfLine(lineId){ try{ return /^\d{6,}$/.test(String(lineId || "")) ? String(BigInt(lineId) - 1n) : ""; }catch(e){ return ""; } }
+function mdProjects(){ return (S && (S.pj || S.properties)) || []; }
+function mdProjectMatch(p, li, b, used){
+  const keys = new Set([p.name, p.address].concat(p.aliases || []).map(PMCore.normAddr).filter(Boolean));
+  const days = iso => iso ? PMCore.dayNum(String(iso).slice(0, 10)) : null;
+  const when = [b && b.due, b && b.date, li && li.date].map(days).filter(x => x != null);
+  for(const pj of mdProjects()){
+    if(pj.archived || pj.deleted || !(pj.transactions || []).length) continue;
+    if(![pj.name, pj.address].map(PMCore.normAddr).some(k => k && keys.has(k))) continue;
+    const vk = mdVendorKey((b && b.vendor) || (li && li.vendor)).slice(0, 4);
+    const t = pj.transactions.find(t => !used.has(pj.id + "|" + t.id) && cents(t.amount) > 0 && cents(t.amount) === cents(li.amount)
+      && (!when.length || !t.date || when.some(d => Math.abs(d - days(t.date)) <= 150))
+      && ((vk && mdVendorKey(t.vendor).slice(0, 4) === vk) || cents(li.amount) >= 10000));
+    if(t){ used.add(pj.id + "|" + t.id); return {pj, t}; }
+  }
+  return null;
+}
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]}, newOwners = {};
+  const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
     return (S.owners || []).find(o => (o.mdId && o.mdId === mo.id) || (em && String(o.email || "").toLowerCase() === em) || (nm && String(o.name || o.company || "").toLowerCase().replace(/\s+/g, " ").trim() === nm)) || newOwners[mo.id] || null;
@@ -484,6 +501,12 @@ function mdPlan(){
       if(!rr || rr.locked || rr.detailOnly || mt.closed) return;
       const items = rr.repairItems || [], orphans = [];
       items.forEach(it => { if(!it.mdLine) return; const f = mdLineById(it.mdLine);
+        // kept off owner statements (a project expense, or not the owner's cost): take it back out
+        if(SK[it.mdLine] && !SK[it.mdLine].keep){ out.skips.push({p, row:rr, it, why:SK[it.mdLine].why}); return; }
+        if(f && it.source === "MagicDoor" && !SK[it.mdLine] && PMCore.mdIsRepairLine(f.li, f.b)){
+          const pm = mdProjectMatch(p, Object.assign({date:f.b.date}, f.li), f.b, usedTx);
+          if(pm){ out.skips.push({p, row:rr, it, why:"project", auto:true, pj:pm.pj, t:pm.t, li:f.li, b:f.b}); return; }
+        }
         if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it); return; }
         if(!PMCore.mdIsRepairLine(f.li, f.b)){ out.unbills.push({p, row:rr, it}); return; }
         // MagicDoor's description changed (and nobody retyped it here): follow it
@@ -497,7 +520,9 @@ function mdPlan(){
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
-        if(have.has(li.id)) return;
+        if(have.has(li.id) || (SK[li.id] && !SK[li.id].keep)) return;
+        const pm = SK[li.id] ? null : mdProjectMatch(p, li, (mdLineById(li.id) || {}).b, usedTx);
+        if(pm){ out.skips.push({p, row:rr, it:null, why:"project", auto:true, pj:pm.pj, t:pm.t, li, b:(mdLineById(li.id) || {}).b}); return; }
         const o = orphans.find(i => !claimed.has(i) && oldBill(i) === li.billId) || orphans.find(i => !claimed.has(i) && !i.mdBill && same(i, li));
         if(o){ claimed.add(o); out.relinks.push({p, row:rr, it:o, li, memo:mdMemoSynced(o, [li.memo]) ? li.memo : null}); return; }
         // already typed in by hand (same amount)? link it instead of adding a second copy
@@ -511,7 +536,7 @@ function mdPlan(){
         if(d){ claimed.add(o); claimed.add(d); const f = mdLineById(d.mdLine), want = PMCore.mdLineMemo(f.li, f.b);
           out.dupes.push({p, row:rr, keep:o, drop:d, li:f.li, billId:f.b.id, memo:mdMemoSynced(o, [d.memo, f.li.text, f.b.memo]) ? want : null}); return; }
         // the bill itself was deleted in MagicDoor
-        if(o.mdBill && !(S.md.bills || []).some(b => b.id === o.mdBill)){ claimed.add(o); out.gone.push({p, row:rr, it:o}); }
+        if(!o.mdBill || !(S.md.bills || []).some(b => b.id === o.mdBill)){ claimed.add(o); out.gone.push({p, row:rr, it:o}); }
       });
       const dropped = new Set(out.dupes.filter(x => x.row === rr).map(x => x.drop));
       if(dropped.size) out.memos = out.memos.filter(x => !dropped.has(x.it));
@@ -635,6 +660,15 @@ function mdApply(opts){
     row.repairItems = row.repairItems.filter(i => i !== it);
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: removed MagicDoor's admin-fee line ${usd(cents(it.amount))} — the console adds the 10% admin fee itself`});
+  });
+  (plan.skips || []).forEach(({p, row, it, why, auto, pj, t, li, b}) => {
+    const lineId = it ? it.mdLine : li.id;
+    if(auto && !L.skip[lineId]) L.skip[lineId] = {why:"project", auto:true, at:today, pid:p.id, month:row.month, vendor:(b && b.vendor) || (it && it.vendor) || "", amount:li.amount, memo:(it && it.memo) || PMCore.mdLineMemo(li, b), billId:b && b.id, pjId:pj.id, pjTxn:t.id, pjName:pj.name, pjDesc:t.desc || "", pjDate:t.date || ""};
+    if(!it) return;
+    row.repairItems = row.repairItems.filter(i => i !== it);
+    if(typeof pmTouch === "function") pmTouch(row);
+    const s = L.skip[lineId] || {};
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: took ${it.vendor || "a bill"} ${usd(cents(it.amount))} off the owner statement — ${s.why === "project" ? `project expense${s.pjName ? ` (on the ${s.pjName} project${s.pjDesc ? ": " + s.pjDesc.slice(0, 40) : ""})` : ""}` : "not the owner's cost"}`});
   });
   const memoTxt = (a, b) => `“${String(a || "").slice(0, 50)}” → “${String(b || "").slice(0, 50)}”`;
   (plan.memos || []).forEach(({p, row, it, memo, billId}) => {
