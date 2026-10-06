@@ -1283,7 +1283,13 @@ function weeklyBills(opt){
   try{ readRows_().filter(r => r.status === 'pending' && String(r.pay_status) === 'to_pay').forEach(r => rows.push({side:r.side === 'projects' ? 'Projects' : 'Property management',
     vendor:r.vendor || 'Vendor', where:r.property_name || '', amount:Number(r.total) || 0, due:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, tz, 'yyyy-MM-dd') : String(r.due_date || ''),
     what:r.description || '', note:r.pay_note || '', state:'In the receipt inbox — approve it', link:'inbox'})); }catch(e){}
-  if(!rows.length && !opt.preview){ Logger.log('No unpaid bills — no email.'); return; }
+  // back-charges: project costs a contractor owes PHD, not settled yet
+  const owed = [];
+  docs.filter(d => d.kind === 'pj_property').forEach(d => (d.data.transactions || []).forEach(t => {
+    if(!t.charge || t.charge.state === 'settled') return;
+    owed.push({party:t.charge.party || 'Contractor', where:d.data.name || '', what:t.desc || '', amount:Math.abs(Number(t.amount) || 0), state:t.charge.state === 'invoiced' ? 'invoiced ' + (t.charge.invNo || '') : 'not invoiced yet'});
+  }));
+  if(!rows.length && !owed.length && !opt.preview){ Logger.log('No unpaid bills — no email.'); return; }
   const late = r => r.due && r.due < today;
   rows.sort((a, b) => (late(b) - late(a)) || String(a.due || '9999').localeCompare(String(b.due || '9999')) || b.amount - a.amount);
   const total = rows.reduce((a, r) => a + r.amount, 0), nLate = rows.filter(late).length;
@@ -1306,6 +1312,11 @@ function weeklyBills(opt){
     h += `</div>`;
   });
   if(!rows.length) h += `<p style="font-size:14px">Nothing waiting — every bill is paid.</p>`;
+  if(owed.length){
+    h += `<div style="border:1px solid #e6e4dd;border-radius:10px;margin-bottom:16px;overflow:hidden"><div style="padding:10px 14px;background:#f7f6f2;font-weight:600;font-size:14px">Owed to PHD · back-charges <span style="color:#8a8a82;font-weight:400">· ${owed.length} · ${money(owed.reduce((a, r) => a + r.amount, 0))}</span></div>`;
+    owed.forEach(r => { h += `<div style="padding:10px 14px;border-top:1px solid #efede7;display:flex;gap:12px"><div style="flex:1"><div style="font-size:14px;font-weight:600"><a href="${digestEsc_(base + '/?view=charges')}" style="color:#1d1d1b;text-decoration:none">${digestEsc_(r.party)}</a> <span style="font-weight:400;color:#65655e">· ${digestEsc_(r.where)}</span></div><div style="font-size:13px;color:#65655e;margin-top:2px">${digestEsc_(r.what)} · ${digestEsc_(r.state)}</div></div><div style="font-size:14px;font-weight:600;white-space:nowrap">${money(r.amount)}</div></div>`; });
+    h += `</div>`;
+  }
   h += `<a href="${digestEsc_(base + '/?view=pmBills')}" style="display:inline-block;background:#1f5c50;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 16px;border-radius:8px">Open Bills</a>`;
   h += `<div style="font-size:12px;color:#8a8a82;margin-top:18px">Every Monday from the PHD receipt-inbox script. Mark a bill to pay by putting [UNPAID] in the subject when you send it to PMBilling@ or ProjectBilling@.</div></div>`;
   let to;
@@ -1315,7 +1326,7 @@ function weeklyBills(opt){
     to = (list.length ? list : (data.staff || []).filter(x => x.active).map(x => x.email)).join(',');
   }
   if(!to){ Logger.log('No one to send to: add people on the Team page, or set DIGEST_TO.'); return; }
-  const subject = (opt.preview ? '[Preview] ' : '') + `Bills not paid yet · ${rows.length} · ${money(total)}${nLate ? ` · ${nLate} past due` : ''}`;
+  const subject = (opt.preview ? '[Preview] ' : '') + `Bills not paid yet · ${rows.length} · ${money(total)}${nLate ? ` · ${nLate} past due` : ''}${owed.length ? ` · ${owed.length} back-charge${owed.length === 1 ? '' : 's'} to collect` : ''}`;
   MailApp.sendEmail({to, subject, htmlBody:h, name:'PHD Console', body:rows.map(r => `${r.vendor} · ${r.where} · ${money(r.amount)} · ${r.due || 'no due date'} · ${r.state}`).join('\n')});
   Logger.log('Sent to ' + to + ': ' + subject);
 }

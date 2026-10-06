@@ -186,6 +186,18 @@ Each file is read the same way as an emailed receipt (vendor, amount, invoice da
 
 This uses the receipt inbox script (which also tells the Drive buttons where each property's folder is), so after updating the console, update the script once: open the receipt inbox's Apps Script project → replace **Code.gs** with `apps-script/Code.gs` → Save → **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy**. The URL and key stay the same.
 
+### 7d. Back-charges: costs a contractor pays, not the owner
+When a project cost is the contractor's fault (a second countertop trip, a re-delivery, damage), open the transaction → **Billing state → Bill to a contractor or vendor**. Fill in who pays, their email, and whether you'll **send them an invoice** or **take it out of what we pay them**. To do several at once, tick them and choose **Bill to a contractor…** in the bulk menu.
+
+The row stays on the property's transaction list with an orange **To charge → name** tag, but it never goes on the owner's invoice and doesn't count against the cap.
+
+**Back-charges** (Projects side) shows everything owed to PHD, grouped by contractor:
+- **Invoice {name}** emails one invoice for all their open charges from billing@, with a PDF (numbered like `BC-GPL-261006`). Use **Mark invoiced only** if you send it another way.
+- **Deducted from their payment** marks the charges settled when you short their next payment.
+- **Settle** on a row records a check or other payment. **Undo** reopens it.
+
+Open back-charges also appear on **Today** and in the Monday "bills not paid" email. To get them in the email, update the receipt-inbox script in billing@ with the new `apps-script/Code.gs` (same steps as 7c).
+
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)

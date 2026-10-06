@@ -12,9 +12,9 @@ function toast(m, withUndo){
 /* ===================== chrome ===================== */
 function render(){
   const p = P();
-  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.mode === "pm";
+  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.mode === "pm";
   renderModeSwitch();
-  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : p.name;
+  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : p.name;
   $("#swSub").textContent  = portfolioView
     ? `${live().length} propert${live().length===1?"y":"ies"}`
     : `${usd0(cents(p.invoiceTarget))} cap · ${p.feePct}% fee`;
@@ -46,12 +46,13 @@ function render(){
     pmPaySetup:["Shared", "Payments", ""],
     payments: ["Shared", "Payments", ""],
     today:    ["", "Today", ""],
+    charges:  ["Projects", "Back-charges", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, settings:pgSettings})[S.ui.view] || pgOverview)();
   chip();
 }
 function actions(list){
@@ -90,6 +91,7 @@ function renderNav(){
     mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (inboxConn() ? null : `<i class="badge" style="color:var(--gold)">set up</i>`));
     n.lastChild.onclick = () => { go("inbox"); inboxRefresh(); }; }
   if(typeof payOnline === "function" && payOnline()) mk("payments", "Payments", "card", payNavBadge());
+  { const nCh = typeof chOpenCount === "function" ? chOpenCount() : 0; mk("charges", "Back-charges", "receipt", nCh ? `<i class="badge" style="color:var(--gold)">${nCh}</i>` : null); }
   if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
   const unrec = reconcileEntries().filter(e => !e.reconciled).length;
   mk("reconcile", "Reconcile", "check", unrec ? `<i class="badge">${unrec}</i>` : null);
@@ -467,7 +469,7 @@ function visibleTxns(p){
   const q = (S.ui.query||"").toLowerCase().trim();
   const fu = S.ui.filterUnit || "", fs = S.ui.filterStatus || "", ft = S.ui.filterTag || "";
   return p.transactions.map((t,i) => ({t, i})).filter(({t}) => {
-    if(!S.ui.showExcluded && t.status !== "billable") return false;
+    if(!S.ui.showExcluded && t.status !== "billable" && !t.charge) return false;
     if(fs && (COMP.txn[t.id]||{}).pay !== fs) return false;
     if(ft && !(t.tags||[]).includes(ft)) return false;
     if(fu){
@@ -490,7 +492,7 @@ function pgTxns(){
   const from = (S.ui.page - 1) * PAGE, slice = rows.slice(from, from + PAGE);
   const sel = S.ui.sel = (S.ui.sel||[]).filter(id => p.transactions.some(t => t.id === id));
 
-  const states = ["Unbilled","Invoiced","Part invoiced","Paid","Part paid","On hold","Excluded","Unassigned"];
+  const states = ["Unbilled","Invoiced","Part invoiced","Paid","Part paid","On hold","Back-charge","Back-charge settled","Excluded","Unassigned"];
   const bar = elm("div","toolbar");
   bar.innerHTML = `
     <input class="search" type="text" id="q" placeholder="Search vendor, item, receipt…" value="${esc(S.ui.query||"")}">
@@ -513,7 +515,7 @@ function pgTxns(){
     const bulk = elm("div","bulk");
     bulk.innerHTML = `<b>${sel.length}</b> selected
       <select id="b_state"><option value="">Set billing state…</option>
-        <option value="billable">Bill to owner</option><option value="review">On hold</option><option value="excluded">Not billable</option></select>
+        <option value="billable">Bill to owner</option><option value="review">On hold</option><option value="excluded">Not billable</option><option value="charge">Bill to a contractor…</option></select>
       <select id="b_unit"><option value="">Assign to unit…</option>
         ${p.units.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}</select>
       <button class="btn sm" id="b_fee">Fee on</button>
@@ -602,7 +604,8 @@ function pgTxns(){
     };
     const bs = $("#b_state"); if(bs) bs.onchange = e => { const val = e.target.value; if(!val) return;
       const ids = openIds(), sk = skipped();
-      re(() => P().transactions.forEach(x => { if(ids.includes(x.id)) x.status = val; })); toast(`${ids.length} updated${note(sk)}`); };
+      if(val === "charge") return chBulkSheet(ids);
+      re(() => P().transactions.forEach(x => { if(ids.includes(x.id)){ x.status = val; delete x.charge; } })); toast(`${ids.length} updated${note(sk)}`); };
     const bu = $("#b_unit"); if(bu) bu.onchange = e => { const val = e.target.value; if(!val) return;
       const ids = openIds(), sk = skipped();
       re(() => P().transactions.forEach(x => { if(ids.includes(x.id)) x.scope = {type:"single", unit:val, splits:{}}; })); toast(`${ids.length} reassigned${note(sk)}`); };
@@ -629,7 +632,7 @@ function txnRow(t, idx, p, filtered, picked){
   const tr = elm("tr"); tr.dataset.id = t.id;
   tr.draggable = !filtered && !fullyLocked;
   if(picked) tr.classList.add("sel");
-  if(t.status !== "billable") tr.classList.add("off");
+  if(t.status !== "billable" && !t.charge) tr.classList.add("off");
   if(COMP.notes.some(n => n.txnId === t.id && n.level === "err")) tr.classList.add("bad");
   const unit = t.scope.type === "single"
     ? (p.units.find(u => u.id === t.scope.unit)?.name || "—")
@@ -662,7 +665,7 @@ function txnRow(t, idx, p, filtered, picked){
     <td style="font-size:13px">${esc(unit)}</td>
     <td class="r num"${isCredit?' style="color:var(--green)"':""}>${usd(cents(t.amount))}</td>
     <td>${lands}</td>
-    <td><span class="tag ${tagCls}">${info.pay}</span>${doc?" "+doc:""}</td>
+    <td>${t.charge ? chTagHTML(t) : `<span class="tag ${tagCls}">${info.pay}</span>`}${doc?" "+doc:""}</td>
     <td class="act"><button class="btn sm ghost">›</button></td>`;
 
   tr.querySelector(".pick input").onclick = e => {
@@ -1819,7 +1822,8 @@ function openSheet(id, preset){
         <select id="e_status">
           <option value="billable" ${t.status==="billable"?"selected":""}>Bill to owner</option>
           <option value="review" ${t.status==="review"?"selected":""}>On hold</option>
-          <option value="excluded" ${t.status==="excluded"?"selected":""}>Not billable</option>
+          <option value="excluded" ${t.status==="excluded"&&!t.charge?"selected":""}>Not billable (PHD absorbs it)</option>
+          <option value="charge" ${t.charge?"selected":""}>Bill to a contractor or vendor</option>
         </select></label>
       <label class="opt"><input type="checkbox" id="e_fee" ${t.applyFee!==false?"checked":""}>
         <span><b>Charge the ${p.feePct}% project fee</b><small>Turn off for pass-through items billed at cost — consultation fees, permits, deposits.</small></span></label>
@@ -2050,8 +2054,9 @@ function openSheet(id, preset){
       receipt:$("#e_receipt").value.trim(), link:$("#e_link").value.trim(),
       amount:(() => { const v = Math.abs(Number($("#e_amt").value)||0);
                       return ($("#e_credit") && $("#e_credit").checked) ? -v : v; })(),
-      status:$("#e_status").value,
-      party:t.party||"Owner", notes:$("#e_notes").value.trim(),
+      status:$("#e_status").value === "charge" ? "excluded" : $("#e_status").value,
+      charge:chargeFromSheet(t),
+      party:$("#e_status").value === "charge" ? "Contractor" : "Owner", notes:$("#e_notes").value.trim(),
       work:$("#e_work") && $("#e_work").value ? $("#e_work").value : undefined,
       applyFee:$("#e_fee").checked, allowPartial:!$("#e_whole").checked,
       pin:$("#e_pin").value.trim()==="" ? null : Math.max(1, parseInt($("#e_pin").value,10)||1),
@@ -7946,6 +7951,214 @@ function bmCheckDraft(p, unit, inv){
 }
 
 /* =====================================================================
+   BACK-CHARGES — project expenses someone other than the owner pays.
+   A transaction can be billed to a contractor or vendor instead of the
+   owner (a countertop trip they caused, a damaged item, a redo). It stays
+   off the owner's invoices (status "excluded") and carries t.charge:
+     {party, email, how: "invoice" | "deduct", note,
+      state: "open" | "invoiced" | "settled", invNo, invoicedAt,
+      settled: {date, method, note, by}}
+   The Back-charges page collects them by contractor across all
+   properties: send them an invoice from billing@, or take it out of
+   what PHD pays them, and mark each one settled.
+   ===================================================================== */
+const CH_HOW = {invoice:"Send them an invoice", deduct:"Take it out of what we pay them"};
+const CH_SETTLE = ["Paid by check", "Paid by ACH / Zelle", "Deducted from their payment", "Written off"];
+const chOpen = t => !!(t && t.charge && t.charge.state !== "settled");
+function chAll(){
+  const out = [];
+  live().forEach(p => (p.transactions || []).forEach(t => { if(t.charge) out.push({p, t}); }));
+  return out;
+}
+const chOpenCount = () => chAll().filter(x => chOpen(x.t)).length;
+function chParties(){
+  const m = new Map();
+  chAll().forEach(({t}) => { const k = t.charge.party.trim().toLowerCase(); if(k && !m.has(k)) m.set(k, {name:t.charge.party, email:t.charge.email || ""}); else if(k && t.charge.email && !m.get(k).email) m.get(k).email = t.charge.email; });
+  live().forEach(p => (p.transactions || []).forEach(t => { const k = String(t.vendor || "").trim().toLowerCase(); if(k && !m.has(k)) m.set(k, {name:t.vendor.trim(), email:""}); }));
+  (typeof pmVendors === "function" ? pmVendors() : []).forEach(v => { const k = String(v.name || "").trim().toLowerCase(); if(!k) return; if(!m.has(k)) m.set(k, {name:v.name, email:v.email || ""}); else if(v.email && !m.get(k).email) m.get(k).email = v.email; });
+  return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+const chFind = name => chParties().find(x => x.name.toLowerCase() === String(name || "").trim().toLowerCase());
+function chTagHTML(t){
+  const c = t.charge, st = c.state === "settled" ? ["green", `Settled${c.settled && c.settled.date ? " " + fdateS(c.settled.date) : ""}`] : c.state === "invoiced" ? ["acc", `Invoiced${c.invNo ? " " + c.invNo : ""}`] : ["gold", "To charge"];
+  return `<span class="tag ${st[0]}" title="${esc(CH_HOW[c.how] || "")}">${esc(st[1])}</span><div class="ch-who">→ ${esc(c.party || "contractor")}</div>`;
+}
+
+/* ---------- in the transaction sheet ---------- */
+function chFields(c){
+  c = c || {};
+  const ps = chParties();
+  return `<div class="ch-box" id="chBox">
+      <div class="f2"><label class="fld"><span>Who pays it</span><input type="text" id="chParty" list="chPl" value="${esc(c.party || "")}" placeholder="Contractor or vendor" autocomplete="off"><datalist id="chPl">${ps.map(x => `<option value="${esc(x.name)}">`).join("")}</datalist></label>
+        <label class="fld"><span>Their email</span><input type="email" id="chEmail" value="${esc(c.email || "")}" placeholder="for the invoice"></label></div>
+      <div class="ch-how">${Object.entries(CH_HOW).map(([k, l]) => `<label class="${(c.how || "invoice") === k ? "on" : ""}"><input type="radio" name="chHow" value="${k}" ${(c.how || "invoice") === k ? "checked" : ""}> ${l}</label>`).join("")}</div>
+      <label class="fld"><span>Note for them</span><input type="text" id="chNote" value="${esc(c.note || "")}" placeholder="e.g. Second countertop trip — template was measured wrong"></label>
+      <p class="help" style="margin:2px 0 0">Kept off the owner's invoices. It shows on <b>Back-charges</b> until it's settled.</p></div>`;
+}
+function chWire(root){
+  const pi = root.querySelector("#chParty"), em = root.querySelector("#chEmail");
+  if(pi) pi.addEventListener("change", () => { const f = chFind(pi.value); if(f && f.email && !em.value) em.value = f.email; });
+  root.querySelectorAll("[name=chHow]").forEach(r => r.onchange = () => root.querySelectorAll(".ch-how label").forEach(l => l.classList.toggle("on", l.querySelector("input").checked)));
+}
+// read by the transaction sheet's Save (patched in build.py)
+function chargeFromSheet(t){
+  if(!$("#e_status") || $("#e_status").value !== "charge") return undefined;
+  const prior = (t && t.charge) || {};
+  const party = ($("#chParty") || {}).value || "";
+  return Object.assign({state:"open"}, prior, {party:party.trim() || prior.party || "Contractor", email:(($("#chEmail") || {}).value || "").trim(),
+    how:(document.querySelector("[name=chHow]:checked") || {}).value || "invoice", note:(($("#chNote") || {}).value || "").trim()});
+}
+(function(){
+  const base = openSheet;
+  openSheet = function(id, preset){
+    base(id, preset);
+    const sel = $("#e_status"); if(!sel) return;
+    const t = id ? ((P().transactions || []).find(x => x.id === id) || {}) : {};
+    const lab = sel.closest("label");
+    lab.insertAdjacentHTML("afterend", chFields(t.charge));
+    const box = $("#chBox"); chWire(box);
+    const sync = () => { box.style.display = sel.value === "charge" ? "" : "none"; };
+    sel.addEventListener("change", sync); sync();
+    if(t.charge && t.charge.state !== "open") box.insertAdjacentHTML("afterbegin", `<div class="pm-banner" style="margin-bottom:10px">${t.charge.state === "settled" ? `Settled ${esc(fdateS(t.charge.settled.date))} · ${esc(t.charge.settled.method || "")}` : `Invoiced to ${esc(t.charge.party)}${t.charge.invNo ? " as " + esc(t.charge.invNo) : ""}${t.charge.invoicedAt ? " on " + esc(fdateS(t.charge.invoicedAt)) : ""}`} · <a href="#" id="chGo">Back-charges</a></div>`);
+    const g = $("#chGo"); if(g) g.onclick = e => { e.preventDefault(); closeSheet(); go("charges"); };
+  };
+})();
+
+/* ---------- several at once (bulk action on Transactions) ---------- */
+function chBulkSheet(ids){
+  const sh = $("#sheet"), p = P(), list = (p.transactions || []).filter(t => ids.includes(t.id));
+  const tot = list.reduce((a, t) => a + cents(t.amount), 0);
+  sh.innerHTML = `<div class="sheet-h"><h3>Bill ${list.length} to a contractor</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">${list.map(t => esc(t.desc || t.vendor || "Item")).join(" · ")} — ${usd(tot)}</p>${chFields({})}</div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="chOk">Bill to them</button></div>`;
+  chWire(sh); openPanel();
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#chOk").onclick = () => {
+    const party = $("#chParty").value.trim(); if(!party) return toast("Who pays it?");
+    const c = {state:"open", party, email:$("#chEmail").value.trim(), how:(document.querySelector("[name=chHow]:checked") || {}).value || "invoice", note:$("#chNote").value.trim()};
+    snapshot(); P().transactions.forEach(t => { if(ids.includes(t.id)){ t.status = "excluded"; t.party = "Contractor"; t.charge = Object.assign({}, t.charge && t.charge.state !== "open" ? t.charge : {}, c); } });
+    S.ui.sel = []; closeSheet(); commit(); toast(`${list.length} billed to ${party}`, true);
+  };
+}
+
+/* ---------- the Back-charges page ---------- */
+function pgCharges(){
+  const v = $("#view"), all = chAll(), f = S.ui.chF || "open";
+  $("#pgCrumb").textContent = "Projects"; $("#pgTitle").textContent = "Back-charges";
+  $("#pgSub").textContent = "Project costs a contractor or vendor pays, not the owner";
+  actions([]);
+  const open = all.filter(x => chOpen(x.t)), settled = all.filter(x => !chOpen(x.t));
+  const sum = l => l.reduce((a, x) => a + cents(x.t.amount), 0);
+  const hero = elm("div", "card pf-hero td-hero");
+  hero.innerHTML = `<div class="pf-cell"><div class="label">To collect</div><div class="pf-v a">${usd(sum(open))}</div><div class="pf-note">${open.length} charge${open.length === 1 ? "" : "s"} · ${new Set(open.map(x => x.t.charge.party.toLowerCase())).size} contractor${new Set(open.map(x => x.t.charge.party.toLowerCase())).size === 1 ? "" : "s"}</div></div>
+    <div class="pf-cell"><div class="label">Invoiced, not settled</div><div class="pf-v">${usd(sum(open.filter(x => x.t.charge.state === "invoiced")))}</div><div class="pf-note">${open.filter(x => x.t.charge.state === "invoiced").length} sent</div></div>
+    <div class="pf-cell"><div class="label">Settled</div><div class="pf-v g">${usd(sum(settled))}</div><div class="pf-note">${settled.length} done</div></div>`;
+  v.appendChild(hero);
+  const bar = elm("div", "sc-bar");
+  bar.innerHTML = `<div class="sc-seg">${[["open", "To collect", open.length], ["settled", "Settled", settled.length], ["all", "All", all.length]].map(([k, l, n]) => `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
+    <span class="muted" style="font-size:12.5px">To add one: open a transaction → Billing state → <b>Bill to a contractor or vendor</b>, or select several and use the bulk menu.</span>`;
+  bar.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.chF = b.dataset.f; persistUi(); render(); });
+  v.appendChild(bar);
+  const list = f === "open" ? open : f === "settled" ? settled : all;
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>${f === "open" ? "Nothing to collect" : "Nothing here yet"}</b><p>Charges billed to a contractor instead of the owner show up here, grouped by who pays.</p></div>`)); return; }
+  const groups = new Map();
+  list.forEach(x => { const k = x.t.charge.party.trim().toLowerCase(); if(!groups.has(k)) groups.set(k, []); groups.get(k).push(x); });
+  [...groups.values()].sort((a, b) => sum(b) - sum(a)).forEach(rows => {
+    const c0 = rows[0].t.charge, openRows = rows.filter(x => chOpen(x.t)), email = (rows.find(x => x.t.charge.email) || {t:{charge:{}}}).t.charge.email || (chFind(c0.party) || {}).email || "";
+    const card = elm("div", "card ch-card");
+    card.innerHTML = `<div class="card-h"><h3>${esc(c0.party)}</h3><span class="muted td-n">${email ? esc(email) : "no email on file"}</span>
+        <span style="margin-left:auto" class="num"><b>${usd(sum(openRows))}</b>${openRows.length !== rows.length ? ` <span class="muted">open of ${usd(sum(rows))}</span>` : ""}</span></div>
+      <table class="tbl"><thead><tr><th>Date</th><th>Property</th><th>Item</th><th>How</th><th class="r">Amount</th><th>Status</th><th></th></tr></thead><tbody>
+        ${rows.map((x, i) => `<tr data-i="${i}"><td class="nw muted">${esc(fdateS(x.t.date))}</td><td>${esc(x.p.name)}</td><td><div class="item-t">${esc(x.t.desc || "—")}</div><div class="item-s">${esc(x.t.vendor || "")}${x.t.charge.note ? " · " + esc(x.t.charge.note) : ""}</div></td>
+          <td class="muted" style="font-size:12.5px">${x.t.charge.how === "deduct" ? "Deduct" : "Invoice"}</td><td class="r num">${usd(cents(x.t.amount))}</td><td>${chTagHTML(x.t).split("<div")[0]}</td>
+          <td class="r nw">${chOpen(x.t) ? `<button class="btn sm" data-settle="${i}">Settle</button>` : `<button class="btn sm ghost" data-undo="${i}">Undo</button>`}<button class="btn sm ghost" data-open="${i}">›</button></td></tr>`).join("")}
+      </tbody></table>
+      ${openRows.length ? `<div class="ch-acts"><button class="btn primary" data-inv>Invoice ${esc(c0.party)} · ${usd(sum(openRows))}</button><button class="btn" data-ded>Deducted from their payment</button><button class="btn ghost" data-pdf>PDF</button></div>` : ""}`;
+    v.appendChild(card);
+    card.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { const x = rows[+b.dataset.open]; go("txns", x.p.id); setTimeout(() => openSheet(x.t.id), 40); });
+    card.querySelectorAll("[data-settle]").forEach(b => b.onclick = () => chSettleSheet([rows[+b.dataset.settle]]));
+    card.querySelectorAll("[data-undo]").forEach(b => b.onclick = () => { const x = rows[+b.dataset.undo]; snapshot(); x.t.charge.state = x.t.charge.invNo ? "invoiced" : "open"; delete x.t.charge.settled; commit(); render(); });
+    const ib = card.querySelector("[data-inv]"); if(ib) ib.onclick = () => chInvoiceSheet(openRows, email);
+    const db = card.querySelector("[data-ded]"); if(db) db.onclick = () => chSettleSheet(openRows, "Deducted from their payment");
+    const pb = card.querySelector("[data-pdf]"); if(pb) pb.onclick = () => printDoc(chInvoiceHTML(openRows, chNextNo(c0.party)));
+  });
+}
+function chSettleSheet(rows, method){
+  const sh = $("#sheet"), tot = rows.reduce((a, x) => a + cents(x.t.amount), 0);
+  sh.innerHTML = `<div class="sheet-h"><h3>Settle ${rows.length === 1 ? "this charge" : rows.length + " charges"} · ${usd(tot)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="muted" style="margin-top:0;font-size:13px">${esc(rows[0].t.charge.party)} — ${rows.map(x => esc(x.t.desc || "item")).join(", ")}</p>
+      <div class="f2"><label class="fld"><span>How</span><select id="stM">${CH_SETTLE.map(m => `<option ${m === (method || (rows[0].t.charge.how === "deduct" ? "Deducted from their payment" : "Paid by check")) ? "selected" : ""}>${m}</option>`).join("")}</select></label>
+        <label class="fld"><span>Date</span><input type="date" id="stD" value="${todayISO()}"></label></div>
+      <label class="fld"><span>Note</span><input type="text" id="stN" placeholder="e.g. check #1042, or taken off their Oct 10 payment"></label></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="stOk">Mark settled</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#stOk").onclick = () => {
+    snapshot();
+    rows.forEach(x => { x.t.charge.state = "settled"; x.t.charge.settled = {date:$("#stD").value || todayISO(), method:$("#stM").value, note:$("#stN").value.trim(), by:billWho()}; });
+    closeSheet(); commit(); toast(`${rows.length} charge${rows.length === 1 ? "" : "s"} settled`, true);
+  };
+}
+function chNextNo(party){
+  const ini = String(party || "C").replace(/[^A-Za-z ]/g, "").split(/\s+/).filter(Boolean).map(w => w[0]).join("").slice(0, 3).toUpperCase() || "C";
+  const d = todayISO().replace(/-/g, "").slice(2);
+  const used = new Set(chAll().map(x => x.t.charge.invNo).filter(Boolean));
+  let n = 1; while(used.has(`BC-${ini}-${d}${n > 1 ? "-" + n : ""}`)) n++;
+  return `BC-${ini}-${d}${n > 1 ? "-" + n : ""}`;
+}
+function chInvoiceHTML(rows, no){
+  const c0 = rows[0].t.charge, tot = rows.reduce((a, x) => a + cents(x.t.amount), 0), d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
+  const ded = rows.every(x => x.t.charge.how === "deduct");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(no)}</title><style>
+  @page{size:letter;margin:0.6in} body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;color:#1A2322;margin:0}
+  table{border-collapse:collapse;width:100%} .brand{font-size:9pt;letter-spacing:1.5px;text-transform:uppercase;color:#1D5C57;font-weight:bold}
+  h1{font-size:20pt;font-weight:normal;margin:4px 0 0} .hd td{vertical-align:top;padding:0} .rt{text-align:right;font-size:10pt;color:#3A4745}
+  .rule{border-top:2px solid #1D5C57;margin:14px 0 16px} .k{font-size:8pt;letter-spacing:1px;text-transform:uppercase;color:#6B7775;margin-bottom:3px}
+  .ac th{font-size:8pt;letter-spacing:.8px;text-transform:uppercase;color:#6B7775;text-align:left;border-bottom:1px solid #C9D1CE;padding:6px}
+  .ac td{padding:7px 6px;border-bottom:1px solid #ECEFED;vertical-align:top} .r{text-align:right;white-space:nowrap} .m{color:#6B7775;font-size:9.5pt}
+  .tot td{border-top:2px solid #1A2322;border-bottom:0;font-weight:bold;font-size:11pt} .ft{margin-top:24px;font-size:9.5pt;color:#3A4745;line-height:1.5}
+</style></head><body>
+  <table class="hd"><tr><td><div class="brand">PHD Properties</div><h1>Back-charge invoice</h1></td><td class="rt"><b>${esc(no)}</b><br>${docLong(todayISO())}</td></tr></table>
+  <div class="rule"></div>
+  <table><tr><td style="width:50%;vertical-align:top"><div class="k">Bill to</div><b>${esc(c0.party)}</b>${c0.email ? `<br><span class="m">${esc(c0.email)}</span>` : ""}</td>
+    <td style="vertical-align:top"><div class="k">Amount due</div><b style="font-size:16pt">${usd(tot)}</b></td></tr></table>
+  <table class="ac" style="margin-top:18px"><thead><tr><th>Date</th><th>Property</th><th>Description</th><th class="r">Amount</th></tr></thead><tbody>
+    ${rows.map(x => `<tr><td class="m">${d(x.t.date)}</td><td>${esc(x.p.address || x.p.name)}</td><td>${esc(x.t.desc || "")}${x.t.charge.note ? `<br><span class="m">${esc(x.t.charge.note)}</span>` : ""}</td><td class="r">${usd(cents(x.t.amount))}</td></tr>`).join("")}
+    <tr class="tot"><td></td><td colspan="2">Total due</td><td class="r">${usd(tot)}</td></tr></tbody></table>
+  <div class="ft">${ded ? "This amount will be deducted from your next payment from PHD Properties." : "Please pay PHD Properties, or reply if you'd like it deducted from your next payment."} Questions: billing@phdproperties.realestate</div>
+</body></html>`;
+}
+function chInvoiceSheet(rows, email){
+  const c0 = rows[0].t.charge, no = rows.find(x => x.t.charge.invNo) ? rows.find(x => x.t.charge.invNo).t.charge.invNo : chNextNo(c0.party), tot = rows.reduce((a, x) => a + cents(x.t.amount), 0);
+  const conn = typeof bmConn === "function" ? bmConn() : null, first = String(c0.party).split(/\s+/)[0];
+  const body = `Hi ${first},\n\nAttached is back-charge invoice ${no} for ${usd(tot)}:\n${rows.map(x => `• ${x.t.desc || "Item"} — ${x.p.name} — ${usd(cents(x.t.amount))}`).join("\n")}\n\n${rows.every(x => x.t.charge.how === "deduct") ? "We'll deduct this from your next payment." : "Please send payment to PHD Properties, or let us know if you'd rather we deduct it from your next payment."}\n\nThank you,\nPHD Properties`;
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${esc(c0.party)} · ${usd(tot)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(no)} · from ${esc((conn && conn.mailbox) || "billing@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${!conn ? `<div class="pm-banner">billing@ isn't connected yet — connect it from any project invoice (Email owner). You can still download the PDF and mark it invoiced.</div>` : ""}
+      <label class="fld"><span>To</span><input type="email" id="ciTo" value="${esc(email || "")}" placeholder="their email"></label>
+      <label class="fld"><span>Subject</span><input type="text" id="ciSub" value="${esc(`PHD Properties – Back-charge invoice ${no}`)}"></label>
+      <label class="fld"><span>Message</span><textarea id="ciBody" rows="11">${esc(body)}</textarea></label>
+      <div class="se-att">${icon("file")} <a href="#" id="ciPdf">${esc(no)}.pdf</a><span class="muted">attached</span></div>
+    </div>
+    <div class="sheet-f"><button class="btn ghost" id="ciMark">Mark invoiced only</button><span style="flex:1"></span><button class="btn" id="ciDraft" ${conn ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="ciSend" ${conn ? "" : "disabled"}>Send from billing@</button></div>`;
+  openPanel(); $("#shClose").onclick = closeSheet;
+  $("#ciPdf").onclick = e => { e.preventDefault(); printDoc(chInvoiceHTML(rows, no)); };
+  const mark = (to, how) => { snapshot(); rows.forEach(x => { if(x.t.charge.state === "open") x.t.charge.state = "invoiced"; x.t.charge.invNo = no; x.t.charge.invoicedAt = todayISO(); if(to){ x.t.charge.email = to; x.t.charge.sentTo = to; x.t.charge.sentHow = how; } }); commit(); };
+  $("#ciMark").onclick = () => { mark($("#ciTo").value.trim(), "manual"); closeSheet(); toast(`${no} marked invoiced`, true); };
+  const go2 = async send => {
+    const to = $("#ciTo").value.trim(); if(!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(to)) return toast("Add their email");
+    if(send && !confirm(`Send ${no} (${usd(tot)}) to ${to} from billing@?`)) return;
+    const b = $(send ? "#ciSend" : "#ciDraft"); b.disabled = true; b.textContent = send ? "Sending…" : "Saving…";
+    try{
+      const txt = $("#ciBody").value;
+      await bmCall({action:send ? "send" : "draft", to, subject:$("#ciSub").value, text:txt, html:txt.split(/\n{2,}/).map(par => `<p>${esc(par).replace(/\n/g, "<br>")}</p>`).join(""), pdfHtml:chInvoiceHTML(rows, no), fileName:no});
+      mark(to, send ? "sent" : "draft"); closeSheet(); toast(send ? `${no} sent to ${to}` : "Draft saved in billing@'s Gmail", true);
+    }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from billing@" : "Save as Gmail draft"; }
+  };
+  $("#ciSend").onclick = () => go2(true); $("#ciDraft").onclick = () => go2(false);
+}
+
+/* =====================================================================
    ADD BILL BY UPLOAD — drop a vendor invoice or receipt (PDF or photo).
    It goes to the receipt inbox script, which reads it with Claude the
    same way it reads emailed receipts and files it in Drive. When the
@@ -8422,6 +8635,11 @@ function todayProjects(v){
   if(vdue.length) tdSection(right, "Vendors to pay", vdue.map(({p, t}) => { const due = t.vendorDue.due, late = due && due < today;
     return {t:`${esc(t.vendor || "Vendor")} · ${esc(p.name)}`, s:`${esc(t.desc || "")}${due ? ` · due ${fdateS(due)}${late ? " (past due)" : ""}` : ""}${t.vendorDue.note ? ` · <i>${esc(t.vendorDue.note)}</i>` : ""}`, cls:late ? "late" : "",
       amt:usd(cents(t.amount)), btn:"Open", primary:!!late, fn:() => { go("txns", p.id); setTimeout(() => openSheet(t.id), 40); }}; }), "");
+  if(typeof chAll === "function"){
+    const by = new Map(); chAll().filter(x => chOpen(x.t)).forEach(x => { const k = x.t.charge.party.toLowerCase(); if(!by.has(k)) by.set(k, []); by.get(k).push(x); });
+    if(by.size) tdSection(right, "Back-charges to collect", [...by.values()].map(rows => { const c = rows[0].t.charge, tot = rows.reduce((a2, x) => a2 + cents(x.t.amount), 0), inv = rows.filter(x => x.t.charge.state === "invoiced").length;
+      return {t:esc(c.party), s:`${rows.length} charge${rows.length === 1 ? "" : "s"} · ${[...new Set(rows.map(x => x.p.name))].map(esc).join(", ")}${inv ? ` · ${inv} invoiced` : " · not invoiced yet"}`, amt:usd(tot), btn:inv === rows.length ? "Open" : "Invoice", primary:!inv, fn:() => go("charges")}; }), "", ["All back-charges", () => go("charges")]);
+  }
   tdInbox(right, false);
   tdDeposits(right);
   if(paidM.length) tdSection(right, "Paid this month", paidM.map(x => ({t:label(x), s:`Paid${(x.inv.reg || {}).datePaid ? " " + fdateS(x.inv.reg.datePaid) : ""}`, amt:usd(x.inv.totalC), btn:"Open", fn:openInv(x.p, x.u, x.inv)})), "");
@@ -8838,7 +9056,7 @@ Cloud.boot = async function(){
       if(want.view === "pmMonth" && /^\d{4}-\d{2}$/.test(want.m || "")) S.ui.pmMonth = want.m;
     }
     else if(want && ["txns","invoices","overview"].includes(want.view) && want.p && (S.properties || []).some(x => x.id === want.p)){ S.ui.mode = "projects"; S.ui.view = want.view; S.activeId = want.p; }
-    else if(want && ["inbox","today","payments"].includes(want.view)){ S.ui.view = want.view; }
+    else if(want && ["inbox","today","payments","charges"].includes(want.view)){ S.ui.view = want.view; }
   }catch(e){}
   Cloud.staff = (await Cloud.sb.from("staff").select("email,name,active")).data || [];
   // Store.save now means "sync": documents go to the database, screen state stays in this browser

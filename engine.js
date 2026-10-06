@@ -352,7 +352,7 @@ function compute(prop){
 
   prop.transactions.forEach(t => {
     const i = out.txn[t.id];
-    if(t.status === "excluded"){ i.pay = "Excluded"; return; }
+    if(t.status === "excluded"){ i.pay = t.charge ? (t.charge.state === "settled" ? "Back-charge settled" : "Back-charge") : "Excluded"; return; }
     if(t.status === "review"){   i.pay = "On hold";  return; }
     if(!i.parts.length){         i.pay = "Unassigned"; return; }
     const paid = i.parts.filter(p => p.status === "Paid").length;
