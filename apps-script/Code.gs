@@ -53,7 +53,7 @@ const CFG = {
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
-  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text'];
+  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text','pay_status','pay_note'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -162,10 +162,11 @@ function processGmail_(budget){
         const context = `Email from ${addr}\nSubject: ${msg.getSubject()}\nDate: ${msg.getDate().toISOString().slice(0,10)}` +
           (side ? `\nSent to the ${side === 'pm' ? 'property management (rentals)' : 'renovation projects'} billing address.` : '');
         const emailText = String(msg.getPlainBody() || '').replace(/\n{3,}/g, '\n\n').slice(0, 6000);
+        const payTag = payTag_(msg.getSubject(), emailText);
         if(atts.length){
           for(const a of atts){
             if(used >= budget) break;
-            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText});
+            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText, payTag});
             used++;
           }
         } else {
@@ -175,7 +176,7 @@ function processGmail_(budget){
           try{ file = HtmlService.createHtmlOutput(msg.getBody()).getAs('application/pdf'); }
           catch(e){ file = Utilities.newBlob(text, 'text/plain'); }
           file.setName((msg.getSubject() || 'Receipt').replace(/[\\/:*?"<>|]+/g, '-') + (file.getContentType() === 'application/pdf' ? '.pdf' : '.txt'));
-          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, bodyText:text || '(empty email)'});
+          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, payTag, bodyText:text || '(empty email)'});
           used++;
         }
       }catch(err){
@@ -229,6 +230,8 @@ function handleBlob_(blob, o){
     if(kind === 'document' && blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('PDF is over 25 MB');
     const x = extract_(blob, kind, o.context, o.bodyText, o.side, o.emailText);
     Object.assign(row, x);
+    if(o.payTag){ row.pay_status = o.payTag; row.pay_note = (row.pay_note ? row.pay_note + ' · ' : '') + (o.payTag === 'to_pay' ? 'Marked UNPAID in the email' : 'Marked PAID in the email'); }
+    if(o.kind === 'paid' || o.kind === 'topay') row.pay_status = o.kind === 'paid' ? 'paid' : 'to_pay';
     if(!x.is_receipt){ row.status = 'rejected'; row.error = 'Did not look like a receipt or invoice' + (x.notes ? ' — ' + x.notes : ''); }
   }catch(err){
     row.status = 'error';
@@ -279,6 +282,8 @@ Rules:
 - date: the transaction/purchase date (for a vendor invoice, the invoice date) as YYYY-MM-DD.
 - due_date: for a vendor invoice or bill, the payment due date as YYYY-MM-DD if one is printed (or computable from terms like "Net 30"); otherwise empty.
 - For a vendor invoice, total is the balance due, and order_no is the invoice number.
+- pay_status: "to_pay" if this is a bill or invoice that still has to be paid (balance due, "please pay", a forwarding note asking for payment), "paid" if it shows payment already made (store receipt, PAID stamp, zero balance, card charged), otherwise "unknown".
+- pay_note: any payment instruction from the email or invoice in a few words, e.g. "pay from account 4091 today" or "due on receipt"; otherwise empty.
 - is_receipt false for marketing, shipping-only notices, quotes/estimates, or anything that is not a charge or credit.`});
 
   const tool = {
@@ -291,6 +296,8 @@ Rules:
         vendor:{type:'string'},
         date:{type:'string', description:'YYYY-MM-DD'},
         due_date:{type:'string', description:'YYYY-MM-DD or empty'},
+        pay_status:{type:'string', enum:['to_pay','paid','unknown']},
+        pay_note:{type:'string'},
         total:{type:'number'},
         is_credit:{type:'boolean'},
         description:{type:'string'},
@@ -374,6 +381,8 @@ function clean_(x, props){
     vendor: s(x.vendor).slice(0, 80),
     date: /^\d{4}-\d{2}-\d{2}$/.test(s(x.date)) ? s(x.date) : '',
     due_date: /^\d{4}-\d{2}-\d{2}$/.test(s(x.due_date)) ? s(x.due_date) : '',
+    pay_status: ['to_pay','paid'].indexOf(x.pay_status) >= 0 ? x.pay_status : '',
+    pay_note: s(x.pay_note).slice(0, 140),
     total: Math.round(Math.abs(Number(x.total) || 0) * 100) / 100,
     is_credit: x.is_credit === true,
     description: s(x.description).slice(0, 80),
@@ -469,7 +478,7 @@ function doPost(e){
         return json_({ok:true, duplicate:true, item:old ? publicRow_(old) : null});
       }
       const kind = b.kind === 'paid' ? 'a receipt for something already paid' : 'a vendor bill or invoice we need to pay';
-      const row = handleBlob_(blob, {seen:seen, source:'Upload', from:String(b.by || '').slice(0, 80), subject:name, side:b.side === 'projects' ? 'projects' : b.side === 'pm' ? 'pm' : '',
+      const row = handleBlob_(blob, {seen:seen, kind:b.kind === 'paid' ? 'paid' : 'topay', source:'Upload', from:String(b.by || '').slice(0, 80), subject:name, side:b.side === 'projects' ? 'projects' : b.side === 'pm' ? 'pm' : '',
         context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name});
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
@@ -531,6 +540,13 @@ function tokenOk_(t){
   return diff === 0;
 }
 function json_(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+// [UNPAID] / [TO PAY] / #unpaid in the subject (or the first line of the note) marks a bill to pay; [PAID] / #paid marks it paid
+function payTag_(subject, body){
+  const t = String(subject || '') + ' ' + String(body || '').split(/\n/).slice(0, 3).join(' ');
+  if(/\[\s*(unpaid|to\s*pay|pay)\s*\]|#(unpaid|topay)\b/i.test(t)) return 'to_pay';
+  if(/\[\s*paid\s*\]|#paid\b/i.test(t)) return 'paid';
+  return '';
+}
 // which billing alias a message was sent to: 'pm', 'projects' or ''
 function sideOf_(msg){
   let h = '';
@@ -623,7 +639,7 @@ function publicRow_(r){
     description:r.description, property_id:r.property_id, property_name:r.property_name, unit_id:r.unit_id, unit_name:r.unit_name,
     confidence:r.confidence, reason:r.reason, line_items:(function(){ try{ return JSON.parse(r.line_items || '[]'); }catch(e){ return []; } })(),
     order_no:r.order_no, notes:r.notes, error:r.error,
-    side:String(r.side || ''),
+    side:String(r.side || ''), pay_status:String(r.pay_status || ''), pay_note:String(r.pay_note || ''),
     due_date:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r.due_date || '')};
 }
 
@@ -1223,3 +1239,83 @@ const PMCore = (function(){
   return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 /*PMCORE-END*/
+
+
+/* =====================================================================
+   WEEKLY: BILLS NOT PAID YET
+   Every Monday morning, one email listing every bill that still has to be paid:
+   property-management bills (To pay and processing), project vendor bills marked
+   "to pay", and unpaid invoices still waiting in the receipt inbox. Overdue first.
+   Uses the same Script Properties as the backup (SUPABASE_URL, SUPABASE_ANON_KEY,
+   BACKUP_TOKEN). Optional: CONSOLE_URL for links, DIGEST_TO for who gets it
+   (otherwise everyone on the Team page).
+   Run setupWeekly() once; previewWeekly() sends a copy to you now.
+   ===================================================================== */
+function setupWeekly(){
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'weeklyBills').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('weeklyBills').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(8).create();
+  previewWeekly();
+  Logger.log('Unpaid-bills email scheduled for Mondays between 8 and 9 AM. A preview was sent to you.');
+}
+function previewWeekly(){ return weeklyBills({preview:true}); }
+function weeklyBills(opt){
+  opt = (opt && typeof opt === 'object' && 'preview' in opt) ? opt : {};
+  const tz = Session.getScriptTimeZone(), today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+  const props = PropertiesService.getScriptProperties();
+  const {data} = fetchOffice_();
+  const docs = (data.docs || []).filter(d => !d.deleted && d.data);
+  const pmProps = {}; docs.filter(d => d.kind === 'pm_property').forEach(d => pmProps[d.id] = d.data);
+  const dn = iso => Math.floor(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5);
+  const rows = [];
+  // property management: bills to pay or on the way
+  docs.filter(d => d.kind === 'pm_bill').forEach(d => {
+    const b = d.data; if(b.status !== 'open' && b.status !== 'paying') return;
+    rows.push({side:'Property management', vendor:b.vendor || 'Vendor', where:(pmProps[b.propertyId] || {}).name || '', amount:Number(b.amount) || 0,
+      due:String(b.due || '').slice(0, 10), what:b.memo || '', note:b.payNote || '', state:b.status === 'paying' ? 'On the way' : 'To pay', link:'pmBills'});
+  });
+  // projects: vendor bills marked "to pay" and not paid through Nickel
+  docs.filter(d => d.kind === 'pj_property').forEach(d => (d.data.transactions || []).forEach(t => {
+    if(!t.vendorDue || t.vendorPaid || (t.nickelPay && !t.nickelPay.dismissed)) return;
+    rows.push({side:'Projects', vendor:t.vendor || 'Vendor', where:d.data.name || '', amount:Math.abs(Number(t.amount) || 0),
+      due:String(t.vendorDue.due || '').slice(0, 10), what:t.desc || '', note:t.vendorDue.note || '', state:'To pay', link:'txns', pid:d.id});
+  }));
+  // still in the receipt inbox
+  try{ readRows_().filter(r => r.status === 'pending' && String(r.pay_status) === 'to_pay').forEach(r => rows.push({side:r.side === 'projects' ? 'Projects' : 'Property management',
+    vendor:r.vendor || 'Vendor', where:r.property_name || '', amount:Number(r.total) || 0, due:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, tz, 'yyyy-MM-dd') : String(r.due_date || ''),
+    what:r.description || '', note:r.pay_note || '', state:'In the receipt inbox — approve it', link:'inbox'})); }catch(e){}
+  if(!rows.length && !opt.preview){ Logger.log('No unpaid bills — no email.'); return; }
+  const late = r => r.due && r.due < today;
+  rows.sort((a, b) => (late(b) - late(a)) || String(a.due || '9999').localeCompare(String(b.due || '9999')) || b.amount - a.amount);
+  const total = rows.reduce((a, r) => a + r.amount, 0), nLate = rows.filter(late).length;
+  const money = n => '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const base = String(props.getProperty('CONSOLE_URL') || 'https://phdbilling.vercel.app').trim().replace(/\/+$/, '');
+  const font = "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  let h = `<div style="${font};color:#1d1d1b;max-width:720px;margin:0 auto;padding:8px 4px">`;
+  h += `<div style="font-size:22px;font-weight:600;margin:4px 0">Bills not paid yet</div>`;
+  h += `<div style="font-size:14px;color:#55554f;margin-bottom:16px">${rows.length} bill${rows.length === 1 ? '' : 's'} · ${money(total)}${nLate ? ` · <b style="color:#b3261e">${nLate} past due</b>` : ''}</div>`;
+  ['Property management', 'Projects'].forEach(side => {
+    const list = rows.filter(r => r.side === side); if(!list.length) return;
+    h += `<div style="border:1px solid #e6e4dd;border-radius:10px;margin-bottom:16px;overflow:hidden"><div style="padding:10px 14px;background:#f7f6f2;font-weight:600;font-size:14px">${side} <span style="color:#8a8a82;font-weight:400">· ${list.length} · ${money(list.reduce((a, r) => a + r.amount, 0))}</span></div>`;
+    list.forEach(r => {
+      const d = r.due ? (late(r) ? `<span style="color:#b3261e;font-weight:600">${dn(today) - dn(r.due)} days past due (${r.due.slice(5)})</span>` : `due ${r.due.slice(5)}`) : 'no due date';
+      const link = base + '/?view=' + r.link + (r.pid ? '&p=' + encodeURIComponent(r.pid) : '');
+      h += `<div style="padding:10px 14px;border-top:1px solid #efede7;display:flex;gap:12px"><div style="flex:1"><div style="font-size:14px;font-weight:600"><a href="${digestEsc_(link)}" style="color:#1d1d1b;text-decoration:none">${digestEsc_(r.vendor)}</a>${r.where ? ` <span style="font-weight:400;color:#65655e">· ${digestEsc_(r.where)}</span>` : ''}</div>`;
+      h += `<div style="font-size:13px;color:#65655e;margin-top:2px">${d} · ${digestEsc_(r.state)}${r.what ? ' · ' + digestEsc_(r.what) : ''}${r.note ? ' · <i>' + digestEsc_(r.note) + '</i>' : ''}</div></div>`;
+      h += `<div style="font-size:14px;font-weight:600;white-space:nowrap">${money(r.amount)}</div></div>`;
+    });
+    h += `</div>`;
+  });
+  if(!rows.length) h += `<p style="font-size:14px">Nothing waiting — every bill is paid.</p>`;
+  h += `<a href="${digestEsc_(base + '/?view=pmBills')}" style="display:inline-block;background:#1f5c50;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 16px;border-radius:8px">Open Bills</a>`;
+  h += `<div style="font-size:12px;color:#8a8a82;margin-top:18px">Every Monday from the PHD receipt-inbox script. Mark a bill to pay by putting [UNPAID] in the subject when you send it to PMBilling@ or ProjectBilling@.</div></div>`;
+  let to;
+  if(opt.preview) to = Session.getEffectiveUser().getEmail();
+  else {
+    const list = String(props.getProperty('DIGEST_TO') || '').split(',').map(x => x.trim()).filter(Boolean);
+    to = (list.length ? list : (data.staff || []).filter(x => x.active).map(x => x.email)).join(',');
+  }
+  if(!to){ Logger.log('No one to send to: add people on the Team page, or set DIGEST_TO.'); return; }
+  const subject = (opt.preview ? '[Preview] ' : '') + `Bills not paid yet · ${rows.length} · ${money(total)}${nLate ? ` · ${nLate} past due` : ''}`;
+  MailApp.sendEmail({to, subject, htmlBody:h, name:'PHD Console', body:rows.map(r => `${r.vendor} · ${r.where} · ${money(r.amount)} · ${r.due || 'no due date'} · ${r.state}`).join('\n')});
+  Logger.log('Sent to ' + to + ': ' + subject);
+}

@@ -3631,7 +3631,8 @@ function inboxCard(it){
   const d = INBOX.draft[it.id] = INBOX.draft[it.id] || {
     propId: it.property_id && (S.properties.some(p => p.id === it.property_id) || pmProp(it.property_id)) ? it.property_id : "",
     unit: it.unit_id || "", date: it.date || "", vendor: it.vendor || "", desc: it.description || "",
-    amount: it.total ? String(it.total) : "", credit: !!it.is_credit
+    amount: it.total ? String(it.total) : "", credit: !!it.is_credit,
+    pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || ""
   };
   const prop = S.properties.find(p => p.id === d.propId), pmp = prop ? null : pmProp(d.propId);
   if(prop && d.unit !== "split" && !prop.units.some(u => u.id === d.unit)) d.unit = prop.units.length === 1 ? prop.units[0].id : "";
@@ -3651,6 +3652,7 @@ function inboxCard(it){
     </div>
     ${isErr ? `<div class="ib-errline">${esc(it.error || "Unknown error")}</div>` : ""}
     ${it.reason && !isErr ? `<div class="ib-why">${icon("bolt")} ${esc(it.reason)}</div>` : ""}
+    ${it.pay_status && !isErr ? `<div class="ib-why ib-pay ${it.pay_status === "to_pay" ? "due" : ""}"><span class="tag ${it.pay_status === "to_pay" ? "gold" : "green"}">${it.pay_status === "to_pay" ? "Not paid yet" : "Already paid"}</span>${it.pay_note ? " " + esc(it.pay_note) : ""}${it.due_date && it.pay_status === "to_pay" ? ` · due ${esc(fdateS(it.due_date))}` : ""}</div>` : ""}
     <div class="ib-body">
       <div class="ib-form">
         <div class="f2">
@@ -3673,6 +3675,7 @@ function inboxCard(it){
         ${pmp && !d.credit ? `<div class="f2"><label class="fld"><span>This is</span><select data-f="pmPaid"><option value="paid" ${d.pmPaid !== "topay" ? "selected" : ""}>A receipt — already paid</option><option value="topay" ${d.pmPaid === "topay" ? "selected" : ""}>A vendor invoice — needs paying</option></select></label>
           <label class="fld"><span>Owner</span><select data-f="pmRec">${Object.entries(BILL_REC).map(([k, l]) => `<option value="${k}" ${(d.pmRec || (pmp.ownerId ? "deduct" : "phd")) === k ? "selected" : ""} ${k !== "phd" && !pmp.ownerId ? "disabled" : ""}>${l}</option>`).join("")}</select></label></div>` : ""}
         <label class="switchbox"><input type="checkbox" data-f="credit" ${d.credit ? "checked" : ""}> Refund / return — reduces the next open invoice</label>
+        ${prop && !d.credit ? `<label class="switchbox"><input type="checkbox" data-f="toPay" ${d.toPay ? "checked" : ""}> The vendor still needs to be paid — keep it on the unpaid list${d.toPay ? ` <input type="date" data-f="due" value="${esc(d.due)}" title="Due" style="margin-left:8px">` : ""}</label>` : ""}
       </div>
       <div class="ib-side">
         ${(it.line_items||[]).length ? `<div class="label" style="margin-bottom:6px">Items on the receipt</div>
@@ -3693,7 +3696,7 @@ function inboxCard(it){
   card.querySelectorAll("[data-f]").forEach(inp => {
     const k = inp.dataset.f;
     const upd = () => { d[k] = inp.type === "checkbox" ? inp.checked : inp.value;
-      if(k === "propId" || k === "unit" || k === "credit" || k === "amount") card.replaceWith(inboxCard(it));
+      if(k === "propId" || k === "unit" || k === "credit" || k === "amount" || k === "toPay") card.replaceWith(inboxCard(it));
       else { const ok = inboxReady(d); card.querySelectorAll('[data-x="ok"],[data-x="edit"]').forEach(b => b.disabled = !ok); } };
     inp.addEventListener(inp.tagName === "SELECT" || inp.type === "checkbox" ? "change" : (k === "amount" ? "change" : "input"), upd);
   });
@@ -3747,6 +3750,7 @@ async function inboxApprove(it, openAfter){
     notes:[it.order_no ? "Order " + it.order_no : "", "From receipt inbox"].filter(Boolean).join(" · "),
     tags:[], reconciled:false, reconciledAt:"", date:d.date, vendor:d.vendor.trim(), desc:(d.desc || "").trim() + (d.credit && !/return|refund|credit/i.test(d.desc) ? " — return" : ""),
     amount: d.credit ? -amt : amt, scope, status:"billable", applyFee:true, allowPartial:true};
+  if(d.toPay && !d.credit) rec.vendorDue = {since:todayISO(), due:d.due || "", note:it.pay_note || "", by:billWho()};
   if(d.credit && p.tags.some(t => t.id === RETURN_TAG_ID)) rec.tags = [RETURN_TAG_ID];
   applyHoldRule(rec, p);
   p.transactions.push(rec);
@@ -3786,7 +3790,7 @@ async function inboxApprovePm(it, openAfter){
     // receipts and vendor invoices become bills: paid already, or waiting to be paid; the owner side follows the bill
     const rec = d.pmRec || (p.ownerId ? "deduct" : "phd"), paid = d.pmPaid !== "topay";
     bill = billNew({propertyId:p.id, vendor:d.vendor, amount:amt, date:d.date, memo:d.desc, recover:p.ownerId ? rec : "phd", deductMonth:m,
-      receipt:it.file_url ? {url:it.file_url, name:fileName} : null, source:"Receipt inbox", inbox:it.id,
+      receipt:it.file_url ? {url:it.file_url, name:fileName} : null, source:"Receipt inbox", inbox:it.id, payNote:paid ? "" : (it.pay_note || ""), due:paid ? "" : (it.due_date || ""),
       status:paid ? "paid" : "open", pay:paid ? {method:"Card / receipt", date:d.date, ref:"", by:billWho(), at:new Date().toISOString()} : null});
     billSave(bill, true);
   }
@@ -6662,7 +6666,7 @@ function billNew(f){
   return {id:"bl_" + uid(), propertyId:f.propertyId, vendor:(f.vendor || "").trim(), vendorId:null, billNo:f.billNo || "", date:f.date || todayISO(), due:f.due || "",
     amount:Math.round(Number(f.amount) * 100) / 100, memo:(f.memo || "").trim(), category:f.category || "Repairs", receipt:f.receipt || null,
     recover:f.recover || (p && p.ownerId ? "deduct" : "phd"), feeMode:f.feeMode || "auto", status:f.status || "open", pay:f.pay || null, deduct:f.deductMonth ? {month:f.deductMonth, pid:f.propertyId} : null,
-    invoiceId:null, qbo:null, nickel:null, source:f.source || "", inbox:f.inbox || ""};
+    invoiceId:null, qbo:null, nickel:null, source:f.source || "", inbox:f.inbox || "", payNote:(f.payNote || "").trim()};
 }
 
 /* ---------- server calls (Supabase function "payments") ---------- */
@@ -6923,7 +6927,7 @@ function pgPmBills(){
   t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>Owner</th><th></th></tr></thead>
     <tbody>${list.map(b => { const p = pmProp(b.propertyId), st = billStatus(b);
       return `<tr data-b="${b.id}">${canSel ? `<td class="nw" data-nos><input type="checkbox" data-sel="${b.id}" ${sel[b.id] ? "checked" : ""}></td>` : ""}
-        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}</div></td>
+        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
         <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
@@ -6951,6 +6955,7 @@ function billSheet(id, preset){
           <label class="fld"><span>Bill date</span><input type="date" data-k="date" value="${esc(b.date)}"></label>
           <label class="fld"><span>Due</span><input type="date" data-k="due" value="${esc(b.due)}"></label></div>
         <label class="fld"><span>What for</span><input type="text" data-k="memo" value="${esc(b.memo)}" placeholder="e.g. Replaced kitchen faucet"></label>
+        <label class="fld"><span>Payment note</span><input type="text" data-k="payNote" value="${esc(b.payNote || "")}" placeholder="e.g. Pay from 4091 today"></label>
         <div class="f2"><label class="fld"><span>Category</span><select data-k="category">${BILL_CATS.map(c => `<option ${c === b.category ? "selected" : ""}>${c}</option>`).join("")}</select></label>
           <label class="fld"><span>Vendor's invoice #</span><input type="text" data-k="billNo" value="${esc(b.billNo)}"></label></div>
         <label class="fld"><span>Receipt or invoice link</span><div class="fld-row"><input type="text" data-rc value="${esc((b.receipt && b.receipt.url) || "")}" placeholder="Paste a Google Drive or Dropbox link">${b.receipt && b.receipt.url ? `<a class="btn" href="${esc(b.receipt.url)}" target="_blank" rel="noopener">Open</a>` : ""}</div><span class="help">Receipts emailed to the receipt inbox are linked automatically.</span></label>
@@ -7756,10 +7761,33 @@ function pjTxnNickelBlock(p, t){
       if(r.ok){ toast("Bill added in Nickel"); openSheet(t.id); } else e.target.disabled = false; }catch(er){ toast(er.message); e.target.disabled = false; } };
   return box;
 }
+/* ---------- has the vendor been paid? (project expenses) ----------
+   A project expense can be marked "vendor not paid yet" (from the receipt inbox, or here). It stays on
+   Today, the weekly unpaid-bills email and this banner until it's paid through Nickel or marked paid. */
+const pjVendorOpen = t => !!(t && t.vendorDue && !t.vendorPaid && !(t.nickelPay && !t.nickelPay.dismissed));
+function pjVendorDueBlock(p, t){
+  const box = elm("div", "pj-vdue"), live = () => (P().transactions || []).find(x => x.id === t.id);
+  const reopen = () => { closeSheet(); render(); setTimeout(() => openSheet(t.id), 30); };
+  if(pjVendorOpen(t)){
+    const v = t.vendorDue, late = v.due && v.due < todayISO();
+    box.innerHTML = `<div class="pm-banner ${late ? "late" : ""}"><b>${esc(t.vendor || "The vendor")} hasn't been paid yet</b>${v.due ? ` · due ${esc(fdateS(v.due))}${late ? " (past due)" : ""}` : ""}${v.note ? ` · <i>${esc(v.note)}</i>` : ""}
+      <span class="pj-vdue-a"><button type="button" class="btn sm primary" data-vp>Mark vendor paid</button><button type="button" class="btn sm ghost" data-vx>Not owed</button></span></div>`;
+    box.querySelector("[data-vp]").onclick = () => { const x = live(); if(!x) return; snapshot(); x.vendorPaid = {date:todayISO(), by:billWho()}; commit(); toast(`${x.vendor || "Vendor"} marked paid`); reopen(); };
+    box.querySelector("[data-vx]").onclick = () => { const x = live(); if(!x) return; snapshot(); delete x.vendorDue; commit(); toast("Taken off the unpaid list"); reopen(); };
+  } else if(!t.vendorPaid && !(t.nickelPay && !t.nickelPay.dismissed)){
+    box.innerHTML = `<a href="#" class="pj-vdue-add">Vendor not paid yet? Keep it on the unpaid list</a>`;
+    box.querySelector("a").onclick = e => { e.preventDefault(); const x = live(); if(!x) return; snapshot(); x.vendorDue = {since:todayISO(), due:"", note:"", by:billWho()}; delete x.vendorPaid; commit(); reopen(); };
+  } else if(t.vendorPaid){
+    box.innerHTML = `<p class="help" style="margin:0 0 10px">Vendor paid ${esc(fdateS(t.vendorPaid.date))}${t.vendorPaid.by ? " · " + esc(cloudWhoSafe(t.vendorPaid.by)) : ""} · <a href="#" data-vu>undo</a></p>`;
+    box.querySelector("[data-vu]").onclick = e => { e.preventDefault(); const x = live(); if(!x) return; snapshot(); delete x.vendorPaid; commit(); reopen(); };
+  }
+  return box;
+}
 (function(){
   const base = openSheet;
   openSheet = function(id, preset){
     base(id, preset);
+    if(id){ const p0 = P(), t0 = (p0.transactions || []).find(x => x.id === id), b0 = document.querySelector("#sheet .sheet-b"); if(t0 && b0 && Number(t0.amount) > 0) b0.insertBefore(pjVendorDueBlock(p0, t0), b0.firstChild); }
     if(!id || !payOnline()) return;
     const p = P(), t = (p.transactions || []).find(x => x.id === id), b = document.querySelector("#sheet .sheet-b");
     if(!t || !b) return;
@@ -8033,7 +8061,7 @@ function buFileName(it, p, b){
 function buPreset(it, f){
   const paid = f.kind === "paid";
   return {propertyId:f.prop || (pmProp(it.property_id) ? it.property_id : ""), vendor:it.vendor || "", amount:it.total || "", date:it.date || todayISO(), due:paid ? "" : (it.due_date || ""),
-    memo:it.description || "", billNo:it.order_no || "", receipt:it.file_url ? {url:it.file_url, name:it.file_name || f.name} : null, source:"Upload", inbox:it.id,
+    memo:it.description || "", billNo:it.order_no || "", payNote:paid ? "" : (it.pay_note || ""), receipt:it.file_url ? {url:it.file_url, name:it.file_name || f.name} : null, source:"Upload", inbox:it.id,
     status:paid ? "paid" : "open", pay:paid ? {method:"Card / receipt", date:it.date || todayISO(), ref:"", by:billWho(), at:new Date().toISOString()} : null};
 }
 function buCreate(f, p){
@@ -8388,6 +8416,12 @@ function todayProjects(v){
     return {t:label(x), s:`Sent${reg.dateSent ? " " + fdateS(reg.dateSent) : ""}${d > 30 ? ` · ${d} days ago` : ""}${nk.paidC ? ` · ${usd(nk.paidC)} paid so far` : ""}`, cls:d > 30 ? "late" : "", amt:usd(owedC(x)),
       btn:d > 14 && nk.invoiceId && typeof pjEmailSheet === "function" ? "Remind" : "Open", fn:d > 14 && nk.invoiceId && typeof pjEmailSheet === "function" ? () => pjEmailSheet(x.p, x.u, x.inv) : openInv(x.p, x.u, x.inv)};
   }), "No project invoices waiting on payment.");
+  const vdue = [];
+  live().forEach(p => (p.transactions || []).forEach(t => { if(typeof pjVendorOpen === "function" && pjVendorOpen(t)) vdue.push({p, t}); }));
+  vdue.sort((a, b) => String(a.t.vendorDue.due || "9999").localeCompare(String(b.t.vendorDue.due || "9999")));
+  if(vdue.length) tdSection(right, "Vendors to pay", vdue.map(({p, t}) => { const due = t.vendorDue.due, late = due && due < today;
+    return {t:`${esc(t.vendor || "Vendor")} · ${esc(p.name)}`, s:`${esc(t.desc || "")}${due ? ` · due ${fdateS(due)}${late ? " (past due)" : ""}` : ""}${t.vendorDue.note ? ` · <i>${esc(t.vendorDue.note)}</i>` : ""}`, cls:late ? "late" : "",
+      amt:usd(cents(t.amount)), btn:"Open", primary:!!late, fn:() => { go("txns", p.id); setTimeout(() => openSheet(t.id), 40); }}; }), "");
   tdInbox(right, false);
   tdDeposits(right);
   if(paidM.length) tdSection(right, "Paid this month", paidM.map(x => ({t:label(x), s:`Paid${(x.inv.reg || {}).datePaid ? " " + fdateS(x.inv.reg.datePaid) : ""}`, amt:usd(x.inv.totalC), btn:"Open", fn:openInv(x.p, x.u, x.inv)})), "");
@@ -8803,6 +8837,8 @@ Cloud.boot = async function(){
       if(want.view === "pmProperty" && want.p) S.ui.pmPropId = want.p;
       if(want.view === "pmMonth" && /^\d{4}-\d{2}$/.test(want.m || "")) S.ui.pmMonth = want.m;
     }
+    else if(want && ["txns","invoices","overview"].includes(want.view) && want.p && (S.properties || []).some(x => x.id === want.p)){ S.ui.mode = "projects"; S.ui.view = want.view; S.activeId = want.p; }
+    else if(want && ["inbox","today","payments"].includes(want.view)){ S.ui.view = want.view; }
   }catch(e){}
   Cloud.staff = (await Cloud.sb.from("staff").select("email,name,active")).data || [];
   // Store.save now means "sync": documents go to the database, screen state stays in this browser

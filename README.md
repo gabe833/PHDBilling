@@ -174,6 +174,11 @@ Vendors can send invoices to those addresses directly, and Peter (or anyone) can
 
 Receipts already filed stay in gabe@'s Drive; their links keep working for anyone they're shared with.
 
+### 6c. Bills not paid yet
+- **Mark it in the email:** put **[UNPAID]** (or [TO PAY]) in the subject when you send or forward a bill to PMBilling@ or ProjectBilling@; **[PAID]** for a receipt that's already paid. Without a tag the invoice itself decides (balance due, "please pay", a PAID stamp), and a payment note like "pay from 4091 today" is picked up from the email.
+- **In the console:** the receipt inbox shows *Not paid yet* or *Already paid* on each item. Property-management bills come in as **To pay** (with the due date and payment note). Project expenses get "The vendor still needs to be paid" ticked, which keeps them on **Today → Vendors to pay** and shows a banner on the transaction with **Mark vendor paid**. Any project expense can be put on the list from its transaction ("Vendor not paid yet?"); paying it through Nickel takes it off automatically.
+- **Every Monday:** an email lists every bill not paid yet — property-management bills to pay or on the way, project vendors to pay, and unpaid invoices still waiting in the receipt inbox — past-due first, with totals. Turn it on once in the billing@ receipt-inbox script: run **setupWeekly()** (it sends you a preview). It goes to everyone on the Team page, or to `DIGEST_TO` if set.
+
 ### 7c. Add a bill by uploading the vendor's invoice
 **Add bill** (or N) on the property management side opens an upload window. Drop in the vendor's invoice — PDF, JPG or PNG, several at once — or drag the file anywhere on the Bills or Today page. Choose **Bills to pay** or **Already paid (receipts)**.
 
