@@ -1093,10 +1093,17 @@ const PMCore = (function(){
   // admin fee out itself from the repairs, so those lines are never repairs — taking them in would charge 10% twice.
   const NOT_REPAIR = /admin(istrative)?\s*fee|management fee|distribution|owner contribution|security deposit|leasing fee|rent income/i;
   function mdIsRepairLine(li, b){ return !!(li && li.amount && !(b && b.company) && !NOT_REPAIR.test(li.account || "") && !/\badmin(istrative)?\s*fee\b/i.test(li.text || "")); }
+  // the description to show for a bill line: on a one-line bill it's the bill's memo (what MagicDoor's bill list shows
+  // and what gets edited there — editing it doesn't touch the line's own text); on a split bill each line's own text
+  function mdLineMemo(li, b){
+    const t = String((li && li.text) || "").trim(), m = String((b && b.memo) || "").trim();
+    const twice = t && m.replace(/\s+/g, "") === (t + t).replace(/\s+/g, "");   // a memo pasted in twice
+    return ((b && (b.lines || []).length <= 1 && !twice) ? (m || t) : (t || m));
+  }
   function mdBillLines(md, mdPropId, month){
     const out = [];
     (md.bills || []).forEach(b => { if(b.company || !b.date || b.date.slice(0, 7) !== month) return;
-      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:li.text || b.memo, amount:li.amount, account:li.account, owed:b.owed}); }); });
+      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed}); }); });
     return out;
   }
   // which month an owner distribution pays: from the 20th of a month to the 19th of the next
@@ -1236,7 +1243,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdLineMemo, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 /*PMCORE-END*/
 
