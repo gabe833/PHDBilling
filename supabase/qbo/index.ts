@@ -219,9 +219,22 @@ async function apply(changes: Obj[], email: string) {
         if (c.billable) d.BillableStatus = c.billable === "Billable" ? "Billable" : "NotBillable";
         if (d.BillableStatus === "Billable" && !d.CustomerRef) d.BillableStatus = "NotBillable";   // QuickBooks requires a customer to bill
       }
-      const saved = (await qbo("POST", ENTITY[type], { Id: id, SyncToken: cur.SyncToken, sparse: true, Line: lines }))[type];
+      // a full update (the whole record as QuickBooks sent it, with the new lines) works for every expense type;
+      // QuickBooks doesn't take a partial ("sparse") update of the lines on some of them
+      const full: Obj = { ...cur, Line: lines };
+      delete full.MetaData; delete full.PurchaseEx; delete full.domain; delete full.sparse;
+      let saved: Obj;
+      try { saved = (await qbo("POST", ENTITY[type], full))[type]; }
+      catch (e1) {
+        console.error(`apply ${type} ${id} full update: ${(e1 as Error).message}`);
+        saved = (await qbo("POST", ENTITY[type], { Id: id, SyncToken: cur.SyncToken, sparse: true, Line: lines }))[type];
+      }
       results.push({ type, id, ok: true, txn: cleanTxn(type, saved) });
-    } catch (e) { results.push({ type, id, ok: false, error: String((e as Error).message || e).slice(0, 240) }); }
+    } catch (e) {
+      const msg = String((e as Error).message || e).slice(0, 300);
+      console.error(`apply ${type} ${id} failed: ${msg}`);
+      results.push({ type, id, ok: false, error: msg });
+    }
   }
   // fold the saved records into the snapshot so the console sees them right away
   const ok = results.filter((r) => r.ok);

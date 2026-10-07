@@ -8870,6 +8870,7 @@ function qbFixTab(body, m){
       <td class="qbf-ck"><input type="checkbox" data-ck ${on ? "checked" : ""} ${ch ? "" : "disabled"} aria-label="Change this line"></td>
       <td class="qbf-what"><div class="item-t">${esc(r.vend || "—")} <span class="muted td-n">${esc(qbFmtDate(r.qt.date))}</span></div>
         <div class="item-s">${esc(((r.t && r.t.desc) || r.l.desc || r.qt.memo || "").slice(0, 90))}</div>
+        ${(S.ui.qbErr || {})[r.qt.type + "/" + r.qt.id] ? `<div class="qbf-err">QuickBooks didn't take this: ${esc(S.ui.qbErr[r.qt.type + "/" + r.qt.id])}</div>` : ""}
         <div class="qbf-why">${r.odd ? `<span class="tag gold" title="This line sits in a liability, income or equity account in QuickBooks">check</span> ` : ""}${esc(r.why)}${sim.length ? ` · <a href="#" data-sim>Same for ${sim.length} more from ${esc(r.vend)}</a>` : ""}</div></td>
       <td class="qbf-cat"><div class="qbf-now" title="${esc(curName)}">Now ${esc(qbShort(curName))}</div>
         <select data-acct class="${acc !== r.cur.account ? "chg" : ""} ${maintBad(r) ? "bad" : ""}" aria-label="Category">${acctOpts(r, false)}</select></td>
@@ -8883,7 +8884,10 @@ function qbFixTab(body, m){
     const list = rows.filter(f).sort((a, b) => (a.uncat - b.uncat) || a.grp.localeCompare(b.grp) || b.qt.date.localeCompare(a.qt.date));
     const groups = []; list.forEach(r => { let g = groups.find(x => x.name === r.grp); if(!g) groups.push(g = {name:r.grp, rows:[]}); g.rows.push(r); });
     if(!rows.length){ body.innerHTML = `<div class="empty"><b>Nothing to fix in QuickBooks</b><p>Project costs there have the right category and customer.</p></div>`; return; }
-    body.innerHTML = `<div class="qbf-top"><div class="sc-seg qbf-f">${filters.map(([k, l, fn]) => `<button data-f="${k}" class="${F === k ? "on" : ""}">${l} <span>${rows.filter(fn).length}</span></button>`).join("")}</div>
+    const L = S.ui.qbLast, errN = Object.keys(S.ui.qbErr || {}).length;
+    const banner = L && (L.bad || L.error) ? `<div class="qbf-msg bad"><b>Last update ${esc(qbAgo(L.at))}: ${L.ok} record${L.ok === 1 ? "" : "s"} changed, ${L.bad} didn't.</b> ${L.error ? esc(L.error) : `The reason is on each red row${errN ? "" : ""}. Fix what it says, or press Update again.`} <a href="#" id="qbfClr">Dismiss</a></div>`
+      : L && L.ok ? `<div class="qbf-msg"><b>Last update ${esc(qbAgo(L.at))}: ${L.ok} record${L.ok === 1 ? "" : "s"} changed in QuickBooks.</b> <a href="#" id="qbfClr">Dismiss</a></div>` : "";
+    body.innerHTML = banner + `<div class="qbf-top"><div class="sc-seg qbf-f">${filters.map(([k, l, fn]) => `<button data-f="${k}" class="${F === k ? "on" : ""}">${l} <span>${rows.filter(fn).length}</span></button>`).join("")}</div>
         <span class="help" style="margin:0">Ticked rows change when you press Update. Pick a different category or customer on any row.</span></div>
       ${groups.length ? `<table class="tbl qb-tbl qbf-tbl"><thead><tr><th></th><th>QuickBooks</th><th>Category</th><th>Customer</th><th class="r">Amount</th></tr></thead>
       ${groups.map((g, gi) => { const live_ = g.rows.filter(changed), n = live_.filter(ticked).length;
@@ -8913,11 +8917,12 @@ function qbFixTab(body, m){
       draw(); toast(`${n} set to ${qbShort((qbAcct(a) || {}).name)}${skipped ? ` · ${skipped} labor over ${qbUsd0(qbLabMin())} left as is` : ""}`); };
     body.querySelector("#qbfNone").onclick = () => { rows.forEach(r => sel[r.k] = false); draw(); };
     body.querySelector("#qbApply").onclick = apply;
+    const clr = body.querySelector("#qbfClr"); if(clr) clr.onclick = e => { e.preventDefault(); S.ui.qbLast = null; S.ui.qbErr = {}; persistUi(); draw(); };
     bar();
   };
   const bar = () => {
     const on = rows.filter(ticked), el = body.querySelector("#qbfN"), ap = body.querySelector("#qbApply");
-    if(el) el.innerHTML = on.length ? `<b>${on.length}</b> line${on.length === 1 ? "" : "s"} · ${usd(on.reduce((s, r) => s + r.amt, 0))}` : `<span class="muted">Nothing ticked</span>`;
+    if(el) el.innerHTML = on.length ? `<b>${on.length}</b> line${on.length === 1 ? "" : "s"} · ${usd(on.reduce((s, r) => s + r.amt, 0))}${(g => g > 1 ? ` <span class="muted">in ${g} groups</span>` : "")(new Set(on.map(r => r.grp)).size)}` : `<span class="muted">Nothing ticked</span>`;
     if(ap) ap.disabled = !on.length;
     body.querySelectorAll("[data-g]").forEach(cb => { const tb = cb.closest("tbody"), cks = [...tb.querySelectorAll("[data-ck]:not(:disabled)")]; cb.checked = cks.length && cks.every(c => c.checked); cb.indeterminate = !cb.checked && cks.some(c => c.checked); });
   };
@@ -8927,7 +8932,8 @@ function qbFixTab(body, m){
     const bad = on.filter(maintBad); if(bad.length) return toast(`${bad.length} labor line${bad.length === 1 ? "" : "s"} over ${qbUsd0(qbLabMin())} still on Maintenance Cost — pick Labor / Subcontractors`);
     const changes = on.map(r => { const c = {type:r.qt.type, id:r.qt.id, line:r.l.id, expectAmount:r.l.amount}, a = pick(r, "account"), cu = pick(r, "customer");
       if(a !== r.cur.account) c.account = a; if(cu !== r.cur.customer) c.customer = cu; return c; });
-    if(!confirm(`Change ${changes.length} line${changes.length === 1 ? "" : "s"} (${usd(on.reduce((s, r) => s + r.amt, 0))}) in QuickBooks (${S.qbo.company || "your company"})?\n\nOnly the category and customer on those lines change. Nothing is created, deleted or paid.`)) return;
+    const byG = {}; on.forEach(r => byG[r.grp] = (byG[r.grp] || 0) + 1);
+    if(!confirm(`Change ${changes.length} line${changes.length === 1 ? "" : "s"} (${usd(on.reduce((s, r) => s + r.amt, 0))}) in QuickBooks:\n${Object.entries(byG).map(([g, n]) => `  ${g}: ${n}`).join("\n")}\n\nCompany: ${S.qbo.company || "your company"}\n\nOnly the category and customer on those lines change. Nothing is created, deleted or paid.`)) return;
     const ap = body.querySelector("#qbApply"); ap.disabled = true; ap.textContent = "Updating…";
     try{
       const r = await qbCall("apply", {changes});
@@ -8935,11 +8941,15 @@ function qbFixTab(body, m){
       // remember the categories you chose by vendor, so the next ones from them come pre-filled
       const learn = on.filter(x => okKeys.has(x.qt.type + "/" + x.qt.id) && x.vk && x.vk.length >= 3 && (ed[x.k] || {}).account);
       if(learn.length){ snapshot(); const q = qbSet(); q.rules = q.rules || {}; learn.forEach(x => q.rules[x.vk] = ed[x.k].account); commit(); }
-      await qbFetchSnapshot(); S.ui.qbSel = {}; S.ui.qbEdit = {};
-      const fail = (r.results || []).filter(x => !x.ok);
-      toast(fail.length ? `${r.changed} updated · ${fail.length} not: ${fail[0].error}` : `Updated ${r.changed} in QuickBooks`);
-    }catch(e){ toast(e.message); }
-    render();
+      const fail = (r.results || []).filter(x => !x.ok), failKeys = new Set(fail.map(x => x.type + "/" + x.id));
+      // lines that went through start fresh; the ones that didn't keep their ticks and picks, with the reason on the row
+      on.forEach(x => { if(!failKeys.has(x.qt.type + "/" + x.qt.id)){ delete sel[x.k]; delete ed[x.k]; } });
+      S.ui.qbErr = {}; fail.forEach(x => S.ui.qbErr[x.type + "/" + x.id] = x.error || "QuickBooks didn't take it");
+      S.ui.qbLast = {at:new Date().toISOString(), ok:r.changed || 0, bad:fail.length};
+      if(r.changed) await qbFetchSnapshot();
+      toast(fail.length ? `${r.changed || 0} updated · ${fail.length} didn't go through — see the rows marked in red` : `Updated ${r.changed} in QuickBooks`);
+    }catch(e){ S.ui.qbLast = {at:new Date().toISOString(), ok:0, bad:on.length, error:e.message}; toast(e.message); }
+    persistUi(); render();
   };
   draw();
 }
