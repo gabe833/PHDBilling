@@ -8377,6 +8377,10 @@ function qbLineElsewhere(p, qt, l){
 const qbAcct = id => ((S.qbo && S.qbo.accounts) || []).find(a => a.id === id) || null;
 const qbCust = id => ((S.qbo && S.qbo.customers) || []).find(c => c.id === id) || null;
 const qbIsProjAcct = name => /^project management:/i.test(name || "") && !/income/i.test(name || "");
+const qbIsMaint = name => /maintenance cost|repairs? ?(&|and) ?maintenance/i.test(name || "");
+const qbUsd0 = c => usd(c).replace(/\.00$/, "");
+const qbShort = name => String(name || "").split(":").pop();
+const qbLabMin = () => { const v = +qbCfg().labMin; return (v > 0 ? v : 500) * 100; };   // cents: labor at or over this is a project subcontractor cost, never maintenance
 const qbFmtDate = iso => iso ? fdateS(iso) + (iso.slice(0, 4) !== todayISO().slice(0, 4) ? " '" + iso.slice(2, 4) : "") : "";
 
 /* ---------- property ↔ QuickBooks customer ---------- */
@@ -8530,12 +8534,16 @@ function qbMatch(){
     });
   });
   // the accountant: categories and customers for project costs that are in QuickBooks
-  const fixes = [];
-  const acctFor = (desc, vendor) => {
-    const s = qbCfg();
-    const lab = s.lab || ((S.qbo.accounts || []).find(a => /^project management:labor/i.test(a.name)) || {}).id || "";
-    const mat = s.mat || ((S.qbo.accounts || []).find(a => /^project management:materials/i.test(a.name)) || {}).id || "";
-    return QB_STORES.test(qbVk(vendor)) ? mat : lab;          // store purchases are materials; everyone else did work
+  const fixes = [], cfg = qbCfg(), accts = S.qbo.accounts || [];
+  const lab = cfg.lab || (accts.find(a => /^project management:labor/i.test(a.name)) || {}).id || "";
+  const mat = cfg.mat || (accts.find(a => /^project management:materials/i.test(a.name)) || {}).id || "";
+  const big = qbLabMin();
+  // what a vendor's line should be: a category you picked for this vendor before, else store → materials, everyone else → labor.
+  // Labor over the limit never goes to Maintenance Cost, whatever the rule says.
+  const acctFor = (vendor, amt) => {
+    const vk = qbVk(vendor), store = QB_STORES.test(vk), r = vk && (cfg.rules || {})[vk];
+    if(r && qbAcct(r) && !(qbIsMaint((qbAcct(r) || {}).name) && !store && Math.abs(amt) >= big)) return {id:r, how:"rule"};
+    return store ? {id:mat, how:"store"} : {id:lab, how:"labor"};
   };
   res.forEach((r, k) => {
     if(r.state !== "matched" || !r.units) return;
@@ -8544,22 +8552,47 @@ function qbMatch(){
     r.units.forEach(u => {
       const lines = u.line ? [u.line] : u.qt.lines;
       if(lines.length !== 1) return;                       // several lines on one charge: left as they are (split it in QuickBooks if needed)
-      const l = lines[0], want = {};
+      const l = lines[0], want = {}, amt = cents(l.amount);
       const peers = r.peers ? r.peers.map(pk => pk.split("|")[0]) : [pid];
       const oneProp = new Set(peers).size === 1;
       const cust = oneProp ? qbCustFor(p) : "";
       if(cust && (!l.customer || l.customer.id !== cust)) want.customer = cust;
-      const cur = l.account ? l.account.name : "";
-      if(l.kind === "account" && !qbIsProjAcct(cur) && !/^(cost of goods|cogs)/i.test(cur)){ const a = acctFor(t.desc || "", t.vendor || ""); if(a && (!l.account || l.account.id !== a)) want.account = a; }
+      const cur = l.account ? l.account.name : "", vend = t.vendor || (u.qt.vendor && u.qt.vendor.name) || "";
+      const labor = !QB_STORES.test(qbVk(vend)), bigLab = labor && Math.abs(amt) >= big;
+      let how = "";
+      if(l.kind === "account" && !/^(cost of goods|cogs)/i.test(cur) && (!qbIsProjAcct(cur) || (bigLab && qbIsMaint(cur)))){
+        const a = acctFor(vend, amt); if(a.id && (!l.account || l.account.id !== a.id)){ want.account = a.id; how = a.how; }
+      }
       if(!Object.keys(want).length) return;
       const fk = qbKey(u.qt.type, u.qt.id, l.id);
       if(fixes.some(f => f.k === fk)) return;
       const odd = !QB_OK_CLASS.has(qbLineClass(l));
-      fixes.push({k:fk, qt:u.qt, l, want, p:oneProp ? p : null, t, odd, sure:!odd && (QB_UNCAT.test(cur) || !l.customer || /leasehold/i.test(cur) || (want.customer && !want.account))});
+      const why = bigLab && qbIsMaint(cur) && want.account ? `Labor over ${qbUsd0(big)} — goes to ${qbShort((qbAcct(want.account) || {}).name)}, not ${qbShort(cur)}`
+        : how === "rule" ? `What you chose for ${vend} before`
+        : QB_UNCAT.test(cur) ? "Not categorized yet"
+        : /leasehold/i.test(cur) ? "Project costs, not PHD's own improvements"
+        : !l.customer && want.customer ? "No customer on it"
+        : want.account ? (how === "store" ? "Store purchase for a project" : "Contractor work for a project") : "Wrong customer";
+      fixes.push({k:fk, qt:u.qt, l, want, p:oneProp ? p : null, t, odd, labor, bigLab, why,
+        sure:!odd && (bigLab || how === "rule" || QB_UNCAT.test(cur) || !l.customer || /leasehold/i.test(cur) || (want.customer && !want.account))});
     });
   });
+  // uncategorized lines: suggest from your earlier choices for the vendor, else what the vendor is usually filed under
+  const usual = {};
+  S.qbo.txns.forEach(qt => qt.lines.forEach(l => { const vk = qbVk(qt.vendor && qt.vendor.name); if(!vk || !l.account || QB_UNCAT.test(l.account.name) || !QB_OK_CLASS.has(qbLineClass(l))) return; (usual[vk] = usual[vk] || {})[l.account.id] = ((usual[vk] || {})[l.account.id] || 0) + 1; }));
   const uncats = [];
-  S.qbo.txns.forEach(qt => qt.lines.forEach(l => { if(l.account && QB_UNCAT.test(l.account.name) && !fixes.some(f => f.k === qbKey(qt.type, qt.id, l.id))) uncats.push({k:qbKey(qt.type, qt.id, l.id), qt, l}); }));
+  S.qbo.txns.forEach(qt => qt.lines.forEach(l => {
+    if(!l.account || !QB_UNCAT.test(l.account.name)) return;
+    const k = qbKey(qt.type, qt.id, l.id); if(fixes.some(f => f.k === k)) return;
+    const vname = qt.vendor ? qt.vendor.name : "", vk = qbVk(vname), amt = cents(l.amount), labor = !QB_STORES.test(vk), bigLab = labor && Math.abs(amt) >= big;
+    const rule = vk && (cfg.rules || {})[vk];
+    let sug = "", why = "Not categorized yet";
+    if(rule && qbAcct(rule) && !(bigLab && qbIsMaint(qbAcct(rule).name))){ sug = rule; why = `What you chose for ${vname} before`; }
+    else if(vk && usual[vk]){ const top = Object.entries(usual[vk]).filter(([id]) => !(bigLab && qbIsMaint((qbAcct(id) || {}).name))).sort((a, b) => b[1] - a[1])[0]; if(top){ sug = top[0]; why = `${vname} is usually ${qbShort((qbAcct(top[0]) || {}).name)}`; } }
+    const p = qbPropOfLine(qt, l);
+    if(!sug && p){ sug = labor ? lab : mat; why = `Mentions ${p.name}`; }
+    uncats.push({k, qt, l, p, labor, bigLab, why, want:sug ? {account:sug} : {}, sure:!!rule && !!sug && !!p, uncat:true});
+  }));
   const v = {res, missing, fixes, uncats, unitBy};
   _qbCache = {sig, v};
   return v;
@@ -8592,7 +8625,7 @@ async function qbFetchSnapshot(){
 }
 async function qbSyncNow(btn){
   if(btn){ btn.disabled = true; btn.textContent = "Syncing…"; }
-  try{ const r = await qbCall("sync"); await qbFetchSnapshot(); toast(`QuickBooks synced · ${r.counts ? r.counts.purchases + r.counts.bills + r.counts.credits : 0} expenses since ${qbFmtDate(r.from)}`, true); }
+  try{ const r = await qbCall("sync"); await qbFetchSnapshot(); toast(`QuickBooks synced · ${r.counts ? r.counts.purchases + r.counts.bills + r.counts.credits : 0} expenses since ${qbFmtDate(r.from)}`); }
   catch(e){ toast(e.message); }
   render();
 }
@@ -8689,7 +8722,10 @@ function qbSettingsSheet(){
       <div class="sectl">Categories for project costs</div>
       <div class="f2"><label class="fld"><span>Materials</span><select id="qbMat">${opt(exp, q.mat || ((exp.find(a => /^project management:materials/i.test(a.name)) || {}).id), "Choose…")}</select></label>
         <label class="fld"><span>Labor and contractors</span><select id="qbLab">${opt(exp, q.lab || ((exp.find(a => /^project management:labor/i.test(a.name)) || {}).id), "Choose…")}</select></label></div>
-      <p class="help">Costs that read like labor (install, repair, contractor, renovation…) get the second; everything else the first.</p>
+      <p class="help">Store purchases (Lowe's, Home Depot, Amazon…) get Materials; everyone else did work and gets Labor.</p>
+      <label class="fld" style="max-width:260px"><span>Labor this size or more never goes to Maintenance Cost</span><input id="qbLabMin" type="number" min="0" step="50" value="${esc(String(q.labMin || 500))}"></label>
+      ${Object.keys(q.rules || {}).length ? `<div class="sectl">Categories remembered by vendor</div><p class="help" style="margin-top:0">Picked on “Fix in QuickBooks”; new lines from these vendors start on them.</p>
+        <div class="qb-rules">${Object.entries(q.rules).map(([vk, id]) => `<div><span>${esc(vk)}</span><span class="muted">${esc(qbShort((qbAcct(id) || {}).name || "?"))}</span><button class="btn sm ghost" data-unrule="${esc(vk)}" aria-label="Forget">✕</button></div>`).join("")}</div>` : ""}
       ${Object.keys(q.ignore || {}).length ? `<div class="sectl">QuickBooks lines marked “not a project cost”</div><p class="help" style="margin-top:0">${Object.keys(q.ignore).length} hidden from “In QuickBooks, not in the console”. <a href="#" id="qbUnign">Show them again</a></p>` : ""}
       <div class="sectl">Connection</div>
       <p class="help" style="margin-top:0">Reads QuickBooks every hour. It changes QuickBooks only when you press “Update in QuickBooks”, and then only the category and customer on the lines you ticked — it never creates, deletes or pays anything.</p>
@@ -8697,6 +8733,8 @@ function qbSettingsSheet(){
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="qbSave">Save</button></div>`;
   openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const dropRules = new Set();
+  sh.querySelectorAll("[data-unrule]").forEach(b => b.onclick = () => { dropRules.add(b.dataset.unrule); b.closest("div").remove(); });
   const un = $("#qbUnign"); if(un) un.onclick = e => { e.preventDefault(); snapshot(); q.ignore = {}; commit(); closeSheet(); render(); };
   $("#qbRe").onclick = async () => { try{ const r = await qbCall("connect"); window.open(r.url, "_blank", "noopener,width=720,height=800"); toast("Sign in to QuickBooks in the new window"); }catch(e){ toast(e.message); } };
   $("#qbOff").onclick = async () => { if(!confirm("Disconnect QuickBooks? The console stops checking project expenses against it until you connect again.")) return; try{ await qbCall("disconnect"); toast("QuickBooks disconnected"); }catch(e){ toast(e.message); } };
@@ -8704,6 +8742,8 @@ function qbSettingsSheet(){
     snapshot();
     sh.querySelectorAll("[data-qc]").forEach(s => { if(s.value) q.cust[s.dataset.qc] = s.value; else delete q.cust[s.dataset.qc]; });
     q.mat = $("#qbMat").value || undefined; q.lab = $("#qbLab").value || undefined;
+    const lm = +$("#qbLabMin").value; q.labMin = lm > 0 && lm !== 500 ? lm : undefined;
+    dropRules.forEach(k => { if(q.rules) delete q.rules[k]; });
     commit(); closeSheet(); render(); toast("QuickBooks settings saved", true);
   };
 }
@@ -8775,45 +8815,133 @@ function qbReconcileSection(v){
     body.querySelectorAll("[data-ign]").forEach(b => b.onclick = () => { snapshot(); qbSet().ignore[list[+b.dataset.ign].k] = 1; commit(); render(); });
     return;
   }
-  // fix in QuickBooks: categories and customers on project costs, and uncategorized lines
-  const exp = (S.qbo.accounts || []).filter(a => /expense|cost of goods/i.test(a.type)).sort((a, b) => a.name.localeCompare(b.name));
-  const sel = S.ui.qbSel || (S.ui.qbSel = {});
-  const fixes = m.fixes.slice().sort((a, b) => b.qt.date.localeCompare(a.qt.date));
-  const uncats = m.uncats.slice().sort((a, b) => b.qt.date.localeCompare(a.qt.date));
-  const pend = S.ui.qbUncat || (S.ui.qbUncat = {});
-  body.innerHTML = `${fixes.length ? `<p class="help" style="margin:0 0 8px">Project costs in QuickBooks with the wrong (or no) category or customer. Tick the ones to change and press Update — only those fields on those lines change.</p>
-    <table class="tbl qb-tbl"><thead><tr><th><input type="checkbox" id="qbAll"></th><th>QuickBooks</th><th>Now</th><th>Change to</th><th class="r">Amount</th></tr></thead><tbody>${fixes.map((f, i) => {
-      const on = sel[f.k] != null ? sel[f.k] : f.sure;
-      return `<tr><td><input type="checkbox" data-fx="${i}" ${on ? "checked" : ""}></td><td><div class="item-t">${esc(f.qt.vendor ? f.qt.vendor.name : "—")} · ${esc(qbFmtDate(f.qt.date))}</div><div class="item-s">${esc(f.t.desc || f.l.desc || "")} <span class="muted">(${esc(f.p ? f.p.name : "several properties")})</span></div></td>
-        <td class="qb-now">${f.odd ? `<span class="tag gold" title="This line is in a liability, income or equity account — check before moving it">check</span> ` : ""}${esc(f.l.account ? f.l.account.name : f.l.item ? f.l.item.name : "—")}<div class="muted">${f.l.customer ? esc(f.l.customer.name) : "no customer"}</div></td>
-        <td class="qb-to">${f.want.account ? esc((qbAcct(f.want.account) || {}).name || "") : `<span class="muted">same category</span>`}<div>${f.want.customer ? esc((qbCust(f.want.customer) || {}).full || "") : `<span class="muted">same customer</span>`}</div></td>
-        <td class="r num">${usd(cents(f.l.amount))}</td></tr>`; }).join("")}</tbody></table>` : ""}
-    ${uncats.length ? `<div class="sectl" style="margin-top:${fixes.length ? 16 : 0}px">Uncategorized in QuickBooks</div><p class="help" style="margin:0 0 8px">Lines sitting in ${esc([...new Set(uncats.map(u => u.l.account.name))].join(", "))}. Pick a category for each one you know; leave the rest.</p>
-    <table class="tbl qb-tbl"><thead><tr><th>QuickBooks</th><th class="r">Amount</th><th>Category</th></tr></thead><tbody>${uncats.slice(0, 200).map((u, i) => `<tr><td><div class="item-t">${esc(u.qt.vendor ? u.qt.vendor.name : "—")} · ${esc(qbFmtDate(u.qt.date))}</div><div class="item-s">${esc((u.l.desc || u.qt.memo || "").slice(0, 100))} · ${esc(u.qt.from ? u.qt.from.name : "")}</div></td>
-      <td class="r num">${usd(cents(u.l.amount))}</td><td><select data-uc="${i}"><option value="">Leave it</option>${exp.map(a => `<option value="${a.id}" ${pend[u.k] === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table>` : ""}
-    ${!fixes.length && !uncats.length ? `<div class="empty"><b>Nothing to fix in QuickBooks</b><p>Project costs there have the right category and customer.</p></div>` : `<div class="ch-acts"><button class="btn primary" id="qbApply">Update in QuickBooks</button><span class="muted" id="qbApplyN" style="font-size:12.5px"></span></div>`}`;
-  const count = () => { const a = fixes.filter((f, i) => { const cb = body.querySelector(`[data-fx="${i}"]`); return cb && cb.checked; }).length, b = Object.values(pend).filter(Boolean).length; const el = body.querySelector("#qbApplyN"); if(el) el.textContent = `${a + b} line${a + b === 1 ? "" : "s"} will change`; return a + b; };
-  body.querySelectorAll("[data-fx]").forEach(cb => cb.onchange = () => { sel[fixes[+cb.dataset.fx].k] = cb.checked; count(); });
-  const all = body.querySelector("#qbAll"); if(all) all.onchange = () => { fixes.forEach(f => sel[f.k] = all.checked); body.querySelectorAll("[data-fx]").forEach(cb => cb.checked = all.checked); count(); };
-  body.querySelectorAll("[data-uc]").forEach(s => s.onchange = () => { const u = uncats[+s.dataset.uc]; if(s.value) pend[u.k] = s.value; else delete pend[u.k]; count(); });
-  count();
-  const ap = body.querySelector("#qbApply");
-  if(ap) ap.onclick = async () => {
-    const changes = [];
-    fixes.forEach((f, i) => { const cb = body.querySelector(`[data-fx="${i}"]`); if(!cb || !cb.checked) return;
-      const c = {type:f.qt.type, id:f.qt.id, line:f.l.id, expectAmount:f.l.amount}; if(f.want.account) c.account = f.want.account; if(f.want.customer) c.customer = f.want.customer; changes.push(c); });
-    uncats.forEach(u => { if(pend[u.k]) changes.push({type:u.qt.type, id:u.qt.id, line:u.l.id, expectAmount:u.l.amount, account:pend[u.k]}); });
-    if(!changes.length) return toast("Tick at least one");
-    if(!confirm(`Change ${changes.length} line${changes.length === 1 ? "" : "s"} in QuickBooks (${S.qbo.company || "your company"})?\n\nOnly the category and customer on those lines change. Nothing is created, deleted or paid.`)) return;
-    ap.disabled = true; ap.textContent = "Updating…";
+  qbFixTab(body, m);
+
+}
+
+/* ---------- Fix in QuickBooks: one list, every row editable ----------
+   Rows are project costs with the wrong category or customer, and lines sitting in Ask Client / Uncategorized.
+   Each row starts on the suggestion; change the category or customer right there. Ticked rows go out on Update.
+   S.ui.qbSel[k]  ticked (true/false; unset = the suggestion's own tick)
+   S.ui.qbEdit[k] {account?, customer?} what you picked instead of the suggestion */
+function qbFixTab(body, m){
+  const sel = S.ui.qbSel || (S.ui.qbSel = {}), ed = S.ui.qbEdit || (S.ui.qbEdit = {});
+  // older saved picks for uncategorized lines
+  if(S.ui.qbUncat){ Object.entries(S.ui.qbUncat).forEach(([k, a]) => { if(a){ ed[k] = Object.assign(ed[k] || {}, {account:a}); sel[k] = true; } }); delete S.ui.qbUncat; }
+  const accts = S.qbo.accounts || [];
+  const exp = accts.filter(a => /expense|cost of goods/i.test(a.type) && !QB_UNCAT.test(a.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const groupsOf = list => { const g = {}; list.forEach(a => { const top = a.name.includes(":") ? a.name.split(":")[0] : "Other"; (g[top] = g[top] || []).push(a); }); return g; };
+  const projCusts = [...new Set(live().map(p => qbCustFor(p)).filter(Boolean))].map(id => qbCust(id)).filter(Boolean);
+  const rows = m.fixes.concat(m.uncats).map(f => {
+    const vend = (f.t && f.t.vendor) || (f.qt.vendor ? f.qt.vendor.name : "") || "";
+    return Object.assign({}, f, {vend, vk:qbVk(vend), cur:{account:f.l.account ? f.l.account.id : "", customer:f.l.customer ? f.l.customer.id : ""}, amt:cents(f.l.amount),
+      grp:f.uncat ? (f.p ? f.p.name : "Uncategorized, no project") : f.p ? f.p.name : "Several properties"});
+  });
+  const pick = (r, f) => { const e = ed[r.k] || {}; return e[f] !== undefined ? e[f] : r.want[f] !== undefined ? r.want[f] : r.cur[f]; };
+  const changed = r => pick(r, "account") !== r.cur.account || pick(r, "customer") !== r.cur.customer;
+  const ticked = r => changed(r) && (sel[r.k] != null ? sel[r.k] : r.sure);
+  const maintBad = r => r.bigLab && qbIsMaint((qbAcct(pick(r, "account")) || {}).name);
+  const filters = [["all", "All", () => true], ["on", "Ticked", ticked], ["labor", "Labor", r => r.labor], ["mat", "Materials", r => !r.labor], ["uncat", "Uncategorized", r => r.uncat], ["check", "Check first", r => r.odd || maintBad(r)]];
+  const acctOpts = (r, full) => {
+    const now = pick(r, "account"), o = [];
+    const opt = (id, label, title) => `<option value="${id}" ${id === now ? "selected" : ""} ${title ? `title="${esc(title)}"` : ""}>${esc(label)}</option>`;
+    if(!full){                       // light until opened: just the choice, the suggestion and what it is now
+      const ids = [...new Set([now, r.want.account, r.cur.account].filter(Boolean))];
+      return ids.map(id => { const a = qbAcct(id); return opt(id, (id === r.cur.account ? "Now: " : id === r.want.account ? "Suggested: " : "") + qbShort(a ? a.name : id), a && a.name); }).join("");
+    }
+    if(r.want.account && qbAcct(r.want.account)) o.push(`<optgroup label="Suggested">${opt(r.want.account, qbShort(qbAcct(r.want.account).name), qbAcct(r.want.account).name)}</optgroup>`);
+    if(r.cur.account && qbAcct(r.cur.account) && r.cur.account !== r.want.account){ const ca = qbAcct(r.cur.account), no = r.bigLab && qbIsMaint(ca.name);
+      o.push(`<optgroup label="Leave as is">${no ? `<option value="${ca.id}" disabled title="${esc(ca.name)}">${esc(qbShort(ca.name))} (not for labor this size)</option>` : opt(ca.id, qbShort(ca.name), ca.name)}</optgroup>`); }
+    const g = groupsOf(exp), order = Object.keys(g).sort((a, b) => (b === "Project Management") - (a === "Project Management") || a.localeCompare(b));
+    order.forEach(top => o.push(`<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}" title="${esc(a.name)}" ${r.bigLab && qbIsMaint(a.name) ? "disabled" : ""}>${esc(a.name.includes(":") ? a.name.split(":").slice(1).join(" › ") : a.name)}${r.bigLab && qbIsMaint(a.name) ? " (not for labor this size)" : ""}</option>`).join("")}</optgroup>`));
+    return o.join("");
+  };
+  const custOpts = r => {
+    const now = pick(r, "customer"), ids = [...new Set([r.want.customer, r.cur.customer].filter(Boolean))];
+    const list = ids.map(qbCust).filter(Boolean).concat(projCusts.filter(c => !ids.includes(c.id)));
+    return `<option value="" ${!now ? "selected" : ""}>No customer</option>` + list.map(c => `<option value="${c.id}" ${c.id === now ? "selected" : ""}>${esc(c.full || c.name)}${c.id === r.cur.customer && c.id !== r.want.customer ? " (now)" : ""}</option>`).join("");
+  };
+  const similar = r => rows.filter(x => x !== r && x.vk && x.vk === r.vk && !(x.bigLab && qbIsMaint((qbAcct(pick(r, "account")) || {}).name)) && pick(x, "account") !== pick(r, "account"));
+  const rowHTML = r => {
+    const ch = changed(r), on = ticked(r), acc = pick(r, "account"), e = ed[r.k] || {};
+    const sim = e.account !== undefined ? similar(r) : [];
+    const curName = r.l.account ? r.l.account.name : r.l.item ? r.l.item.name : "—";
+    return `<tr class="qbf ${on ? "on" : ""} ${ch ? "" : "same"}" data-k="${esc(r.k)}">
+      <td class="qbf-ck"><input type="checkbox" data-ck ${on ? "checked" : ""} ${ch ? "" : "disabled"} aria-label="Change this line"></td>
+      <td class="qbf-what"><div class="item-t">${esc(r.vend || "—")} <span class="muted td-n">${esc(qbFmtDate(r.qt.date))}</span></div>
+        <div class="item-s">${esc(((r.t && r.t.desc) || r.l.desc || r.qt.memo || "").slice(0, 90))}</div>
+        <div class="qbf-why">${r.odd ? `<span class="tag gold" title="This line sits in a liability, income or equity account in QuickBooks">check</span> ` : ""}${esc(r.why)}${sim.length ? ` · <a href="#" data-sim>Same for ${sim.length} more from ${esc(r.vend)}</a>` : ""}</div></td>
+      <td class="qbf-cat"><div class="qbf-now" title="${esc(curName)}">Now ${esc(qbShort(curName))}</div>
+        <select data-acct class="${acc !== r.cur.account ? "chg" : ""} ${maintBad(r) ? "bad" : ""}" aria-label="Category">${acctOpts(r, false)}</select></td>
+      <td class="qbf-cust"><div class="qbf-now">${r.l.customer ? "Now " + esc(qbShort(r.l.customer.name)) : "No customer now"}</div>
+        <select data-cust class="${pick(r, "customer") !== r.cur.customer ? "chg" : ""}" aria-label="Customer">${custOpts(r)}</select></td>
+      <td class="r num qbf-amt">${usd(r.amt)}</td></tr>`;
+  };
+  const draw = () => {
+    const F = S.ui.qbFixF || "all";
+    const f = (filters.find(x => x[0] === F) || filters[0])[2];
+    const list = rows.filter(f).sort((a, b) => (a.uncat - b.uncat) || a.grp.localeCompare(b.grp) || b.qt.date.localeCompare(a.qt.date));
+    const groups = []; list.forEach(r => { let g = groups.find(x => x.name === r.grp); if(!g) groups.push(g = {name:r.grp, rows:[]}); g.rows.push(r); });
+    if(!rows.length){ body.innerHTML = `<div class="empty"><b>Nothing to fix in QuickBooks</b><p>Project costs there have the right category and customer.</p></div>`; return; }
+    body.innerHTML = `<div class="qbf-top"><div class="sc-seg qbf-f">${filters.map(([k, l, fn]) => `<button data-f="${k}" class="${F === k ? "on" : ""}">${l} <span>${rows.filter(fn).length}</span></button>`).join("")}</div>
+        <span class="help" style="margin:0">Ticked rows change when you press Update. Pick a different category or customer on any row.</span></div>
+      ${groups.length ? `<table class="tbl qb-tbl qbf-tbl"><thead><tr><th></th><th>QuickBooks</th><th>Category</th><th>Customer</th><th class="r">Amount</th></tr></thead>
+      ${groups.map((g, gi) => { const live_ = g.rows.filter(changed), n = live_.filter(ticked).length;
+        return `<tbody><tr class="qbf-g"><td><input type="checkbox" data-g="${gi}" ${n && n === live_.length ? "checked" : ""} aria-label="Tick all in ${esc(g.name)}"></td><td colspan="3"><b>${esc(g.name)}</b> <span class="muted">${g.rows.length} line${g.rows.length === 1 ? "" : "s"}${n ? ` · ${n} ticked` : ""}</span></td><td class="r num muted">${usd(g.rows.reduce((s, r) => s + r.amt, 0))}</td></tr>
+        ${g.rows.map(rowHTML).join("")}</tbody>`; }).join("")}</table>` : `<div class="empty"><b>Nothing here</b><p>Try another filter.</p></div>`}
+      <div class="qbf-bar"><span class="qbf-n" id="qbfN"></span>
+        <label class="qbf-bulk">Set ticked to <select id="qbfBulk"><option value="">category…</option></select></label>
+        <button class="btn sm ghost" id="qbfNone">Untick all</button>
+        <button class="btn primary" id="qbApply">Update in QuickBooks</button></div>`;
+    const rowOf = el => rows.find(r => r.k === el.closest("tr").dataset.k);
+    const refreshRow = r => { const tr = body.querySelector(`tr[data-k="${CSS.escape(r.k)}"]`); if(!tr) return; tr.outerHTML = rowHTML(r); wireRow(body.querySelector(`tr[data-k="${CSS.escape(r.k)}"]`)); bar(); };
+    const fill = s => { if(s.dataset.full) return; const r = rowOf(s); s.innerHTML = acctOpts(r, true); s.dataset.full = 1; };
+    const wireRow = tr => {
+      const ck = tr.querySelector("[data-ck]"); ck.onchange = () => { const r = rowOf(ck); sel[r.k] = ck.checked; tr.classList.toggle("on", ck.checked); bar(); };
+      const sa = tr.querySelector("[data-acct]"); sa.onmousedown = sa.onfocus = sa.onkeydown = () => fill(sa);
+      sa.onchange = () => { const r = rowOf(sa); ed[r.k] = Object.assign(ed[r.k] || {}, {account:sa.value}); sel[r.k] = true; refreshRow(r); };
+      const sc = tr.querySelector("[data-cust]"); sc.onchange = () => { const r = rowOf(sc); ed[r.k] = Object.assign(ed[r.k] || {}, {customer:sc.value}); sel[r.k] = true; refreshRow(r); };
+      const sm = tr.querySelector("[data-sim]"); if(sm) sm.onclick = e => { e.preventDefault(); const r = rowOf(sm), a = pick(r, "account"); similar(r).forEach(x => { ed[x.k] = Object.assign(ed[x.k] || {}, {account:a}); sel[x.k] = true; }); draw(); toast(`Set ${qbShort((qbAcct(a) || {}).name)} for ${r.vend}`); };
+    };
+    body.querySelectorAll("tr.qbf").forEach(wireRow);
+    body.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.qbFixF = b.dataset.f; draw(); });
+    body.querySelectorAll("[data-g]").forEach(cb => cb.onchange = () => { groups[+cb.dataset.g].rows.filter(changed).forEach(r => sel[r.k] = cb.checked); draw(); });
+    const bulk = body.querySelector("#qbfBulk");
+    bulk.onmousedown = bulk.onfocus = () => { if(bulk.dataset.full) return; const g = groupsOf(exp); bulk.innerHTML = `<option value="">category…</option>` + Object.keys(g).sort((a, b) => (b === "Project Management") - (a === "Project Management") || a.localeCompare(b)).map(top => `<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}">${esc(qbShort(a.name))}</option>`).join("")}</optgroup>`).join(""); bulk.dataset.full = 1; };
+    bulk.onchange = () => { const a = bulk.value; if(!a) return; let n = 0, skipped = 0;
+      rows.filter(ticked).forEach(r => { if(r.bigLab && qbIsMaint((qbAcct(a) || {}).name)){ skipped++; return; } ed[r.k] = Object.assign(ed[r.k] || {}, {account:a}); n++; });
+      draw(); toast(`${n} set to ${qbShort((qbAcct(a) || {}).name)}${skipped ? ` · ${skipped} labor over ${qbUsd0(qbLabMin())} left as is` : ""}`); };
+    body.querySelector("#qbfNone").onclick = () => { rows.forEach(r => sel[r.k] = false); draw(); };
+    body.querySelector("#qbApply").onclick = apply;
+    bar();
+  };
+  const bar = () => {
+    const on = rows.filter(ticked), el = body.querySelector("#qbfN"), ap = body.querySelector("#qbApply");
+    if(el) el.innerHTML = on.length ? `<b>${on.length}</b> line${on.length === 1 ? "" : "s"} · ${usd(on.reduce((s, r) => s + r.amt, 0))}` : `<span class="muted">Nothing ticked</span>`;
+    if(ap) ap.disabled = !on.length;
+    body.querySelectorAll("[data-g]").forEach(cb => { const tb = cb.closest("tbody"), cks = [...tb.querySelectorAll("[data-ck]:not(:disabled)")]; cb.checked = cks.length && cks.every(c => c.checked); cb.indeterminate = !cb.checked && cks.some(c => c.checked); });
+  };
+  const apply = async () => {
+    const on = rows.filter(ticked);
+    if(!on.length) return toast("Tick at least one");
+    const bad = on.filter(maintBad); if(bad.length) return toast(`${bad.length} labor line${bad.length === 1 ? "" : "s"} over ${qbUsd0(qbLabMin())} still on Maintenance Cost — pick Labor / Subcontractors`);
+    const changes = on.map(r => { const c = {type:r.qt.type, id:r.qt.id, line:r.l.id, expectAmount:r.l.amount}, a = pick(r, "account"), cu = pick(r, "customer");
+      if(a !== r.cur.account) c.account = a; if(cu !== r.cur.customer) c.customer = cu; return c; });
+    if(!confirm(`Change ${changes.length} line${changes.length === 1 ? "" : "s"} (${usd(on.reduce((s, r) => s + r.amt, 0))}) in QuickBooks (${S.qbo.company || "your company"})?\n\nOnly the category and customer on those lines change. Nothing is created, deleted or paid.`)) return;
+    const ap = body.querySelector("#qbApply"); ap.disabled = true; ap.textContent = "Updating…";
     try{
       const r = await qbCall("apply", {changes});
-      await qbFetchSnapshot(); S.ui.qbSel = {}; S.ui.qbUncat = {};
-      const bad = (r.results || []).filter(x => !x.ok);
-      toast(bad.length ? `${r.changed} updated · ${bad.length} not: ${bad[0].error}` : `Updated ${r.changed} in QuickBooks`, !bad.length);
+      const okKeys = new Set((r.results || []).filter(x => x.ok).map(x => x.type + "/" + x.id));
+      // remember the categories you chose by vendor, so the next ones from them come pre-filled
+      const learn = on.filter(x => okKeys.has(x.qt.type + "/" + x.qt.id) && x.vk && x.vk.length >= 3 && (ed[x.k] || {}).account);
+      if(learn.length){ snapshot(); const q = qbSet(); q.rules = q.rules || {}; learn.forEach(x => q.rules[x.vk] = ed[x.k].account); commit(); }
+      await qbFetchSnapshot(); S.ui.qbSel = {}; S.ui.qbEdit = {};
+      const fail = (r.results || []).filter(x => !x.ok);
+      toast(fail.length ? `${r.changed} updated · ${fail.length} not: ${fail[0].error}` : `Updated ${r.changed} in QuickBooks`);
     }catch(e){ toast(e.message); }
     render();
   };
+  draw();
 }
 
 /* =====================================================================
