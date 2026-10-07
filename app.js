@@ -8379,6 +8379,8 @@ function qbLineElsewhere(p, qt, l){
 const qbAcct = id => ((S.qbo && S.qbo.accounts) || []).find(a => a.id === id) || null;
 const qbCust = id => ((S.qbo && S.qbo.customers) || []).find(c => c.id === id) || null;
 const qbIsProjAcct = name => /^project management:/i.test(name || "") && !/income/i.test(name || "");
+// money moved between PHD's own accounts (paying the Lowe's card from checking, a transfer): every line posts to a bank or card
+const qbIsMove = qt => qt.lines.length > 0 && qt.lines.every(l => l.account && /^(Bank|Credit Card)$/.test((qbAcct(l.account.id) || {}).type || ""));
 const qbIsMaint = name => /maintenance cost|repairs? ?(&|and) ?maintenance/i.test(name || "");
 const qbUsd0 = c => usd(c).replace(/\.00$/, "");
 const qbShort = name => String(name || "").split(":").pop();
@@ -8450,6 +8452,7 @@ function qbMatch(){
   // units: each QuickBooks record, and each line of a record that has several
   const units = [], unitBy = new Map();
   S.qbo.txns.forEach(qt => {
+    if(qbIsMove(qt)) return;                                      // a card payment or a transfer, not an expense
     const sign = qt.credit ? -1 : 1;
     const whole = {k:qbKey(qt.type, qt.id), qt, line:null, c:sign * cents(qt.total), d:qbDay(qt.date)};
     units.push(whole); unitBy.set(whole.k, whole);
@@ -8553,6 +8556,7 @@ function qbMatch(){
   const ign = qbCfg().ignore || {};
   const missing = [];
   S.qbo.txns.forEach(qt => {
+    if(qbIsMove(qt)) return;
     const wk = qbKey(qt.type, qt.id);
     if(taken.has(wk) || ign[wk]) return;
     qt.lines.forEach(l => {
