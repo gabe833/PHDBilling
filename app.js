@@ -8391,10 +8391,37 @@ function qbCustFor(p){
   if(!qbReady()) return "";
   const key = PMCore.normAddr(p.name), keys = new Set([p.name, p.address].concat(p.aliases || []).map(PMCore.normAddr).filter(Boolean));
   const cands = (S.qbo.customers || []).filter(c => { const last = String(c.full || c.name).split(":").pop(); return keys.has(PMCore.normAddr(last)) || keys.has(PMCore.normAddr(c.name)); });
-  if(!cands.length) return "";
+  if(!cands.length) return qbOwnerCust(p);
   const used = {}; S.qbo.txns.forEach(t => t.lines.forEach(l => { if(l.customer) used[l.customer.id] = (used[l.customer.id] || 0) + 1; }));
   cands.sort((a, b) => (used[b.id] || 0) - (used[a.id] || 0) || (a.job === b.job ? 0 : a.job ? 1 : -1));
   return cands[0].id;
+}
+// the owner as a QuickBooks customer, when there's no customer named for the property:
+// "Bryan Watkins" → Bryan Watkins; "Ken Ansin" → Kenneth Ansin; "Chris Murphy -Gallagher Holdings LLC" → Chris Murphy or Gallagher Holdings
+const qbNameToks = s => String(s || "").toLowerCase().replace(/\b(llc|inc|co|corp|ltd|lp|llp|pllc|trust|the)\b\.?/g, " ").replace(/[^a-z ]/g, " ").split(/\s+/).filter(Boolean);
+function qbNameLike(a, b){
+  const A = qbNameToks(a), B = qbNameToks(b); if(!A.length || !B.length) return 0;
+  if(A.join(" ") === B.join(" ")) return 3;
+  if(A.length >= 2 && B.length >= 2 && A[A.length - 1] === B[B.length - 1] && A[A.length - 1].length > 2){
+    const f = A[0], g = B[0]; if(f === g) return 2;
+    if(f.length >= 3 && g.length >= 3 && (f.startsWith(g) || g.startsWith(f))) return 1;      // Ken / Kenneth, Chris / Christopher
+  }
+  return 0;
+}
+function qbOwnerNames(p){
+  const oi = p.ownerInfo || {}, o = (typeof S !== "undefined" && S.owners && p.ownerId) ? (S.owners.find ? S.owners.find(x => x.id === p.ownerId) : null) : null;
+  return [...new Set([p.owner, oi.name, oi.company, o && o.name, o && o.company].filter(Boolean).flatMap(n => String(n).split(/\s+-\s*|\s*-\s+|,|&|\/|\band\b/i)).map(x => x.trim()).filter(x => x.length > 2))];
+}
+function qbOwnerCust(p){
+  if(!qbReady()) return "";
+  const names = qbOwnerNames(p); if(!names.length) return "";
+  let best = null;
+  (S.qbo.customers || []).forEach(c => {
+    if(c.parent) return;                                           // the owner is a top-level customer
+    const sc = Math.max(...names.map(n => Math.max(qbNameLike(n, c.name), qbNameLike(n, c.full))));
+    if(sc && (!best || sc > best.sc)) best = {id:c.id, sc};
+  });
+  return best ? best.id : "";
 }
 function qbPropForCust(custId){
   if(!custId) return null;
@@ -8415,7 +8442,7 @@ function qbPropOfLine(qt, l){
 let _qbCache = null;
 function qbMatch(){
   if(!qbReady()) return null;
-  const sig = S.qbo.syncedAt + "|" + (S.qbo.appliedAt || "") + "|" + JSON.stringify(qbCfg()) + "|" + live().map(p => p.id + ":" + p.transactions.map(t => t.id + t.amount + t.date + t.vendor + (t.qb ? JSON.stringify(t.qb) : "") + (t.qbSkip ? "s" : "")).join(",")).join("|");
+  const sig = S.qbo.syncedAt + "|" + (S.qbo.appliedAt || "") + "|" + JSON.stringify(qbCfg()) + "|" + live().map(p => p.id + ":" + qbOwnerNames(p).join("/") + ":" + p.transactions.map(t => t.id + t.amount + t.date + t.vendor + (t.qb ? JSON.stringify(t.qb) : "") + (t.qbSkip ? "s" : "")).join(",")).join("|");
   if(_qbCache && _qbCache.sig === sig) return _qbCache.v;
   const today = qbDay(todayISO());
   // units: each QuickBooks record, and each line of a record that has several
@@ -8856,10 +8883,16 @@ function qbFixTab(body, m){
     order.forEach(top => o.push(`<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}" title="${esc(a.name)}" ${r.bigLab && qbIsMaint(a.name) ? "disabled" : ""}>${esc(a.name.includes(":") ? a.name.split(":").slice(1).join(" › ") : a.name)}${r.bigLab && qbIsMaint(a.name) ? " (not for labor this size)" : ""}</option>`).join("")}</optgroup>`));
     return o.join("");
   };
-  const custOpts = r => {
-    const now = pick(r, "customer"), ids = [...new Set([r.want.customer, r.cur.customer].filter(Boolean))];
-    const list = ids.map(qbCust).filter(Boolean).concat(projCusts.filter(c => !ids.includes(c.id)));
-    return `<option value="" ${!now ? "selected" : ""}>No customer</option>` + list.map(c => `<option value="${c.id}" ${c.id === now ? "selected" : ""}>${esc(c.full || c.name)}${c.id === r.cur.customer && c.id !== r.want.customer ? " (now)" : ""}</option>`).join("");
+  const ownerCusts = [...new Set(live().map(qbOwnerCust).filter(Boolean))].map(qbCust).filter(Boolean);
+  const allCusts = (S.qbo.customers || []).slice().sort((a, b) => String(a.full || a.name).localeCompare(String(b.full || b.name)));
+  const custOpts = (r, full) => {
+    const now = pick(r, "customer"), mine = r.p ? [qbCustFor(r.p), qbOwnerCust(r.p)].filter(Boolean) : [];
+    const ids = [...new Set([now, r.want.customer, r.cur.customer].concat(mine).filter(Boolean))];
+    const o1 = c => `<option value="${c.id}" ${c.id === now ? "selected" : ""}>${esc(c.full || c.name)}${c.id === r.cur.customer && c.id !== r.want.customer ? " (now)" : ""}${r.p && c.id === qbOwnerCust(r.p) && c.id !== qbCustFor(r.p) ? " (owner)" : ""}</option>`;
+    let h = `<option value="" ${!now ? "selected" : ""}>No customer</option>`;
+    if(!full) return h + ids.map(qbCust).filter(Boolean).map(o1).join("");
+    const seen = new Set(ids), grp = (label, list) => { const l = list.filter(c => !seen.has(c.id)); l.forEach(c => seen.add(c.id)); return l.length ? `<optgroup label="${label}">${l.map(o1).join("")}</optgroup>` : ""; };
+    return h + `<optgroup label="${r.p ? esc(r.p.name) : "Suggested"}">${ids.map(qbCust).filter(Boolean).map(o1).join("")}</optgroup>` + grp("Projects", projCusts) + grp("Owners", ownerCusts) + grp("All customers", allCusts);
   };
   const similar = r => rows.filter(x => x !== r && x.vk && x.vk === r.vk && !(x.bigLab && qbIsMaint((qbAcct(pick(r, "account")) || {}).name)) && pick(x, "account") !== pick(r, "account"));
   const rowHTML = r => {
@@ -8904,7 +8937,8 @@ function qbFixTab(body, m){
       const ck = tr.querySelector("[data-ck]"); ck.onchange = () => { const r = rowOf(ck); sel[r.k] = ck.checked; tr.classList.toggle("on", ck.checked); bar(); };
       const sa = tr.querySelector("[data-acct]"); sa.onmousedown = sa.onfocus = sa.onkeydown = () => fill(sa);
       sa.onchange = () => { const r = rowOf(sa); ed[r.k] = Object.assign(ed[r.k] || {}, {account:sa.value}); sel[r.k] = true; refreshRow(r); };
-      const sc = tr.querySelector("[data-cust]"); sc.onchange = () => { const r = rowOf(sc); ed[r.k] = Object.assign(ed[r.k] || {}, {customer:sc.value}); sel[r.k] = true; refreshRow(r); };
+      const sc = tr.querySelector("[data-cust]"); sc.onmousedown = sc.onfocus = sc.onkeydown = () => { if(sc.dataset.full) return; sc.innerHTML = custOpts(rowOf(sc), true); sc.dataset.full = 1; };
+      sc.onchange = () => { const r = rowOf(sc); ed[r.k] = Object.assign(ed[r.k] || {}, {customer:sc.value}); sel[r.k] = true; refreshRow(r); };
       const sm = tr.querySelector("[data-sim]"); if(sm) sm.onclick = e => { e.preventDefault(); const r = rowOf(sm), a = pick(r, "account"); similar(r).forEach(x => { ed[x.k] = Object.assign(ed[x.k] || {}, {account:a}); sel[x.k] = true; }); draw(); toast(`Set ${qbShort((qbAcct(a) || {}).name)} for ${r.vend}`); };
     };
     body.querySelectorAll("tr.qbf").forEach(wireRow);
