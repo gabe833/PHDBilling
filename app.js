@@ -8702,19 +8702,32 @@ function qbPickSheet(p, t){
   const c = cents(t.amount), d = qbDay(t.date);
   const all = [];
   m.unitBy.forEach(u => { if(u.line && u.qt.lines.length < 2) return; const dd = d != null && u.d != null ? Math.abs(u.d - d) : 999; const vh = qbVendorHit(t.vendor, u.qt);
-    const s = (u.c === c ? 100 : Math.abs(u.c) > Math.abs(c) && Math.sign(u.c) === Math.sign(c) ? 30 : 0) + (vh ? 40 : 0) - Math.min(dd, 60); if(s > 0 && dd <= 60) all.push({u, s, dd, vh}); });
+    const s = (u.c === c ? 100 : Math.abs(u.c) > Math.abs(c) && Math.sign(u.c) === Math.sign(c) ? 30 : 0) + (vh ? 40 : 0) - Math.min(dd, 60); if((s > 0 || vh) && dd <= 60) all.push({u, s, dd, vh}); });
   all.sort((a, b) => b.s - a.s);
-  const list = all.slice(0, 30);
+  const cur = new Set(t.qb ? (t.qb.ids || [qbKey(t.qb.type, t.qb.id, t.qb.line)]) : []);
+  const list = all.slice(0, 40);
   const sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><div><h3>Find in QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(t.vendor || "")} · ${usd(Math.abs(c))}${c < 0 ? " credit" : ""} · ${qbFmtDate(t.date)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b"><p class="help" style="margin-top:0">Closest QuickBooks records first. Pick the one this expense is — or part of — to link them.</p>
-      <div class="qb-pick">${list.map((x, i) => `<label class="qb-pick-r"><input type="radio" name="qbp" value="${esc(x.u.k)}" ${i === 0 && x.u.c === c ? "checked" : ""}>
-        <span><b>${usd(Math.abs(x.u.c))}</b> ${x.u.line ? `<span class="muted">line of a ${usd(cents(x.u.qt.total))} record</span>` : ""}<div class="muted">${esc(qbRecLabel(x.u.qt))}</div><div class="muted">${esc(x.u.line ? (x.u.line.desc || qbLineLabel(x.u.line)) : x.u.qt.lines.map(l => l.desc || qbLineLabel(l)).filter(Boolean).join(" · ").slice(0, 140))}</div></span>
+    <div class="sheet-b"><p class="help" style="margin-top:0">Closest QuickBooks records first. Tick the one this expense is — or several, when the store charged the card in pieces or a refund is already taken out of it. Credits count as minus.</p>
+      <input type="search" id="qbpQ" class="inv-q" style="margin:0 0 8px;width:100%;box-sizing:border-box" placeholder="Filter by amount, vendor or card">
+      <div class="qb-pick">${list.map((x, i) => `<label class="qb-pick-r" data-q="${esc((usd(Math.abs(x.u.c)) + " " + Math.abs(x.u.c / 100).toFixed(2) + " " + qbRecLabel(x.u.qt)).toLowerCase())}"><input type="checkbox" name="qbp" value="${esc(x.u.k)}" data-c="${x.u.c}" ${cur.has(x.u.k) || (!cur.size && i === 0 && x.u.c === c) ? "checked" : ""}>
+        <span><b class="${x.u.c < 0 ? "qb-cr" : ""}">${x.u.c < 0 ? "−" : ""}${usd(Math.abs(x.u.c))}</b> ${x.u.c < 0 ? `<span class="muted">credit</span>` : ""} ${x.u.line ? `<span class="muted">line of a ${usd(cents(x.u.qt.total))} record</span>` : ""}<div class="muted">${esc(qbRecLabel(x.u.qt))}</div><div class="muted">${esc(x.u.line ? (x.u.line.desc || qbLineLabel(x.u.line)) : x.u.qt.lines.map(l => l.desc || qbLineLabel(l)).filter(Boolean).join(" · ").slice(0, 140))}</div></span>
         <span class="tag ${x.u.c === c ? "green" : "grey"}">${x.u.c === c ? "same amount" : "different amount"}</span></label>`).join("") || `<p class="muted">Nothing in QuickBooks within two months of this date.</p>`}</div></div>
-    <div class="sheet-f"><button class="btn ghost" id="qbSkip">Not a QuickBooks expense</button><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="qbOk" ${list.length ? "" : "disabled"}>Link</button></div>`;
+    <div class="sheet-f"><button class="btn ghost" id="qbSkip">Not a QuickBooks expense</button><span class="qbp-sum" id="qbpSum"></span><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="qbOk" ${list.length ? "" : "disabled"}>Link</button></div>`;
   openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const picked = () => [...sh.querySelectorAll("[name=qbp]:checked")];
+  const sum = () => { const ps = picked(), tot = ps.reduce((a, x) => a + (+x.dataset.c), 0), diff = tot - c;
+    $("#qbpSum").innerHTML = ps.length ? `${ps.length} picked · ${tot < 0 ? "−" : ""}${usd(Math.abs(tot))} · ${diff === 0 ? `<span style="color:var(--green)">matches</span>` : `<span style="color:var(--gold)">${usd(Math.abs(diff))} ${diff > 0 ? "over" : "short"}</span>`}` : "";
+    $("#qbOk").textContent = ps.length > 1 ? `Link ${ps.length}` : "Link"; };
+  sh.querySelectorAll("[name=qbp]").forEach(x => x.onchange = sum); sum();
+  $("#qbpQ").oninput = () => { const q = $("#qbpQ").value.trim().toLowerCase().replace(/[$,]/g, ""); sh.querySelectorAll(".qb-pick-r").forEach(r => r.style.display = !q || r.dataset.q.replace(/[$,]/g, "").includes(q) || r.querySelector("input").checked ? "" : "none"); };
   $("#qbSkip").onclick = () => { qbSkipTxn(p, t); closeSheet(); toast("Marked not a QuickBooks expense"); };
-  $("#qbOk").onclick = () => { const v = (sh.querySelector("[name=qbp]:checked") || {}).value; if(!v) return toast("Pick one"); qbLink(p, t, [v]); closeSheet(); toast("Linked to QuickBooks", true); };
+  $("#qbOk").onclick = () => {
+    const ps = picked(); if(!ps.length) return toast("Tick at least one");
+    const tot = ps.reduce((a, x) => a + (+x.dataset.c), 0);
+    if(tot !== c && !confirm(`These add up to ${tot < 0 ? "−" : ""}${usd(Math.abs(tot))}, not ${usd(c)} (${usd(Math.abs(tot - c))} ${tot > c ? "over" : "short"}). Link them anyway?`)) return;
+    qbLink(p, t, ps.map(x => x.value)); closeSheet(); toast(ps.length > 1 ? `Linked to ${ps.length} QuickBooks records` : "Linked to QuickBooks", true);
+  };
 }
 
 /* ---------- add a QuickBooks cost to the console ---------- */

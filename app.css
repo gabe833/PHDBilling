@@ -1303,4 +1303,6 @@ a:not(.btn) > .brand-ic{width:13px;height:13px;margin-right:4px;vertical-align:-
 .inv-uses{display:flex;flex-direction:column;font-size:13px}
 .inv-uses>div{display:grid;grid-template-columns:70px 1fr auto;gap:10px;padding:4px 0;border-bottom:1px dotted var(--line,#E6E4DD)}
 @media (max-width:760px){.inv-q{min-width:0;width:100%;margin:8px 0 0}.inv-tbl th:nth-child(3),.inv-tbl td:nth-child(3),.inv-tbl th:nth-child(5),.inv-tbl td:nth-child(5){display:none}}
+.qbp-sum{font-size:12.5px;margin-left:10px;font-variant-numeric:tabular-nums}
+.qb-cr{color:var(--green,#2B7A4B)}
 
