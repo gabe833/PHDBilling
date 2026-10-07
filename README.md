@@ -207,6 +207,24 @@ Everything kept off is listed under **Kept off this statement** in that month, w
 
 Editing a bill in MagicDoor updates it here. It isn't added a second time, and a bill deleted or voided in MagicDoor comes off open months.
 
+### 7f. QuickBooks check of project expenses (Reconcile page)
+The `qbo` function reads QuickBooks every hour, at 22 minutes past. It reads your bank and card accounts with their balances, the chart of accounts, customers, and every posted expense, check, card charge, credit and bill since the first project. **Reconcile** (Projects side) then checks each project expense against it:
+
+- **Not in QuickBooks** lists project expenses QuickBooks has nothing for. Each shows why, for example "a different amount from Lowe's that day", or "recent — may still be in Banking → For review". **Find in QuickBooks** links one by hand, and **Not a QB expense** marks inventory, PHD's own fees and the like.
+- **Needs a look** lists likely matches a person confirms with **That's it**:
+  - an expense that's part of a bigger charge (a bulk receipt split here)
+  - one paid in parts
+  - several expenses that add up to one charge
+- **Fix in QuickBooks** is the accountant part. It lists project costs in QuickBooks with the wrong category or no customer, for example Amazon orders under Office Supplies, or Lowe's under Leasehold Improvements. Each gets a suggested **Project Management** category and the property's customer. It also lists uncategorized lines ("Ask Client") so you can pick a category. Tick the rows you want and press **Update in QuickBooks**. Only the category and customer on those lines change. Nothing is created, deleted or paid, and a line someone changed since the last sync is skipped.
+- **In QuickBooks, not here** lists QuickBooks project costs (a project category, or a project's customer) that no expense here explains. Use **Add here** to add one, or **Not a project cost** to dismiss it.
+- **Matched** shows the QuickBooks record behind each expense, including bills with one line per job.
+
+Every transaction row also shows **QB ✓**, **QB part** or **Not in QB**. **Settings** (on the QuickBooks card) sets each project's QuickBooks customer and the Materials and Labor categories. Store purchases count as materials, everyone else as labor.
+
+QuickBooks doesn't let other apps see Banking → **For review**, so a charge shows as matched only after it's added or matched there.
+
+To reconnect later, use Settings → **Connect again**. If Intuit asks, add `https://skeuyevmbxtkjusmrmdd.supabase.co/functions/v1/qbo?qbo=callback` as a redirect URI in the Intuit developer app (Keys & credentials).
+
 ---
 
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)
