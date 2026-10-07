@@ -1305,4 +1305,16 @@ a:not(.btn) > .brand-ic{width:13px;height:13px;margin-right:4px;vertical-align:-
 @media (max-width:760px){.inv-q{min-width:0;width:100%;margin:8px 0 0}.inv-tbl th:nth-child(3),.inv-tbl td:nth-child(3),.inv-tbl th:nth-child(5),.inv-tbl td:nth-child(5){display:none}}
 .qbp-sum{font-size:12.5px;margin-left:10px;font-variant-numeric:tabular-nums}
 .qb-cr{color:var(--green,#2B7A4B)}
+/* ---------- two sides, two colors ----------
+   Property management keeps the harbor green. Projects (renovations) run on blueprint navy,
+   so it's clear at a glance which side of the console you're on. */
+body:not(.mode-pm){
+  --dock:#14223A; --dock-2:#1B2C49; --dock-3:#26395C; --dock-ink:#E4EAF4; --dock-muted:#9AAAC6; --dock-faint:#6A7DA0; --dock-mint:#A7C6F2;
+  --accent:#27548F; --accent-hover:#1E4376; --accent-2:#3A6BAE; --accent-3:#9DB5DA; --accent-soft:#E6EDF7; --accent-line:#C6D4EA;
+  --canvas:#F1F3F6; --panel-2:#F8F9FB; --sunken:#EBEEF3; --line:#DEE3EA; --line-2:#E8EBF0; --line-3:#CCD3DE;
+  --ink:#151C28; --ink-2:#343E4F; --muted:#5E6878; --faint:#98A1B0;
+}
+body{transition:background-color .25s var(--ease)}
+.rail{transition:background-color .25s var(--ease)}
+@media (prefers-reduced-motion:reduce){body,.rail{transition:none}}
 
