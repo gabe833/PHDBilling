@@ -8827,7 +8827,7 @@ function qbReconcileSection(v){
     body.querySelectorAll("[data-unskip]").forEach(b => b.onclick = () => { const [pid, tid] = b.dataset.unskip.split("|"), p = live().find(x => x.id === pid); qbUnskip(p, p.transactions.find(t => t.id === tid)); });
     body.querySelectorAll("[data-unmatch]").forEach(b => b.onclick = () => { const [pid, tid] = b.dataset.unmatch.split("|"), p = live().find(x => x.id === pid); qbUnmatch(p, p.transactions.find(t => t.id === tid)); toast("Unmatched — it's under Not in QuickBooks now", true); });
     body.querySelectorAll("[data-rematch]").forEach(b => b.onclick = () => { const [pid, tid] = b.dataset.rematch.split("|"), p = live().find(x => x.id === pid); qbRematch(p, p.transactions.find(t => t.id === tid)); });
-    body.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { (S.ui.qbPin = S.ui.qbPin || {})[b.dataset.edit] = 1; S.ui.qbFocus = b.dataset.edit; S.ui.qbTab = "fix"; S.ui.qbFixF = "all"; persistUi(); render(); });
+    body.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { (S.ui.qbPin = S.ui.qbPin || {})[b.dataset.edit] = Date.now(); S.ui.qbFocus = b.dataset.edit; S.ui.qbTab = "fix"; S.ui.qbFixF = "all"; persistUi(); render(); });
     body.querySelectorAll("[data-unlink]").forEach(b => b.onclick = () => { const [pid, tid] = b.dataset.unlink.split("|"), p = live().find(x => x.id === pid); qbUnlink(p, p.transactions.find(t => t.id === tid)); toast("Unlinked"); });
     body.querySelectorAll("[data-yes]").forEach(b => b.onclick = () => { const [pid, tid] = b.dataset.yes.split("|"), p = live().find(x => x.id === pid), t = p.transactions.find(y => y.id === tid), r = m.res.get(b.dataset.yes); qbLink(p, t, r.units.map(u => u.k), "suggested"); toast("Linked", true); });
   };
@@ -8878,12 +8878,15 @@ function qbFixTab(body, m){
   const pins = S.ui.qbPin || {}, extra = [];
   Object.keys(pins).forEach(pk => {
     const r = m.res.get(pk); if(!r || r.state !== "matched" || !r.units){ delete pins[pk]; return; }
+    // opened before the last update to QuickBooks and nothing picked for it since: done with it
+    const applied = S.qbo.appliedAt ? Date.parse(S.qbo.appliedAt) : 0;
+    if(applied && (+pins[pk] || 0) < applied && !r.units.some(u => ed[qbKey(u.qt.type, u.qt.id, (u.line || u.qt.lines[0] || {}).id)])){ delete pins[pk]; return; }
     const [pid, tid] = pk.split("|"), p = live().find(x => x.id === pid), t = p && p.transactions.find(y => y.id === tid); if(!t) return;
     r.units.forEach(u => {
       const l = u.line || (u.qt.lines.length === 1 ? u.qt.lines[0] : null); if(!l) return;
       const k = qbKey(u.qt.type, u.qt.id, l.id); if(m.fixes.some(f => f.k === k) || m.uncats.some(f => f.k === k) || extra.some(f => f.k === k)) return;
       const vend = t.vendor || (u.qt.vendor ? u.qt.vendor.name : ""), labor = !QB_STORES.test(qbVk(vend));
-      extra.push({k, qt:u.qt, l, p, t, want:{}, pin:pk, labor, bigLab:labor && Math.abs(cents(l.amount)) >= qbLabMin(), sure:false, odd:!QB_OK_CLASS.has(qbLineClass(l)), why:"Matched — change the category or customer if it's wrong"});
+      extra.push({k, qt:u.qt, l, p, t, want:{}, pin:pk, labor, bigLab:labor && Math.abs(cents(l.amount)) >= qbLabMin(), sure:false, odd:!QB_OK_CLASS.has(qbLineClass(l)), why:"Opened from Matched — pick a different category or customer to tick it"});
     });
   });
   const rows = m.fixes.concat(m.uncats, extra).map(f => {
@@ -8928,7 +8931,7 @@ function qbFixTab(body, m){
     const sim = e.account !== undefined ? similar(r) : [];
     const curName = r.l.account ? r.l.account.name : r.l.item ? r.l.item.name : "—";
     return `<tr class="qbf ${on ? "on" : ""} ${ch ? "" : "same"} ${r.pin ? "pin" : ""} ${S.ui.qbFocus && S.ui.qbFocus === r.pk ? "focus" : ""}" data-k="${esc(r.k)}">
-      <td class="qbf-ck"><input type="checkbox" data-ck ${on ? "checked" : ""} ${ch ? "" : "disabled"} aria-label="Change this line"></td>
+      <td class="qbf-ck"><input type="checkbox" data-ck ${on ? "checked" : ""} ${ch ? "" : "disabled"} aria-label="Change this line" ${ch ? "" : `title="Nothing to change yet — pick a different category or customer first"`}></td>
       <td class="qbf-what"><div class="item-t">${esc(r.vend || "—")} <span class="muted td-n">${esc(qbFmtDate(r.qt.date))}</span></div>
         <div class="item-s">${esc(((r.t && r.t.desc) || r.l.desc || r.qt.memo || "").slice(0, 90))}</div>
         ${(S.ui.qbErr || {})[r.qt.type + "/" + r.qt.id] ? `<div class="qbf-err">QuickBooks didn't take this: ${esc(S.ui.qbErr[r.qt.type + "/" + r.qt.id])}</div>` : ""}
@@ -9007,7 +9010,7 @@ function qbFixTab(body, m){
       if(learn.length){ snapshot(); const q = qbSet(); q.rules = q.rules || {}; learn.forEach(x => q.rules[x.vk] = ed[x.k].account); commit(); }
       const fail = (r.results || []).filter(x => !x.ok), failKeys = new Set(fail.map(x => x.type + "/" + x.id));
       // lines that went through start fresh; the ones that didn't keep their ticks and picks, with the reason on the row
-      on.forEach(x => { if(!failKeys.has(x.qt.type + "/" + x.qt.id)){ delete sel[x.k]; delete ed[x.k]; if(x.pin) delete pins[x.pin]; } });
+      on.forEach(x => { if(!failKeys.has(x.qt.type + "/" + x.qt.id)){ delete sel[x.k]; delete ed[x.k]; if(x.pin) delete pins[x.pin]; if(x.pk) delete pins[x.pk]; } });
       S.ui.qbErr = {}; fail.forEach(x => S.ui.qbErr[x.type + "/" + x.id] = x.error || "QuickBooks didn't take it");
       S.ui.qbLast = {at:new Date().toISOString(), ok:r.changed || 0, bad:fail.length};
       if(r.changed) await qbFetchSnapshot();
