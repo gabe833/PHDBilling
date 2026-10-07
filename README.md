@@ -207,6 +207,14 @@ Everything kept off is listed under **Kept off this statement** in that month, w
 
 Editing a bill in MagicDoor updates it here. It isn't added a second time, and a bill deleted or voided in MagicDoor comes off open months.
 
+### 7g. Inventory (Projects → Inventory)
+
+Bulk buys PHD keeps on hand (Costco lights and plants, Lowe's deadbolts…).
+- **Paste from a sheet**: copy your inventory sheet (header row included) and paste it. It reads Store, Item, Qty Bought, Qty Left, Paid Price Ea., Retail Price Ea., Tax % and Owner Charge Ea. Pasting again updates items instead of doubling them.
+- Each item shows how many are left, our cost each (paid + tax), the owner charge each and what it's over or under our cost, and the value on hand.
+- **Use on a project** adds a charge to that project: vendor "PHD Inventory", "Item × qty", qty × owner charge (project fee off unless you tick it). What's left counts down; delete that transaction and the items come back. **Used on projects** lists every use.
+- **QuickBooks**: store charges still in "Ask Client" with no customer are listed; tick the bulk buys and press **Move to inventory in QuickBooks** to file them under Inventory Asset (change the account with **Change account**). Lines already in it are listed with **Add its items**. On Reconcile → Fix in QuickBooks, Inventory Asset is also offered in every category list and in **Set ticked to**.
+
 ### 7f. QuickBooks check of project expenses (Reconcile page)
 The `qbo` function reads QuickBooks every hour, at 22 minutes past. It reads your bank and card accounts with their balances, the chart of accounts, customers, and every posted expense, check, card charge, credit and bill since the first project. **Reconcile** (Projects side) then checks each project expense against it:
 

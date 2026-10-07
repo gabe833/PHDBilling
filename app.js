@@ -12,9 +12,9 @@ function toast(m, withUndo){
 /* ===================== chrome ===================== */
 function render(){
   const p = P();
-  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.mode === "pm";
+  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.view === "inventory" || S.ui.mode === "pm";
   renderModeSwitch();
-  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : p.name;
+  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : S.ui.view === "inventory" ? "Inventory" : p.name;
   $("#swSub").textContent  = portfolioView
     ? `${live().length} propert${live().length===1?"y":"ies"}`
     : `${usd0(cents(p.invoiceTarget))} cap · ${p.feePct}% fee`;
@@ -47,12 +47,13 @@ function render(){
     payments: ["Shared", "Payments", ""],
     today:    ["", "Today", ""],
     charges:  ["Projects", "Back-charges", ""],
+    inventory:["Projects", "Inventory", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, settings:pgSettings})[S.ui.view] || pgOverview)();
   chip();
 }
 function actions(list){
@@ -92,6 +93,7 @@ function renderNav(){
     n.lastChild.onclick = () => { go("inbox"); inboxRefresh(); }; }
   if(typeof payOnline === "function" && payOnline()) mk("payments", "Payments", "card", payNavBadge());
   { const nCh = typeof chOpenCount === "function" ? chOpenCount() : 0; mk("charges", "Back-charges", "receipt", nCh ? `<i class="badge" style="color:var(--gold)">${nCh}</i>` : null); }
+  if(typeof pgInventory === "function"){ const nLow = invLowCount(); mk("inventory", "Inventory", "box", nLow ? `<i class="badge" style="color:var(--gold)" title="Running low">${nLow} low</i>` : null); }
   if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
   const qbN = typeof qbCounts === "function" ? qbCounts() : null;
   const unrec = qbN ? qbN.none + qbN.gone : reconcileEntries().filter(e => !e.reconciled).length;
@@ -8910,6 +8912,8 @@ function qbFixTab(body, m){
     if(r.want.account && qbAcct(r.want.account)) o.push(`<optgroup label="Suggested">${opt(r.want.account, qbShort(qbAcct(r.want.account).name), qbAcct(r.want.account).name)}</optgroup>`);
     if(r.cur.account && qbAcct(r.cur.account) && r.cur.account !== r.want.account){ const ca = qbAcct(r.cur.account), no = r.bigLab && qbIsMaint(ca.name);
       o.push(`<optgroup label="Leave as is">${no ? `<option value="${ca.id}" disabled title="${esc(ca.name)}">${esc(qbShort(ca.name))} (not for labor this size)</option>` : opt(ca.id, qbShort(ca.name), ca.name)}</optgroup>`); }
+    const ia = typeof invAcctId === "function" ? invAcctId() : "";
+    if(ia && qbAcct(ia) && ia !== r.want.account && ia !== r.cur.account && !r.bigLab) o.push(`<optgroup label="PHD inventory (bulk buys)">${opt(ia, qbShort(qbAcct(ia).name), qbAcct(ia).name)}</optgroup>`);
     const g = groupsOf(exp), order = Object.keys(g).sort((a, b) => (b === "Project Management") - (a === "Project Management") || a.localeCompare(b));
     order.forEach(top => o.push(`<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}" title="${esc(a.name)}" ${r.bigLab && qbIsMaint(a.name) ? "disabled" : ""}>${esc(a.name.includes(":") ? a.name.split(":").slice(1).join(" › ") : a.name)}${r.bigLab && qbIsMaint(a.name) ? " (not for labor this size)" : ""}</option>`).join("")}</optgroup>`));
     return o.join("");
@@ -8977,7 +8981,7 @@ function qbFixTab(body, m){
     body.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.qbFixF = b.dataset.f; draw(); });
     body.querySelectorAll("[data-g]").forEach(cb => cb.onchange = () => { groups[+cb.dataset.g].rows.filter(changed).forEach(r => sel[r.k] = cb.checked); draw(); });
     const bulk = body.querySelector("#qbfBulk");
-    bulk.onmousedown = bulk.onfocus = () => { if(bulk.dataset.full) return; const g = groupsOf(exp); bulk.innerHTML = `<option value="">category…</option>` + Object.keys(g).sort((a, b) => (b === "Project Management") - (a === "Project Management") || a.localeCompare(b)).map(top => `<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}">${esc(qbShort(a.name))}</option>`).join("")}</optgroup>`).join(""); bulk.dataset.full = 1; };
+    bulk.onmousedown = bulk.onfocus = () => { if(bulk.dataset.full) return; const g = groupsOf(exp); const ia = typeof invAcctId === "function" ? invAcctId() : ""; bulk.innerHTML = `<option value="">category…</option>` + (ia && qbAcct(ia) ? `<optgroup label="PHD inventory"><option value="${ia}">${esc(qbShort(qbAcct(ia).name))}</option></optgroup>` : "") + Object.keys(g).sort((a, b) => (b === "Project Management") - (a === "Project Management") || a.localeCompare(b)).map(top => `<optgroup label="${esc(top)}">${g[top].map(a => `<option value="${a.id}">${esc(qbShort(a.name))}</option>`).join("")}</optgroup>`).join(""); bulk.dataset.full = 1; };
     bulk.onchange = () => { const a = bulk.value; if(!a) return; let n = 0, skipped = 0;
       rows.filter(ticked).forEach(r => { if(r.bigLab && qbIsMaint((qbAcct(a) || {}).name)){ skipped++; return; } ed[r.k] = Object.assign(ed[r.k] || {}, {account:a}); n++; });
       draw(); toast(`${n} set to ${qbShort((qbAcct(a) || {}).name)}${skipped ? ` · ${skipped} labor over ${qbUsd0(qbLabMin())} left as is` : ""}`); };
@@ -9019,6 +9023,259 @@ function qbFixTab(body, m){
     persistUi(); render();
   };
   draw();
+}
+
+/* =====================================================================
+   INVENTORY — what PHD buys in bulk (Costco, Lowe's…) and hands out to projects.
+   S.acct.inv  (shared with the team, in the accounting doc)
+     items: [{id, store, name, bought, paid, tax, retail, charge, adj, note, created, by, qb:[lineKey…]}]
+        bought  how many were bought            paid    price paid each, before tax
+        tax     sales tax % (9 = 9%)            retail  shelf price each, for reference
+        charge  what an owner is billed each    adj     used or lost outside the console (counts against what's left)
+        qb      QuickBooks lines the purchase came from ("Purchase/123#1")
+     acct:  the QuickBooks account bulk purchases go to (default: the Inventory asset account)
+   Using an item on a project adds a transaction there — vendor "PHD Inventory",
+   "<item> × <qty>", qty × owner charge — carrying t.inv = {item, qty, each, cost}.
+   How many are left is always bought − adj − what those transactions use, so
+   deleting the transaction puts the items back.
+   ===================================================================== */
+ICON_PATHS.box = '<path d="M2.5 5 8 2.5 13.5 5v6L8 13.5 2.5 11z"/><path d="M2.5 5 8 7.5 13.5 5M8 7.5v6"/>';
+const INV_VENDOR = "PHD Inventory";
+function invSet(){ S.acct = S.acct || {}; S.acct.inv = S.acct.inv || {}; const v = S.acct.inv; v.items = v.items || []; return v; }
+function invItems(){ return (S.acct && S.acct.inv && S.acct.inv.items) || []; }
+const invCostEach = it => Math.round(cents(it.paid || 0) * (1 + (+it.tax || 0) / 100));          // cents, tax in
+function invUses(){
+  const out = [];
+  (S.properties || []).forEach(p => (p.transactions || []).forEach(t => { if(t.inv && t.inv.item) out.push({p, t, qty:+t.inv.qty || 0}); }));
+  return out;
+}
+function invLeft(it, uses){
+  const used = (uses || invUses()).filter(u => u.t.inv.item === it.id).reduce((a, u) => a + u.qty, 0);
+  return (+it.bought || 0) - (+it.adj || 0) - used;
+}
+function invAcctId(){
+  const set = S.acct && S.acct.inv && S.acct.inv.acct; if(set) return set;
+  const a = ((S.qbo && S.qbo.accounts) || []).find(a => a.sub === "Inventory") || ((S.qbo && S.qbo.accounts) || []).find(a => /inventory/i.test(a.name) && a.cls === "Asset");
+  return a ? a.id : "";
+}
+const invLowCount = () => invItems().filter(it => { const l = invLeft(it); return l > 0 && l <= Math.max(1, Math.round((+it.bought || 0) * 0.15)); }).length;
+
+/* ---------- the page ---------- */
+function pgInventory(){
+  const v = $("#view"), items = invItems(), uses = invUses(), f = S.ui.invF || "stock", q = (S.ui.invQ || "").toLowerCase();
+  $("#pgCrumb").textContent = "Projects"; $("#pgTitle").textContent = "Inventory";
+  $("#pgSub").textContent = "Bulk buys PHD keeps on hand, and what each project has used";
+  actions([["Paste from a sheet", invImportSheet, "ghost"], ["Add item", () => invItemSheet(null), "primary"]]);
+  const rows = items.map(it => { const left = invLeft(it, uses), ce = invCostEach(it), ch = cents(it.charge || 0); return {it, left, ce, ch, val:Math.max(0, left) * ce, used:uses.filter(u => u.t.inv.item === it.id)}; });
+  const onHand = rows.reduce((a, r) => a + r.val, 0);
+  const billed = uses.reduce((a, u) => a + cents(u.t.amount), 0), costOut = uses.reduce((a, u) => a + (cents(u.t.inv.cost || 0)), 0);
+  const hero = elm("div", "card pf-hero td-hero");
+  hero.innerHTML = `<div class="pf-cell"><div class="label">On hand, at cost</div><div class="pf-v">${usd(onHand)}</div><div class="pf-note">${rows.filter(r => r.left > 0).length} item${rows.filter(r => r.left > 0).length === 1 ? "" : "s"} in stock</div></div>
+    <div class="pf-cell"><div class="label">Billed to owners</div><div class="pf-v g">${usd(billed)}</div><div class="pf-note">${uses.length} use${uses.length === 1 ? "" : "s"} on projects</div></div>
+    <div class="pf-cell"><div class="label">Margin on what's used</div><div class="pf-v">${usd(billed - costOut)}</div><div class="pf-note">owner charge less our cost</div></div>`;
+  v.appendChild(hero);
+  const bar = elm("div", "sc-bar");
+  const fl = [["stock", "In stock", rows.filter(r => r.left > 0).length], ["out", "Used up", rows.filter(r => r.left <= 0).length], ["all", "All", rows.length], ["used", "Used on projects", uses.length]];
+  bar.innerHTML = `<div class="sc-seg">${fl.map(([k, l, n]) => `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
+    <input type="search" id="invQ" class="inv-q" placeholder="Find an item or store" value="${esc(S.ui.invQ || "")}">`;
+  bar.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.invF = b.dataset.f; persistUi(); render(); });
+  const qi = bar.querySelector("#invQ"); qi.oninput = () => { S.ui.invQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#invQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
+  v.appendChild(bar);
+  if(f === "used"){ invUsedCard(v, uses, q); invQbCard(v); return; }
+  const list = rows.filter(r => (f === "all" || (f === "stock" ? r.left > 0 : r.left <= 0)) && (!q || (r.it.name + " " + r.it.store).toLowerCase().includes(q)))
+    .sort((a, b) => String(a.it.store).localeCompare(String(b.it.store)) || String(a.it.name).localeCompare(String(b.it.name)));
+  const card = elm("div", "card inv-card");
+  if(!items.length){
+    card.innerHTML = `<div class="empty"><b>No inventory yet</b><p>Add what PHD keeps on hand, or paste it straight from your inventory sheet (Store, Item, Qty Bought, Qty Left, Paid Price Ea., Retail Price Ea., Tax %, Owner Charge Ea.).</p>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px"><button class="btn primary" id="invE1">Paste from a sheet</button><button class="btn" id="invE2">Add item</button></div></div>`;
+    v.appendChild(card); card.querySelector("#invE1").onclick = invImportSheet; card.querySelector("#invE2").onclick = () => invItemSheet(null);
+    invQbCard(v); return;
+  }
+  card.innerHTML = list.length ? `<table class="tbl inv-tbl"><thead><tr><th>Item</th><th class="r">Left</th><th class="r">Our cost ea.</th><th class="r">Owner charge ea.</th><th class="r">Value left</th><th></th></tr></thead><tbody>
+    ${list.map(r => { const b = +r.it.bought || 0, pct = b ? Math.max(0, Math.min(100, r.left / b * 100)) : 0, low = r.left > 0 && r.left <= Math.max(1, Math.round(b * 0.15));
+      return `<tr data-id="${r.it.id}"><td><div class="item-t">${esc(r.it.name || "—")}</div><div class="item-s">${esc(r.it.store || "")}${r.it.paid ? ` · paid ${usd(cents(r.it.paid))}${r.it.tax ? ` + ${+r.it.tax}% tax` : ""}` : ""}${r.it.retail ? ` · retail ${usd(cents(r.it.retail))}` : ""}${r.used.length ? ` · on ${new Set(r.used.map(u => u.p.id)).size} project${new Set(r.used.map(u => u.p.id)).size === 1 ? "" : "s"}` : ""}</div></td>
+        <td class="r nw"><span class="num ${r.left <= 0 ? "muted" : low ? "inv-low" : ""}"><b>${r.left}</b> of ${b}</span><div class="inv-bar"><i style="width:${pct}%" class="${low ? "low" : ""}"></i></div></td>
+        <td class="r num">${usd(r.ce)}</td><td class="r num">${r.ch ? usd(r.ch) : `<span class="muted">set it</span>`}${r.ch && r.ce ? `<div class="item-s">${r.ch >= r.ce ? "+" : ""}${usd(r.ch - r.ce)}</div>` : ""}</td>
+        <td class="r num">${usd(r.val)}</td>
+        <td class="r nw">${r.left > 0 ? `<button class="btn sm primary" data-use="${r.it.id}">Use on a project</button>` : ""}<button class="btn sm ghost" data-edit="${r.it.id}">Edit</button></td></tr>`; }).join("")}
+    </tbody></table>` : `<div class="empty"><b>Nothing here</b><p>${q ? "No item matches that search." : f === "out" ? "Nothing is used up." : "Everything is used up."}</p></div>`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-use]").forEach(b => b.onclick = () => invUseSheet(items.find(x => x.id === b.dataset.use)));
+  card.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => invItemSheet(items.find(x => x.id === b.dataset.edit)));
+  invQbCard(v);
+}
+function invUsedCard(v, uses, q){
+  const list = uses.filter(u => !q || (u.t.desc + " " + u.p.name).toLowerCase().includes(q)).sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
+  const card = elm("div", "card");
+  card.innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Date</th><th>Property</th><th>Item</th><th class="r">Qty</th><th class="r">Billed</th><th class="r">Our cost</th><th></th></tr></thead><tbody>
+    ${list.map((u, i) => `<tr><td class="nw muted">${esc(fdateS(u.t.date))}</td><td>${esc(u.p.name)}${u.p.archived ? ` <span class="muted">(archived)</span>` : ""}</td><td>${esc(u.t.desc || "")}</td><td class="r num">${u.qty}</td><td class="r num">${usd(cents(u.t.amount))}</td><td class="r num muted">${usd(cents(u.t.inv.cost || 0))}</td>
+      <td class="r nw"><button class="btn sm ghost" data-open="${i}">›</button></td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty"><b>Nothing used on a project yet</b><p>Press “Use on a project” on an item: it adds a PHD Inventory charge to that project's transactions.</p></div>`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { const u = list[+b.dataset.open]; go("txns", u.p.id); setTimeout(() => openSheet(u.t.id), 40); });
+}
+// QuickBooks: bulk buys sitting in the inventory account, and store charges not categorized yet
+function invQbCard(v){
+  if(typeof qbReady !== "function" || !qbReady()) return;
+  const acct = invAcctId(), A = acct && qbAcct(acct);
+  const inInv = [], waiting = [];
+  S.qbo.txns.forEach(qt => qt.lines.forEach(l => {
+    const k = qbKey(qt.type, qt.id, l.id), item = {k, qt, l, c:(qt.credit ? -1 : 1) * cents(l.amount)};
+    if(acct && l.account && l.account.id === acct) inInv.push(item);
+    else if(l.account && QB_UNCAT.test(l.account.name) && QB_STORES.test(qbVk(qt.vendor && qt.vendor.name)) && !l.customer) waiting.push(item);
+  }));
+  const linked = new Set(invItems().flatMap(it => it.qb || []));
+  const card = elm("div", "card inv-qb");
+  const row = (x, i, kind) => `<tr><td class="nw muted">${esc(qbFmtDate(x.qt.date))}</td><td><div class="item-t">${esc(x.qt.vendor ? x.qt.vendor.name : "—")}</div><div class="item-s">${esc((x.l.desc || x.qt.memo || "").slice(0, 80))}${x.qt.from ? " · " + esc(x.qt.from.name) : ""}</div></td>
+      <td class="r num">${usd(x.c)}</td><td class="r nw">${kind === "in" ? (linked.has(x.k) ? `<span class="tag green">Items added</span>` : `<button class="btn sm" data-add="${i}">Add its items</button>`) : `<label class="inv-ck"><input type="checkbox" data-w="${i}"> Inventory</label>`}</td></tr>`;
+  card.innerHTML = `<div class="card-h"><h3>QuickBooks</h3><span class="muted td-n">${A ? "Bulk buys go to " + esc(A.name) : "No inventory account found in QuickBooks"}</span><button class="btn sm ghost" id="invAcct" style="margin-left:auto">Change account</button></div>
+    ${waiting.length ? `<div class="card-b"><div class="sectl" style="margin-top:0">Store charges not categorized yet</div><p class="help" style="margin:0 0 8px">Tick the bulk buys for inventory and press the button — they move to ${A ? esc(qbShort(A.name)) : "the inventory account"} in QuickBooks. Project purchases are on Reconcile → Fix in QuickBooks.</p>
+      <table class="tbl qb-tbl"><tbody>${waiting.sort((a, b) => b.qt.date.localeCompare(a.qt.date)).map((x, i) => row(x, i, "w")).join("")}</tbody></table>
+      <div class="ch-acts"><button class="btn primary" id="invMove" disabled>Move to inventory in QuickBooks</button><span class="muted" id="invMoveN" style="font-size:12.5px"></span></div></div>` : ""}
+    <div class="card-b"><div class="sectl" style="margin-top:0">In ${A ? esc(qbShort(A.name)) : "inventory"} in QuickBooks <span class="muted">${usd(inInv.reduce((a, x) => a + x.c, 0))}</span></div>
+      ${inInv.length ? `<table class="tbl qb-tbl"><tbody>${inInv.sort((a, b) => b.qt.date.localeCompare(a.qt.date)).map((x, i) => row(x, i, "in")).join("")}</tbody></table>` : `<p class="muted" style="margin:0">Nothing in it yet.</p>`}</div>`;
+  v.appendChild(card);
+  card.querySelector("#invAcct").onclick = invAcctSheet;
+  card.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { const x = inInv.sort((a, b) => b.qt.date.localeCompare(a.qt.date))[+b.dataset.add]; invItemSheet(null, x); });
+  const mv = card.querySelector("#invMove");
+  if(mv){
+    const sorted = waiting; const picked = () => [...card.querySelectorAll("[data-w]:checked")].map(c => sorted[+c.dataset.w]);
+    card.querySelectorAll("[data-w]").forEach(c => c.onchange = () => { const p = picked(); mv.disabled = !p.length || !acct; card.querySelector("#invMoveN").textContent = p.length ? `${p.length} · ${usd(p.reduce((a, x) => a + x.c, 0))}` : ""; });
+    mv.onclick = async () => {
+      const p = picked(); if(!p.length || !acct) return;
+      if(!confirm(`Move ${p.length} charge${p.length === 1 ? "" : "s"} (${usd(p.reduce((a, x) => a + x.c, 0))}) to ${A.name} in QuickBooks?\n\nOnly the category on those lines changes.`)) return;
+      mv.disabled = true; mv.textContent = "Moving…";
+      try{
+        const r = await qbCall("apply", {changes:p.map(x => ({type:x.qt.type, id:x.qt.id, line:x.l.id, expectAmount:x.l.amount, account:acct}))});
+        const bad = (r.results || []).filter(x => !x.ok);
+        if(r.changed) await qbFetchSnapshot();
+        toast(bad.length ? `${r.changed || 0} moved · ${bad.length} didn't: ${bad[0].error}` : `Moved ${r.changed} to inventory`);
+      }catch(e){ toast(e.message); }
+      render();
+    };
+  }
+}
+function invAcctSheet(){
+  const accts = ((S.qbo && S.qbo.accounts) || []).filter(a => a.cls === "Asset" && !/^(Bank|Accounts Receivable)$/.test(a.type) || /inventory/i.test(a.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const sh = $("#sheet"), cur = invAcctId();
+  sh.innerHTML = `<div class="sheet-h"><h3>Inventory account in QuickBooks</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><label class="fld"><span>Bulk buys for PHD's inventory go to</span><select id="invA">${accts.map(a => `<option value="${a.id}" ${a.id === cur ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
+      <p class="help">An asset account: the purchase is something PHD owns until it goes into a project.</p></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="invAOk">Save</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#invAOk").onclick = () => { snapshot(); invSet().acct = $("#invA").value; commit(); closeSheet(); render(); };
+}
+
+/* ---------- add / edit an item ---------- */
+function invItemSheet(it, fromQb){
+  const isNew = !it; it = it || {store:fromQb && fromQb.qt.vendor ? fromQb.qt.vendor.name : "", tax:9};
+  const uses = invUses().filter(u => u.t.inv.item === it.id);
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "Add an inventory item" : esc(it.name)}</h3>${fromQb ? `<div class="muted" style="font-size:12.5px;margin-top:3px">From ${esc(qbRecLabel(fromQb.qt))} · ${usd(fromQb.c)}</div>` : ""}</div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div class="f2"><label class="fld"><span>Item</span><input type="text" id="iN" value="${esc(it.name || "")}" placeholder="e.g. GFCI Sconce"></label>
+        <label class="fld"><span>Store</span><input type="text" id="iS" list="iSl" value="${esc(it.store || "")}"><datalist id="iSl">${[...new Set(invItems().map(x => x.store).filter(Boolean).concat(["Costco", "Lowe's", "Home Depot", "Amazon"]))].map(s => `<option value="${esc(s)}">`).join("")}</datalist></label></div>
+      <div class="f3"><label class="fld"><span>Qty bought</span><input type="number" id="iB" min="0" step="1" value="${it.bought != null ? +it.bought : ""}"></label>
+        <label class="fld"><span>Paid each (before tax)</span><input type="number" id="iP" min="0" step="0.01" value="${it.paid != null ? +it.paid : ""}"></label>
+        <label class="fld"><span>Tax %</span><input type="number" id="iT" min="0" step="0.01" value="${it.tax != null ? +it.tax : 9}"></label></div>
+      <div class="f3"><label class="fld"><span>Retail each</span><input type="number" id="iR" min="0" step="0.01" value="${it.retail != null ? +it.retail : ""}"></label>
+        <label class="fld"><span>Owner charge each</span><input type="number" id="iC" min="0" step="0.01" value="${it.charge != null ? +it.charge : ""}"></label>
+        <label class="fld"><span>Used outside the console</span><input type="number" id="iA" step="1" value="${+it.adj || 0}" title="Used, lost or broken without a project charge here"></label></div>
+      <p class="help" id="iCalc" style="margin-top:0"></p>
+      <label class="fld"><span>Note</span><input type="text" id="iNo" value="${esc(it.note || "")}" placeholder="Where it's kept, model number…"></label>
+      ${uses.length ? `<div class="sectl">Used on projects</div><div class="inv-uses">${uses.map(u => `<div><span>${esc(fdateS(u.t.date))}</span><span>${esc(u.p.name)}</span><span class="num">${u.qty} · ${usd(cents(u.t.amount))}</span></div>`).join("")}</div>` : ""}
+    </div>
+    <div class="sheet-f">${!isNew ? `<button class="btn ghost" id="iDel" style="color:var(--red)">Delete</button>` : ""}<span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="iOk">${isNew ? "Add" : "Save"}</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const calc = () => { const t = {paid:+$("#iP").value || 0, tax:+$("#iT").value || 0}, ce = invCostEach(t), ch = cents(+$("#iC").value || 0), b = +$("#iB").value || 0;
+    const left = b - (+$("#iA").value || 0) - uses.reduce((a, u) => a + u.qty, 0);
+    $("#iCalc").innerHTML = ce ? `Our cost ${usd(ce)} each with tax${ch ? ` · owner charge is ${ch >= ce ? usd(ch - ce) + " over" : usd(ce - ch) + " under"} cost` : ""}${b ? ` · ${left} left · ${usd(Math.max(0, left) * ce)} on hand` : ""}` : ""; };
+  ["iP", "iT", "iC", "iB", "iA"].forEach(id => $("#" + id).oninput = calc); calc();
+  $("#iR").addEventListener("change", () => { if(!$("#iC").value && $("#iR").value) $("#iC").value = Math.ceil(+$("#iR").value); calc(); });
+  if(!isNew) $("#iDel").onclick = () => {
+    if(uses.length) return toast(`It's used on ${uses.length} project charge${uses.length === 1 ? "" : "s"} — delete those first, or set what's left to 0`);
+    if(!confirm(`Delete ${it.name}?`)) return; snapshot(); const s = invSet(); s.items = s.items.filter(x => x.id !== it.id); commit(); closeSheet(); render();
+  };
+  $("#iOk").onclick = () => {
+    const name = $("#iN").value.trim(); if(!name) return toast("Name the item");
+    snapshot();
+    const s = invSet(), rec = isNew ? {id:uid(), created:todayISO(), by:typeof qbWho === "function" ? qbWho() : "", qb:[]} : s.items.find(x => x.id === it.id);
+    Object.assign(rec, {name, store:$("#iS").value.trim(), bought:+$("#iB").value || 0, paid:+$("#iP").value || 0, tax:+$("#iT").value || 0, retail:+$("#iR").value || 0, charge:+$("#iC").value || 0, adj:+$("#iA").value || 0, note:$("#iNo").value.trim()});
+    if(fromQb && !(rec.qb || []).includes(fromQb.k)) (rec.qb = rec.qb || []).push(fromQb.k);
+    if(isNew) s.items.push(rec);
+    commit(); closeSheet(); render(); toast(isNew ? `Added ${name}` : "Saved", true);
+  };
+}
+
+/* ---------- use on a project ---------- */
+function invUseSheet(it){
+  const ps = live().filter(p => !p.archived), left = invLeft(it), sh = $("#sheet");
+  const last = S.ui.invLastP && ps.find(p => p.id === S.ui.invLastP) ? S.ui.invLastP : (P() && ps.find(p => p.id === P().id) ? P().id : (ps[0] || {}).id);
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Use ${esc(it.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${left} left · owner charge ${usd(cents(it.charge || 0))} each</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div class="f2"><label class="fld"><span>Project</span><select id="uP">${ps.map(p => `<option value="${p.id}" ${p.id === last ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Unit</span><select id="uU"></select></label></div>
+      <div class="f3"><label class="fld"><span>How many</span><input type="number" id="uQ" min="1" max="${left}" step="1" value="1"></label>
+        <label class="fld"><span>Each</span><input type="number" id="uE" min="0" step="0.01" value="${+it.charge || ""}"></label>
+        <label class="fld"><span>Date</span><input type="date" id="uD" value="${todayISO()}"></label></div>
+      <label class="fld inv-fee"><input type="checkbox" id="uF"> Add the project management fee on top</label>
+      <p class="help" id="uSum" style="margin-top:4px"></p>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="uOk">Add to project</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const fillU = () => { const p = ps.find(x => x.id === $("#uP").value); $("#uU").innerHTML = (p.units || []).map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join("") + ((p.units || []).length > 1 ? `<option value="split">Split evenly</option>` : ""); };
+  const sum = () => { const q = Math.max(0, Math.floor(+$("#uQ").value || 0)), e = cents(+$("#uE").value || 0);
+    $("#uSum").innerHTML = q ? `Adds <b>${esc(it.name)} × ${q}</b> · ${usd(q * e)} to the project, from ${INV_VENDOR}.${q > left ? ` <span style="color:var(--red)">Only ${left} left.</span>` : ` ${left - q} left after.`}${e && e < invCostEach(it) ? ` <span style="color:var(--gold)">Under our cost.</span>` : ""}` : ""; };
+  fillU(); sum(); $("#uP").onchange = fillU; $("#uQ").oninput = $("#uE").oninput = sum;
+  $("#uOk").onclick = () => {
+    const p = ps.find(x => x.id === $("#uP").value), q = Math.floor(+$("#uQ").value || 0), each = +$("#uE").value || 0, uv = $("#uU").value;
+    if(q < 1) return toast("How many?"); if(q > invLeft(it)) return toast(`Only ${invLeft(it)} left`);
+    if(!each) return toast("Set what the owner pays each");
+    let scope;
+    if(uv === "split"){ const sp = {}, even = +(100 / p.units.length).toFixed(2); p.units.forEach((u, i) => sp[u.id] = i === p.units.length - 1 ? +(100 - even * (p.units.length - 1)).toFixed(2) : even); scope = {type:"split", unit:null, splits:sp}; }
+    else scope = {type:"single", unit:uv, splits:{}};
+    snapshot();
+    const rec = {id:uid(), receipt:"", link:"", pin:null, party:"Owner", notes:"From PHD inventory", tags:[], reconciled:false, reconciledAt:"",
+      date:$("#uD").value || todayISO(), vendor:INV_VENDOR, desc:`${it.name} × ${q}`, amount:Math.round(q * each * 100) / 100, scope, status:"billable", applyFee:$("#uF").checked, allowPartial:true,
+      inv:{item:it.id, qty:q, each, cost:Math.round(q * invCostEach(it)) / 100}};
+    if(typeof applyHoldRule === "function") applyHoldRule(rec, p);
+    p.transactions.push(rec); S.ui.invLastP = p.id;
+    commit(); closeSheet(); render(); toast(`Added to ${p.name} · ${invLeft(it)} ${it.name} left`, true);
+  };
+}
+
+/* ---------- paste from a spreadsheet ---------- */
+function invImportSheet(){
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><h3>Paste from your inventory sheet</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="help" style="margin-top:0">Copy the rows from the sheet, header row included, and paste them here. Columns it reads: Store, Item, Qty Bought, Qty Left, Paid Price Ea., Retail Price Ea., Tax %, Owner Charge Ea. Items already here (same store and name) are updated, not doubled.</p>
+      <textarea id="imT" rows="10" class="inv-paste" placeholder="Store&#9;Item&#9;Qty Bought&#9;Qty Left&#9;Paid Price Ea.&#9;…"></textarea><div id="imP"></div></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="imOk" disabled>Add</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  let parsed = [];
+  const num = s => { const n = parseFloat(String(s || "").replace(/[$,%\s]/g, "")); return isNaN(n) ? null : n; };
+  $("#imT").oninput = () => {
+    const lines = $("#imT").value.split(/\r?\n/).filter(l => l.trim()), rows = lines.map(l => l.split(/\t|\s{2,}/).map(c => c.trim()));
+    let head = rows[0] || [], body = rows.slice(1);
+    const find = re => head.findIndex(h => re.test(h));
+    let ix = {store:find(/^store/i), name:find(/^item|^name|^desc/i), bought:find(/bought|^qty$|quantity/i), left:find(/left|on hand|remain/i), paid:find(/paid|cost ea|price paid/i), retail:find(/retail/i), tax:find(/tax/i), charge:find(/owner|charge/i)};
+    if(ix.name < 0){ body = rows; ix = {store:0, name:1, bought:2, left:3, paid:4, retail:5, tax:6, charge:8}; }      // no header: the sheet's column order
+    if(ix.paid >= 0 && /our cost/i.test(head[ix.paid] || "")) ix.paid = find(/paid/i);
+    parsed = body.map(r => { const g = k => ix[k] >= 0 ? r[ix[k]] : ""; const tax = num(g("tax")); return {store:g("store"), name:g("name"), bought:num(g("bought")) || 0, left:num(g("left")), paid:num(g("paid")) || 0, retail:num(g("retail")) || 0, tax:tax == null ? 9 : (tax < 1 && tax > 0 ? tax * 100 : tax), charge:num(g("charge")) || 0}; }).filter(x => x.name);
+    $("#imP").innerHTML = parsed.length ? `<table class="tbl" style="margin-top:10px"><thead><tr><th>Item</th><th class="r">Bought</th><th class="r">Left</th><th class="r">Paid</th><th class="r">Owner</th></tr></thead><tbody>${parsed.map(x => `<tr><td>${esc(x.name)} <span class="muted">${esc(x.store)}</span></td><td class="r num">${x.bought}</td><td class="r num">${x.left == null ? x.bought : x.left}</td><td class="r num">${usd(cents(x.paid))}</td><td class="r num">${usd(cents(x.charge))}</td></tr>`).join("")}</tbody></table>` : (lines.length ? `<p class="muted">Couldn't find an Item column.</p>` : "");
+    $("#imOk").disabled = !parsed.length; $("#imOk").textContent = parsed.length ? `Add ${parsed.length} item${parsed.length === 1 ? "" : "s"}` : "Add";
+  };
+  $("#imOk").onclick = () => {
+    snapshot(); const s = invSet(), uses = invUses(); let added = 0, updated = 0;
+    parsed.forEach(x => {
+      let rec = s.items.find(it => it.name.toLowerCase() === x.name.toLowerCase() && String(it.store || "").toLowerCase() === String(x.store || "").toLowerCase());
+      if(!rec){ rec = {id:uid(), created:todayISO(), by:typeof qbWho === "function" ? qbWho() : "", qb:[]}; s.items.push(rec); added++; } else updated++;
+      Object.assign(rec, {name:x.name, store:x.store, bought:x.bought, paid:x.paid, retail:x.retail, tax:x.tax, charge:x.charge});
+      const used = uses.filter(u => u.t.inv.item === rec.id).reduce((a, u) => a + u.qty, 0);
+      rec.adj = x.left == null ? (rec.adj || 0) : Math.max(0, x.bought - x.left - used);           // what the sheet says is gone beyond the console's own charges
+    });
+    commit(); closeSheet(); render(); toast(`${added} added${updated ? ` · ${updated} updated` : ""}`, true);
+  };
 }
 
 /* =====================================================================
