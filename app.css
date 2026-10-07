@@ -1283,4 +1283,9 @@ a:not(.btn) > .brand-ic{width:13px;height:13px;margin-right:4px;vertical-align:-
 .qbf-msg{font-size:13px;padding:9px 12px;border-radius:8px;margin:2px 0 10px;background:var(--green-soft,#E5F2EA);color:var(--green,#2B7A4B)}
 .qbf-msg.bad{background:var(--red-soft,#FAE9E6);color:var(--red,#B03A2F)}
 .qbf-msg a{color:inherit;margin-left:6px}
+.qbf-tbl tr.qbf.pin td:nth-child(2){background-image:linear-gradient(90deg,var(--gold-soft,#F6EEDD),transparent 60%)}
+.qbf-tbl tr.qbf.focus td{animation:qbfFlash 1.6s ease-out 1}
+@keyframes qbfFlash{0%{background:var(--gold-soft,#F6EEDD)}100%{background:transparent}}
+@media (prefers-reduced-motion:reduce){.qbf-tbl tr.qbf.focus td{animation:none;background:var(--gold-soft,#F6EEDD)}}
+.qbf-tbl tr.qbf.pin.same{opacity:1}
 
