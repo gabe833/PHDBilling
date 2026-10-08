@@ -431,18 +431,21 @@ function compute(prop){
   out.workRoll = {budgetC:0, actualC:0, holdC:0, billedC:0, paidC:0, items:(prop.scope||[]).length, done:0, over:0};
   (prop.scope||[]).forEach(i => {
     const w = out.work[i.id];
-    out.workRoll.budgetC += cents(i.budget);
+    out.workRoll.budgetC += workBudgetC(i);
     ["actualC","holdC","billedC","paidC"].forEach(k => out.workRoll[k] += w[k]);
     if(i.done) out.workRoll.done++;
-    if(cents(i.budget) > 0 && w.actualC > cents(i.budget)) out.workRoll.over++;
+    if(workBudgetC(i) > 0 && w.actualC > workBudgetC(i)) out.workRoll.over++;
   });
 
   out.notes = notes;
   return out;
 }
+// original budget plus approved change orders
+function workCoC(item){ return (item.cos || []).filter(c => c.status === "approved").reduce((a, c) => a + cents(c.amount), 0); }
+function workBudgetC(item){ return cents(item.budget) + workCoC(item); }
 function workStatus(item, w){
   if(item.done) return "Complete";
-  const b = cents(item.budget);
+  const b = workBudgetC(item);
   if(w.actualC === 0 && w.holdC === 0) return "Not started";
   if(b > 0 && w.actualC > b) return "Over budget";
   if(b > 0 && w.actualC >= b) return "At budget";

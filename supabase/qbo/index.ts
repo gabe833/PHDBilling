@@ -8,8 +8,9 @@
 //
 // It changes QuickBooks only when a person on the team asks it to, one
 // confirmed batch at a time: the category (account), customer/project,
-// class and billable flag on expense lines. It never creates, deletes or
-// pays anything, and never touches bank feeds or reconciliations.
+// class and billable flag on expense lines, and journal entries that move
+// the cost of PHD inventory used on a project into that project's materials.
+// It never deletes or pays anything, and never touches bank feeds or reconciliations.
 //
 // Keys live in Supabase → Edge Functions → Secrets (never in the browser):
 //   QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENV (production | sandbox)
@@ -19,6 +20,7 @@
 //   status      connected? company name                     (team)
 //   sync        read QuickBooks and save the snapshot       (team, or the hourly schedule)
 //   apply       change categories on expense lines          (team) {changes:[{type,id,line,account?,customer?,cls?,billable?}]}
+//   journal     inventory used on a project: asset → materials (team) {entries:[{ref,date,amount,debit,credit,customer?,memo}]}
 //   connect     sign-in link to (re)connect QuickBooks      (team)
 //   disconnect  revoke and forget the sign-in               (team)
 // GET ?qbo=callback is where Intuit sends the browser back after signing in.
@@ -249,6 +251,41 @@ async function apply(changes: Obj[], email: string) {
   return { ok: true, results: results.map(({ txn, ...r }) => r), changed: ok.length };
 }
 
+/* ---------- journal entries: inventory used on a project ----------
+   Moves the cost of PHD inventory used on a project out of the inventory asset account and into the
+   project's materials account, with the project's customer on the materials side. One entry per use;
+   the console keeps the id so it's never posted twice. {entries:[{ref, date, amount, debit, credit, customer?, memo}]} */
+async function journal(entries: Obj[], email: string) {
+  if (!Array.isArray(entries) || !entries.length) throw new Error("Nothing to post");
+  if (entries.length > 50) throw new Error("Too many at once — 50 entries at most");
+  const results: Obj[] = [];
+  for (const e of entries) {
+    const amt = N(e.amount);
+    try {
+      if (!(amt > 0)) throw new Error("amount must be more than 0");
+      if (!/^\d+$/.test(S(e.debit)) || !/^\d+$/.test(S(e.credit))) throw new Error("missing an account");
+      if (!/^\d{4}-\d\d-\d\d$/.test(S(e.date))) throw new Error("missing a date");
+      const memo = S(e.memo).slice(0, 4000);
+      const debit: Obj = { PostingType: "Debit", AccountRef: { value: S(e.debit) } };
+      if (/^\d+$/.test(S(e.customer))) debit.Entity = { Type: "Customer", EntityRef: { value: S(e.customer) } };
+      const je = {
+        TxnDate: S(e.date), DocNumber: S(e.doc || "").slice(0, 21) || undefined, PrivateNote: (memo + " · posted from the PHD billing console by " + email).slice(0, 4000),
+        Line: [
+          { DetailType: "JournalEntryLineDetail", Amount: amt, Description: memo.slice(0, 4000), JournalEntryLineDetail: debit },
+          { DetailType: "JournalEntryLineDetail", Amount: amt, Description: memo.slice(0, 4000), JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: S(e.credit) } } },
+        ],
+      };
+      const saved = (await qbo("POST", "journalentry", je)).JournalEntry || {};
+      results.push({ ref: S(e.ref), ok: true, id: S(saved.Id), doc: S(saved.DocNumber), at: new Date().toISOString() });
+    } catch (err) {
+      const msg = String((err as Error).message || err).slice(0, 300);
+      console.error(`journal ${S(e.ref)} failed: ${msg}`);
+      results.push({ ref: S(e.ref), ok: false, error: msg });
+    }
+  }
+  return { ok: true, results, posted: results.filter((r) => r.ok).length };
+}
+
 /* ---------- connect / disconnect ---------- */
 async function qboStatus() {
   const out: Obj = { configured: !!(QBO_ID && QBO_SECRET), env: QBO_ENV, redirectUri: QBO_REDIRECT, connected: false };
@@ -305,6 +342,7 @@ Deno.serve(async (req) => {
     if (mode === "status") return json(await qboStatus());
     if (mode === "sync") return json(await sync());
     if (mode === "apply") return json(await apply(body.changes, who.email));
+    if (mode === "journal") return json(await journal(body.entries, who.email));
     if (mode === "connect") return json(await connect(who.email));
     if (mode === "disconnect") return json(await disconnect());
     return json({ error: "Unknown mode" }, 400);

@@ -12,9 +12,9 @@ function toast(m, withUndo){
 /* ===================== chrome ===================== */
 function render(){
   const p = P();
-  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.view === "inventory" || S.ui.mode === "pm";
+  const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.view === "inventory" || S.ui.view === "business" || S.ui.mode === "pm";
   renderModeSwitch();
-  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : S.ui.view === "inventory" ? "Inventory" : p.name;
+  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : S.ui.view === "inventory" ? "Inventory" : S.ui.view === "business" ? "Business" : p.name;
   $("#swSub").textContent  = portfolioView
     ? `${live().length} propert${live().length===1?"y":"ies"}`
     : `${usd0(cents(p.invoiceTarget))} cap · ${p.feePct}% fee`;
@@ -48,12 +48,13 @@ function render(){
     today:    ["", "Today", ""],
     charges:  ["Projects", "Back-charges", ""],
     inventory:["Projects", "Inventory", ""],
+    business: ["Projects", "Business", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings})[S.ui.view] || pgOverview)();
   chip();
 }
 function actions(list){
@@ -94,6 +95,7 @@ function renderNav(){
   if(typeof payOnline === "function" && payOnline()) mk("payments", "Payments", "card", payNavBadge());
   { const nCh = typeof chOpenCount === "function" ? chOpenCount() : 0; mk("charges", "Back-charges", "receipt", nCh ? `<i class="badge" style="color:var(--gold)">${nCh}</i>` : null); }
   if(typeof pgInventory === "function"){ const nLow = invLowCount(); mk("inventory", "Inventory", "box", nLow ? `<i class="badge" style="color:var(--gold)" title="Running low">${nLow} low</i>` : null); }
+  if(typeof pgBusiness === "function"){ const nDue = bizRemindersDue(); mk("business", "Business", "chart", nDue ? `<i class="badge" style="color:var(--gold)" title="Invoice reminders due">${nDue} due</i>` : null); }
   if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
   const qbN = typeof qbCounts === "function" ? qbCounts() : null;
   const unrec = qbN ? qbN.none + qbN.gone : reconcileEntries().filter(e => !e.reconciled).length;
@@ -487,7 +489,7 @@ function visibleTxns(p){
 
 function pgTxns(){
   const p = P();
-  actions([["Undo", undo, "ghost"], ["Import", importSheet], ["Export CSV", exportTxnCsv], ["Full form", () => openSheet(null)]]);
+  actions([["Undo", undo, "ghost"], ["Read an order", () => ordSheet()], ["Import", importSheet], ["Export CSV", exportTxnCsv], ["Full form", () => openSheet(null)]]);
   const v = $("#view"), card = elm("div","card");
   const rows = visibleTxns(p);
   const filtered = !!(S.ui.query || S.ui.filterUnit || S.ui.filterStatus || S.ui.filterTag);
@@ -743,7 +745,7 @@ function pgScope(){
   const ZERO = {actualC:0,holdC:0,billedC:0,paidC:0,count:0};
   const rows = p.scope.map(item => {
     const w = C.work[item.id] || ZERO;
-    return {item, w, b:cents(item.budget), st:workStatus(item, w)};
+    return {item, w, b:workBudgetC(item), st:workStatus(item, w)};
   });
   const ST = [["Complete","green"],["In progress","acc"],["At budget","gold"],["Over budget","red"],["Not started","grey"]];
   const count = {}; ST.forEach(([s]) => count[s] = rows.filter(r => r.st === s).length);
@@ -823,10 +825,10 @@ function pgScope(){
           </div>
           <div class="sc-prog">
             <div class="sc-pbar"><i class="a" style="width:${pa}%;${st==="Over budget"?"background:var(--red)":""}"></i><i class="b" style="width:${pb}%"></i></div>
-            <div class="sc-pl num"><span>${usd(w.actualC)}</span><span class="muted">${b?usd(b):"no budget"}</span></div>
+            <div class="sc-pl num"><span>${usd(w.actualC)}</span><span class="muted">${b?usd(b):"no budget"}${workCoC(item)?` <span class="sc-co" title="Original ${usd(cents(item.budget))} + approved change orders">incl. CO ${usd(workCoC(item))}</span>`:""}</span></div>
           </div>
           <div class="sc-var num ${b?(vc<0?"varneg":"varpos"):""}">${b?(vc<0?"−":"+")+usd(Math.abs(vc)):`<span class="muted">—</span>`}</div>
-          <div><span class="tag ${cls}">${st}</span></div>
+          <div><span class="tag ${cls}">${st}</span>${st==="In progress"&&b&&w.actualC>=b*0.9?`<div class="sc-near">${Math.round(w.actualC/b*100)}% used</div>`:""}${(item.cos||[]).some(c=>c.status==="pending")?`<div class="sc-near">CO pending</div>`:""}</div>
           <span class="sc-go">›</span>`;
         row.onclick = () => workSheet(item.id);
         row.querySelector(".sc-chk").onclick = e => {
@@ -960,7 +962,8 @@ function workSheet(id){
       name:$("#w_name").value.trim() || "Untitled work",
       unit:$("#w_unit").value, budget:Number($("#w_budget").value)||0,
       match:$("#w_match").value.split(",").map(x=>x.trim()).filter(Boolean),
-      done:$("#w_done").checked, notes:$("#w_notes").value.trim()
+      done:$("#w_done").checked, notes:$("#w_notes").value.trim(),
+      cos:(typeof WS_COS !== "undefined" && WS_COS) ? WS_COS : (item.cos || [])
     };
     const L = P().scope;
     if(isNew) L.push(rec); else L[L.findIndex(x => x.id === id)] = rec;
@@ -8390,6 +8393,62 @@ function directBulk(ids){
   toast(`${list.length} marked paid directly · fee lines added`, true);
 }
 
+/* =====================================================================
+   BUDGETS AND CHANGE ORDERS — on the Scope of work.
+   A work item's budget is what was agreed at the start (item.budget) plus
+   its approved change orders (item.cos: [{id, no, desc, amount, date,
+   status: "approved" | "pending"}]); pending ones are shown but don't count
+   until they're approved. budgetAlerts() lists, across every project, the
+   items that have used 90% or more of their budget, gone over, or have a
+   change order waiting — for the Business page and Today.
+   ===================================================================== */
+let WS_COS = null;                                   // the change orders being edited in the open work-item sheet
+(function(){
+  const base = workSheet;
+  workSheet = function(id){
+    base(id);
+    const p = P(), item = id ? (p.scope || []).find(x => x.id === id) : null;
+    WS_COS = JSON.parse(JSON.stringify((item && item.cos) || []));
+    const live = $("#w_live"); if(!live) return;
+    live.insertAdjacentHTML("beforebegin", `<div id="w_cos"></div>`);
+    const box = $("#w_cos");
+    const sum = () => { const el = $("#coSum"); if(!el) return;
+      const orig = cents(+$("#w_budget").value || 0), ok = WS_COS.filter(c => c.status === "approved").reduce((a, c) => a + cents(c.amount), 0), pend = WS_COS.filter(c => c.status === "pending").reduce((a, c) => a + cents(c.amount), 0);
+      el.innerHTML = WS_COS.length ? `Budget ${usd(orig)} + ${usd(ok)} approved = <b>${usd(orig + ok)}</b>${pend ? ` · ${usd(pend)} pending` : ""}` : "None — the budget above is the whole budget"; };
+    const draw = () => {
+      box.innerHTML = `<hr class="sep"><div class="co-h"><div class="label">Change orders</div><span class="muted" style="font-size:12.5px" id="coSum"></span><button class="btn sm ghost" id="coAdd" type="button" style="margin-left:auto">+ Change order</button></div>
+        ${WS_COS.map((c, i) => `<div class="co-r" data-i="${i}">
+          <input type="text" data-f="no" value="${esc(c.no || "")}" placeholder="CO 001" class="co-no">
+          <input type="text" data-f="desc" value="${esc(c.desc || "")}" placeholder="What changed">
+          <input type="date" data-f="date" value="${esc(c.date || "")}">
+          <input type="number" step="0.01" data-f="amount" value="${c.amount != null ? c.amount : ""}" placeholder="Amount" class="co-amt">
+          <select data-f="status"><option value="approved" ${c.status === "approved" ? "selected" : ""}>Approved</option><option value="pending" ${c.status !== "approved" ? "selected" : ""}>Pending</option></select>
+          <button class="btn sm ghost" data-rm type="button" aria-label="Remove">✕</button></div>`).join("")}
+        <p class="help" style="margin:4px 0 0">Approved change orders add to this item's budget; pending ones don't count until approved. A credit (work taken out) is a negative amount.</p>`;
+      box.querySelector("#coAdd").onclick = () => { WS_COS.push({id:uid(), no:"CO " + String((p.scope || []).filter(x => !item || x.id !== item.id).reduce((a, x) => a + (x.cos || []).length, 0) + WS_COS.length + 1).padStart(3, "0"), desc:"", amount:"", date:todayISO(), status:"pending"}); draw(); const ins = box.querySelectorAll('[data-f="desc"]'); ins[ins.length - 1].focus(); };
+      box.querySelectorAll(".co-r").forEach(r => { const c = WS_COS[+r.dataset.i];
+        r.querySelectorAll("[data-f]").forEach(inp => inp.oninput = inp.onchange = () => { c[inp.dataset.f] = inp.dataset.f === "amount" ? (+inp.value || 0) : inp.value; sum(); });
+        r.querySelector("[data-rm]").onclick = () => { WS_COS.splice(+r.dataset.i, 1); draw(); }; });
+      sum();
+    };
+    $("#w_budget").addEventListener("input", sum);
+    draw();
+  };
+})();
+function budgetAlerts(){
+  const out = [];
+  live().forEach(p => {
+    const C = (typeof ALL !== "undefined" && ALL[p.id]) || compute(p);
+    (p.scope || []).forEach(item => {
+      if(item.done || (/from ledger/i.test((item.cat || "") + " " + (item.notes || "")) && !(item.cos || []).length)) return;      // built from transactions: the budget is just what was spent
+      const w = (C.work || {})[item.id] || {actualC:0}, b = workBudgetC(item), pend = (item.cos || []).filter(c => c.status === "pending");
+      const pct = b > 0 ? w.actualC / b : 0, hot = b > 0 && pct >= 0.9;
+      if(hot || pend.length) out.push({p, item, w, b, pct, pending:pend, kind:hot ? (w.actualC > b ? "over" : "near") : "co"});
+    });
+  });
+  return out.sort((a, b) => ({over:0, near:1, co:2}[a.kind] - {over:0, near:1, co:2}[b.kind]) || b.pct - a.pct);
+}
+
 /* ====================================================================
    QUICKBOOKS — project expenses checked against the books
    --------------------------------------------------------------------
@@ -9140,6 +9199,208 @@ function qbFixTab(body, m){
 }
 
 /* =====================================================================
+   ORDER READER — a Lowe's / Home Depot / Costco / Amazon order, read for you.
+   Paste the order page (select all, copy) or drop its PDF. The console finds
+   what was billed, the tax rate, each return (items × price × tax, and the
+   refund total for the rest) and any payments the store split the charge
+   into. You check the lines, pick the property and unit, and it adds the
+   purchase and every return as their own lines — so each one can match its
+   own card charge or credit in QuickBooks, which it links right away when
+   QuickBooks already has them.
+   ===================================================================== */
+const ORD_MONEY = /-?\$\s?\(?([\d,]+\.\d{2})\)?/;
+const ordNum = s => { const m = String(s || "").match(ORD_MONEY); return m ? +m[1].replace(/,/g, "") : null; };
+const ordMoneyAll = s => [...String(s || "").matchAll(/\$\s?([\d,]+\.\d{2})/g)].map(m => +m[1].replace(/,/g, ""));
+const ORD_MON = {jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, sept:9, oct:10, nov:11, dec:12};
+function ordDate(s){
+  s = String(s || "");
+  let m = s.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i);
+  if(m) return `${m[3]}-${String(ORD_MON[m[1].toLowerCase().slice(0, m[1].toLowerCase() === "sept" ? 4 : 3)] || ORD_MON[m[1].toLowerCase().slice(0, 3)]).padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+  m = s.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+  if(m){ const y = m[3].length === 2 ? "20" + m[3] : m[3]; return `${y}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`; }
+  m = s.match(/\b(20\d\d)-(\d\d)-(\d\d)\b/); if(m) return m[0];
+  return "";
+}
+function ordStore(text){
+  const t = text.toLowerCase();
+  return /lowe'?s|mylowe|lowes\.com|model #low-/.test(t) ? "Lowe's" : /home ?depot/.test(t) ? "Home Depot" : /costco/.test(t) ? "Costco" : /amazon/.test(t) ? "Amazon" : /floor ?& ?decor/.test(t) ? "Floor & Decor" : /sherwin/.test(t) ? "Sherwin Williams" : "";
+}
+// the value printed after a label, on the same line or the next
+function ordAfter(lines, re){
+  for(let i = 0; i < lines.length; i++){
+    if(!re.test(lines[i])) continue;
+    const v = ordNum(lines[i].replace(re, "")); if(v != null) return v;
+    for(let j = i + 1; j < Math.min(lines.length, i + 3); j++){ const w = ordNum(lines[j]); if(w != null) return w; if(/[a-z]{3,}/i.test(lines[j]) && !/\$/.test(lines[j])) break; }
+  }
+  return null;
+}
+function ordParse(text){
+  text = String(text || "").replace(/\r/g, "").replace(/[ \t]+/g, " ");
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const out = {store:ordStore(text), orders:[...new Set([...text.matchAll(/order\s*(?:#|no\.?|number)\s*:?\s*\n?\s*([A-Z0-9-]{6,})/gi)].map(m => m[1]))],
+    job:"", date:"", subtotal:null, tax:null, billed:null, charged:null, refund:null, rate:0, returns:[], payments:[], notes:[]};
+  const jm = text.match(/(?:PO\s*\/\s*Job Name|Job Name|PO Number|Project)\s*:?\s*\n?\s*([^\n$]{3,60})/i); if(jm) out.job = jm[1].trim();
+  const dm = text.match(/(?:order(?:ed)?\s*(?:date|placed)?|purchase date|date)\s*:?\s*\n?\s*([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  out.date = ordDate(dm ? dm[1] : text);
+  out.subtotal = ordAfter(lines, /^(merchandise\s+)?sub\s*-?total\b/i);
+  out.tax = ordAfter(lines, /^(sales\s+)?tax\b|^estimated tax/i);
+  out.billed = ordAfter(lines, /^total billed\b|^order total\b|^grand total\b|^total paid\b|^\**\s*total\b(?!\s*(charged|savings|saved|items))/i);
+  out.charged = ordAfter(lines, /^total charged\b/i);
+  // refunds: "Refund Issued … $594.72", "Refund total", "Refunded $x"
+  const rf = []; lines.forEach((l, i) => { if(/refund(ed| issued| total| amount)?/i.test(l)){ const v = ordNum(l) != null ? ordNum(l) : ordNum(lines[i + 1] || ""); if(v != null && !/\/ea|qty/i.test(l)) rf.push(v); } });
+  out.refund = rf.length ? Math.max(...rf) : (out.billed != null && out.charged != null && out.billed > out.charged ? Math.round((out.billed - out.charged) * 100) / 100 : null);
+  if(out.subtotal && out.tax) out.rate = out.tax / out.subtotal;
+  // payments the store split the charge into: "7/28/26  MyLowe's Rewards Credit Card  $1,012.90"
+  lines.forEach((l, i) => { const m = l.match(/^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{3,60}?)\s+\$([\d,]+\.\d{2})$/); if(m) out.payments.push({date:ordDate(m[1]), method:m[2].trim(), amount:+m[3].replace(/,/g, "")}); });
+  // returns: each "Return …" block, with the items listed in it (price each × qty)
+  const isStart = l => /^return(ed)?(\s+(completed|complete|pending|initiated|started|in progress|processed))?\.?$/i.test(l);
+  const starts = []; lines.forEach((l, i) => { if(isStart(l) && !(starts.length && i - starts[starts.length - 1] <= 1)) starts.push(i); });
+  const stop = lines.findIndex((l, i) => i > (starts[starts.length - 1] || 0) && /^(payment method|order summary|return & cancellation|returns? (&|and) cancell?ation)/i.test(l));
+  starts.forEach((a, n) => {
+    const b = starts[n + 1] != null ? starts[n + 1] : (stop > a ? stop : lines.length);
+    const seg = lines.slice(a, b), items = [];
+    seg.forEach((l, j) => { const m = l.match(/\$([\d,]+\.\d{2})\s*\/\s*ea\.?\s*(?:qty|quantity)\s*:?\s*(\d+)/i); if(!m) return;
+      const name = (seg.slice(0, j).filter(x => /[a-z]{4,}/i.test(x) && !/saved|discount|review|buy again|^return|expect to see|^item #|model #|refund/i.test(x)).pop() || "Item").trim();
+      items.push({name:name.slice(0, 70), each:+m[1].replace(/,/g, ""), qty:+m[2]}); });
+    const rl = seg.find(x => /refund/i.test(x) && ORD_MONEY.test(x));
+    out.returns.push({items, refund:rl ? ordNum(rl) : null});
+  });
+  // what each return came to with tax; one return without items listed takes what's left of the refund total
+  const r = out.rate || 0;
+  out.returns.forEach(x => { if(x.refund == null && x.items.length) x.amount = Math.round(x.items.reduce((s, it) => s + it.each * it.qty, 0) * (1 + r) * 100) / 100; else x.amount = x.refund; });
+  const known = out.returns.filter(x => x.amount != null).reduce((s, x) => s + x.amount, 0), open = out.returns.filter(x => x.amount == null);
+  if(out.refund != null && open.length === 1) open[0].amount = Math.round((out.refund - known) * 100) / 100;
+  if(out.refund != null && !out.returns.length) out.returns.push({items:[], amount:out.refund});
+  if(out.refund != null && Math.abs(out.returns.reduce((s, x) => s + (x.amount || 0), 0) - out.refund) > 0.01) out.notes.push(`The returns add up to ${usd(Math.round(out.returns.reduce((s, x) => s + (x.amount || 0), 0) * 100))}, but the order says ${usd(Math.round(out.refund * 100))} was refunded — check the return amounts.`);
+  if(out.billed == null && out.subtotal != null) out.billed = Math.round((out.subtotal + (out.tax || 0)) * 100) / 100;
+  if(out.billed == null && out.charged != null) out.billed = Math.round((out.charged + (out.refund || 0)) * 100) / 100;
+  return out;
+}
+async function ordPdfText(file){
+  const pdfjs = await import("./vendor/pdf.min.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
+  const doc = await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  let text = "";
+  for(let i = 1; i <= Math.min(doc.numPages, 30); i++){
+    const pg = await doc.getPage(i), tc = await pg.getTextContent();
+    let lastY = null; tc.items.forEach(it => { const y = Math.round(it.transform[5]); text += (lastY != null && Math.abs(y - lastY) > 2 ? "\n" : " ") + it.str; lastY = y; });
+    text += "\n";
+  }
+  return text;
+}
+// QuickBooks records for one line: same amount (a refund is a credit), same store, near the order date
+function ordQbFor(amountC, date, store, used, payments){
+  if(typeof qbReady !== "function" || !qbReady()) return null;
+  const m = qbMatch(); if(!m) return null;
+  // the order lists the payments it was split into: find each one, on any card, within a few days of its date
+  if(amountC > 0 && payments && payments.length && Math.round(payments.reduce((s, x) => s + x.amount, 0) * 100) === amountC){
+    const got = [], taken = new Set(used);
+    payments.forEach(pay => { const c = Math.round(pay.amount * 100), pd = qbDay(pay.date);
+      let best = null; m.unitBy.forEach(u => { if(taken.has(u.k) || u.c !== c || (u.line && u.qt.lines.length < 2)) return; const dd = Math.abs((u.d || 0) - (pd || 0)); if(dd <= 6 && (!best || dd < best.dd)) best = {u, dd}; });
+      if(best){ got.push(best.u); taken.add(best.u.k); } });
+    if(got.length === payments.length) return got;
+  }
+  const d = qbDay(date), cands = [];
+  m.unitBy.forEach(u => { if(u.line && u.qt.lines.length < 2) return; if(used.has(u.k)) return;
+    const dd = d != null && u.d != null ? u.d - d : 0;
+    if(dd < -5 || dd > 75) return;
+    if(!qbVendorHit(store, u.qt) && !(u.qt.memo || "").toLowerCase().includes(String(store).toLowerCase().replace(/'/g, "").slice(0, 4))) return;
+    cands.push({u, dd}); });
+  const one = cands.filter(x => x.u.c === amountC).sort((a, b) => Math.abs(a.dd) - Math.abs(b.dd))[0];
+  if(one) return [one.u];
+  if(amountC > 0){                                  // charged in pieces as it shipped
+    const pos = cands.filter(x => x.u.c > 0 && x.u.c < amountC && x.dd >= -3 && x.dd <= 45).sort((a, b) => a.dd - b.dd).slice(0, 16);
+    let best = null;
+    const rec = (i, sum, pick) => { if(best) return; if(sum === amountC && pick.length >= 2){ best = pick.slice(); return; } if(i >= pos.length || pick.length >= 5 || sum > amountC) return;
+      pick.push(pos[i].u); rec(i + 1, sum + pos[i].u.c, pick); pick.pop(); rec(i + 1, sum, pick); };
+    rec(0, 0, []); if(best) return best;
+  }
+  return null;
+}
+
+function ordSheet(){
+  const ps = live().filter(p => !p.archived), sh = $("#sheet");
+  let P0 = null, rows = [];
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Read a store order</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Lowe's, Home Depot, Costco, Amazon — the purchase and every return as their own lines</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div id="ordIn"><p class="help" style="margin-top:0">Open the order on the store's site, select everything (⌘A), copy and paste it here — or drop the order PDF.</p>
+        <textarea id="ordT" rows="8" class="inv-paste" placeholder="Paste the order page here"></textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><label class="btn sm">Choose a PDF<input type="file" id="ordF" accept="application/pdf,.pdf,.txt" hidden></label><button class="btn sm primary" id="ordGo">Read it</button><span class="muted" id="ordMsg" style="font-size:12.5px"></span></div></div>
+      <div id="ordOut"></div>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="ordAdd" disabled>Add to the project</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const guessProp = (o, text) => { const t = PMCore.normAddr(o.job + " " + text.slice(0, 4000));
+    return ps.find(p => [p.name, p.address].concat(p.aliases || []).map(PMCore.normAddr).filter(Boolean).some(k => k.length > 4 && t.includes(k))) || P() || ps[0]; };
+  const read = text => {
+    const o = ordParse(text); P0 = o;
+    if(o.billed == null && !o.returns.length){ $("#ordMsg").textContent = "Couldn't find a total in that — paste the whole order page, including the order summary."; return; }
+    const p = guessProp(o, text), base = o.job && !ps.some(x => PMCore.normAddr(x.name) === PMCore.normAddr(o.job)) ? o.job : "Materials";
+    rows = [];
+    if(o.billed != null) rows.push({on:true, kind:"buy", date:o.date || todayISO(), desc:`${base}${o.orders[0] ? " — order " + o.orders[0] : ""}`, amount:o.billed});
+    o.returns.forEach((r, i) => rows.push({on:r.amount != null, kind:"ret", date:o.date || todayISO(), desc:`Return${r.items.length ? ": " + r.items.map(it => (it.qty > 1 ? it.qty + " × " : "") + it.name).join(", ") : o.returns.length > 1 ? " " + (i + 1) + " (items not listed)" : ""}`.slice(0, 140), amount:r.amount != null ? r.amount : 0}));
+    $("#ordIn").style.display = "none";
+    draw(p.id);
+  };
+  const draw = pid => {
+    const p = ps.find(x => x.id === pid) || ps[0], o = P0;
+    const used = new Set(); rows.forEach(r => { r.qb = r.on && r.amount ? ordQbFor((r.kind === "ret" ? -1 : 1) * Math.round(r.amount * 100), r.date, $("#ordV") ? $("#ordV").value : o.store, used, r.kind === "buy" ? o.payments : null) : null; (r.qb || []).forEach(u => used.add(u.k)); });
+    rows.forEach(r => { r.dupe = (p.transactions || []).find(t => Math.abs(cents(t.amount) - (r.kind === "ret" ? -1 : 1) * Math.round(r.amount * 100)) === 0 && Math.abs((qbDay(t.date) || 0) - (qbDay(r.date) || 0)) <= 20); });
+    const net = rows.filter(r => r.on).reduce((s, r) => s + (r.kind === "ret" ? -1 : 1) * Math.round(r.amount * 100), 0);
+    $("#ordOut").innerHTML = `
+      <div class="ord-facts">${[["Store", o.store || "?"], ["Order", o.orders.join(", ") || "—"], ["Billed", o.billed != null ? usd(Math.round(o.billed * 100)) : "—"], ["Tax rate", o.rate ? (o.rate * 100).toFixed(2) + "%" : "—"], ["Refunded", o.refund != null ? usd(Math.round(o.refund * 100)) : "none"], o.charged != null ? ["Charged", usd(Math.round(o.charged * 100))] : null].filter(Boolean).map(([k, v]) => `<div><span class="label">${k}</span><b class="num">${esc(v)}</b></div>`).join("")}</div>
+      ${o.notes.map(n => `<div class="pm-banner">${esc(n)}</div>`).join("")}
+      ${o.payments.length ? `<p class="help" style="margin:6px 0">Paid in ${o.payments.length} part${o.payments.length === 1 ? "" : "s"}: ${o.payments.map(x => `${usd(Math.round(x.amount * 100))} on ${fdateS(x.date)} (${esc(x.method)})`).join(" · ")}</p>` : ""}
+      <div class="f3"><label class="fld"><span>Property</span><select id="ordP">${ps.map(x => `<option value="${x.id}" ${x.id === p.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Unit</span><select id="ordU">${p.units.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join("")}${p.units.length > 1 ? `<option value="split">Split evenly</option>` : ""}</select></label>
+        <label class="fld"><span>Vendor</span><input type="text" id="ordV" value="${esc(($("#ordV") || {}).value || o.store || "")}"></label></div>
+      <table class="tbl ord-tbl"><thead><tr><th></th><th>Date</th><th>Line</th><th class="r">Amount</th><th>QuickBooks</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr data-i="${i}" class="${r.on ? "" : "off"}"><td><input type="checkbox" data-on ${r.on ? "checked" : ""}></td>
+        <td><input type="date" data-f="date" value="${esc(r.date)}"></td>
+        <td><input type="text" data-f="desc" value="${esc(r.desc)}">${r.dupe ? `<div class="ord-warn">Already in ${esc(p.name)}: ${esc(r.dupe.desc || r.dupe.vendor || "")} ${usd(cents(r.dupe.amount))} on ${esc(fdateS(r.dupe.date))}</div>` : ""}</td>
+        <td class="r nw">${r.kind === "ret" ? "−" : ""}<input type="number" step="0.01" min="0" data-f="amount" value="${r.amount || ""}" class="md-n"></td>
+        <td class="ord-qb">${!r.on ? "" : r.qb ? `<span class="tag green">found</span> <span class="muted">${esc(r.qb.map(u => (u.c < 0 ? "credit " : "") + usd(Math.abs(u.c)) + " " + fdateS(u.qt.date) + (u.qt.from ? " · " + qbShort(u.qt.from.name) : "")).join(" + "))}</span>` : `<span class="muted">not in QuickBooks yet</span>`}</td></tr>`).join("")}
+      </tbody></table>
+      <div style="display:flex;gap:8px;margin-top:6px"><button class="btn sm ghost" data-add="buy">+ Purchase line</button><button class="btn sm ghost" data-add="ret">+ Return</button><span style="flex:1"></span><span class="num">Net <b>${usd(net)}</b></span></div>
+      <p class="help">Each line is added on its own, so the purchase matches its card charge${o.payments.length > 1 ? "s" : ""} and every return matches its own credit. Lines marked <b>found</b> are linked to QuickBooks as they're added.</p>`;
+    const a = $("#ordAdd"); a.disabled = !rows.some(r => r.on && r.amount); a.textContent = `Add ${rows.filter(r => r.on && r.amount).length} line${rows.filter(r => r.on && r.amount).length === 1 ? "" : "s"} to ${p.name}`;
+    $("#ordOut").querySelectorAll("tr[data-i]").forEach(tr => { const r = rows[+tr.dataset.i];
+      tr.querySelector("[data-on]").onchange = e => { r.on = e.target.checked; draw($("#ordP").value); };
+      tr.querySelectorAll("[data-f]").forEach(inp => inp.onchange = () => { r[inp.dataset.f] = inp.dataset.f === "amount" ? Math.abs(+inp.value || 0) : inp.value; draw($("#ordP").value); }); });
+    $("#ordOut").querySelectorAll("[data-add]").forEach(b => b.onclick = () => { rows.push({on:true, kind:b.dataset.add, date:(rows[0] || {}).date || todayISO(), desc:b.dataset.add === "ret" ? "Return" : "Materials", amount:0}); draw($("#ordP").value); });
+    $("#ordP").onchange = () => draw($("#ordP").value);
+    $("#ordV").onchange = () => draw($("#ordP").value);
+  };
+  const go = async () => {
+    const f = $("#ordF").files[0]; let text = $("#ordT").value;
+    if(f){ $("#ordMsg").textContent = "Reading the PDF…"; try{ text = /\.txt$/i.test(f.name) ? await f.text() : await ordPdfText(f); }catch(e){ $("#ordMsg").textContent = "Couldn't read that PDF: " + e.message; return; } }
+    if(!text.trim()) return $("#ordMsg").textContent = "Paste the order page or choose its PDF";
+    read(text);
+  };
+  $("#ordGo").onclick = go; $("#ordF").onchange = go;
+  $("#ordAdd").onclick = () => {
+    const p = ps.find(x => x.id === $("#ordP").value), uv = $("#ordU").value, vend = $("#ordV").value.trim() || P0.store || "Store";
+    const list = rows.filter(r => r.on && r.amount);
+    if(list.some(r => r.dupe) && !confirm("Some of these look like they're already in this project (same amount within 20 days). Add them anyway?")) return;
+    let scope;
+    if(uv === "split"){ const sp = {}, even = +(100 / p.units.length).toFixed(2); p.units.forEach((u, i) => sp[u.id] = i === p.units.length - 1 ? +(100 - even * (p.units.length - 1)).toFixed(2) : even); scope = {type:"split", unit:null, splits:sp}; }
+    else scope = {type:"single", unit:uv, splits:{}};
+    snapshot();
+    const hasRet = (p.tags || []).some(t => t.id === RETURN_TAG_ID);
+    list.forEach(r => {
+      const rec = {id:uid(), date:r.date, vendor:vend, desc:r.desc, receipt:P0.orders.length ? "Order " + P0.orders.join(", ") : "", link:"", amount:(r.kind === "ret" ? -1 : 1) * Math.round(r.amount * 100) / 100,
+        scope:JSON.parse(JSON.stringify(scope)), status:"billable", applyFee:true, allowPartial:true, pin:null, party:"Owner", notes:"From the store order" + (P0.orders.length ? " " + P0.orders.join(", ") : ""), tags:r.kind === "ret" && hasRet ? [RETURN_TAG_ID] : [], reconciled:false, reconciledAt:""};
+      if(r.qb && r.qb.length){ const keys = r.qb.map(u => u.k), [type, rest] = keys[0].split("/"), [id, line] = rest.split("#");
+        rec.qb = keys.length === 1 ? {type, id, line:line || undefined, how:"order", at:todayISO(), by:typeof qbWho === "function" ? qbWho() : ""} : {ids:keys, how:"order", at:todayISO(), by:typeof qbWho === "function" ? qbWho() : ""}; }
+      if(typeof applyHoldRule === "function") applyHoldRule(rec, p);
+      p.transactions.push(rec);
+    });
+    commit(); closeSheet(); render();
+    toast(`Added ${list.length} line${list.length === 1 ? "" : "s"} to ${p.name}${list.filter(r => r.qb).length ? ` · ${list.filter(r => r.qb).length} linked to QuickBooks` : ""}`, true);
+  };
+}
+
+/* =====================================================================
    INVENTORY — what PHD buys in bulk (Costco, Lowe's…) and hands out to projects.
    S.acct.inv  (shared with the team, in the accounting doc)
      items: [{id, store, name, bought, paid, tax, retail, charge, adj, note, created, by, qb:[lineKey…]}]
@@ -9220,13 +9481,40 @@ function pgInventory(){
 }
 function invUsedCard(v, uses, q){
   const list = uses.filter(u => !q || (u.t.desc + " " + u.p.name).toLowerCase().includes(q)).sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
+  const qb = typeof qbReady === "function" && qbReady(), todo = list.filter(u => !(u.t.inv.je && u.t.inv.je.id) && cents(u.t.inv.cost || 0) > 0);
   const card = elm("div", "card");
-  card.innerHTML = list.length ? `<table class="tbl"><thead><tr><th>Date</th><th>Property</th><th>Item</th><th class="r">Qty</th><th class="r">Billed</th><th class="r">Our cost</th><th></th></tr></thead><tbody>
+  card.innerHTML = list.length ? `${qb ? `<div class="card-h"><h3>Used on projects</h3><span class="muted td-n">${todo.length ? `${todo.length} not in QuickBooks yet · ${usd(todo.reduce((a, u) => a + cents(u.t.inv.cost || 0), 0))} at cost` : "All posted to QuickBooks"}</span>${todo.length ? `<button class="btn sm primary" id="invJe" style="margin-left:auto">Post ${todo.length} to QuickBooks</button>` : ""}</div>` : ""}
+    <table class="tbl"><thead><tr><th>Date</th><th>Property</th><th>Item</th><th class="r">Qty</th><th class="r">Billed</th><th class="r">Our cost</th>${qb ? "<th>QuickBooks</th>" : ""}<th></th></tr></thead><tbody>
     ${list.map((u, i) => `<tr><td class="nw muted">${esc(fdateS(u.t.date))}</td><td>${esc(u.p.name)}${u.p.archived ? ` <span class="muted">(archived)</span>` : ""}</td><td>${esc(u.t.desc || "")}</td><td class="r num">${u.qty}</td><td class="r num">${usd(cents(u.t.amount))}</td><td class="r num muted">${usd(cents(u.t.inv.cost || 0))}</td>
-      <td class="r nw"><button class="btn sm ghost" data-open="${i}">›</button></td></tr>`).join("")}</tbody></table>`
+      ${qb ? `<td>${u.t.inv.je && u.t.inv.je.id ? `<span class="tag green" title="Journal entry ${esc(u.t.inv.je.id)}, ${esc(fdateS(String(u.t.inv.je.at || "").slice(0, 10)))}">Posted</span>` : u.t.inv.je && u.t.inv.je.error ? `<span class="tag red" title="${esc(u.t.inv.je.error)}">Didn't post</span>` : `<span class="muted">not yet</span>`}</td>` : ""}
+      <td class="r nw"><button class="btn sm ghost" data-open="${i}">›</button></td></tr>`).join("")}</tbody></table>
+    ${qb ? `<p class="help" style="margin:8px 16px 12px">Posting makes one QuickBooks journal entry per use: our cost comes out of ${esc(qbShort((qbAcct(invAcctId()) || {}).name || "Inventory Asset"))} and goes to ${esc(qbShort((qbAcct(invMatAcct()) || {}).name || "Materials & Supplies"))} with the project's customer — so QuickBooks shows what's still on the shelf, and each project's real materials cost.</p>` : ""}`
     : `<div class="empty"><b>Nothing used on a project yet</b><p>Press “Use on a project” on an item: it adds a PHD Inventory charge to that project's transactions.</p></div>`;
   v.appendChild(card);
   card.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { const u = list[+b.dataset.open]; go("txns", u.p.id); setTimeout(() => openSheet(u.t.id), 40); });
+  const jb = card.querySelector("#invJe"); if(jb) jb.onclick = () => invPostJe(todo, jb);
+}
+function invMatAcct(){
+  const c = (typeof qbCfg === "function" ? qbCfg() : {}) || {};
+  return c.mat || (((S.qbo && S.qbo.accounts) || []).find(a => /^project management:materials/i.test(a.name)) || {}).id || "";
+}
+async function invPostJe(list, btn){
+  const credit = invAcctId(), debit = invMatAcct();
+  if(!credit || !debit) return toast("Pick the inventory account and the materials account in QuickBooks settings first");
+  const tot = list.reduce((a, u) => a + cents(u.t.inv.cost || 0), 0);
+  if(!confirm(`Post ${list.length} journal entr${list.length === 1 ? "y" : "ies"} to QuickBooks (${usd(tot)} at cost)?\n\nEach moves our cost from ${(qbAcct(credit) || {}).name} to ${(qbAcct(debit) || {}).name}, with the project's customer.`)) return;
+  if(btn){ btn.disabled = true; btn.textContent = "Posting…"; }
+  const entries = list.map(u => ({ref:u.p.id + "|" + u.t.id, date:u.t.date || todayISO(), amount:Math.round(cents(u.t.inv.cost || 0)) / 100, debit, credit, customer:qbCustFor(u.p) || "",
+    memo:`PHD inventory used on ${u.p.name}: ${u.t.desc}`}));
+  try{
+    const r = await qbCall("journal", {entries});
+    snapshot();
+    (r.results || []).forEach(x => { const [pid, tid] = String(x.ref).split("|"), p = S.properties.find(y => y.id === pid), t = p && p.transactions.find(y => y.id === tid); if(!t || !t.inv) return;
+      t.inv.je = x.ok ? {id:x.id, at:x.at} : {error:x.error, at:new Date().toISOString()}; });
+    commit(); render();
+    const bad = (r.results || []).filter(x => !x.ok);
+    toast(bad.length ? `${r.posted} posted · ${bad.length} didn't: ${bad[0].error}` : `Posted ${r.posted} to QuickBooks`);
+  }catch(e){ toast(e.message); if(btn){ btn.disabled = false; btn.textContent = "Post to QuickBooks"; } }
 }
 // QuickBooks: bulk buys sitting in the inventory account, and store charges not categorized yet
 function invQbCard(v){
@@ -9460,6 +9748,283 @@ function invReceiptSheet(x, canMove){
   };
 }
 
+
+/* =====================================================================
+   BUSINESS — the projects side's back office, on one page with four tabs:
+     Profit       what PHD earns on each renovation (project fees, fees on
+                  labor the owner paid directly, inventory markup), collected
+                  vs. invoiced vs. not invoiced yet
+     Budgets      work items at 90%+ of budget, over budget, or waiting on a
+                  change order — across every project
+     Contractors  who PHD paid, by year (1099s), contract vs. paid per
+                  project, W-9 and insurance on file, and what isn't in
+                  QuickBooks yet
+     Unpaid       owner invoices sent and not paid, by age, with reminders
+                  from billing@ at 7 and 14 days
+   Contractor records live in S.acct.ctr (shared): {[key]: {name, email,
+   w9 (date received), coi (insurance expiry), corp (no 1099), notes,
+   contracts: {[propertyId]: amount}}}.
+   ===================================================================== */
+ICON_PATHS.chart = '<path d="M2.5 13.5h11"/><path d="M4.5 11V8M7.5 11V5M10.5 11V7M13 11V3.5"/>';
+const BIZ_TABS = [["profit", "Profit"], ["budgets", "Budgets"], ["contractors", "Contractors"], ["unpaid", "Unpaid invoices"]];
+const bizC = p => (typeof ALL !== "undefined" && ALL[p.id]) || compute(p);
+const bizDays = iso => iso ? Math.floor((Date.parse(todayISO() + "T12:00:00") - Date.parse(String(iso).slice(0, 10) + "T12:00:00")) / 86400000) : null;
+
+/* ---------- profit ---------- */
+function bizProfit(){
+  return live().map(p => {
+    const C = bizC(p), R = C.roll || {}, r = {p, feeC:R.feeC || 0, feePaidC:R.feePaidC || 0, feeSentC:R.feeSentC || 0, dirC:0, dirPaidC:0, dirSentC:0, invC:0, invPaidC:0, invSentC:0};
+    (p.transactions || []).forEach(t => {
+      const pay = (C.txn[t.id] || {}).pay || "";
+      const put = (k, v) => { r[k + "C"] += v; if(pay === "Paid") r[k + "PaidC"] += v; else if(/Invoiced|Part paid|Part invoiced/.test(pay)) r[k + "SentC"] += v; };
+      if(t.feeFor && t.status === "billable") put("dir", cents(t.amount));
+      if(t.inv && t.status === "billable") put("inv", cents(t.amount) - cents(t.inv.cost || 0));
+    });
+    r.totC = r.feeC + r.dirC + r.invC; r.paidC = r.feePaidC + r.dirPaidC + r.invPaidC; r.sentC = r.feeSentC + r.dirSentC + r.invSentC; r.draftC = r.totC - r.paidC - r.sentC;
+    r.spendC = (p.transactions || []).filter(t => t.status !== "review" && !t.feeFor && !t.inv).reduce((a, t) => a + cents(t.amount), 0);
+    return r;
+  }).filter(r => r.totC || r.spendC);
+}
+function bizProfitTab(v){
+  const rows = bizProfit().sort((a, b) => b.totC - a.totC), T = k => rows.reduce((a, r) => a + r[k], 0);
+  const hero = elm("div", "card pf-hero td-hero");
+  hero.innerHTML = `<div class="pf-cell"><div class="label">Earned on projects</div><div class="pf-v">${usd(T("totC"))}</div><div class="pf-note">fees ${usd(T("feeC"))} · on owner-paid labor ${usd(T("dirC"))} · inventory ${usd(T("invC"))}</div></div>
+    <div class="pf-cell"><div class="label">Collected</div><div class="pf-v g">${usd(T("paidC"))}</div><div class="pf-note">on invoices marked paid</div></div>
+    <div class="pf-cell"><div class="label">Invoiced, not paid</div><div class="pf-v a">${usd(T("sentC"))}</div><div class="pf-note">${usd(T("draftC"))} more not invoiced yet</div></div>`;
+  v.appendChild(hero);
+  const card = elm("div", "card");
+  card.innerHTML = rows.length ? `<table class="tbl biz-tbl"><thead><tr><th>Project</th><th class="r">Project spend</th><th class="r">Project fee</th><th class="r">Owner-paid labor fee</th><th class="r">Inventory markup</th><th class="r">Earned</th><th class="r">Collected</th><th class="r">Outstanding</th><th class="r">Margin</th></tr></thead><tbody>
+    ${rows.map((r, i) => `<tr data-i="${i}" class="biz-click"><td><b>${esc(r.p.name)}</b><div class="item-s">${esc(r.p.owner || "")}${r.p.feePct ? ` · ${r.p.feePct}% fee` : ""}</div></td>
+      <td class="r num">${usd(r.spendC)}</td><td class="r num">${usd(r.feeC)}</td><td class="r num">${r.dirC ? usd(r.dirC) : `<span class="muted">—</span>`}</td><td class="r num">${r.invC ? usd(r.invC) : `<span class="muted">—</span>`}</td>
+      <td class="r num"><b>${usd(r.totC)}</b></td><td class="r num g">${usd(r.paidC)}</td><td class="r num">${usd(r.sentC + r.draftC)}${r.draftC ? `<div class="item-s">${usd(r.draftC)} not invoiced</div>` : ""}</td>
+      <td class="r num muted">${r.spendC ? (r.totC / r.spendC * 100).toFixed(1) + "%" : "—"}</td></tr>`).join("")}
+    <tr class="tot"><td>All projects</td><td class="r num">${usd(T("spendC"))}</td><td class="r num">${usd(T("feeC"))}</td><td class="r num">${usd(T("dirC"))}</td><td class="r num">${usd(T("invC"))}</td><td class="r num">${usd(T("totC"))}</td><td class="r num">${usd(T("paidC"))}</td><td class="r num">${usd(T("sentC") + T("draftC"))}</td><td class="r num">${T("spendC") ? (T("totC") / T("spendC") * 100).toFixed(1) + "%" : "—"}</td></tr></tbody></table>
+    <p class="help" style="margin:8px 16px 12px">Earned is what PHD keeps: the project fee on every invoice, the fee lines on labor owners paid directly, and inventory charged to owners above our cost. Collected counts invoices marked paid. Margin is earned as a share of project spend.</p>`
+    : `<div class="empty"><b>No project income yet</b><p>Fees show here as invoices are built.</p></div>`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-i]").forEach(tr => tr.onclick = () => go("overview", rows[+tr.dataset.i].p.id));
+}
+
+/* ---------- budgets ---------- */
+function bizBudgetsTab(v){
+  const list = budgetAlerts();
+  const card = elm("div", "card");
+  const n = k => list.filter(x => x.kind === k).length;
+  card.innerHTML = `<div class="card-h"><h3>Budget alerts</h3><span class="muted td-n">${n("over")} over · ${n("near")} at 90%+ · ${list.filter(x => x.pending.length).length} with a change order pending</span></div>
+    ${list.length ? `<table class="tbl biz-tbl"><thead><tr><th>Project</th><th>Work item</th><th class="r">Spent</th><th class="r">Budget</th><th class="r">Used</th><th></th></tr></thead><tbody>
+    ${list.map((x, i) => `<tr data-i="${i}" class="biz-click"><td>${esc(x.p.name)}</td><td><b>${esc(x.item.name)}</b><div class="item-s">${esc(x.item.cat || "")}${workCoC(x.item) ? ` · includes ${usd(workCoC(x.item))} in change orders` : ""}${x.pending.length ? ` · <span style="color:var(--gold)">${x.pending.map(c => `${esc(c.no || "CO")} ${usd(cents(c.amount))} pending`).join(", ")}</span>` : ""}</div></td>
+      <td class="r num">${usd(x.w.actualC)}</td><td class="r num">${x.b ? usd(x.b) : "—"}</td><td class="r num"><b class="${x.kind === "over" ? "neg" : ""}">${x.b ? Math.round(x.pct * 100) + "%" : "—"}</b></td>
+      <td><span class="tag ${x.kind === "over" ? "red" : x.kind === "near" ? "gold" : "acc"}">${x.kind === "over" ? `Over by ${usd(x.w.actualC - x.b)}` : x.kind === "near" ? `${usd(x.b - x.w.actualC)} left` : "Change order pending"}</span></td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty"><b>Every work item is under 90% of its budget</b><p>Set budgets on each project's Scope of work; items that reach 90% or go over show here, with any change orders waiting for approval. Items built from transactions (their budget is just what was spent) are left out until you set a real budget.</p></div>`}`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-i]").forEach(tr => tr.onclick = () => { const x = list[+tr.dataset.i]; go("scope", x.p.id); setTimeout(() => workSheet(x.item.id), 60); });
+}
+
+/* ---------- contractors ---------- */
+const bizKey = name => String(name || "").toLowerCase().replace(/[’']/g, "").replace(/\b(inc|llc|co|corp|company|the)\b\.?/g, " ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+function bizCtrSet(){ S.acct = S.acct || {}; S.acct.ctr = S.acct.ctr || {}; return S.acct.ctr; }
+function bizCtrRec(k){ return Object.assign({}, ((S.acct && S.acct.ctr) || {})[k] || {}); }
+function bizIsContractor(vendor){
+  const v = String(vendor || "").trim(); if(!v) return false;
+  if(typeof QB_INTERNAL !== "undefined" && QB_INTERNAL.test(v)) return false;
+  if(typeof INV_VENDOR !== "undefined" && v === INV_VENDOR) return false;
+  if(typeof QB_STORES !== "undefined" && QB_STORES.test(qbVk(v))) return false;
+  return !/^(phd|amazon|wayfair|ikea|target|walmart|floor ?& ?decor|sherwin|best buy|costco|lowe|home ?depot|ace hardware|true value|ferguson|grainger)/i.test(v);
+}
+function bizContractors(){
+  const m = new Map(), year = todayISO().slice(0, 4), qbm = typeof qbReady === "function" && qbReady() ? qbMatch() : null;
+  (S.properties || []).forEach(p => (p.transactions || []).forEach(t => {
+    if(!bizIsContractor(t.vendor) || t.feeFor || t.status === "review") return;
+    const k = bizKey(t.vendor); if(!k) return;
+    let c = m.get(k); if(!c){ c = {k, name:t.vendor.trim(), years:{}, owner:0, card:{}, props:new Map(), last:"", txns:[], notInQb:0, notInQbC:0}; m.set(k, c); }
+    const amt = cents(t.amount), y = String(t.date || "").slice(0, 4) || year;
+    c.txns.push({p, t}); if(String(t.date) > c.last) c.last = String(t.date);
+    const pr = c.props.get(p.id) || {p, paidC:0, ownerC:0}; c.props.set(p.id, pr);
+    if(t.direct){ c.owner += amt; pr.ownerC += amt; return; }
+    pr.paidC += amt;
+    // paid by card? then the card company reports it, not PHD (no 1099 for that part)
+    const r = qbm && qbm.res.get(p.id + "|" + t.id), units = r && r.units || [];
+    const byCard = units.length && units.every(u => u.qt.from && (qbAcct(u.qt.from.id) || {}).type === "Credit Card");
+    c.years[y] = c.years[y] || {paidC:0, cardC:0}; c.years[y].paidC += amt; if(byCard) c.years[y].cardC += amt;
+    if(r && (r.state === "none" || r.state === "gone")){ c.notInQb++; c.notInQbC += amt; }
+  }));
+  return [...m.values()].map(c => {
+    const rec = bizCtrRec(c.k), y = c.years[year] || {paidC:0, cardC:0}, rep = y.paidC - y.cardC;
+    if(rec.corp == null && /\b(inc|corp|corporation|incorporated)\b\.?/i.test(rec.name || c.name)) rec.corp = true;          // corporations don't get a 1099 (change it on the contractor)
+    const flags = [];
+    if(rep >= 60000 && !rec.corp && !rec.w9) flags.push(["red", "W-9 needed"]);
+    if(rec.coi){ const d = bizDays(rec.coi); if(d > 0) flags.push(["red", "Insurance expired"]); else if(d > -31) flags.push(["gold", `Insurance ends ${fdateS(rec.coi)}`]); }
+    else if(y.paidC > 0) flags.push(["grey", "No insurance on file"]);
+    if(c.notInQb) flags.push(["gold", `${c.notInQb} not in QuickBooks`]);
+    const contracts = rec.contracts || {};
+    const contractC = Object.values(contracts).reduce((a, x) => a + cents(x || 0), 0);
+    return Object.assign(c, {rec, y, rep, flags, need1099:rep >= 60000 && !rec.corp, contractC, display:rec.name || c.name, props:[...c.props.values()]});
+  }).sort((a, b) => b.y.paidC - a.y.paidC || b.last.localeCompare(a.last));
+}
+function bizContractorsTab(v){
+  const list = bizContractors(), year = todayISO().slice(0, 4), q = (S.ui.bizQ || "").toLowerCase();
+  const shown = list.filter(c => !q || c.display.toLowerCase().includes(q));
+  const hero = elm("div", "card pf-hero td-hero");
+  hero.innerHTML = `<div class="pf-cell"><div class="label">Paid to contractors in ${year}</div><div class="pf-v">${usd(list.reduce((a, c) => a + c.y.paidC, 0))}</div><div class="pf-note">${list.filter(c => c.y.paidC).length} contractors · ${usd(list.reduce((a, c) => a + c.owner, 0))} more paid by owners directly</div></div>
+    <div class="pf-cell"><div class="label">1099s for ${year}</div><div class="pf-v">${list.filter(c => c.need1099).length}</div><div class="pf-note">$600+ paid by check, ACH or Zelle · ${list.filter(c => c.need1099 && !c.rec.w9).length} without a W-9</div></div>
+    <div class="pf-cell"><div class="label">Insurance</div><div class="pf-v ${list.some(c => c.flags.some(f => f[1] === "Insurance expired")) ? "a" : ""}">${list.filter(c => c.flags.some(f => /Insurance (expired|ends)/.test(f[1]))).length}</div><div class="pf-note">expired or ending within 30 days</div></div>`;
+  v.appendChild(hero);
+  const bar = elm("div", "sc-bar");
+  bar.innerHTML = `<input type="search" id="bizQ" class="inv-q" style="margin-left:0" placeholder="Find a contractor" value="${esc(S.ui.bizQ || "")}"><span style="flex:1"></span><button class="btn sm" id="biz1099">1099 list for ${year} (CSV)</button>`;
+  v.appendChild(bar);
+  const qi = bar.querySelector("#bizQ"); qi.oninput = () => { S.ui.bizQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#bizQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
+  bar.querySelector("#biz1099").onclick = () => {
+    const rows = [["Contractor", "Email", `Paid ${year} (check/ACH/Zelle)`, `Paid ${year} by card`, "W-9 received", "Corporation (no 1099)"]].concat(list.filter(c => c.y.paidC).map(c => [c.display, c.rec.email || "", (c.rep / 100).toFixed(2), (c.y.cardC / 100).toFixed(2), c.rec.w9 || "", c.rec.corp ? "yes" : ""]));
+    const csv = rows.map(r => r.map(x => /[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : x).join(",")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"})); a.download = `contractors-1099-${year}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  const card = elm("div", "card");
+  card.innerHTML = shown.length ? `<table class="tbl biz-tbl"><thead><tr><th>Contractor</th><th class="r">Paid ${year}</th><th class="r">Earlier</th><th class="r">Contract</th><th>Projects</th><th>On file</th><th></th></tr></thead><tbody>
+    ${shown.map((c, i) => { const earlier = Object.entries(c.years).filter(([y]) => y !== year).reduce((a, [, x]) => a + x.paidC, 0), paidAll = c.props.reduce((a, x) => a + x.paidC + x.ownerC, 0);
+      return `<tr data-i="${i}" class="biz-click"><td><b>${esc(c.display)}</b><div class="item-s">${c.txns.length} payment${c.txns.length === 1 ? "" : "s"} · last ${esc(fdateS(c.last))}${c.owner ? ` · ${usd(c.owner)} paid by owners` : ""}</div>${c.flags.length ? `<div class="biz-flags">${c.flags.map(f => `<span class="tag ${f[0]}">${esc(f[1])}</span>`).join("")}</div>` : ""}</td>
+        <td class="r num">${usd(c.y.paidC)}${c.y.cardC ? `<div class="item-s">${usd(c.y.cardC)} by card</div>` : ""}</td><td class="r num muted">${earlier ? usd(earlier) : "—"}</td>
+        <td class="r num">${c.contractC ? `${usd(c.contractC)}<div class="item-s">${usd(Math.max(0, c.contractC - paidAll))} left</div>` : `<span class="muted">—</span>`}</td>
+        <td class="biz-props">${c.props.map(x => esc(x.p.name)).join(", ")}</td>
+        <td class="nw">${c.rec.w9 ? `<span class="tag green">W-9</span>` : c.rec.corp ? `<span class="tag grey">Corp</span>` : ""} ${c.rec.coi ? `<span class="tag ${bizDays(c.rec.coi) > 0 ? "red" : "green"}">COI ${esc(fdateS(c.rec.coi))}</span>` : ""}</td>
+        <td class="r"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody></table>
+    <p class="help" style="margin:8px 16px 12px">From every project's transactions. Stores are left out. 1099 totals leave out what was paid by card (the card company reports those) and labor owners paid directly; card payments are known from the QuickBooks match, so anything not matched yet counts as check/ACH.</p>`
+    : `<div class="empty"><b>No contractors${q ? " match" : " yet"}</b></div>`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-i]").forEach(tr => tr.onclick = () => bizCtrSheet(shown[+tr.dataset.i]));
+}
+function bizCtrSheet(c){
+  const rec = c.rec || {}, sh = $("#sheet"), years = Object.entries(c.years).sort((a, b) => b[0].localeCompare(a[0]));
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${esc(c.display)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${c.txns.length} payments on ${c.props.length} project${c.props.length === 1 ? "" : "s"}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div class="f2"><label class="fld"><span>Name</span><input type="text" id="cN" value="${esc(rec.name || c.name)}"></label><label class="fld"><span>Email</span><input type="email" id="cE" value="${esc(rec.email || "")}"></label></div>
+      <div class="f3"><label class="fld"><span>W-9 received</span><input type="date" id="cW" value="${esc(rec.w9 || "")}"></label><label class="fld"><span>Insurance (COI) expires</span><input type="date" id="cI" value="${esc(rec.coi || "")}"></label>
+        <label class="fld"><span>&nbsp;</span><label class="inv-fee"><input type="checkbox" id="cC" ${rec.corp ? "checked" : ""}> Corporation — no 1099${/\b(inc|corp)/i.test(rec.name || c.name) && (S.acct && S.acct.ctr && (S.acct.ctr[c.k] || {}).corp == null) ? " (from the name)" : ""}</label></label></div>
+      <div class="sectl">Paid by year</div>
+      <div class="inv-uses">${years.map(([y, x]) => `<div><span>${y}</span><span>${x.cardC ? `${usd(x.paidC - x.cardC)} check/ACH · ${usd(x.cardC)} card` : "check/ACH/Zelle"}</span><span class="num">${usd(x.paidC)}</span></div>`).join("") || `<p class="muted">Nothing paid by PHD.</p>`}</div>
+      <div class="sectl">Contract on each project</div>
+      ${c.props.map(x => { const v0 = (rec.contracts || {})[x.p.id]; const paid = x.paidC + x.ownerC;
+        return `<div class="biz-con"><span><b>${esc(x.p.name)}</b><span class="muted"> · paid ${usd(paid)}${x.ownerC ? ` (${usd(x.ownerC)} by the owner)` : ""}</span></span><input type="number" step="0.01" min="0" data-con="${x.p.id}" value="${v0 != null && v0 !== "" ? v0 : ""}" placeholder="Contract total"><span class="num muted" data-left="${x.p.id}">${v0 ? usd(cents(v0) - paid) + " left" : ""}</span></div>`; }).join("")}
+      <label class="fld" style="margin-top:12px"><span>Notes</span><textarea id="cNo" rows="2">${esc(rec.notes || "")}</textarea></label>
+      <div class="sectl">Payments</div>
+      <div class="inv-uses">${c.txns.slice().sort((a, b) => String(b.t.date).localeCompare(String(a.t.date))).slice(0, 40).map(({p, t}) => `<div><span>${esc(fdateS(t.date))}</span><span>${esc(p.name)} · ${esc(t.desc || "")}${t.direct ? " <span class='muted'>(owner paid)</span>" : ""}</span><span class="num">${usd(cents(t.amount))}</span></div>`).join("")}</div>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="cOk">Save</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  sh.querySelectorAll("[data-con]").forEach(inp => inp.oninput = () => { const x = c.props.find(y => y.p.id === inp.dataset.con), paid = x.paidC + x.ownerC; sh.querySelector(`[data-left="${inp.dataset.con}"]`).textContent = inp.value ? usd(cents(+inp.value) - paid) + " left" : ""; });
+  $("#cOk").onclick = () => {
+    snapshot(); const all = bizCtrSet(), r = all[c.k] = all[c.k] || {};
+    Object.assign(r, {name:$("#cN").value.trim(), email:$("#cE").value.trim(), w9:$("#cW").value, coi:$("#cI").value, corp:$("#cC").checked, notes:$("#cNo").value.trim()});
+    r.contracts = {}; sh.querySelectorAll("[data-con]").forEach(inp => { if(inp.value) r.contracts[inp.dataset.con] = +inp.value; });
+    commit(); closeSheet(); render(); toast("Saved", true);
+  };
+}
+
+/* ---------- unpaid invoices and reminders ---------- */
+const BIZ_REM = {
+  subject:"Friendly reminder: {address}{unit} - Invoice #{no}",
+  body:`Hi {first},
+
+I hope you're doing well! Just a friendly reminder that the project invoice for {property}{unit} is still open:
+{link} · {amount}
+
+If you've already sent payment, thank you and please disregard this note. Let me know if you have any questions.
+
+Sincerely,`
+};
+function bizUnpaid(){
+  const out = [];
+  live().forEach(p => { const C = bizC(p);
+    p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
+      const reg = inv.reg || {}; if(!reg.dateSent || reg.paid) return;
+      const age = bizDays(reg.dateSent), rem = reg.reminders || [];
+      const due = !rem.length ? (age >= 7 ? "1st" : "") : rem.length === 1 && age >= 14 && bizDays(rem[0].at) >= 7 ? "2nd" : "";
+      out.push({p, unit:u, inv, reg, age, rem, due});
+    })); });
+  return out.sort((a, b) => b.age - a.age);
+}
+const bizRemindersDue = () => { try{ return bizUnpaid().filter(x => x.due).length; }catch(e){ return 0; } };
+function bizRemFill(x, tpl){
+  const f = bmFields(x.p, x.unit, x.inv), o = ownerRec(x.p);
+  return {f, o, to:o && o.email ? o.email : "", cc:o ? String(o.cc || "").split(/[,;\s]+/).filter(e => /@/.test(e)).join(",") : "", subject:bmFill(tpl.subject, f), body:bmFill(tpl.body, f).replace("{amount}", f.amount)};
+}
+async function bizSendReminder(x, subject, body, to, cc){
+  const f = bmFields(x.p, x.unit, x.inv);
+  const r = await bmCall({action:"send", to, cc, subject, html:bmHTML(body, f), text:bmText(body, f)});
+  const g = x.p.register[pjKey(x.unit, x.inv)] = x.p.register[pjKey(x.unit, x.inv)] || {};
+  (g.reminders = g.reminders || []).push({at:r.at || new Date().toISOString(), to, by:typeof billWho === "function" ? billWho() : "", subject});
+  return r;
+}
+function bizRemSheet(x){
+  const tpl = Object.assign({}, BIZ_REM, (S.billMail || {}).reminder || {}), d = bizRemFill(x, tpl), c = bmConn(), sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Reminder for invoice ${esc(d.f.no)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(x.p.name)}${esc(d.f.unit)} · ${usd(x.inv.totalC)} · sent ${x.age} days ago${x.rem.length ? ` · ${x.rem.length} reminder${x.rem.length === 1 ? "" : "s"} so far` : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">${!c ? `<div class="pm-banner">Connect billing@ first: open any invoice → Email to the owner.</div>` : ""}
+      <div class="f2"><label class="fld"><span>To</span><input type="text" id="rTo" value="${esc(d.to)}"></label><label class="fld"><span>Cc</span><input type="text" id="rCc" value="${esc(d.cc)}"></label></div>
+      <label class="fld"><span>Subject</span><input type="text" id="rSub" value="${esc(d.subject)}"></label>
+      <label class="fld"><span>Message <span class="muted" style="font-weight:400">· <code>{link}</code> is the invoice, linked to its pay link</span></span><textarea id="rBody" rows="9">${esc(d.body)}</textarea></label>
+      <label class="ps-chk"><input type="checkbox" id="rTpl"> Use this for future reminders</label>
+      ${x.rem.length ? `<div class="sectl">Sent</div><div class="inv-uses">${x.rem.map(r => `<div><span>${esc(fdateS(String(r.at).slice(0, 10)))}</span><span>${esc(r.to || "")}</span><span></span></div>`).join("")}</div>` : ""}</div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="rSend" ${c ? "" : "disabled"}>Send from billing@</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#rSend").onclick = async () => {
+    const to = $("#rTo").value.split(/[,;\s]+/).filter(e => /@/.test(e)).join(","), cc = $("#rCc").value.split(/[,;\s]+/).filter(e => /@/.test(e)).join(",");
+    if(!to) return toast("Add the owner's email");
+    if(!confirm(`Send this reminder to ${to} from billing@ now?`)) return;
+    const b = $("#rSend"); b.disabled = true; b.textContent = "Sending…";
+    try{
+      snapshot();
+      if($("#rTpl").checked) bmSave({reminder:{subject:bmUnfill($("#rSub").value, d.f).split(d.f.amount).join("{amount}"), body:bmUnfill($("#rBody").value, d.f).split(d.f.amount).join("{amount}")}});
+      await bizSendReminder(x, $("#rSub").value, $("#rBody").value, to, cc);
+      commit(); closeSheet(); render(); toast(`Reminder sent to ${to}`);
+    }catch(e){ toast(e.message); b.disabled = false; b.textContent = "Send from billing@"; }
+  };
+}
+async function bizSendDue(list){
+  const c = bmConn(); if(!c) return toast("Connect billing@ first: open any invoice → Email to the owner");
+  const tpl = Object.assign({}, BIZ_REM, (S.billMail || {}).reminder || {});
+  const go = list.map(x => Object.assign({x}, bizRemFill(x, tpl))).filter(y => y.to);
+  const skipped = list.length - go.length;
+  if(!go.length) return toast("None of these owners have an email on file");
+  if(!confirm(`Send ${go.length} reminder${go.length === 1 ? "" : "s"} from billing@?\n\n${go.map(y => `${y.x.p.name}${y.f.unit} · Invoice ${y.f.no} · ${y.f.amount} → ${y.to}`).join("\n")}${skipped ? `\n\n${skipped} skipped — no owner email on file.` : ""}`)) return;
+  snapshot(); let sent = 0, err = "";
+  for(const y of go){ try{ await bizSendReminder(y.x, y.subject, y.body, y.to, y.cc); sent++; }catch(e){ err = e.message; break; } }
+  commit(); render(); toast(err ? `${sent} sent · stopped: ${err}` : `${sent} reminder${sent === 1 ? "" : "s"} sent from billing@`);
+}
+function bizUnpaidTab(v){
+  const list = bizUnpaid(), due = list.filter(x => x.due), tot = list.reduce((a, x) => a + x.inv.totalC, 0);
+  const band = k => list.filter(x => k === 0 ? x.age < 15 : k === 1 ? x.age >= 15 && x.age < 31 : k === 2 ? x.age >= 31 && x.age < 61 : x.age >= 61);
+  const hero = elm("div", "card pf-hero td-hero");
+  hero.innerHTML = [["Sent, not paid", tot, `${list.length} invoice${list.length === 1 ? "" : "s"}`], ["Under 15 days", band(0).reduce((a, x) => a + x.inv.totalC, 0), `${band(0).length}`], ["15–30 days", band(1).reduce((a, x) => a + x.inv.totalC, 0), `${band(1).length}`], ["Over 30 days", band(2).concat(band(3)).reduce((a, x) => a + x.inv.totalC, 0), `${band(2).length + band(3).length}`]]
+    .map(([l, c, n], i) => `<div class="pf-cell"><div class="label">${l}</div><div class="pf-v ${i === 3 && c ? "a" : ""}">${usd(c)}</div><div class="pf-note">${n}</div></div>`).join("");
+  v.appendChild(hero);
+  const card = elm("div", "card");
+  card.innerHTML = `<div class="card-h"><h3>Unpaid owner invoices</h3><span class="muted td-n">${due.length ? `${due.length} reminder${due.length === 1 ? "" : "s"} due` : "No reminders due"}</span>${due.length ? `<button class="btn sm primary" id="bizDue" style="margin-left:auto">Send ${due.length} due reminder${due.length === 1 ? "" : "s"}</button>` : ""}</div>
+    ${list.length ? `<table class="tbl biz-tbl"><thead><tr><th>Project</th><th>Invoice</th><th class="r">Amount</th><th>Sent</th><th class="r">Days</th><th>Reminders</th><th></th></tr></thead><tbody>
+    ${list.map((x, i) => `<tr><td><b>${esc(x.p.name)}</b>${x.p.units.length > 1 ? ` <span class="muted">${esc(x.unit.name)}</span>` : ""}<div class="item-s">${esc(x.p.owner || "no owner")}${(ownerRec(x.p) || {}).email ? "" : ` · <span style="color:var(--gold)">no email on file</span>`}</div></td>
+      <td>${esc(typeof pjInvNumber === "function" ? pjInvNumber(x.p, x.unit, x.inv) : "#" + x.inv.no)}</td><td class="r num">${usd(x.inv.totalC)}</td><td class="nw muted">${esc(fdateS(x.reg.dateSent))}</td>
+      <td class="r num"><b class="${x.age > 30 ? "neg" : ""}">${x.age}</b></td>
+      <td>${x.rem.length ? x.rem.map(r => `<span class="tag grey">${esc(fdateS(String(r.at).slice(0, 10)))}</span>`).join(" ") : `<span class="muted">none</span>`}${x.due ? ` <span class="tag gold">${x.due} due</span>` : ""}</td>
+      <td class="r nw"><button class="btn sm ${x.due ? "" : "ghost"}" data-rem="${i}">Remind</button><button class="btn sm ghost" data-open="${i}">›</button></td></tr>`).join("")}</tbody></table>
+    <p class="help" style="margin:8px 16px 12px">A first reminder is due 7 days after an invoice is sent, a second at 14 days (at least a week after the first). They go from billing@ — press <b>Send due reminders</b> to send them all, or <b>Remind</b> to read and edit one first. Mark an invoice paid on its page and it leaves this list.</p>`
+    : `<div class="empty"><b>Every sent invoice is paid</b></div>`}`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-rem]").forEach(b => b.onclick = () => bizRemSheet(list[+b.dataset.rem]));
+  card.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { const x = list[+b.dataset.open]; S.ui.unit = x.unit.id; go("invoices", x.p.id); });
+  const db = card.querySelector("#bizDue"); if(db) db.onclick = () => bizSendDue(due);
+}
+
+/* ---------- the page ---------- */
+function pgBusiness(){
+  const v = $("#view"), tab = S.ui.bizTab || "profit";
+  $("#pgCrumb").textContent = "Projects"; $("#pgTitle").textContent = "Business";
+  $("#pgSub").textContent = "What PHD earns on projects, budgets to watch, contractors, and owner invoices not paid yet";
+  actions([]);
+  const due = bizRemindersDue(), al = budgetAlerts().filter(x => x.kind === "over").length;
+  const bar = elm("div", "sc-bar");
+  bar.innerHTML = `<div class="sc-seg">${BIZ_TABS.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? "on" : ""}">${l}${k === "unpaid" && due ? ` <span>${due} due</span>` : k === "budgets" && al ? ` <span>${al} over</span>` : ""}</button>`).join("")}</div>`;
+  bar.querySelectorAll("[data-t]").forEach(b => b.onclick = () => { S.ui.bizTab = b.dataset.t; persistUi(); render(); });
+  v.appendChild(bar);
+  ({profit:bizProfitTab, budgets:bizBudgetsTab, contractors:bizContractorsTab, unpaid:bizUnpaidTab}[tab] || bizProfitTab)(v);
+}
 
 /* =====================================================================
    ADD BILL BY UPLOAD — drop a vendor invoice or receipt (PDF or photo).

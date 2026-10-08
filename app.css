@@ -1325,4 +1325,27 @@ body{transition:background-color .25s var(--ease)}
 .inv-rc input.sm-n{width:58px;text-align:right}.inv-rc input.md-n{width:84px;text-align:right}
 .inv-rc td{padding:4px 6px;vertical-align:middle}.inv-rc th{font-size:12px}
 .inv-rc-sum{margin-top:10px;font-size:13px;font-variant-numeric:tabular-nums}
+.ord-facts{display:flex;flex-wrap:wrap;gap:6px 22px;margin:0 0 10px;padding:10px 12px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px}
+.ord-facts>div{display:flex;flex-direction:column;gap:1px}.ord-facts b{font-size:14px;font-weight:550}
+.ord-tbl input[type=text],.ord-tbl input[type=date],.ord-tbl input[type=number]{width:100%;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;background:var(--panel);box-sizing:border-box}
+.ord-tbl input.md-n{width:96px;text-align:right}.ord-tbl input[type=date]{width:132px}
+.ord-tbl td{vertical-align:top;padding:5px 6px}.ord-tbl tr.off td{opacity:.5}
+.ord-qb{font-size:12px;max-width:220px}
+.ord-warn{font-size:11.5px;color:var(--gold);margin-top:3px}
+.co-h{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.co-r{display:grid;grid-template-columns:76px 1fr 128px 96px 98px 30px;gap:6px;margin-bottom:5px}
+.co-r input,.co-r select{width:100%;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;background:var(--panel);box-sizing:border-box}
+.co-r .co-amt{text-align:right}
+.sc-co{color:var(--accent-hover);font-size:11.5px}
+.sc-near{font-size:11px;color:var(--gold);margin-top:2px}
+@media (max-width:760px){.co-r{grid-template-columns:1fr 1fr}.co-r input[data-f=desc]{grid-column:1/3}}
+.biz-tbl td{vertical-align:middle}
+.biz-click{cursor:pointer}.biz-click:hover td{background:var(--panel-2)}
+.biz-tbl tr.tot td{font-weight:600;border-top:2px solid var(--line-3)}
+.biz-tbl .num.g{color:var(--green)}.biz-tbl .neg{color:var(--red)}
+.biz-flags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.biz-props{font-size:12.5px;color:var(--muted);max-width:220px}
+.biz-con{display:grid;grid-template-columns:1fr 130px 110px;gap:8px;align-items:center;padding:5px 0;border-bottom:1px dotted var(--line);font-size:13px}
+.biz-con input{padding:5px 7px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;text-align:right}
+@media (max-width:760px){.biz-tbl th:nth-child(n+5),.biz-tbl td:nth-child(n+5){display:none}.biz-con{grid-template-columns:1fr 1fr}}
 

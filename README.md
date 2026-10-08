@@ -220,6 +220,19 @@ Bulk buys PHD keeps on hand (Costco lights and plants, Lowe's deadbolts…).
 
 When the owner pays a contractor themselves, open that labor line → Billing state → **Owner paid them directly — bill our fee only** (or select several and use the bulk menu). The labor stays on the project for the record but off the owner's invoices ("Paid by owner"), and a separate line — PHD Properties, "Project management fee — 15% of …" — bills only PHD's fee. The fee line follows the labor line: change the amount, unit or date and it updates, until it's on a sent invoice. Switch the labor back to "Bill to owner" and the fee line goes away. Owner-paid labor is left out of the QuickBooks check.
 
+### 7i. Read a store order (Transactions → Read an order)
+
+Open a Lowe's, Home Depot, Costco or Amazon order on the store's site, select all, copy and paste it — or drop the order PDF. The console finds what was billed, the tax rate, each return (items × price × tax; one return without items listed takes what's left of the refund total), and the payments a big order was split into. Check the lines, pick the property and unit, and it adds the purchase and every return as their own lines. Any line QuickBooks already has (the purchase, its pieces, each refund credit) is linked as it's added; lines that look like they're already in the project are flagged.
+
+### 7j. Business page (Projects → Business)
+
+- **Profit** — what PHD earns on each project: the project fee, fees on labor owners paid directly, and inventory markup; collected, invoiced and not invoiced yet; margin on project spend.
+- **Budgets** — every work item at 90%+ of its budget, over budget, or with a change order pending, across all projects. Change orders are added on a work item (Scope of work → open the item → Change orders): approved ones add to the budget, pending ones don't until approved. Items built from transactions are left out until they have a real budget.
+- **Contractors** — everyone PHD paid (stores left out): paid this year and before, by card vs. check/ACH (from the QuickBooks match), contract total and what's left on each project, W-9 and insurance (COI) dates, and what isn't in QuickBooks yet. 1099s are counted at $600+ paid by check/ACH/Zelle; names with Inc./Corp. are treated as corporations (change it on the contractor). **1099 list (CSV)** exports the year.
+- **Unpaid invoices** — owner invoices sent and not paid, by age. A first reminder is due at 7 days, a second at 14 (a week after the first). **Send due reminders** sends them all from billing@ after one confirmation; **Remind** opens one to edit. Nothing is sent without a press.
+
+**Inventory → Used on projects → Post to QuickBooks** makes one journal entry per use: our cost moves from Inventory Asset to Project Management:Materials & Supplies with the project's customer. Each is posted once; the console keeps the entry's id.
+
 ### 7f. QuickBooks check of project expenses (Reconcile page)
 The `qbo` function reads QuickBooks every hour, at 22 minutes past. It reads your bank and card accounts with their balances, the chart of accounts, customers, and every posted expense, check, card charge, credit and bill since the first project. **Reconcile** (Projects side) then checks each project expense against it:
 
