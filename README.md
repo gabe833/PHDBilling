@@ -212,8 +212,13 @@ Editing a bill in MagicDoor updates it here. It isn't added a second time, and a
 Bulk buys PHD keeps on hand (Costco lights and plants, Lowe's deadbolts…).
 - **Paste from a sheet**: copy your inventory sheet (header row included) and paste it. It reads Store, Item, Qty Bought, Qty Left, Paid Price Ea., Retail Price Ea., Tax % and Owner Charge Ea. Pasting again updates items instead of doubling them.
 - Each item shows how many are left, our cost each (paid + tax), the owner charge each and what it's over or under our cost, and the value on hand.
+- **Itemize** a store charge (Inventory page → QuickBooks): one line per thing it bought — item, qty, paid each, tax %, owner charge — with a running total against the charge. Each line becomes an inventory item tied to that charge; **Edit items** changes them later (lines already used on projects can't drop below what's used). Tick “Also move this charge to Inventory Asset” to recategorize it in QuickBooks in the same step.
 - **Use on a project** adds a charge to that project: vendor "PHD Inventory", "Item × qty", qty × owner charge (project fee off unless you tick it). What's left counts down; delete that transaction and the items come back. **Used on projects** lists every use.
 - **QuickBooks**: store charges still in "Ask Client" with no customer are listed; tick the bulk buys and press **Move to inventory in QuickBooks** to file them under Inventory Asset (change the account with **Change account**). Lines already in it are listed with **Add its items**. On Reconcile → Fix in QuickBooks, Inventory Asset is also offered in every category list and in **Set ticked to**.
+
+### 7h. Owner paid the contractor directly
+
+When the owner pays a contractor themselves, open that labor line → Billing state → **Owner paid them directly — bill our fee only** (or select several and use the bulk menu). The labor stays on the project for the record but off the owner's invoices ("Paid by owner"), and a separate line — PHD Properties, "Project management fee — 15% of …" — bills only PHD's fee. The fee line follows the labor line: change the amount, unit or date and it updates, until it's on a sent invoice. Switch the labor back to "Bill to owner" and the fee line goes away. Owner-paid labor is left out of the QuickBooks check.
 
 ### 7f. QuickBooks check of project expenses (Reconcile page)
 The `qbo` function reads QuickBooks every hour, at 22 minutes past. It reads your bank and card accounts with their balances, the chart of accounts, customers, and every posted expense, check, card charge, credit and bill since the first project. **Reconcile** (Projects side) then checks each project expense against it:

@@ -473,7 +473,7 @@ function visibleTxns(p){
   const q = (S.ui.query||"").toLowerCase().trim();
   const fu = S.ui.filterUnit || "", fs = S.ui.filterStatus || "", ft = S.ui.filterTag || "";
   return p.transactions.map((t,i) => ({t, i})).filter(({t}) => {
-    if(!S.ui.showExcluded && t.status !== "billable" && !t.charge) return false;
+    if(!S.ui.showExcluded && t.status !== "billable" && !t.charge && !t.direct) return false;
     if(fs && (COMP.txn[t.id]||{}).pay !== fs) return false;
     if(ft && !(t.tags||[]).includes(ft)) return false;
     if(fu){
@@ -496,7 +496,7 @@ function pgTxns(){
   const from = (S.ui.page - 1) * PAGE, slice = rows.slice(from, from + PAGE);
   const sel = S.ui.sel = (S.ui.sel||[]).filter(id => p.transactions.some(t => t.id === id));
 
-  const states = ["Unbilled","Invoiced","Part invoiced","Paid","Part paid","On hold","Back-charge","Back-charge settled","Excluded","Unassigned"];
+  const states = ["Unbilled","Invoiced","Part invoiced","Paid","Part paid","On hold","Back-charge","Back-charge settled","Paid by owner","Excluded","Unassigned"];
   const bar = elm("div","toolbar");
   bar.innerHTML = `
     <input class="search" type="text" id="q" placeholder="Search vendor, item, receipt…" value="${esc(S.ui.query||"")}">
@@ -519,7 +519,7 @@ function pgTxns(){
     const bulk = elm("div","bulk");
     bulk.innerHTML = `<b>${sel.length}</b> selected
       <select id="b_state"><option value="">Set billing state…</option>
-        <option value="billable">Bill to owner</option><option value="review">On hold</option><option value="excluded">Not billable</option><option value="charge">Bill to a contractor…</option></select>
+        <option value="billable">Bill to owner</option><option value="review">On hold</option><option value="excluded">Not billable</option><option value="charge">Bill to a contractor…</option><option value="direct">Owner paid them directly…</option></select>
       <select id="b_unit"><option value="">Assign to unit…</option>
         ${p.units.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}</select>
       <button class="btn sm" id="b_fee">Fee on</button>
@@ -609,6 +609,7 @@ function pgTxns(){
     const bs = $("#b_state"); if(bs) bs.onchange = e => { const val = e.target.value; if(!val) return;
       const ids = openIds(), sk = skipped();
       if(val === "charge") return chBulkSheet(ids);
+      if(val === "direct") return directBulk(ids);
       re(() => P().transactions.forEach(x => { if(ids.includes(x.id)){ x.status = val; delete x.charge; } })); toast(`${ids.length} updated${note(sk)}`); };
     const bu = $("#b_unit"); if(bu) bu.onchange = e => { const val = e.target.value; if(!val) return;
       const ids = openIds(), sk = skipped();
@@ -636,7 +637,7 @@ function txnRow(t, idx, p, filtered, picked){
   const tr = elm("tr"); tr.dataset.id = t.id;
   tr.draggable = !filtered && !fullyLocked;
   if(picked) tr.classList.add("sel");
-  if(t.status !== "billable" && !t.charge) tr.classList.add("off");
+  if(t.status !== "billable" && !t.charge && !t.direct) tr.classList.add("off");
   if(COMP.notes.some(n => n.txnId === t.id && n.level === "err")) tr.classList.add("bad");
   const unit = t.scope.type === "single"
     ? (p.units.find(u => u.id === t.scope.unit)?.name || "—")
@@ -670,7 +671,7 @@ function txnRow(t, idx, p, filtered, picked){
     <td style="font-size:13px">${esc(unit)}</td>
     <td class="r num"${isCredit?' style="color:var(--green)"':""}>${usd(cents(t.amount))}</td>
     <td>${lands}</td>
-    <td>${t.charge ? chTagHTML(t) : `<span class="tag ${tagCls}">${info.pay}</span>`}${doc?" "+doc:""}</td>
+    <td>${t.direct ? directTagHTML(p, t) : t.charge ? chTagHTML(t) : `<span class="tag ${tagCls}">${info.pay}</span>`}${doc?" "+doc:""}</td>
     <td class="act"><button class="btn sm ghost">›</button></td>`;
 
   tr.querySelector(".pick input").onclick = e => {
@@ -1827,8 +1828,9 @@ function openSheet(id, preset){
         <select id="e_status">
           <option value="billable" ${t.status==="billable"?"selected":""}>Bill to owner</option>
           <option value="review" ${t.status==="review"?"selected":""}>On hold</option>
-          <option value="excluded" ${t.status==="excluded"&&!t.charge?"selected":""}>Not billable (PHD absorbs it)</option>
+          <option value="excluded" ${t.status==="excluded"&&!t.charge&&!t.direct?"selected":""}>Not billable (PHD absorbs it)</option>
           <option value="charge" ${t.charge?"selected":""}>Bill to a contractor or vendor</option>
+          <option value="direct" ${t.direct?"selected":""}>Owner paid them directly — bill our fee only</option>
         </select></label>
       <label class="opt"><input type="checkbox" id="e_fee" ${t.applyFee!==false?"checked":""}>
         <span><b>Charge the ${p.feePct}% project fee</b><small>Turn off for pass-through items billed at cost — consultation fees, permits, deposits.</small></span></label>
@@ -2048,7 +2050,7 @@ function openSheet(id, preset){
   $("#shClose").onclick = $("#e_cancel").onclick = closeSheet;
   if($("#e_del")) $("#e_del").onclick = () => {
     if(!confirm("Delete this transaction?")) return;
-    snapshot(); P().transactions = P().transactions.filter(x => x.id !== id);
+    snapshot(); P().transactions = P().transactions.filter(x => x.id !== id); if(typeof directSync === "function") directSync(P());
     closeSheet(); commit(); toast("Deleted");
   };
   const doSave = (again) => {
@@ -2059,7 +2061,8 @@ function openSheet(id, preset){
       receipt:$("#e_receipt").value.trim(), link:$("#e_link").value.trim(),
       amount:(() => { const v = Math.abs(Number($("#e_amt").value)||0);
                       return ($("#e_credit") && $("#e_credit").checked) ? -v : v; })(),
-      status:$("#e_status").value === "charge" ? "excluded" : $("#e_status").value,
+      status:["charge", "direct"].includes($("#e_status").value) ? "excluded" : $("#e_status").value,
+      direct:$("#e_status").value === "direct" ? true : undefined,
       charge:chargeFromSheet(t),
       party:$("#e_status").value === "charge" ? "Contractor" : "Owner", notes:$("#e_notes").value.trim(),
       work:$("#e_work") && $("#e_work").value ? $("#e_work").value : undefined,
@@ -2080,8 +2083,10 @@ function openSheet(id, preset){
       rec.tags = prior.tags || [];
       rec.reconciled = !!prior.reconciled;
       rec.reconciledAt = prior.reconciledAt || "";
+      Object.keys(prior).forEach(k => { if(!(k in rec)) rec[k] = prior[k]; });     // keep what other parts of the console put on it (QuickBooks link, inventory use, fee link)
       T[T.findIndex(x => x.id === id)] = rec;
     }
+    if(typeof directSync === "function") directSync(P());
     closeSheet(); commit(); toast(isNew ? "Transaction added" : "Saved", true);
     if(again) setTimeout(() => openSheet(null, {date:rec.date, vendor:rec.vendor, scope:rec.scope, applyFee:rec.applyFee, status:rec.status}), 340);
   };
@@ -8308,6 +8313,83 @@ function chInvoiceSheet(rows, email){
   $("#ciSend").onclick = () => go2(true); $("#ciDraft").onclick = () => go2(false);
 }
 
+/* =====================================================================
+   OWNER PAID THE CONTRACTOR DIRECTLY — bill PHD's fee, not the labor.
+   A transaction marked t.direct = true stays off the owner's invoices
+   (status "excluded", like any non-billable cost), and a companion line
+   carries PHD's fee on it:
+     vendor "PHD Properties", "Project management fee — 15% of <vendor> …",
+     amount = labor × the property's fee %, no fee on top, t.feeFor = <labor id>.
+   directSync(p) keeps the fee line in step with the labor line (amount,
+   unit, date) until it's on a sent invoice, and drops fee lines whose
+   labor line is gone or no longer "paid directly" (unless invoiced).
+   ===================================================================== */
+const DIRECT_VENDOR = "PHD Properties";
+const directFeeOf = (p, t) => (p.transactions || []).find(x => x.feeFor === t.id) || null;
+function directFeeAmt(p, t){ return Math.round(cents(t.amount) * (Number(p.feePct) || 0) / 100) / 100; }
+function directDesc(p, t){ return `Project management fee — ${Number(p.feePct) || 0}% of ${t.vendor || "contractor"}${t.desc ? " · " + t.desc : ""} (owner paid them directly)`; }
+function directLocked(p, f){
+  try{ const R = compute(p), i = R.txn[f.id]; return !!(i && (i.lockedC || (i.parts || []).some(x => x.status === "Sent" || x.status === "Paid"))); }catch(e){ return false; }
+}
+function directSync(p){
+  if(!p || !Array.isArray(p.transactions)) return 0;
+  let n = 0;
+  p.transactions.filter(t => t.direct).forEach(t => {
+    t.status = "excluded"; delete t.charge;
+    const amt = directFeeAmt(p, t);
+    let f = directFeeOf(p, t);
+    if(!f){
+      f = {id:uid(), date:t.date, vendor:DIRECT_VENDOR, desc:directDesc(p, t), receipt:"", link:"", amount:amt,
+        scope:JSON.parse(JSON.stringify(t.scope || {type:"single", unit:(p.units[0] || {}).id, splits:{}})),
+        status:"billable", applyFee:false, allowPartial:true, pin:null, party:"Owner", notes:"PHD's fee on labor the owner paid directly", tags:[], reconciled:false, reconciledAt:"", feeFor:t.id};
+      p.transactions.splice(p.transactions.indexOf(t) + 1, 0, f); n++;
+    } else if(!directLocked(p, f)){
+      if(f.amount !== amt || f.date !== t.date || JSON.stringify(f.scope) !== JSON.stringify(t.scope) || f.desc !== directDesc(p, t)){
+        Object.assign(f, {amount:amt, date:t.date, desc:directDesc(p, t), scope:JSON.parse(JSON.stringify(t.scope)), applyFee:false, status:f.status === "excluded" ? "billable" : f.status}); n++;
+      }
+    }
+  });
+  // fee lines whose labor line was deleted or isn't "paid directly" any more
+  const before = p.transactions.length;
+  p.transactions = p.transactions.filter(f => {
+    if(!f.feeFor) return true;
+    const t = p.transactions.find(x => x.id === f.feeFor);
+    return (t && t.direct) || directLocked(p, f);
+  });
+  return n + (before - p.transactions.length);
+}
+function directTagHTML(p, t){
+  const f = directFeeOf(p, t);
+  return `<span class="tag acc" title="The owner paid ${esc(t.vendor || "the contractor")} themselves — only PHD's fee is billed">Owner paid directly</span><div class="ch-who">fee billed: ${f ? usd(cents(f.amount)) : "—"}</div>`;
+}
+// the transaction sheet: explain what "paid directly" does, live with the amount
+(function(){
+  const base = openSheet;
+  openSheet = function(id, preset){
+    base(id, preset);
+    const sel = $("#e_status"); if(!sel) return;
+    const p = P(), t = id ? ((p.transactions || []).find(x => x.id === id) || {}) : {};
+    if(t.feeFor){ const lab = (p.transactions || []).find(x => x.id === t.feeFor);
+      sel.closest("label").insertAdjacentHTML("afterend", `<div class="pm-banner" style="margin:-4px 0 10px">PHD's fee on ${esc(lab ? (lab.vendor || "") + " " + usd(cents(lab.amount)) : "labor")} the owner paid directly. It follows that line — change the labor amount there.</div>`); return; }
+    sel.closest("label").insertAdjacentHTML("afterend", `<div class="pm-banner" id="dirBox" style="margin:-4px 0 10px"></div>`);
+    const box = $("#dirBox"), amt = $("#e_amt");
+    const sync = () => { const on = sel.value === "direct"; box.style.display = on ? "" : "none";
+      const a = Math.abs(Number(amt && amt.value) || 0), fee = Math.round(a * 100 * (Number(p.feePct) || 0) / 100) / 100;
+      if(on) box.innerHTML = `The owner paid ${esc(($("#e_vendor") || {}).value || "the contractor")} themselves, so the ${usd(cents(a))} stays off their invoices. A separate line bills PHD's ${Number(p.feePct) || 0}% fee: <b>${usd(cents(fee))}</b>.`;
+      const fb = $("#e_fee"); if(fb) fb.closest("label").style.display = on ? "none" : ""; };
+    sel.addEventListener("change", sync); if(amt) amt.addEventListener("input", sync); sync();
+  };
+})();
+// several at once from the bulk menu
+function directBulk(ids){
+  const p = P(), list = (p.transactions || []).filter(t => ids.includes(t.id) && !t.feeFor && Number(t.amount) > 0);
+  if(!list.length) return toast("Pick labor lines with an amount");
+  const fee = list.reduce((a, t) => a + cents(t.amount), 0) * (Number(p.feePct) || 0) / 100;
+  if(!confirm(`Mark ${list.length} as paid by the owner directly?\n\nThey come off the owner's invoices and PHD's ${Number(p.feePct) || 0}% fee (${usd(Math.round(fee))}) is billed instead.`)) return;
+  snapshot(); list.forEach(t => { t.direct = true; t.status = "excluded"; delete t.charge; }); directSync(p); commit(); render();
+  toast(`${list.length} marked paid directly · fee lines added`, true);
+}
+
 /* ====================================================================
    QUICKBOOKS — project expenses checked against the books
    --------------------------------------------------------------------
@@ -8446,7 +8528,7 @@ function qbPropOfLine(qt, l){
 let _qbCache = null;
 function qbMatch(){
   if(!qbReady()) return null;
-  const sig = S.qbo.syncedAt + "|" + (S.qbo.appliedAt || "") + "|" + JSON.stringify(qbCfg()) + "|" + live().map(p => p.id + ":" + qbOwnerNames(p).join("/") + ":" + p.transactions.map(t => t.id + t.amount + t.date + t.vendor + (t.qb ? JSON.stringify(t.qb) : "") + (t.qbSkip ? "s" : "") + (t.qbNot ? "n" + t.qbNot.join(",") : "")).join(",")).join("|");
+  const sig = S.qbo.syncedAt + "|" + (S.qbo.appliedAt || "") + "|" + JSON.stringify(qbCfg()) + "|" + live().map(p => p.id + ":" + qbOwnerNames(p).join("/") + ":" + p.transactions.map(t => t.id + t.amount + t.date + t.vendor + (t.qb ? JSON.stringify(t.qb) : "") + (t.qbSkip ? "s" : "") + (t.direct ? "d" : "") + (t.qbNot ? "n" + t.qbNot.join(",") : "")).join(",")).join("|");
   if(_qbCache && _qbCache.sig === sig) return _qbCache.v;
   const today = qbDay(todayISO());
   // units: each QuickBooks record, and each line of a record that has several
@@ -8466,6 +8548,7 @@ function qbMatch(){
   live().forEach(p => p.transactions.forEach(t => {
     const k = p.id + "|" + t.id, c = cents(t.amount);
     if(!c) return;
+    if(t.direct){ res.set(k, {state:"skip", why:"The owner paid this directly — only PHD's fee is billed"}); return; }
     if(t.qbSkip || QB_INTERNAL.test(String(t.vendor || "").trim())){ res.set(k, {state:"skip", why:t.qbSkip ? (t.qbSkip.why || "Marked not a QuickBooks expense") : "PHD's own charge — not a QuickBooks expense"}); return; }
     if(t.qbNot && t.qbNot.length && !t.qb){ res.set(k, {state:"none", unmatched:true, why:`You unmatched it${t.qbNotAt ? " on " + fdateS(t.qbNotAt) : ""} — use Find in QuickBooks to pick the right record`}); return; }
     C.push({k, p, t, c, d:qbDay(t.date)});
@@ -9155,22 +9238,25 @@ function invQbCard(v){
     if(acct && l.account && l.account.id === acct) inInv.push(item);
     else if(l.account && QB_UNCAT.test(l.account.name) && QB_STORES.test(qbVk(qt.vendor && qt.vendor.name)) && !l.customer) waiting.push(item);
   }));
-  const linked = new Set(invItems().flatMap(it => it.qb || []));
+  waiting.sort((a, b) => b.qt.date.localeCompare(a.qt.date)); inInv.sort((a, b) => b.qt.date.localeCompare(a.qt.date));
+  const itemsOf = k => invItems().filter(it => (it.qb || []).includes(k));
   const card = elm("div", "card inv-qb");
-  const row = (x, i, kind) => `<tr><td class="nw muted">${esc(qbFmtDate(x.qt.date))}</td><td><div class="item-t">${esc(x.qt.vendor ? x.qt.vendor.name : "—")}</div><div class="item-s">${esc((x.l.desc || x.qt.memo || "").slice(0, 80))}${x.qt.from ? " · " + esc(x.qt.from.name) : ""}</div></td>
-      <td class="r num">${usd(x.c)}</td><td class="r nw">${kind === "in" ? (linked.has(x.k) ? `<span class="tag green">Items added</span>` : `<button class="btn sm" data-add="${i}">Add its items</button>`) : `<label class="inv-ck"><input type="checkbox" data-w="${i}"> Inventory</label>`}</td></tr>`;
+  const row = (x, i, kind) => { const its = itemsOf(x.k), tot = its.reduce((a, it) => a + invCostEach(it) * (+it.bought || 0), 0);
+    return `<tr><td class="nw muted">${esc(qbFmtDate(x.qt.date))}</td><td><div class="item-t">${esc(x.qt.vendor ? x.qt.vendor.name : "—")}</div><div class="item-s">${esc((x.l.desc || x.qt.memo || "").slice(0, 80))}${x.qt.from ? " · " + esc(x.qt.from.name) : ""}</div>
+        ${its.length ? `<div class="inv-its">${its.map(it => `<span>${esc(it.name)} × ${+it.bought || 0}</span>`).join("")}${tot !== Math.abs(x.c) ? `<span class="inv-left">${usd(Math.abs(x.c) - tot)} not itemized</span>` : ""}</div>` : ""}</td>
+      <td class="r num">${usd(x.c)}</td><td class="r nw"><button class="btn sm ${its.length ? "ghost" : ""}" data-itz="${kind}${i}">${its.length ? `Edit items (${its.length})` : "Itemize"}</button>${kind === "in" ? "" : `<label class="inv-ck"><input type="checkbox" data-w="${i}"> Inventory</label>`}</td></tr>`; };
   card.innerHTML = `<div class="card-h"><h3>QuickBooks</h3><span class="muted td-n">${A ? "Bulk buys go to " + esc(A.name) : "No inventory account found in QuickBooks"}</span><button class="btn sm ghost" id="invAcct" style="margin-left:auto">Change account</button></div>
-    ${waiting.length ? `<div class="card-b"><div class="sectl" style="margin-top:0">Store charges not categorized yet</div><p class="help" style="margin:0 0 8px">Tick the bulk buys for inventory and press the button — they move to ${A ? esc(qbShort(A.name)) : "the inventory account"} in QuickBooks. Project purchases are on Reconcile → Fix in QuickBooks.</p>
-      <table class="tbl qb-tbl"><tbody>${waiting.sort((a, b) => b.qt.date.localeCompare(a.qt.date)).map((x, i) => row(x, i, "w")).join("")}</tbody></table>
+    ${waiting.length ? `<div class="card-b"><div class="sectl" style="margin-top:0">Store charges not categorized yet</div><p class="help" style="margin:0 0 8px"><b>Itemize</b> a receipt to add what it bought (20 locks, 10 lights…) as inventory items. Tick the bulk buys and press the button to move them to ${A ? esc(qbShort(A.name)) : "the inventory account"} in QuickBooks. Project purchases are on Reconcile → Fix in QuickBooks.</p>
+      <table class="tbl qb-tbl"><tbody>${waiting.map((x, i) => row(x, i, "w")).join("")}</tbody></table>
       <div class="ch-acts"><button class="btn primary" id="invMove" disabled>Move to inventory in QuickBooks</button><span class="muted" id="invMoveN" style="font-size:12.5px"></span></div></div>` : ""}
     <div class="card-b"><div class="sectl" style="margin-top:0">In ${A ? esc(qbShort(A.name)) : "inventory"} in QuickBooks <span class="muted">${usd(inInv.reduce((a, x) => a + x.c, 0))}</span></div>
-      ${inInv.length ? `<table class="tbl qb-tbl"><tbody>${inInv.sort((a, b) => b.qt.date.localeCompare(a.qt.date)).map((x, i) => row(x, i, "in")).join("")}</tbody></table>` : `<p class="muted" style="margin:0">Nothing in it yet.</p>`}</div>`;
+      ${inInv.length ? `<table class="tbl qb-tbl"><tbody>${inInv.map((x, i) => row(x, i, "in")).join("")}</tbody></table>` : `<p class="muted" style="margin:0">Nothing in it yet.</p>`}</div>`;
   v.appendChild(card);
   card.querySelector("#invAcct").onclick = invAcctSheet;
-  card.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { const x = inInv.sort((a, b) => b.qt.date.localeCompare(a.qt.date))[+b.dataset.add]; invItemSheet(null, x); });
+  card.querySelectorAll("[data-itz]").forEach(b => b.onclick = () => { const k = b.dataset.itz, x = k.startsWith("in") ? inInv[+k.slice(2)] : waiting[+k.slice(1)]; invReceiptSheet(x, !k.startsWith("in")); });
   const mv = card.querySelector("#invMove");
   if(mv){
-    const sorted = waiting; const picked = () => [...card.querySelectorAll("[data-w]:checked")].map(c => sorted[+c.dataset.w]);
+    const sorted = waiting, picked = () => [...card.querySelectorAll("[data-w]:checked")].map(c => sorted[+c.dataset.w]);
     card.querySelectorAll("[data-w]").forEach(c => c.onchange = () => { const p = picked(); mv.disabled = !p.length || !acct; card.querySelector("#invMoveN").textContent = p.length ? `${p.length} · ${usd(p.reduce((a, x) => a + x.c, 0))}` : ""; });
     mv.onclick = async () => {
       const p = picked(); if(!p.length || !acct) return;
@@ -9308,6 +9394,72 @@ function invImportSheet(){
     commit(); closeSheet(); render(); toast(`${added} added${updated ? ` · ${updated} updated` : ""}`, true);
   };
 }
+
+/* ---------- itemize one QuickBooks charge: the receipt's lines become inventory items ---------- */
+function invReceiptSheet(x, canMove){
+  const acct = invAcctId(), A = acct && qbAcct(acct), total = Math.abs(x.c), uses = invUses();
+  const mine = invItems().filter(it => (it.qb || []).includes(x.k));
+  let rows = mine.map(it => ({id:it.id, name:it.name, qty:+it.bought || 0, paid:+it.paid || 0, tax:it.tax != null ? +it.tax : 9, charge:+it.charge || 0, used:uses.filter(u => u.t.inv.item === it.id).reduce((a, u) => a + u.qty, 0)}));
+  if(!rows.length) rows = [{name:"", qty:1, paid:0, tax:9, charge:0}];
+  const sh = $("#sheet"), store = x.qt.vendor ? x.qt.vendor.name : "";
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Itemize this ${esc(store || "store")} charge</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(qbRecLabel(x.qt))} · ${usd(total)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="help" style="margin-top:0">One line per thing it bought. Each becomes an inventory item you can use on projects. Leave out anything that wasn't for inventory — the total below shows what's left.</p>
+      <table class="tbl inv-rc"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Paid each</th><th class="r">Tax %</th><th class="r">Owner charge</th><th class="r">Line total</th><th></th></tr></thead><tbody id="rcB"></tbody></table>
+      <button class="btn sm ghost" id="rcAdd" style="margin-top:6px">+ Add a line</button>
+      <div class="inv-rc-sum" id="rcSum"></div>
+      ${canMove && acct ? `<label class="inv-fee" style="margin-top:12px"><input type="checkbox" id="rcMove" checked> Also move this charge to ${esc(A.name)} in QuickBooks</label>` : ""}
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="rcOk">Save items</button></div>`;
+  openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  const lineC = r => Math.round(cents(r.paid || 0) * (1 + (+r.tax || 0) / 100)) * (Math.floor(+r.qty) || 0);
+  const draw = () => {
+    $("#rcB").innerHTML = rows.map((r, i) => `<tr data-i="${i}">
+      <td><input type="text" data-f="name" value="${esc(r.name)}" placeholder="e.g. Aura deadbolt" list="rcNames"></td>
+      <td class="r"><input type="number" data-f="qty" min="0" step="1" value="${r.qty}" class="sm-n"></td>
+      <td class="r"><input type="number" data-f="paid" min="0" step="0.01" value="${r.paid || ""}" class="md-n"></td>
+      <td class="r"><input type="number" data-f="tax" min="0" step="0.01" value="${r.tax}" class="sm-n"></td>
+      <td class="r"><input type="number" data-f="charge" min="0" step="0.01" value="${r.charge || ""}" class="md-n" placeholder="each"></td>
+      <td class="r num" data-lt>${usd(lineC(r))}</td>
+      <td class="r">${r.used ? `<span class="muted" title="Used on projects">${r.used} used</span>` : `<button class="btn sm ghost" data-rm="${i}" aria-label="Remove line">✕</button>`}</td></tr>`).join("") + `<datalist id="rcNames">${[...new Set(invItems().map(it => it.name))].map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
+    $("#rcB").querySelectorAll("input").forEach(inp => inp.oninput = () => { const r = rows[+inp.closest("tr").dataset.i], f = inp.dataset.f; r[f] = f === "name" ? inp.value : +inp.value || 0;
+      if(f === "name" && !r.id){ const old = invItems().find(it => it.name.toLowerCase() === inp.value.trim().toLowerCase()); if(old && !r.charge){ r.charge = +old.charge || 0; inp.closest("tr").querySelector('[data-f="charge"]').value = r.charge || ""; } }
+      inp.closest("tr").querySelector("[data-lt]").textContent = usd(lineC(r)); sum(); });
+    $("#rcB").querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { rows.splice(+b.dataset.rm, 1); if(!rows.length) rows.push({name:"", qty:1, paid:0, tax:9, charge:0}); draw(); });
+    sum();
+  };
+  const sum = () => { const it = rows.reduce((a, r) => a + lineC(r), 0), left = total - it;
+    $("#rcSum").innerHTML = `Itemized <b>${usd(it)}</b> of ${usd(total)} · ${left === 0 ? `<span style="color:var(--green)">all of it</span>` : left > 0 ? `<span class="muted">${usd(left)} not itemized</span>` : `<span style="color:var(--red)">${usd(-left)} more than the charge</span>`}`; };
+  $("#rcAdd").onclick = () => { rows.push({name:"", qty:1, paid:0, tax:rows.length ? rows[rows.length - 1].tax : 9, charge:0}); draw(); const ins = $("#rcB").querySelectorAll('[data-f="name"]'); ins[ins.length - 1].focus(); };
+  draw();
+  $("#rcOk").onclick = async () => {
+    const keep = rows.filter(r => String(r.name || "").trim() && (Math.floor(+r.qty) || 0) > 0);
+    const bad = rows.find(r => r.id && r.used && (!String(r.name || "").trim() || Math.floor(+r.qty) < r.used));
+    if(bad) return toast(`${bad.name || "An item"} has ${bad.used} used on projects — keep at least that many`);
+    const over = keep.reduce((a, r) => a + lineC(r), 0) - total;
+    if(over > 100 && !confirm(`These lines come to ${usd(over)} more than the ${usd(total)} charge. Save them anyway?`)) return;
+    snapshot();
+    const s = invSet(), seen = new Set();
+    keep.forEach(r => {
+      let rec = r.id && s.items.find(it => it.id === r.id);
+      if(!rec){ rec = {id:uid(), created:todayISO(), by:typeof qbWho === "function" ? qbWho() : "", qb:[x.k], adj:0}; s.items.push(rec); }
+      Object.assign(rec, {name:String(r.name).trim(), store, bought:Math.floor(+r.qty), paid:+r.paid || 0, tax:+r.tax || 0, charge:+r.charge || 0});
+      if(!(rec.qb || []).includes(x.k)) (rec.qb = rec.qb || []).push(x.k);
+      seen.add(rec.id);
+    });
+    // lines taken off the receipt: gone, unless something was used
+    s.items = s.items.filter(it => !((it.qb || []).includes(x.k) && !seen.has(it.id) && !uses.some(u => u.t.inv.item === it.id)));
+    commit();
+    const mv = $("#rcMove") && $("#rcMove").checked;
+    closeSheet(); render(); toast(`${keep.length} item${keep.length === 1 ? "" : "s"} saved from this receipt`, true);
+    if(mv && keep.length){
+      try{ const r = await qbCall("apply", {changes:[{type:x.qt.type, id:x.qt.id, line:x.l.id, expectAmount:x.l.amount, account:acct}]});
+        const b = (r.results || []).filter(y => !y.ok); if(r.changed) await qbFetchSnapshot();
+        toast(b.length ? `Items saved · QuickBooks didn't move it: ${b[0].error}` : `Items saved · moved to ${qbShort(A.name)} in QuickBooks`); render();
+      }catch(e){ toast("Items saved · " + e.message); }
+    }
+  };
+}
+
 
 /* =====================================================================
    ADD BILL BY UPLOAD — drop a vendor invoice or receipt (PDF or photo).
