@@ -1473,3 +1473,17 @@ body{transition:background-color .25s var(--ease)}
   .pm-add .btn{flex:1 1 100%}
   .pm-tbl tr.ow-tot td:nth-child(3)::before{content:"Received ";color:var(--muted);font-weight:400}
 }
+
+/* drop a receipt on a project page */
+.drop-ov{position:fixed;inset:0;z-index:90;display:none;place-items:center;background:rgba(15,25,23,.38);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
+.drop-ov.on{display:grid}
+.drop-box{pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:38px 48px;max-width:min(460px,calc(100% - 32px));
+  background:var(--panel);border:2px dashed var(--accent);border-radius:16px;box-shadow:var(--sh-lift)}
+.drop-box svg{width:30px;height:30px;color:var(--accent);margin-bottom:4px}
+.drop-box b{font-size:17px;font-weight:600;letter-spacing:-.015em}
+.drop-box span{font-size:13px;color:var(--muted)}
+#dpCards .ib-card{margin-top:14px}
+#dpCards .ib-body{grid-template-columns:1fr}
+.dp-more{position:relative;display:inline-flex;align-items:center;gap:6px;margin-top:14px;font-size:13px;color:var(--accent);cursor:pointer;font-weight:500}
+.dp-more input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.dp-more:focus-within{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}

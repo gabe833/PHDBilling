@@ -3360,14 +3360,14 @@ function quickEntryBar(p){
       <button class="btn" id="qeMore" title="Open the full form (Shift+Enter)">Details</button>
       <button class="btn primary" id="qeAdd" disabled>Add</button>
     </div>
-    <div class="qe-chips" id="qeChips"><span class="qe-hint" style="margin-left:0">Type vendor, amount, and what it was${p.units.length > 1 ? " — plus the unit, or “both” to split" : ""}. Dates like “yesterday” or “9/12”, and “no fee”, “hold”, “return” work too.</span></div>`;
+    <div class="qe-chips" id="qeChips"><span class="qe-hint" style="margin-left:0">Type vendor, amount, and what it was${p.units.length > 1 ? " — plus the unit, or “both” to split" : ""}. Dates like “yesterday” or “9/12”, and “no fee”, “hold”, “return” work too. Or drop a receipt file anywhere on the page.</span></div>`;
   const inp = box.querySelector("#qeIn"), chips = box.querySelector("#qeChips"), addB = box.querySelector("#qeAdd");
   let parsed = null;
   const draw = () => {
     const txt = inp.value;
     if(!txt.trim()){
       parsed = null; addB.disabled = true;
-      chips.innerHTML = `<span class="qe-hint" style="margin-left:0">Type vendor, amount, and what it was${p.units.length > 1 ? " — plus the unit, or “both” to split" : ""}. Dates like “yesterday” or “9/12”, and “no fee”, “hold”, “return” work too.</span>`;
+      chips.innerHTML = `<span class="qe-hint" style="margin-left:0">Type vendor, amount, and what it was${p.units.length > 1 ? " — plus the unit, or “both” to split" : ""}. Dates like “yesterday” or “9/12”, and “no fee”, “hold”, “return” work too. Or drop a receipt file anywhere on the page.</span>`;
       return;
     }
     parsed = parseQuick(txt, P());
@@ -3663,12 +3663,7 @@ function inboxSetup(v){
 
 function inboxCard(it){
   const card = elm("div","card ib-card");
-  const d = INBOX.draft[it.id] = INBOX.draft[it.id] || {
-    propId: it.property_id && (S.properties.some(p => p.id === it.property_id) || pmProp(it.property_id)) ? it.property_id : "",
-    unit: it.unit_id || "", date: it.date || "", vendor: it.vendor || "", desc: it.description || "",
-    amount: it.total ? String(it.total) : "", credit: !!it.is_credit,
-    pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || ""
-  };
+  const d = INBOX.draft[it.id] = INBOX.draft[it.id] || inboxDraft(it);
   const prop = S.properties.find(p => p.id === d.propId), pmp = prop ? null : pmProp(d.propId);
   if(prop && d.unit !== "split" && !prop.units.some(u => u.id === d.unit)) d.unit = prop.units.length === 1 ? prop.units[0].id : "";
   const conf = {high:"green", medium:"gold", low:"grey"}[it.confidence] || "grey";
@@ -3743,6 +3738,18 @@ function inboxCard(it){
   act("retry", async () => { try{ toast("Reading it again…"); await inboxPost({action:"retry", id:it.id}); delete INBOX.draft[it.id]; inboxRefresh(); }catch(e){ toast(e.message); } });
   return card;
 }
+// what the approve form starts with; propId forces a property (a file dropped on that property's page)
+function inboxDraft(it, propId){
+  const d = {
+    propId: propId || (it.property_id && (S.properties.some(p => p.id === it.property_id) || pmProp(it.property_id)) ? it.property_id : ""),
+    unit: it.unit_id || "", date: it.date || "", vendor: it.vendor || "", desc: it.description || "",
+    amount: it.total ? String(it.total) : "", credit: !!it.is_credit,
+    pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || ""
+  };
+  const p = S.properties.find(x => x.id === d.propId);
+  if(p && d.unit !== "split" && !p.units.some(u => u.id === d.unit)) d.unit = p.units.length === 1 ? p.units[0].id : "";
+  return d;
+}
 function inboxPmMonth(){ const open = pmMonths().filter(m => !(pmState().meta[m] || {}).closed); return open.length ? open[open.length - 1] : thisMonth(); }
 function inboxPmDupes(p, d, it){
   const c = cents(Number(d.amount) || 0); if(!c) return [];
@@ -3794,13 +3801,16 @@ async function inboxApprove(it, openAfter){
   INBOX.items = INBOX.items.filter(x => x.id !== it.id); delete INBOX.draft[it.id];
   commit();
   toast(`Added ${d.credit ? "credit " : ""}${usd(cents(amt))} to ${p.name}${rec.status === "review" ? " · on hold (labor)" : ""}`);
+  if(INBOX.onDone) INBOX.onDone(it.id, rec.id);
   if(openAfter){ go("txns", p.id); openSheet(rec.id); }
   try{ await inboxPost(Object.assign({action:"decide", id:it.id}, msg)); delete inboxDone()[it.id]; Store.save(S); }catch(e){ /* retried on next check */ }
+  return rec.id;
 }
 async function inboxReject(it){
   try{
     await inboxPost({action:"decide", id:it.id, decision:"rejected"});
     INBOX.items = INBOX.items.filter(x => x.id !== it.id); delete INBOX.draft[it.id];
+    if(INBOX.onDone) INBOX.onDone(it.id, null);
     render(); toast("Dismissed — it stays in Drive and the sheet, marked rejected");
   }catch(e){ toast(e.message); }
 }
@@ -10191,16 +10201,29 @@ function snapRow(f){
   if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>This exact file was sent before — it's already in the inbox or approved.</span></div></div>`;
   return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${esc(f.msg || "Couldn't send it")}</span></div></div>`;
 }
+// a file headed for the receipt inbox: its type, a usable name, and why it can't go (if it can't)
+function receiptFile(file, i, n){
+  const mime = (file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : (file.type || "").toLowerCase();
+  const name = !file.name || /^image\.\w+$/i.test(file.name) ? `Receipt ${new Date().toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}).replace(/[,:]/g, "")}${n > 1 ? " " + (i + 1) : ""}.${(mime.split("/")[1] || "jpg").replace("jpeg", "jpg")}` : file.name;
+  const f = {name, file, mime, state:"queued"};
+  if(!BU_TYPES[mime]){ f.state = "error"; f.msg = /hei[cf]/.test(mime) || /\.hei[cf]$/i.test(file.name || "") ? "This photo is HEIC — set the camera to “Most Compatible”, or export it as JPG" : "Use a PDF, JPG or PNG"; }
+  else if(mime === "application/pdf" && file.size > 25 * 1024 * 1024){ f.state = "error"; f.msg = "PDF is over 25 MB"; }
+  return f;
+}
+// shrink, send and read one file; returns the inbox's answer
+async function receiptUpload(f, kind, side){
+  const sm = await shrinkPhoto(f.file, f.mime);
+  if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error("Photo is over 5 MB even after shrinking — try a PDF");
+  const data = await buBase64(sm.file);
+  const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind, by:billWho(), side});
+  delete f.file;
+  if(r.item && !r.duplicate && !INBOX.items.some(x => x.id === r.item.id)) INBOX.items.unshift(r.item);
+  return r;
+}
+const receiptErr = e => /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? "No connection to the receipt inbox — check the connection and try again" : e.message;
 function snapAdd(files){
   const side = S.ui.mode === "pm" ? "pm" : "projects";
-  files.forEach((file, i) => {
-    const mime = (file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : (file.type || "").toLowerCase();
-    const name = !file.name || /^image\.\w+$/i.test(file.name) ? `Receipt ${new Date().toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}).replace(/[,:]/g, "")}${files.length > 1 ? " " + (i + 1) : ""}.${(mime.split("/")[1] || "jpg").replace("jpeg", "jpg")}` : file.name;
-    const f = {name, file, mime, kind:SNAP.kind, side, state:"queued"};
-    if(!BU_TYPES[mime]) { f.state = "error"; f.msg = /hei[cf]/.test(mime) ? "This photo is HEIC — set the camera to “Most Compatible”, or choose it again from Photos" : "Send a photo (JPG or PNG) or a PDF"; }
-    else if(mime === "application/pdf" && file.size > 25 * 1024 * 1024){ f.state = "error"; f.msg = "PDF is over 25 MB"; }
-    SNAP.files.push(f);
-  });
+  files.forEach((file, i) => SNAP.files.push(Object.assign(receiptFile(file, i, files.length), {kind:SNAP.kind, side})));
   SNAP.redraw && SNAP.redraw(); snapPump();
 }
 async function snapPump(){
@@ -10211,19 +10234,112 @@ async function snapPump(){
     while((f = SNAP.files.find(x => x.state === "queued"))){
       f.state = "working"; redraw();
       try{
-        const sm = await shrinkPhoto(f.file, f.mime);
-        if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error("Photo is over 5 MB even after shrinking — try a PDF");
-        const data = await buBase64(sm.file);
-        const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind:f.kind, by:billWho(), side:f.side});
-        delete f.file; f.item = r.item || null;
-        if(r.duplicate || !r.item) f.state = "dupe";
-        else { f.state = "done"; if(!INBOX.items.some(x => x.id === r.item.id)) INBOX.items.unshift(r.item); }
-      }catch(e){ f.state = "error"; f.msg = /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? "No connection to the receipt inbox — check signal and try again" : e.message; }
+        const r = await receiptUpload(f, f.kind, f.side);
+        f.item = r.item || null; f.state = r.duplicate || !r.item ? "dupe" : "done";
+      }catch(e){ f.state = "error"; f.msg = receiptErr(e); }
       redraw();
     }
   } finally { SNAP.busy = false; }
   if(S.ui.view === "inbox" && !$("#sheet").classList.contains("on")) render(); else renderNav();
 }
+
+/* =====================================================================
+   DROP A RECEIPT ON A PROJECT — drag PDFs or photos onto any page of a
+   project property. Each is read by the receipt inbox (and filed in Drive
+   like an emailed one). When the amount, date and unit are clear and it
+   isn't a likely duplicate, it's added to this property as a transaction
+   right away (Ctrl+Z undoes it); otherwise its inbox card opens here to
+   finish. Nothing goes to any other property.
+   ===================================================================== */
+const DROP_VIEWS = new Set(["overview","txns","scope","invoices","owner","settings"]);
+const DROP = {files:[], busy:false, redraw:null};
+const dropSheetOn = () => $("#sheet").classList.contains("on") && !!$("#dpList");
+function dropTarget(){
+  if(dropSheetOn()) return S.properties.find(p => p.id === DROP.prop) || null;   // more files onto the open panel
+  if(S.ui.mode === "pm" || !DROP_VIEWS.has(S.ui.view) || $("#sheet").classList.contains("on") || $("#cmdk").classList.contains("on")) return null;
+  return P() || null;
+}
+function dropAdd(p, files){
+  if(!dropSheetOn()) DROP.files = DROP.files.filter(f => f.state === "working" || f.state === "queued");
+  DROP.prop = p.id;
+  if(inboxConn()) files.forEach((file, i) => DROP.files.push(Object.assign(receiptFile(file, i, files.length), {prop:p.id})));
+  dropSheet(); dropPump();
+}
+function dropSheet(){
+  const sh = $("#sheet"), conn = inboxConn(), p = S.properties.find(x => x.id === DROP.prop);
+  if(!p) return;
+  const draw = () => {
+    const mine = DROP.files.filter(f => f.prop === p.id), added = mine.filter(f => f.state === "added");
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Add to ${esc(p.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Dropped files are read for you and added as transactions</div></div>
+        <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${conn ? "" : `<div class="pm-banner">Reading dropped files uses the receipt inbox, which isn't connected yet. <button class="btn sm" id="dpConn" style="margin-left:6px">Connect it</button></div>`}
+        <div class="bu-list" id="dpList">${mine.map((f, i) => dropRow(f, DROP.files.indexOf(f))).join("") || `<div class="bu-r"><div class="bu-t"><span>Drop more PDFs or photos here.</span></div></div>`}</div>
+        <div id="dpCards"></div>
+        ${conn ? `<label class="dp-more">${icon("plus")} Add more files<input type="file" id="dpPick" accept="image/*,application/pdf,.pdf" multiple></label>` : ""}
+      </div>
+      <div class="sheet-f"><span style="flex:1"></span>
+        ${added.length && S.ui.view !== "txns" ? `<button class="btn" id="dpSee">See transactions</button>` : ""}<button class="btn primary" id="shCancel">Done</button></div>`;
+    const cards = sh.querySelector("#dpCards");
+    mine.filter(f => f.state === "review" && INBOX.items.some(x => x.id === f.item.id)).forEach(f => cards.appendChild(inboxCard(f.item)));
+    const close = () => { closeSheet(); INBOX.onDone = null; const last = added[added.length - 1]; if(last && S.ui.view === "txns") S.ui.flash = last.txn; render(); };
+    $("#shClose").onclick = $("#shCancel").onclick = close;
+    const see = sh.querySelector("#dpSee"); if(see) see.onclick = () => { close(); const last = added[added.length - 1]; if(last) S.ui.flash = last.txn; go("txns", p.id); };
+    const c = sh.querySelector("#dpConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
+    const pick = sh.querySelector("#dpPick"); if(pick) pick.onchange = () => { dropAdd(p, [...pick.files]); pick.value = ""; };
+    sh.querySelectorAll("[data-dp]").forEach(b => b.onclick = () => { const f = DROP.files[Number(b.dataset.dp)]; if(f && f.txn){ closeSheet(); INBOX.onDone = null; go("txns", p.id); openSheet(f.txn); } });
+  };
+  // the inbox card approves or dismisses; mark it here
+  INBOX.onDone = (itemId, txnId) => { const f = DROP.files.find(x => x.item && x.item.id === itemId); if(!f) return;
+    if(txnId){ f.state = "added"; f.txn = txnId; } else f.state = "dismissed"; if(dropSheetOn()) draw(); };
+  DROP.redraw = draw;
+  draw(); if(!$("#sheet").classList.contains("on")) openPanel();
+}
+function dropRow(f, i){
+  const it = f.item || {}, amt = it.total ? " · " + usd(cents(it.total)) : "";
+  if(f.state === "working" || f.state === "queued") return `<div class="bu-r"><span class="bu-spin" aria-hidden="true"></span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${f.state === "queued" ? "Waiting…" : "Reading it…"}</span></div></div>`;
+  if(f.state === "added") return `<div class="bu-r ok"><span class="bu-ic">✓</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${amt}</b><span>Added${it.description ? " — " + esc(it.description) : ""}</span></div><button class="btn sm ghost" data-dp="${i}">Open</button></div>`;
+  if(f.state === "review") return `<div class="bu-r warn"><span class="bu-ic">…</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${amt}</b><span>${esc(f.msg)} — finish it below</span></div></div>`;
+  if(f.state === "dismissed") return `<div class="bu-r"><span class="bu-ic">–</span><div class="bu-t"><div class="bu-n">${esc(it.vendor || f.name)}</div><span>Dismissed</span></div></div>`;
+  if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>This exact file was sent before — it's in the receipt inbox or already added</span></div></div>`;
+  return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${esc(f.msg || "Couldn't read it")}</span></div></div>`;
+}
+async function dropPump(){
+  if(DROP.busy) return; DROP.busy = true;
+  const redraw = () => { if(DROP.redraw && dropSheetOn()) DROP.redraw(); };
+  try{
+    let f;
+    while((f = DROP.files.find(x => x.state === "queued"))){
+      f.state = "working"; redraw();
+      try{
+        const r = await receiptUpload(f, "paid", "projects");
+        if(r.duplicate || !r.item){ f.state = "dupe"; redraw(); continue; }
+        const it = f.item = r.item, p = S.properties.find(x => x.id === f.prop);
+        if(!p){ f.state = "error"; f.msg = "That property is gone"; redraw(); continue; }
+        const d = INBOX.draft[it.id] = inboxDraft(it, p.id);
+        const dup = inboxDupes(p, d, it);
+        f.msg = it.status === "error" ? "Couldn't read it" : !(Number(d.amount) > 0) ? "No amount found" : !/^\d{4}-\d{2}-\d{2}$/.test(d.date || "") ? "No date found"
+          : !inboxReady(d) ? "Pick the unit" : dup.length ? "Looks like one already here" : it.confidence === "low" ? "Check the details" : "";
+        if(f.msg){ f.state = "review"; redraw(); continue; }
+        f.state = "added"; f.txn = await inboxApprove(it, false);
+      }catch(e){ f.state = "error"; f.msg = receiptErr(e); }
+      redraw();
+    }
+  } finally { DROP.busy = false; }
+}
+// the drop target: a veil over the page while files are dragged over it
+(function(){
+  let depth = 0;
+  const hasFiles = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  const veil = () => { let o = $("#dropOv"); if(!o){ o = elm("div", "drop-ov"); o.id = "dropOv"; document.body.appendChild(o); } return o; };
+  const hide = () => { depth = 0; const o = $("#dropOv"); if(o) o.classList.remove("on"); };
+  document.addEventListener("dragenter", e => { if(!hasFiles(e)) return; const p = dropTarget(); if(!p) return;
+    if(depth++ === 0){ const o = veil(); o.innerHTML = `<div class="drop-box">${icon("receipt")}<b>Drop to add to ${esc(p.name)}</b><span>PDF, JPG or PNG · read for you and added as a transaction</span></div>`; o.classList.add("on"); } }, true);
+  document.addEventListener("dragover", e => { if(!hasFiles(e) || !dropTarget()) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }, true);
+  document.addEventListener("dragleave", e => { if(!hasFiles(e)) return; if(--depth <= 0 || !e.relatedTarget) hide(); }, true);
+  document.addEventListener("drop", e => { if(!hasFiles(e)) return; const p = dropTarget(); hide(); if(!p) return;
+    e.preventDefault(); e.stopPropagation(); dropAdd(p, [...e.dataTransfer.files]); }, true);
+})();
 // decide what to do with what was read
 function buHandle(f, duplicate, force){
   const it = f.item;
