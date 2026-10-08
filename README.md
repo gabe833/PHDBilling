@@ -225,6 +225,14 @@ When the owner pays a contractor themselves, open that labor line → Billing st
 
 Open a Lowe's, Home Depot, Costco or Amazon order on the store's site, select all, copy and paste it — or drop the order PDF. The console finds what was billed, the tax rate, each return (items × price × tax; one return without items listed takes what's left of the refund total), and the payments a big order was split into. Check the lines, pick the property and unit, and it adds the purchase and every return as their own lines. Any line QuickBooks already has (the purchase, its pieces, each refund credit) is linked as it's added; lines that look like they're already in the project are flagged.
 
+### 7k. Drop a receipt on a project
+Drag one or more PDFs or photos (JPG, PNG) from your computer onto any page of a project property: Overview, Transactions, Scope, Invoices, Owner or Settings. Each file is read by the receipt inbox and filed in Drive like an emailed receipt, then added to **that** property:
+- When the amount, date and unit are clear and nothing similar is already there, it's added as a transaction right away. Press Ctrl+Z (⌘Z) to undo.
+- Otherwise its inbox card opens in the same panel, with the reason (pick the unit, no amount found, looks like one already here…). Finish it there or dismiss it.
+- Files sent before are caught as duplicates. Big photos are shrunk first.
+
+This needs the receipt inbox connected. **Add more files** in the panel works when dragging isn't handy.
+
 ### 7j. Business page (Projects → Business)
 
 - **Profit** — what PHD earns on each project: the project fee, fees on labor owners paid directly, and inventory markup; collected, invoiced and not invoiced yet; margin on project spend.
