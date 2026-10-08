@@ -435,15 +435,6 @@ table.lines tr.tot td{border-bottom:0;border-top:1px solid var(--line);font-weig
 /* ============================== responsive ============================== */
 @media (max-width:1000px){ .hero{grid-template-columns:1fr} .hero-r{border-left:0;border-top:1px solid var(--line-2)} .owner-grid{grid-template-columns:1fr} }
 @media (max-width:800px){
-  .app{flex-direction:column}
-  .rail{width:auto;height:auto;position:static;flex-direction:row;align-items:center;gap:6px;padding:8px 12px;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}
-  .brand .wm{display:none} .brand{padding:0 4px 0 0}
-  .switch-wrap{padding:0;flex:none;min-width:150px;max-width:200px}
-  .menu{left:0;right:auto;min-width:260px}
-  .nav{flex-direction:row;padding:0;flex:1;overflow-x:auto}
-  .nav button{padding:7px 10px;white-space:nowrap} .nav .badge{display:none} .nav-gap,.nav-head{display:none}
-  .rail-foot{margin:0;padding:0;border:0;flex:none}
-  .save-chip span{display:none}
   .topbar,.pagehead,.content{padding-left:16px;padding-right:16px}
   .f2,.f3{grid-template-columns:1fr}
   .inv-n{width:auto} .fill{display:none} .inv-amt{margin-left:auto}
@@ -1087,10 +1078,6 @@ input[type=text],input[type=number],input[type=date],input[type=email],input[typ
   .content{padding:16px 16px 56px}
   .page-title{font-size:19px}
 }
-@media (max-width:800px){
-  .rail{background:var(--dock)}
-  .nav button[aria-current="true"]::before{display:none}
-}
 
 /* Today */
 .td-hero{margin-bottom:18px}
@@ -1349,3 +1336,140 @@ body{transition:background-color .25s var(--ease)}
 .biz-con input{padding:5px 7px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px;text-align:right}
 @media (max-width:760px){.biz-tbl th:nth-child(n+5),.biz-tbl td:nth-child(n+5){display:none}.biz-con{grid-template-columns:1fr 1fr}}
 
+
+/* ============================== phones ==============================
+   The left menu becomes a drawer behind a slim top bar (menu · where you
+   are · snap a receipt · search). Pages keep one column, page actions
+   scroll sideways instead of stacking, panels open full screen, and the
+   busy tables turn into tappable cards. */
+.mbar,.rail-scrim{display:none}
+.sn-picks{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sn-pick{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-align:center;padding:22px 12px;border:1.5px solid var(--line-3);border-radius:var(--r);background:var(--panel-2);cursor:pointer;transition:border-color .15s,background .15s}
+.sn-pick input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.sn-pick svg{width:24px;height:24px;color:var(--accent);margin-bottom:4px}
+.sn-pick b{font-size:14px;color:var(--ink)} .sn-pick span{font-size:12px;color:var(--muted)}
+.sn-pick.primary{border-color:var(--accent);background:var(--accent-soft)}
+.sn-pick:hover{border-color:var(--accent)}
+.sn-pick:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.sn-pick.dis{opacity:.55;cursor:not-allowed}
+.sn-picks + .sectl{margin-top:18px}
+
+@media (max-width:800px){
+  html,body{overflow-x:clip}
+  body.nav-open{overflow:hidden}
+  .app{display:block}
+
+  /* top bar */
+  .mbar{display:flex;align-items:center;gap:6px;position:sticky;top:0;z-index:30;background:var(--dock);color:var(--dock-ink);
+    padding:6px 8px;padding-top:max(6px, env(safe-area-inset-top));padding-left:max(8px, env(safe-area-inset-left));padding-right:max(8px, env(safe-area-inset-right))}
+  .mbar-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:42px;height:42px;padding:0 10px;border:0;border-radius:10px;background:transparent;color:inherit;cursor:pointer;font-size:13.5px;font-weight:550}
+  .mbar-btn .ic{width:20px;height:20px}
+  .mbar-btn:active{background:rgba(255,255,255,.1)}
+  .mbar-btn.snap{background:var(--dock-3);color:#fff}
+  .mbar-t{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.2;padding-left:2px}
+  .mbar-t b{font-size:14px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mbar-t span{font-size:11.5px;color:var(--dock-muted);white-space:nowrap}
+
+  /* drawer */
+  .rail{position:fixed;top:0;bottom:0;left:0;width:min(296px,86vw);height:100vh;height:100dvh;z-index:66;transform:translateX(-102%);visibility:hidden;
+    transition:transform .26s var(--ease),visibility 0s linear .26s;box-shadow:var(--sh-lift);padding-bottom:env(safe-area-inset-bottom)}
+  body.nav-open .rail{transform:none;visibility:visible;transition:transform .26s var(--ease),visibility 0s}
+  .rail-scrim{display:block;position:fixed;inset:0;z-index:65;background:rgba(15,25,23,.42);opacity:0;pointer-events:none;transition:opacity .22s}
+  body.nav-open .rail-scrim{opacity:1;pointer-events:auto}
+  .nav{flex:1;min-height:0}
+  .nav button{padding:10px 10px;font-size:14.5px}
+  .nav-sub button{padding:9px 10px !important;font-size:14px !important}
+
+  /* page header: title, then one row of actions that scrolls sideways */
+  .topbar{position:static;padding:12px 16px 10px;gap:10px;box-shadow:none}
+  .hd-title{flex:1 1 0}
+  .page-sub{white-space:normal}
+  .hd-right{flex:1 1 100%;flex-wrap:nowrap;overflow-x:auto;margin:0 -16px;padding:0 16px 2px;width:calc(100% + 32px);scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .hd-right::-webkit-scrollbar{display:none}
+  .hd-right .grow{flex-wrap:nowrap}
+  .hd-right .btn{white-space:nowrap;flex:none}
+  .cmd-trigger,#qAdd kbd{display:none}
+  .content{padding:14px 12px 72px}
+
+  /* panels open full screen */
+  .sheet{top:0;right:0;bottom:0;width:100%;border-radius:0;padding-top:env(safe-area-inset-top)}
+  .sheet-h{padding:14px 16px}
+  .sheet-b{padding:16px}
+  .sheet-f{padding:12px 16px;padding-bottom:max(12px, env(safe-area-inset-bottom));flex-wrap:wrap}
+  .to-top{right:14px;bottom:max(14px, env(safe-area-inset-bottom))}
+
+  /* no zoom-on-focus in iOS, and fingers instead of a mouse */
+  input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],select,textarea{font-size:16px}
+  .btn{min-height:40px;padding:8px 14px}
+  .btn.sm{min-height:36px;padding:6px 12px;font-size:13px}
+  .btn.ghost.sm{min-height:34px}
+
+  /* Today: name on its own line, amount and the button under it */
+  .td-r{flex-wrap:wrap;row-gap:8px;padding:12px 14px}
+  .td-t{flex:1 1 100%}
+  .td-t b,.td-t span{white-space:normal}
+  .td-amt{margin-right:auto}
+  .td-more{padding:12px 14px}
+  .qe{padding:12px}
+  .qe-chips{min-height:0}
+  .qe-chips:empty{display:none}
+
+  /* Receipt inbox: approve buttons first and wide */
+  .ib-top{padding:12px 14px}
+  .ib-foot{flex-wrap:wrap;padding:12px 14px}
+  .ib-foot > span{display:none}
+  .ib-foot [data-x="ok"]{order:-2;flex:1 1 100%}
+  .ib-foot [data-x="edit"]{order:-1;flex:1 1 100%}
+  .ib-src{flex:1 1 100%}
+  .ib-src span{white-space:normal}
+  .ib-foot [data-x="retry"],.ib-foot [data-x="reject"]{flex:1 1 calc(50% - 4px)}
+}
+
+@media (max-width:640px){
+  /* Transactions: one card per charge — item and amount, then date · unit · status */
+  .tx-tbl,.tx-tbl tbody{display:block}
+  .tx-tbl thead{display:none}
+  .tx-tbl tr{display:grid;grid-template-columns:26px auto minmax(0,1fr) auto;column-gap:10px;row-gap:5px;align-items:center;padding:12px 14px;border-top:1px solid var(--line-2)}
+  .tx-tbl tr:first-child{border-top:0}
+  .tx-tbl td{display:block;padding:0 !important;border:0 !important;background:none !important;min-width:0}
+  .tx-tbl td.pick{grid-column:1;grid-row:1 / span 2;align-self:start;padding-top:2px !important}
+  .tx-tbl td.pick input{width:18px;height:18px}
+  .tx-tbl td.ord,.tx-tbl td:nth-child(7),.tx-tbl td.act{display:none}
+  .tx-tbl td:nth-child(4){grid-column:2 / span 2;grid-row:1}
+  .tx-tbl td:nth-child(6){grid-column:4;grid-row:1;align-self:start;font-weight:550}
+  .tx-tbl td:nth-child(3){grid-column:2;grid-row:2}
+  .tx-tbl td:nth-child(5){grid-column:3;grid-row:2;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tx-tbl td:nth-child(8){grid-column:4;grid-row:2;justify-self:end;white-space:nowrap}
+  .tx-tbl td[colspan]{grid-column:1 / -1;grid-row:auto}
+  .tx-tbl tr.sel{background:var(--accent-soft)}
+  .tx-tbl .item-s{white-space:normal}
+  .tx-tbl .grip,.tx-tbl .tagbtn{display:none}
+  /* the filter bar: search on its own line, two filters a row; drag-to-reorder and Compact are desktop things */
+  .toolbar .search{flex:1 1 100%;min-width:0;width:100%;max-width:none}
+  .toolbar .filt{flex:1 1 calc(50% - 4px);min-width:0}
+  .toolbar #sortBy,.toolbar .switchbox:has(#dense){display:none}
+  .toolbar > span[style*="margin-left:auto"]{display:none}
+  .tallies{flex-wrap:wrap;gap:6px 14px}
+  .sn-pick{padding:26px 10px}
+
+  /* Month close: each property is a card — due beside the box to enter what came in, payout beside Mark sent */
+  .pm-tbl,.pm-tbl tbody{display:block}
+  .pm-tbl thead{display:none}
+  .pm-tbl tr{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:8px;align-items:center;padding:12px 14px;border-top:1px solid var(--line-2)}
+  .pm-tbl tr:first-child{border-top:0}
+  .pm-tbl td{display:block;padding:0 !important;border:0 !important;background:none !important;min-width:0 !important;text-align:left}
+  .pm-tbl td:nth-child(n+4):nth-child(-n+8),.pm-tbl td.act{display:none}
+  .pm-tbl td:nth-child(1){grid-column:1 / -1}
+  .pm-tbl td:nth-child(1) .item-t{white-space:normal}
+  .pm-tbl td:nth-child(2),.pm-tbl td:nth-child(9){grid-column:1;font-size:13px}
+  .pm-tbl td:nth-child(2)::before{content:"Due ";color:var(--muted)}
+  .pm-tbl td:nth-child(9)::before{content:"Owner payout ";color:var(--muted);font-weight:400}
+  .pm-tbl td:nth-child(9) .sub-n{display:inline;margin-left:6px}
+  .pm-tbl td:nth-child(3),.pm-tbl td:nth-child(10){grid-column:2;justify-self:end}
+  .pm-tbl td:nth-child(10):has(> .muted:only-child){display:none}
+  .pm-tbl .pm-in{width:132px;height:40px}
+  .pm-add{flex-wrap:wrap}
+  .pm-add input,.pm-add input[type=number],.pm-add input[type=date]{flex:1 1 calc(50% - 4px);min-width:0;width:auto;height:40px}
+  .pm-add .btn{flex:1 1 100%}
+  .pm-tbl tr.ow-tot td:nth-child(3)::before{content:"Received ";color:var(--muted);font-weight:400}
+}

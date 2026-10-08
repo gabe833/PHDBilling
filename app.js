@@ -55,7 +55,7 @@ function render(){
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
   (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings})[S.ui.view] || pgOverview)();
-  chip();
+  chip(); mbarSync();
 }
 function actions(list){
   const box = $("#pgActions");
@@ -67,6 +67,7 @@ function go(view, propId){
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
+  navDrawer(false);
   fixActive();
   if(switching){ S.ui.open = {}; S.ui.query = ""; S.ui.sel = []; S.ui.page = 1; S.ui.filterUnit = ""; S.ui.filterStatus = ""; S.ui.filterTag = ""; S.ui.catClosed = {}; }
   COMP = ALL[S.activeId]; AUDIT = AUDITS[S.activeId] || [];   // repoint at the new property
@@ -74,6 +75,20 @@ function go(view, propId){
 }
 /* Navigation is state too — save it so returning to the tab lands you back here. */
 function persistUi(){ Store.save(S); AutoFile.queue(); }
+
+/* ---------- phones: the left menu becomes a drawer behind the top bar ---------- */
+function navDrawer(open){
+  if(open === document.body.classList.contains("nav-open")) return;
+  document.body.classList.toggle("nav-open", open);
+  const b = $("#mMenu"); if(b) b.setAttribute("aria-expanded", open);
+  if(open){ const cur = document.querySelector('.nav button[aria-current="true"]'); if(cur) cur.scrollIntoView({block:"nearest"}); }
+}
+function mbarSync(){
+  const n = $("#mName"); if(!n) return;
+  // Projects shows the property you're in; Property mgmt has no switcher, so it shows the page
+  n.textContent = (S.ui.mode === "pm" ? $("#pgTitle").textContent : $("#swName").textContent) || "PHD Billing";
+  $("#mSub").textContent = S.ui.mode === "pm" ? "Property mgmt" : "Projects";
+}
 
 function renderNav(){
   if(S.ui.mode === "pm") return renderNavPM();
@@ -542,7 +557,7 @@ function pgTxns(){
     card.appendChild(nag);
   }
 
-  const wrap = elm("div","tbl-wrap"), t = elm("table","tbl" + (S.ui.dense?" dense":""));
+  const wrap = elm("div","tbl-wrap"), t = elm("table","tbl tx-tbl" + (S.ui.dense?" dense":""));
   const allPicked = slice.length && slice.every(({t:x}) => sel.includes(x.id));
   t.innerHTML = `<thead><tr>
     <th class="pick"><input type="checkbox" id="pickAll" ${allPicked?"checked":""} title="Select the rows on this page"></th>
@@ -2761,7 +2776,8 @@ const ICON_PATHS = {
   undo:'<path d="M5 3L2 6l3 3"/><path d="M2.4 6H10a3.8 3.8 0 0 1 0 7.6H7"/>',
   mail:'<rect x="2" y="3.5" width="12" height="9" rx="1.4"/><path d="M2.4 4.2L8 8.6l5.6-4.4"/>',
   phone:'<path d="M4.5 2.2l2 3.2-1.4 1.2a8 8 0 0 0 4.3 4.3l1.2-1.4 3.2 2-1 2.2c-6 .3-10.8-4.5-10.5-10.5z"/>',
-  building:'<rect x="3" y="2" width="10" height="12" rx="1"/><path d="M6 5h1M9 5h1M6 8h1M9 8h1M7 14v-3h2v3"/>'
+  building:'<rect x="3" y="2" width="10" height="12" rx="1"/><path d="M6 5h1M9 5h1M6 8h1M9 8h1M7 14v-3h2v3"/>',
+  camera:'<path d="M2 5.2a1 1 0 0 1 1-1h2l1.1-1.6h3.8L11 4.2h2a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><circle cx="8" cy="8.4" r="2.5"/>'
 };
 const icon = (n, cls) => `<svg class="ic${cls ? " " + cls : ""}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[n] || ""}</svg>`;
 
@@ -3586,6 +3602,7 @@ function pgInbox(){
   if(!conn) return inboxSetup(v);
 
   actions([["Disconnect", () => { if(!confirm("Disconnect this browser from the receipt inbox? Receipts keep collecting in Google; you can reconnect any time.")) return; setInboxConn(null); INBOX.items = []; render(); }, "ghost"],
+           ["Upload a receipt", () => snapSheet()],
            ["Open sheet", () => inboxGet({action:"ping"}).then(j => j.sheet && window.open(j.sheet, "_blank", "noopener")).catch(e => toast(e.message))],
            [INBOX.loading ? "Checking…" : "Check now", () => inboxRefresh(), "primary"]]);
 
@@ -10088,7 +10105,7 @@ function buAdd(files, draw){
     const mime = (file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : (file.type || "").toLowerCase();
     const f = {name:file.name, file, mime, kind:BU.kind, prop:BU.prop, state:"queued"};
     if(!BU_TYPES[mime]){ f.state = "error"; f.msg = "Upload a PDF, JPG or PNG"; }
-    else if(file.size > BU_TYPES[mime] * 1024 * 1024){ f.state = "error"; f.msg = mime === "application/pdf" ? "PDF is over 25 MB" : "Photo is over 5 MB — use a smaller photo or a PDF"; }
+    else if(mime === "application/pdf" && file.size > BU_TYPES[mime] * 1024 * 1024){ f.state = "error"; f.msg = "PDF is over 25 MB"; }   // big photos are shrunk on the way up
     BU.files.push(f);
   });
   draw(); buPump();
@@ -10100,8 +10117,10 @@ async function buPump(){
     while((f = BU.files.find(x => x.state === "queued"))){
       f.state = "working"; buRedraw();
       try{
-        const data = await buBase64(f.file);
-        const r = await inboxPost({action:"upload", name:f.name, mime:f.mime, data, kind:f.kind, by:billWho(), side:"pm"});
+        const sm = await shrinkPhoto(f.file, f.mime);
+        if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error("Photo is over 5 MB even after shrinking — use a PDF");
+        const data = await buBase64(sm.file);
+        const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind:f.kind, by:billWho(), side:"pm"});
         f.item = r.item || null; delete f.file;
         buHandle(f, r.duplicate);
       }catch(e){ f.state = "error"; f.msg = /Failed to fetch|NetworkError/i.test(e.message) ? "Couldn't reach the receipt inbox. Check your connection and try again." : e.message; }
@@ -10112,6 +10131,98 @@ async function buPump(){
 function buRedraw(){ if(BU.redraw && $("#sheet").classList.contains("on") && $("#buDrop")) BU.redraw(); }
 function buBase64(file){
   return new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1] || ""); rd.onerror = () => rej(new Error("Couldn't read the file")); rd.readAsDataURL(file); });
+}
+/* Phone cameras make 4–12 MB photos. Scale big ones down to a sharp 2400px JPEG
+   (well under the 5 MB limit, and quick on a cell connection); anything small,
+   or that the browser can't decode, goes up as it is. */
+async function shrinkPhoto(file, mime){
+  if(!/^image\/(jpeg|png|webp)$/.test(mime) || file.size < 1.5 * 1024 * 1024) return {file, mime, name:file.name};
+  try{
+    const img = await new Promise((res, rej) => { const u = URL.createObjectURL(file), i = new Image();
+      i.onload = () => { URL.revokeObjectURL(u); res(i); }; i.onerror = () => { URL.revokeObjectURL(u); rej(); }; i.src = u; });
+    const k = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+    if(!blob || blob.size >= file.size) return {file, mime, name:file.name};
+    return {file:blob, mime:"image/jpeg", name:String(file.name || "Receipt").replace(/\.[a-z0-9]{2,5}$/i, "") + ".jpg"};
+  }catch(e){ return {file, mime, name:file.name}; }
+}
+
+/* =====================================================================
+   SNAP A RECEIPT — from the phone's camera (or a photo / PDF) straight
+   into the receipt inbox. It's read like an emailed receipt and waits
+   there for someone to approve it; nothing is added before that.
+   ===================================================================== */
+const SNAP = {files:[], kind:"paid", busy:false, redraw:null};
+function snapSheet(){
+  SNAP.files = SNAP.files.filter(f => f.state === "working" || f.state === "queued");
+  const sh = $("#sheet"), conn = inboxConn(), pm = S.ui.mode === "pm";
+  const draw = () => {
+    const done = SNAP.files.filter(f => f.state === "done").length;
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Snap a receipt</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Read for you and sent to the receipt inbox for approval${pm ? " (Property management)" : " (Projects)"}</div></div>
+        <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${conn ? "" : `<div class="pm-banner">Snapping receipts uses the receipt inbox, which isn't connected yet. <button class="btn sm" id="snConn" style="margin-left:6px">Connect it</button></div>`}
+        <div class="bu-seg sc-seg"><button data-k="paid" class="${SNAP.kind === "paid" ? "on" : ""}">Already paid</button><button data-k="topay" class="${SNAP.kind === "topay" ? "on" : ""}">Still to pay</button></div>
+        <div class="sn-picks">
+          <label class="sn-pick primary ${conn ? "" : "dis"}">${icon("camera")}<b>Take a photo</b><span>Lay it flat, fill the frame</span>
+            <input type="file" id="snCam" accept="image/*" capture="environment" ${conn ? "" : "disabled"}></label>
+          <label class="sn-pick ${conn ? "" : "dis"}">${icon("file")}<b>Choose a file</b><span>Photo or PDF · several is fine</span>
+            <input type="file" id="snFile" accept="image/*,application/pdf,.pdf" multiple ${conn ? "" : "disabled"}></label>
+        </div>
+        ${SNAP.files.length ? `<div class="sectl">This session</div><div class="bu-list">${SNAP.files.map(snapRow).join("")}</div>` : ""}
+      </div>
+      <div class="sheet-f"><span style="flex:1"></span>
+        ${done ? `<button class="btn" id="snSee">Review ${done} in the inbox</button>` : ""}<button class="btn primary" id="shCancel">Done</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = () => { closeSheet(); if(S.ui.view === "inbox" || S.ui.view === "today") render(); };
+    sh.querySelectorAll(".bu-seg [data-k]").forEach(b => b.onclick = () => { SNAP.kind = b.dataset.k; draw(); });
+    const c = sh.querySelector("#snConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
+    const see = sh.querySelector("#snSee"); if(see) see.onclick = () => { closeSheet(); S.ui.ibSide = pm ? "pm" : "projects"; go("inbox"); };
+    ["#snCam", "#snFile"].forEach(id => { const inp = sh.querySelector(id); inp.onchange = () => { snapAdd([...inp.files]); inp.value = ""; }; });
+  };
+  SNAP.redraw = draw;
+  draw(); openPanel();
+}
+function snapRow(f){
+  const it = f.item || {};
+  if(f.state === "working" || f.state === "queued") return `<div class="bu-r"><span class="bu-spin" aria-hidden="true"></span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${f.state === "queued" ? "Waiting…" : "Sending and reading…"}</span></div></div>`;
+  if(f.state === "done") return `<div class="bu-r ok"><span class="bu-ic">✓</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${it.total ? " · " + usd(cents(it.total)) : ""}</b><span>${esc(it.property_name || "Property to pick when you approve")}</span></div></div>`;
+  if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>This exact file was sent before — it's already in the inbox or approved.</span></div></div>`;
+  return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${esc(f.msg || "Couldn't send it")}</span></div></div>`;
+}
+function snapAdd(files){
+  const side = S.ui.mode === "pm" ? "pm" : "projects";
+  files.forEach((file, i) => {
+    const mime = (file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : (file.type || "").toLowerCase();
+    const name = !file.name || /^image\.\w+$/i.test(file.name) ? `Receipt ${new Date().toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}).replace(/[,:]/g, "")}${files.length > 1 ? " " + (i + 1) : ""}.${(mime.split("/")[1] || "jpg").replace("jpeg", "jpg")}` : file.name;
+    const f = {name, file, mime, kind:SNAP.kind, side, state:"queued"};
+    if(!BU_TYPES[mime]) { f.state = "error"; f.msg = /hei[cf]/.test(mime) ? "This photo is HEIC — set the camera to “Most Compatible”, or choose it again from Photos" : "Send a photo (JPG or PNG) or a PDF"; }
+    else if(mime === "application/pdf" && file.size > 25 * 1024 * 1024){ f.state = "error"; f.msg = "PDF is over 25 MB"; }
+    SNAP.files.push(f);
+  });
+  SNAP.redraw && SNAP.redraw(); snapPump();
+}
+async function snapPump(){
+  if(SNAP.busy) return; SNAP.busy = true;
+  const redraw = () => { if(SNAP.redraw && $("#sheet").classList.contains("on") && $("#snCam")) SNAP.redraw(); };
+  try{
+    let f;
+    while((f = SNAP.files.find(x => x.state === "queued"))){
+      f.state = "working"; redraw();
+      try{
+        const sm = await shrinkPhoto(f.file, f.mime);
+        if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error("Photo is over 5 MB even after shrinking — try a PDF");
+        const data = await buBase64(sm.file);
+        const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind:f.kind, by:billWho(), side:f.side});
+        delete f.file; f.item = r.item || null;
+        if(r.duplicate || !r.item) f.state = "dupe";
+        else { f.state = "done"; if(!INBOX.items.some(x => x.id === r.item.id)) INBOX.items.unshift(r.item); }
+      }catch(e){ f.state = "error"; f.msg = /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? "No connection to the receipt inbox — check signal and try again" : e.message; }
+      redraw();
+    }
+  } finally { SNAP.busy = false; }
+  if(S.ui.view === "inbox" && !$("#sheet").classList.contains("on")) render(); else renderNav();
 }
 // decide what to do with what was read
 function buHandle(f, duplicate, force){
@@ -11435,7 +11546,7 @@ document.addEventListener("keydown", e => {
   if((e.metaKey || e.ctrlKey) && k === "k"){ e.preventDefault(); $("#cmdk").classList.contains("on") ? closeCmd() : openCmd(); return; }
   if(e.key === "Escape"){
     if($("#cmdk").classList.contains("on")){ closeCmd(); return; }
-    closeSheet(); $("#propMenu").classList.remove("on"); closeTagPop(); return;
+    closeSheet(); $("#propMenu").classList.remove("on"); closeTagPop(); navDrawer(false); return;
   }
   if((e.metaKey || e.ctrlKey) && k === "z" && !typing){ e.preventDefault(); undo(); return; }
   if(typing || e.metaKey || e.ctrlKey || e.altKey || $("#sheet").classList.contains("on") || $("#cmdk").classList.contains("on")) return;
@@ -11460,6 +11571,10 @@ function startApp(){
   $("#qAdd").onclick = () => goQuick();
   if(Cloud.ready) cloudPresence();
   $("#qReconcile").onclick = () => go("reconcile");
+  $("#mMenu").onclick = () => navDrawer(!document.body.classList.contains("nav-open"));
+  $("#railScrim").onclick = () => navDrawer(false);
+  $("#mSearch").onclick = () => openCmd();
+  $("#mSnap").onclick = () => snapSheet();
   const tb = $("#topbar");
   window.addEventListener("scroll", () => tb.classList.toggle("scrolled", window.scrollY > 4), {passive:true});
 }

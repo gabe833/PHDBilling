@@ -157,6 +157,7 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 - Header shortcuts: the **Drive** logo opens that property's receipt folder, **Gmail** opens the emails about it in pm@ (property management) or billing@ (projects), and the pin opens the address in Maps. Owners get a Gmail button to write to them from the right mailbox.
 - Buttons that open an outside app carry its logo: Gmail for anything that emails, Nickel for paying and invoicing, Drive or Sheets for files. Hover an email address to write in Gmail or copy it.
 - On Today, **Show N more** expands a section in place. Long pages get a back-to-top button.
+- **On a phone**, the left menu moves behind the ☰ button in a slim top bar. That bar also has **Receipt** (take a photo of a receipt, or pick a photo or PDF) and Search. Snapped receipts are read like emailed ones and wait in the **Receipt inbox** for approval, on whichever side (Projects or Property mgmt) you're on. Big phone photos are shrunk before sending. Transactions and Month close show one card per row, and side panels open full screen.
 
 ### 6b. Receipt inbox in billing@ (PMBilling@ and ProjectBilling@)
 The receipt inbox runs in **billing@phdproperties.realestate**. Mail sent to its two aliases is read automatically, about every five minutes:
