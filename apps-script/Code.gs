@@ -28,7 +28,8 @@ const CFG = {
   DROP_FOLDER: '_Drop here',
   UNFILED_FOLDER: '_Unfiled',
   SHEET_NAME: 'PHD Receipt Inbox',
-  DEFAULT_MODEL: 'claude-sonnet-5-5',
+  DEFAULT_MODEL: 'claude-sonnet-5',
+  FALLBACK_MODEL: 'claude-sonnet-5',      // used if the model in Script Properties isn't available
   MAX_PER_RUN: 8,                       // keeps each run well under Apps Script's 6-minute limit
   MAX_IMAGE_BYTES: 5 * 1024 * 1024,     // Claude's per-image limit
   MAX_PDF_BYTES: 25 * 1024 * 1024,
@@ -201,14 +202,25 @@ function processDrop_(budget){
   const it = drop.getFiles();
   while(it.hasNext() && used < budget){
     const f = it.next();
-    const blob = f.getBlob();
-    if(!MIME_OK[normMime_(blob)]){
-      f.moveTo(folderByName_(root, CFG.UNFILED_FOLDER));
-      appendRow_({status:'rejected', source:'drive', subject:f.getName(), file_id:f.getId(), file_url:f.getUrl(), file_name:f.getName(),
-        error:'Unsupported file type (' + blob.getContentType() + '). Use PDF, JPG or PNG — on iPhone set Camera → Formats → Most Compatible.'});
-      continue;
+    // one file that can't be read or moved (a Google Doc, a file shared without edit rights) is recorded and skipped — it never stops the others
+    try{
+      const blob = f.getBlob();
+      if(!MIME_OK[normMime_(blob)]){
+        appendRow_({status:'rejected', source:'drive', subject:f.getName(), file_id:f.getId(), file_url:f.getUrl(), file_name:f.getName(),
+          error:'Unsupported file type (' + blob.getContentType() + '). Use PDF, JPG or PNG — on iPhone set Camera → Formats → Most Compatible.'});
+        f.moveTo(folderByName_(root, CFG.UNFILED_FOLDER));
+        continue;
+      }
+      handleBlob_(blob, {source:'drive', subject:f.getName(), context:`Uploaded file: ${f.getName()}`, seen, existing:f});
+    }catch(err){
+      Logger.log('Drop folder: ' + f.getName() + ' — ' + (err && err.message || err));
+      const k = 'drop:' + f.getId();
+      if(!PropertiesService.getScriptProperties().getProperty(k)){
+        PropertiesService.getScriptProperties().setProperty(k, '1');
+        appendRow_({status:'error', source:'drive', subject:f.getName(), file_id:f.getId(), file_url:f.getUrl(), file_name:f.getName(),
+          error:'Could not read or move this file: ' + String(err && err.message || err).slice(0, 300) + ' — billing@ needs edit access to it (drop it into PHD Receipts/_Drop here in billing@\'s Drive).'});
+      }
     }
-    handleBlob_(blob, {source:'drive', subject:f.getName(), context:`Uploaded file: ${f.getName()}`, seen, existing:f});
     used++;
   }
   return used;
@@ -359,6 +371,11 @@ function callClaude_(content, tool){
     code = res.getResponseCode();
     if(code === 200) break;
     lastErr = res.getContentText().slice(0, 300);
+    // a model name that doesn't exist (or was retired): switch to the fallback, remember it, and try again
+    if((code === 404 || (code === 400 && /model/i.test(lastErr))) && body.model !== CFG.FALLBACK_MODEL){
+      Logger.log('Model ' + body.model + ' was refused (' + code + '); using ' + CFG.FALLBACK_MODEL);
+      body.model = CFG.FALLBACK_MODEL; props.setProperty('MODEL', CFG.FALLBACK_MODEL); attempt--; continue;
+    }
     if(code === 429 || code >= 500){ Utilities.sleep(2000 * (attempt + 1)); continue; }
     throw new Error('Claude API ' + code + ': ' + lastErr);
   }
@@ -713,6 +730,12 @@ function checkSetup(){
   if(trig.indexOf('dailyDigest') < 0) Logger.log('Morning email: not scheduled (run setupDigest to turn it on).');
   Logger.log('Script time zone: ' + Session.getScriptTimeZone() + '  (should be America/New_York)');
   Logger.log('Anthropic key set: ' + !!p.getProperty('ANTHROPIC_API_KEY') + ' · model: ' + (p.getProperty('MODEL') || CFG.DEFAULT_MODEL));
+  try{
+    const drop = folderByName_(rootFolder_(), CFG.DROP_FOLDER), files = [], it = drop.getFiles();
+    while(it.hasNext() && files.length < 20){ const f = it.next(); let owner = ''; try{ owner = f.getOwner() ? f.getOwner().getEmail() : ''; }catch(e){}
+      files.push(f.getName() + ' (' + f.getMimeType() + (owner && owner !== me ? ', owned by ' + owner : '') + ')'); }
+    Logger.log('Drop folder: ' + drop.getUrl() + ' — ' + (files.length ? files.length + ' waiting: ' + files.join('; ') : 'empty'));
+  }catch(e){ Logger.log('>>> Drop folder problem: ' + e.message); }
   const inL = GmailApp.getUserLabelByName(CFG.LABEL_IN);
   if(!inL){ Logger.log('>>> Gmail label ' + CFG.LABEL_IN + ' is missing. Run setup().'); return; }
   const seen = new Set(JSON.parse(p.getProperty('SEEN_MSGS') || '[]'));
