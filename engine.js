@@ -165,7 +165,7 @@ function packUnit(shares, targetC, rate, frozenMap){
      packer treats those dollars as already spent. */
   Object.keys(frz).map(Number).sort((a,b) => a-b).forEach(no => {
     const f = frz[no], i = at(no);
-    i.expC = f.expC; i.feeBaseC = f.feeBaseC; i.closedShort = !!f.closedShort; i.frozen = true;
+    i.expC = f.expC; i.feeBaseC = f.feeBaseC; i.closedShort = !!f.closedShort; i.frozen = true; i.final = !!f.final; i.combined = f.combined || null;
     i.lines = (f.lines||[]).map(l => Object.assign({}, l));
   });
   const usedByTxn = {};
@@ -291,6 +291,23 @@ function matchWork(t, prop){
   return hit ? hit.id : null;
 }
 
+/* Close-out: when no more work is coming on a unit (prop.closeout[unitId]), the last invoice
+   is the final one. If it's short and the invoice before it hasn't gone out, the two are sent as
+   one — the final invoice can be over the cap. Invoices already sent never change. */
+function closeoutMerge(prop, unitId, invs, rate, targetC){
+  if(!prop.closeout || !prop.closeout[unitId] || !invs.length) return;
+  let last = invs[invs.length - 1];
+  if(last.frozen){ last.final = true; return; }      // locked as it is: it's the final one, contents unchanged
+  const prev = invs[invs.length - 2];
+  if(prev && !prev.frozen && prev.no === last.no - 1 && !last.full){
+    last.lines.forEach(l => { const m = !l.credit && prev.lines.find(x => x.txnId === l.txnId && !x.credit); if(m) m.expC += l.expC; else prev.lines.push(l); });
+    prev.expC += last.expC; prev.feeBaseC += last.feeBaseC; prev.combined = last.no;
+    invs.pop(); last = prev;
+  }
+  last.final = true; last.closedShort = false;
+  last.feeC = Math.round(last.feeBaseC * rate); last.totalC = last.expC + last.feeC;
+  last.full = last.totalC === targetC; last.over = false;
+}
 function compute(prop){
   const rate    = (Number(prop.feePct)||0)/100;
   const targetC = cents(prop.invoiceTarget);
@@ -314,13 +331,14 @@ function compute(prop){
       if(uid_ === u.id && prop.register[k] && prop.register[k].frozen) frozenMap[+no] = prop.register[k].frozen;
     });
     const invs = packUnit(shares, targetC, rate, frozenMap);
+    closeoutMerge(prop, u.id, invs, rate, targetC);
     shares.forEach(sh => { if(sh.lockedC) out.txn[sh.txnId].lockedC = (out.txn[sh.txnId].lockedC||0) + sh.lockedC; });
     invs.forEach(inv => {
       const reg = prop.register[u.id+"|"+inv.no] || {};
       inv.unitId = u.id; inv.unitName = u.name; inv.reg = reg;
       inv.locked = !!reg.frozen;
       inv.status = reg.paid ? "Paid" : reg.dateSent ? "Sent"
-                 : inv.full ? "Ready to send"
+                 : inv.final ? "Ready — final" : inv.full ? "Ready to send"
                  : inv.closedShort ? "Ready — closed short" : "Draft";
       inv.lines.forEach(l => {
         l.txn = prop.transactions.find(x => x.id === l.txnId);
@@ -407,7 +425,7 @@ function compute(prop){
   prop.units.forEach(u => (out.units[u.id]||[]).forEach(inv => {
     const orph = inv.lines.filter(l => l.orphan).length;
     if(orph) notes.push({level:"warn", msg:`${u.name} invoice ${inv.no} still bills ${orph} item${orph===1?"":"s"} whose transaction has since been deleted. The invoice was already issued, so the line has been kept.`});
-    if(inv.over) notes.push({level:"err", msg:`${u.name} invoice ${inv.no} totals ${usd(inv.totalC)}, above the cap. This is a bug — please report it.`});
+    if(inv.over && !inv.final) notes.push({level:"err", msg:`${u.name} invoice ${inv.no} totals ${usd(inv.totalC)}, above the cap. This is a bug — please report it.`});
     if(inv.closedShort && !inv.reg.dateSent)
       notes.push({level:"info", msg:`${u.name} invoice ${inv.no} closed at ${usd(inv.totalC)} to keep a transaction whole.`});
   }));
@@ -458,7 +476,7 @@ function audit(prop, C){
   prop.units.forEach(u => {
     let allocated = 0;
     (C.units[u.id]||[]).forEach(inv => {
-      if(inv.totalC > C.targetC) fails.push(`${u.name} invoice ${inv.no} exceeds the cap (${usd(inv.totalC)}).`);
+      if(inv.totalC > C.targetC && !inv.final) fails.push(`${u.name} invoice ${inv.no} exceeds the cap (${usd(inv.totalC)}).`);
       if(inv.expC < 0) fails.push(`${u.name} invoice ${inv.no} has a negative subtotal.`);
       const exp = inv.lines.reduce((a,l) => a + l.expC, 0);
       const base = inv.lines.reduce((a,l) => a + (l.feeApplies ? l.expC : 0), 0);
@@ -639,7 +657,7 @@ function freezeIssued(){
       if(should && !reg.frozen){
         reg.frozen = {
           expC:inv.expC, feeBaseC:inv.feeBaseC, feeC:inv.feeC, totalC:inv.totalC,
-          closedShort:!!inv.closedShort, at:new Date().toISOString().slice(0,10),
+          closedShort:!!inv.closedShort, final:!!inv.final, combined:inv.combined || null, at:new Date().toISOString().slice(0,10),
           lines:inv.lines.map(l => ({txnId:l.txnId, expC:l.expC, feeApplies:l.feeApplies,
                                      fullC:l.fullC, credit:!!l.credit, pin:l.pin||null}))
         };

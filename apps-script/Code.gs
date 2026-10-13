@@ -54,7 +54,8 @@ const CFG = {
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
-  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text','pay_status','pay_note'];
+  'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text','pay_status','pay_note',
+  'office_note','bill_to','no_fee','hold','party'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -164,10 +165,12 @@ function processGmail_(budget){
           (side ? `\nSent to the ${side === 'pm' ? 'property management (rentals)' : 'renovation projects'} billing address.` : '');
         const emailText = String(msg.getPlainBody() || '').replace(/\n{3,}/g, '\n\n').slice(0, 6000);
         const payTag = payTag_(msg.getSubject(), emailText);
+        // someone in the office forwarding it: what they wrote above the forwarded part is an instruction
+        const officeNote = internal_(addr, me) ? noteOf_(msg.getSubject(), emailText) : '';
         if(atts.length){
           for(const a of atts){
             if(used >= budget) break;
-            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText, payTag});
+            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText, payTag, officeNote});
             used++;
           }
         } else {
@@ -177,7 +180,7 @@ function processGmail_(budget){
           try{ file = HtmlService.createHtmlOutput(msg.getBody()).getAs('application/pdf'); }
           catch(e){ file = Utilities.newBlob(text, 'text/plain'); }
           file.setName((msg.getSubject() || 'Receipt').replace(/[\\/:*?"<>|]+/g, '-') + (file.getContentType() === 'application/pdf' ? '.pdf' : '.txt'));
-          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, payTag, bodyText:text || '(empty email)'});
+          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, payTag, officeNote, bodyText:text || '(empty email)'});
           used++;
         }
       }catch(err){
@@ -211,7 +214,7 @@ function processDrop_(budget){
         f.moveTo(folderByName_(root, CFG.UNFILED_FOLDER));
         continue;
       }
-      handleBlob_(blob, {source:'drive', subject:f.getName(), context:`Uploaded file: ${f.getName()}`, seen, existing:f});
+      handleBlob_(blob, {source:'drive', subject:f.getName(), context:`Uploaded file: ${f.getName()}`, seen, existing:f, officeNote:fileNote_(f.getName())});
     }catch(err){
       Logger.log('Drop folder: ' + f.getName() + ' — ' + (err && err.message || err));
       const k = 'drop:' + f.getId();
@@ -240,10 +243,11 @@ function handleBlob_(blob, o){
   try{
     if(kind === 'image' && blob.getBytes().length > CFG.MAX_IMAGE_BYTES) throw new Error('Photo is over 5 MB — retake at a lower resolution or send as PDF');
     if(kind === 'document' && blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('PDF is over 25 MB');
-    const x = extract_(blob, kind, o.context, o.bodyText, o.side, o.emailText);
+    const x = extract_(blob, kind, o.context, o.bodyText, o.side, o.emailText, o.officeNote);
     Object.assign(row, x);
+    applyNote_(row, o.officeNote, o.side);
     if(o.payTag){ row.pay_status = o.payTag; row.pay_note = (row.pay_note ? row.pay_note + ' · ' : '') + (o.payTag === 'to_pay' ? 'Marked UNPAID in the email' : 'Marked PAID in the email'); }
-    if(o.kind === 'paid' || o.kind === 'topay') row.pay_status = o.kind === 'paid' ? 'paid' : 'to_pay';
+    if((o.kind === 'paid' || o.kind === 'topay') && !(o.officeNote && noteFlags_(o.officeNote).pay_status)) row.pay_status = o.kind === 'paid' ? 'paid' : 'to_pay';
     if(!x.is_receipt){ row.status = 'rejected'; row.error = 'Did not look like a receipt or invoice' + (x.notes ? ' — ' + x.notes : ''); }
   }catch(err){
     row.status = 'error';
@@ -261,7 +265,7 @@ function handleBlob_(blob, o){
 }
 
 /* ============================ Claude ============================ */
-function extract_(blob, kind, context, bodyText, side, emailText){
+function extract_(blob, kind, context, bodyText, side, emailText, officeNote){
   const all = knownProperties_();
   const sideOfProp = p => p.side || (/\(managed rental\)\s*$/.test(p.name || '') ? 'pm' : 'projects');
   const props = side ? all.filter(p => sideOfProp(p) === side) : all;
@@ -269,6 +273,7 @@ function extract_(blob, kind, context, bodyText, side, emailText){
     ? props.map(p => `- id "${p.id}": ${p.name}${p.address ? ' (' + p.address + ')' : ''}; units: ${(p.units || []).map(u => `"${u.id}" = ${u.name}`).join(', ') || 'single unit'}`).join('\n')
     : '(no property list yet — leave property_id empty)';
   const content = [];
+  if(officeNote) content.push({type:'text', text:'<note_from_our_office>\n' + officeNote + '\n</note_from_our_office>\nThis note was written by someone in our office when they sent the file in. It is trustworthy and it wins over anything printed on the document: which property or unit, whether it is paid or unpaid, whether it is a refund/return/credit, and who should be billed.'});
   if(bodyText){
     content.push({type:'text', text:'<email_body>\n' + bodyText + '\n</email_body>'});
   } else {
@@ -296,7 +301,8 @@ Rules:
 - For a vendor invoice, total is the balance due, and order_no is the invoice number.
 - pay_status: "to_pay" if this is a bill or invoice that still has to be paid (balance due, "please pay", a forwarding note asking for payment), "paid" if it shows payment already made (store receipt, PAID stamp, zero balance, card charged), otherwise "unknown".
 - pay_note: any payment instruction from the email or invoice in a few words, e.g. "pay from account 4091 today" or "due on receipt"; otherwise empty.
-- is_receipt false for marketing, shipping-only notices, quotes/estimates, or anything that is not a charge or credit.`});
+- is_receipt false for marketing, shipping-only notices, quotes/estimates, or anything that is not a charge or credit.
+- If there is a note from our office, follow it: property/unit it names, "unpaid"/"needs paying" (pay_status to_pay), "paid" (paid), "refund", "return" or "credit" (is_credit true), and fill bill_to: "contractor" when it says to bill or back-charge a contractor/sub/vendor (put their name in party), "owner_paid_direct" when the owner paid the contractor directly, "phd" when we absorb it / it isn't billable, "owner" when it says to bill the owner; otherwise empty. no_fee true when it says no fee / at cost. hold true when it says hold / final billing / don't bill yet. office_note: what the note asked for, in a few words.`});
 
   const tool = {
     name:'record_receipt',
@@ -319,7 +325,12 @@ Rules:
         unit_id:{type:'string', description:'a unit id from the list, "split" if it clearly covers several units, or empty'},
         reason:{type:'string', description:'one short phrase: why this property/unit'},
         confidence:{type:'string', enum:['high','medium','low']},
-        notes:{type:'string'}
+        notes:{type:'string'},
+        bill_to:{type:'string', enum:['owner','contractor','phd','owner_paid_direct','']},
+        party:{type:'string', description:'who to bill when bill_to is contractor'},
+        no_fee:{type:'boolean'},
+        hold:{type:'boolean'},
+        office_note:{type:'string'}
       },
       required:['is_receipt','vendor','date','total','is_credit','description','confidence']
     }
@@ -409,6 +420,11 @@ function clean_(x, props){
     confidence: ['high','medium','low'].indexOf(x.confidence) >= 0 ? x.confidence : 'low',
     reason: s(x.reason).slice(0, 160),
     notes: s(x.notes).slice(0, 200),
+    bill_to: ['owner','contractor','phd','owner_paid_direct'].indexOf(x.bill_to) >= 0 ? x.bill_to : '',
+    party: s(x.party).slice(0, 80),
+    no_fee: x.no_fee === true,
+    hold: x.hold === true,
+    office_summary: s(x.office_note).slice(0, 140),
     property_id:'', property_name:'', unit_id:'', unit_name:''
   };
   const p = props.find(pp => pp.id === s(x.property_id));
@@ -496,7 +512,7 @@ function doPost(e){
       }
       const kind = b.kind === 'paid' ? 'a receipt for something already paid' : 'a vendor bill or invoice we need to pay';
       const row = handleBlob_(blob, {seen:seen, kind:b.kind === 'paid' ? 'paid' : 'topay', source:'Upload', from:String(b.by || '').slice(0, 80), subject:name, side:b.side === 'projects' ? 'projects' : b.side === 'pm' ? 'pm' : '',
-        context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name});
+        context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name, officeNote:String(b.note || '').slice(0, 500)});
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
     }
@@ -537,7 +553,8 @@ Call the describe_work tool once with one short line (under 110 characters) an o
         const blob = f.getBlob(), kind = MIME_OK[normMime_(blob)];
         let x;
         const side = col('side') >= 0 ? String(data[i][col('side')] || '') : '', et = col('email_text') >= 0 ? String(data[i][col('email_text')] || '') : '';
-        try{ x = extract_(blob, kind, 'Re-read of ' + f.getName() + (data[i][col('subject')] ? '\nEmail subject: ' + data[i][col('subject')] : ''), null, side, et); x.status = 'pending'; x.error = ''; }
+        const on = col('office_note') >= 0 ? String(data[i][col('office_note')] || '') : '';
+        try{ x = extract_(blob, kind, 'Re-read of ' + f.getName() + (data[i][col('subject')] ? '\nEmail subject: ' + data[i][col('subject')] : ''), null, side, et, on); x.status = 'pending'; x.error = ''; applyNote_(x, on, side); }
         catch(err){ x = {status:'error', error:String(err.message || err).slice(0, 400)}; }
         Object.keys(x).forEach(k => { if(col(k) >= 0) sh.getRange(i + 1, col(k) + 1).setValue(x[k]); });
         return json_({ok:true});
@@ -563,6 +580,80 @@ function payTag_(subject, body){
   if(/\[\s*(unpaid|to\s*pay|pay)\s*\]|#(unpaid|topay)\b/i.test(t)) return 'to_pay';
   if(/\[\s*paid\s*\]|#paid\b/i.test(t)) return 'paid';
   return '';
+}
+/* ---------- the office's note on a receipt ----------
+   Peter forwards an invoice with "for 24 Bee, unpaid" or "return — bill to Armando" written above it.
+   That note is read as an instruction: it is passed to Claude, and the plain words below also set the
+   fields directly, so "unpaid" or "refund" never depends on the model noticing it. */
+function internal_(addr, me){
+  addr = String(addr || '').toLowerCase();
+  return addr === me || /@phdproperties\.realestate$/.test(addr) || CFG.ALLOWED_SENDERS.map(x => x.toLowerCase()).indexOf(addr) >= 0;
+}
+// the subject (minus Fwd:) and what was typed above the forwarded message
+function noteOf_(subject, body){
+  const sub = String(subject || '').replace(/^\s*((fwd?|fw|re)\s*:\s*)+/i, '').trim();
+  let top = String(body || '');
+  const cut = top.search(/^\s*(-{2,}\s*Forwarded message|Begin forwarded message|-{3,}\s*Original Message|On .{6,120} wrote:|From:\s.+)/im);
+  top = (cut >= 0 ? top.slice(0, cut) : top.slice(0, 400)).replace(/^\s*--\s*$[\s\S]*/m, '').replace(/\n{2,}/g, '\n').trim();
+  if(/^(sent from my|get outlook)/i.test(top)) top = '';
+  const parts = [];
+  if(sub) parts.push('Subject: ' + sub);
+  if(top) parts.push(top.slice(0, 500));
+  return parts.join('\n');
+}
+// a file named by a person ("24 Bee unpaid.pdf"), not by a camera or scanner ("IMG_1234.jpg")
+function fileNote_(name){
+  const n = String(name || '').replace(/\.[a-z0-9]{2,5}$/i, '').trim();
+  if(!/[a-z]{3}/i.test(n) || /^(img|image|scan|scanned|photo|pxl|dsc|dcim|screenshot|screen shot|document|doc|file|receipt|invoice|download)[\s_-]*[\d(]/i.test(n) || /^(img|image|scan|photo|document|doc|file|receipt|invoice|untitled|download|attachment)$/i.test(n) || /^[\w-]{20,}$/.test(n)) return '';
+  return 'File name: ' + n;
+}
+function noteFlags_(note){
+  const t = ' ' + String(note || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
+  const f = {};
+  if(/\b(un-?paid|not (been |yet )?paid|hasn'?t been paid|needs? (to be )?paid|needs? payment|to pay|please pay|pay (this|it|him|her|them|the invoice|asap)|balance due|still owe|payment due)\b/.test(t)) f.pay_status = 'to_pay';
+  else if(/\b(already paid|paid (it|this|with|by|on|in full)|was paid|is paid|i paid|we paid|paid\b(?! by owner| directly))/.test(t) && !/\bun-?paid\b/.test(t)) f.pay_status = 'paid';
+  if(/\b(refund(ed)?|return(ed|s)?|credit( memo)?|store credit|money back)\b/.test(t)) f.is_credit = true;
+  if(/\b(on hold|hold (it|this|off)|final bill(ing)?|don'?t bill (it |this )?yet|bill (it )?later)\b/.test(t)) f.hold = true;
+  if(/\b(no (mgmt |management |project |pm )?fee|without (the |a )?fee|at cost|fee-?free)\b/.test(t)) f.no_fee = true;
+  if(/\b(owner (paid|is paying|pays|will pay|paying)( (him|her|them|the contractor|the sub|directly|direct))?|paid (directly )?by (the )?owner|owner direct)\b/.test(t)) f.bill_to = 'owner_paid_direct';
+  else if(/\b(back-?charge|charge (it |this )?(back )?to (the )?(contractor|sub|vendor|[a-z]+)|bill (it |this )?(back )?to (the )?(contractor|sub|(?!owner\b)[a-z]{3,})|contractor (pays|is paying|owes|will pay)|deduct (it )?from (the )?(contractor|sub))\b/.test(t) && !/\b(bill|charge) (it |this )?to (the )?owner\b/.test(t)) f.bill_to = 'contractor';
+  else if(/\b(phd (pays|absorbs|covers|eats)|we (absorb|eat|cover) (it|this)|not billable|don'?t bill( it| this)?( to)?( the)? owner|do not bill|internal|our (own )?cost|office (supplies|expense))\b/.test(t)) f.bill_to = 'phd';
+  else if(/\b(bill|charge|invoice) (it |this )?(to )?(the )?owner\b/.test(t)) f.bill_to = 'owner';
+  const who = String(note || '').match(/(?:[Bb]ack-?charge|(?:[Cc]harge|[Bb]ill)(?: it| this)?(?: back)? to)\s+(?!the owner\b|owner\b|the contractor\b|contractor\b|the sub\b)([A-Z][\w&'-]*(?:[ \t]+[A-Z][\w&'-]*){0,3})/);
+  if(who && f.bill_to === 'contractor') f.party = who[1].trim();
+  if(f.bill_to === 'owner_paid_direct' && f.pay_status === 'paid') delete f.pay_status;
+  return f;
+}
+// the property (and unit) the note names, from the console's property list
+function noteProperty_(note, side){
+  const t = ' ' + String(note || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ') + ' ';
+  const all = knownProperties_().filter(p => !side || (p.side || 'projects') === side);
+  const keyOf = s => { const m = String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').match(/\b(\d+[a-z]?)\s+([a-z]{3,})/); return m ? m[1] + ' ' + m[2] : ''; };
+  const hits = all.filter(p => [keyOf(p.name), keyOf(p.address)].filter(Boolean).some(k => t.indexOf(' ' + k + ' ') >= 0 || t.indexOf(' ' + k) >= 0));
+  if(hits.length !== 1) return null;
+  const p = hits[0], out = {property_id:p.id, property_name:p.name};
+  const um = t.match(/\b(?:unit|apt|apartment|suite|ste|side)\s+([a-z0-9]{1,4})\b/);
+  if(/\bsplit\b/.test(t) && (p.units || []).length > 1){ out.unit_id = 'split'; out.unit_name = 'Split'; }
+  else if(um){ const u = (p.units || []).find(x => String(x.name).toLowerCase().replace(/^(unit|apt|suite)\s+/, '') === um[1]); if(u){ out.unit_id = u.id; out.unit_name = u.name; } }
+  return out;
+}
+// what the note says overrides the reading of the document
+function applyNote_(row, note, side){
+  if(!note || !row || row.is_receipt === false && !row.total) { if(row) delete row.office_summary; return row; }
+  const f = noteFlags_(note), said = [];
+  row.office_note = String(note).slice(0, 500);
+  if(f.pay_status){ row.pay_status = f.pay_status; said.push(f.pay_status === 'to_pay' ? 'unpaid' : 'paid'); }
+  if(f.is_credit){ row.is_credit = true; said.push('refund/return'); }
+  if(f.hold){ row.hold = true; said.push('hold'); }
+  if(f.no_fee){ row.no_fee = true; said.push('no fee'); }
+  if(f.bill_to){ row.bill_to = f.bill_to; said.push({contractor:'bill the contractor', owner_paid_direct:'owner paid directly', phd:'PHD pays', owner:'bill the owner'}[f.bill_to]); }
+  if(f.party) row.party = f.party;
+  const pr = noteProperty_(note, side);
+  if(pr){ Object.assign(row, pr); row.confidence = 'high'; row.reason = 'Named in the note: ' + pr.property_name + (pr.unit_name ? ' · ' + pr.unit_name : ''); said.unshift(pr.property_name); }
+  if(said.length) row.pay_note = (row.pay_note ? row.pay_note + ' · ' : '') + 'From the note: ' + said.join(', ');
+  else if(!/\n/.test(note) && !row.bill_to && !row.hold && !row.no_fee) delete row.office_note;      // just a subject line, nothing it asked for
+  delete row.office_summary;
+  return row;
 }
 // which billing alias a message was sent to: 'pm', 'projects' or ''
 function sideOf_(msg){
@@ -657,6 +748,8 @@ function publicRow_(r){
     confidence:r.confidence, reason:r.reason, line_items:(function(){ try{ return JSON.parse(r.line_items || '[]'); }catch(e){ return []; } })(),
     order_no:r.order_no, notes:r.notes, error:r.error,
     side:String(r.side || ''), pay_status:String(r.pay_status || ''), pay_note:String(r.pay_note || ''),
+    office_note:String(r.office_note || ''), bill_to:String(r.bill_to || ''), party:String(r.party || ''),
+    no_fee:r.no_fee === true || r.no_fee === 'TRUE', hold:r.hold === true || r.hold === 'TRUE',
     due_date:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r.due_date || '')};
 }
 
