@@ -152,6 +152,7 @@ On a project invoice, **Email owner** writes the email the way the office sends 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one. The script sends at most 60 emails a day (change `MAX_PER_DAY` if needed).
 
 ### Getting around
+- **? buttons.** Every page has a small **?** next to its title that explains, in plain words, what the page is for and how to use it. The trickier parts (QuickBooks tabs, who pays for a cost, locking an invoice, close-out, change orders, the receipt note) have their own **?** right beside them. **How this works** at the bottom of the left menu is the start-here guide for someone new, and pressing **?** on the keyboard opens the help for the page you're on.
 - **Back arrow** (left of the page title, or the browser's back button / Alt+←) returns to the page you came from at the same spot, with the row you opened highlighted for a moment.
 - On a property page, **‹ ›** (or the **[** and **]** keys) step through the properties in the list you opened it from.
 - Header shortcuts: the **Drive** logo opens that property's receipt folder, **Gmail** opens the emails about it in pm@ (property management) or billing@ (projects), and the pin opens the address in Maps. Owners get a Gmail button to write to them from the right mailbox.
@@ -174,6 +175,14 @@ Vendors can send invoices to those addresses directly, and Peter (or anyone) can
 5. In the console: **Receipt inbox → Disconnect**, then paste the new URL and key.
 
 Receipts already filed stay in gabe@'s Drive; their links keep working for anyone they're shared with.
+
+**Tell it what the receipt is — in your own words.** When you forward a bill or receipt, write a line above the forwarded part (or in the subject), the way you'd tell a person:
+- *for 24 Bee, unpaid* · *120 Smith unit B* · *split* — the property and unit
+- *unpaid* / *please pay* · *paid on the amex* — whether the vendor still needs paying
+- *refund* · *return* · *credit* — comes in as a credit
+- *no fee* · *hold* (final billing) · *bill to Armando* / *back-charge the contractor* · *owner paid directly* · *PHD absorbs it* — who pays for it
+
+The inbox reads the note (only from the office's own addresses — a vendor writing directly can't set it), fills in the approve form, and shows the note on the card so you can see why. The same works for a file dropped in Drive (name it *24 Bee unpaid.pdf*) and for **Snap a receipt** (there's a Note box). On a project, the card's **Who pays for it** sets the owner (with or without fee), hold for final billing, a contractor back-charge, PHD, or owner-paid-directly — the same choices as on a transaction. *To turn this on: paste the updated `apps-script/Code.gs` into billing@'s receipt-inbox script (select all, replace, Save), then **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. The URL and key stay the same.*
 
 ### 6c. Bills not paid yet
 - **Mark it in the email:** put **[UNPAID]** (or [TO PAY]) in the subject when you send or forward a bill to PMBilling@ or ProjectBilling@; **[PAID]** for a receipt that's already paid. Without a tag the invoice itself decides (balance due, "please pay", a PAID stamp), and a payment note like "pay from 4091 today" is picked up from the email.
@@ -224,6 +233,14 @@ When the owner pays a contractor themselves, open that labor line → Billing st
 ### 7i. Read a store order (Transactions → Read an order)
 
 Open a Lowe's, Home Depot, Costco or Amazon order on the store's site, select all, copy and paste it — or drop the order PDF. The console finds what was billed, the tax rate, each return (items × price × tax; one return without items listed takes what's left of the refund total), and the payments a big order was split into. Check the lines, pick the property and unit, and it adds the purchase and every return as their own lines. Any line QuickBooks already has (the purchase, its pieces, each refund credit) is linked as it's added; lines that look like they're already in the project are flagged.
+
+### 7l. Close out a project (the last invoice)
+Invoices fill to the cap ($10,000) before they're sent, so the end of a job usually leaves one short invoice. When no more work is coming, close it out — on **Invoices** (the strip under the totals) or when you go to create an invoice in QuickBooks or email it:
+- If the last invoice is short and the one before it hasn't been sent, the two are **combined into one final invoice** — $10,000 + $3,200 goes out as one $13,200 invoice (the only time an invoice goes over the cap). A locked invoice is unlocked, combined and locked again for you.
+- If the one before has already gone out, the short one is simply marked **Ready — final** and can be sent as is.
+- Costs still **on hold for final billing** are listed with **Bill held costs now**, so they land on the last invoice.
+- Nothing already sent ever changes. **Reopen** undoes it; once everything is paid, **Archive** tidies the project away. Projects with several units have **Close out all units**.
+- If the earlier invoice was already created in Nickel/QuickBooks, delete it in Nickel first (on that invoice), then close out — the console says so.
 
 ### 7k. Drop a receipt on a project
 Drag one or more PDFs or photos (JPG, PNG) from your computer onto any page of a project property: Overview, Transactions, Scope, Invoices, Owner or Settings. Each file is read by the receipt inbox and filed in Drive like an emailed receipt, then added to **that** property:

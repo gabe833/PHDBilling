@@ -21,7 +21,7 @@ function render(){
   renderMenu(); renderNav();
 
   const T = {
-    portfolio:["", "Portfolio", "Every property in one place"],
+    portfolio:["Projects", "All properties", "Every renovation project in one place"],
     reconcile:["", "Reconcile", "Match your records against what's actually happened"],
     overview: [p.name, "Overview", "Where every dollar stands today"],
     txns:     [p.name, "Transactions", "Billing order decides how invoices fill"],
@@ -414,7 +414,7 @@ function pgOverview(){
       ? `<div class="avatar sm">${esc(initials(nm))}</div>
          <div class="who"><b>Bill to ${esc(o.name || o.company)}</b><span>${[o.name && o.company ? o.company : "", o.email, o.phone, o.method ? "pays by " + o.method : ""].filter(Boolean).map(esc).join(" · ") || "No contact details yet"}</span></div>
          <div class="links">${o.email ? `<a class="btn sm" href="mailto:${esc(o.email)}">${icon("mail")} Email</a>` : ""}<button class="btn sm ghost" id="btEdit">Owner details ${icon("arrow")}</button></div>`
-      : `<div class="avatar sm">?</div><div class="who"><b>No owner on file</b><span>Add who this property bills — it prints as <i>Bill to</i> on every invoice and statement.</span></div>
+      : `<div class="avatar sm">${icon("user")}</div><div class="who"><b>No owner on file</b><span>Add who this property bills — it prints as <i>Bill to</i> on every invoice and statement.</span></div>
          <div class="links"><button class="btn sm primary" id="btEdit">Add owner</button></div>`;
     v.appendChild(bt);
     setTimeout(() => { const b = $("#btEdit"); if(b) b.onclick = () => go("owner"); }, 0);
@@ -504,7 +504,7 @@ function visibleTxns(p){
 
 function pgTxns(){
   const p = P();
-  actions([["Undo", undo, "ghost"], ["Read an order", () => ordSheet()], ["Import", importSheet], ["Export CSV", exportTxnCsv], ["Full form", () => openSheet(null)]]);
+  actions([["Undo", undo, "ghost"], ["Read an order", () => ordSheet()], ["Import", importSheet], ["Export CSV", exportTxnCsv]]);
   const v = $("#view"), card = elm("div","card");
   const rows = visibleTxns(p);
   const filtered = !!(S.ui.query || S.ui.filterUnit || S.ui.filterStatus || S.ui.filterTag);
@@ -1178,8 +1178,8 @@ function invoiceBlock(inv, unit, p){
   inv.lines.forEach(l => {
     if(l.expC <= 0) return;
     const fee = l.feeApplies ? Math.round(l.expC * COMP.rate) : 0;
-    segs += `<i style="width:${l.expC/COMP.targetC*100}%;background:${["#2C7FA6","#3F92B8","#1F6689","#5CA3C4"][i%4]}" title="${esc(l.txn?.desc||"")} — ${usd(l.expC)}"></i>`;
-    if(fee) segs += `<i style="width:${fee/COMP.targetC*100}%;background:var(--gold);opacity:.8" title="Fee — ${usd(fee)}"></i>`;
+    segs += `<i style="width:${l.expC/Math.max(COMP.targetC, inv.totalC)*100}%;background:${["#2C7FA6","#3F92B8","#1F6689","#5CA3C4"][i%4]}" title="${esc(l.txn?.desc||"")} — ${usd(l.expC)}"></i>`;
+    if(fee) segs += `<i style="width:${fee/Math.max(COMP.targetC, inv.totalC)*100}%;background:var(--gold);opacity:.8" title="Fee — ${usd(fee)}"></i>`;
     i++;
   });
   const tagCls = inv.status === "Paid" ? "green" : inv.status === "Sent" ? "gold" : inv.status.startsWith("Ready") ? "acc" : "grey";
@@ -1187,7 +1187,7 @@ function invoiceBlock(inv, unit, p){
   head.innerHTML = `<span class="chev">›</span><span class="inv-n">Invoice ${inv.no}</span>
     <span class="inv-tags"><span class="tag ${tagCls}">${inv.status}</span>${inv.locked?`<span class="mark grey" title="Contents frozen as issued">Locked</span>`:""}</span>
     <span class="fill ${inv.full?"done":""}">${segs}</span>
-    <span class="inv-amt">${usd(inv.totalC)}<small>${inv.full ? "at cap" : usd(COMP.targetC-inv.totalC)+" left"}</small></span>`;
+    <span class="inv-amt">${usd(inv.totalC)}<small>${inv.final ? (inv.combined ? `final · includes invoice ${inv.combined}` : "final invoice") : inv.full ? "at cap" : usd(COMP.targetC-inv.totalC)+" left"}</small></span>`;
   head.onclick = () => { S.ui.open[key] = !open; persistUi(); render(); };
   wrap.appendChild(head);
   if(!open) return wrap;
@@ -1842,7 +1842,7 @@ function openSheet(id, preset){
         <div class="muted" style="font-size:12.5px" id="e_sum"></div>
       </div>
       <hr class="sep">
-      <label class="fld"><span>Billing state</span>
+      <label class="fld"><span>Who pays for it</span>
         <select id="e_status">
           <option value="billable" ${t.status==="billable"?"selected":""}>Bill to owner</option>
           <option value="review" ${t.status==="review"?"selected":""}>On hold</option>
@@ -2353,7 +2353,7 @@ function reportHTML(p, opt){
   if(o.layout === "summary") o.showLines = false;
   const held = p.transactions.filter(t => t.status === "review");
   const label = inv => inv.reg.paid ? ["Paid","paid"] : inv.reg.dateSent ? ["Awaiting payment","sent"]
-                     : inv.full ? ["Not yet issued","ready"] : ["In progress","draft"];
+                     : inv.full || inv.final ? ["Not yet issued","ready"] : ["In progress","draft"];
   const linkCell = (on, url) => on ? `<td class="rc">${url ? `<a href="${esc(url)}">View</a>` : ""}</td>` : "";
 
   /* ---- invoices ---- */
@@ -2859,7 +2859,7 @@ function ownerAddressLines(o){
   const cityLine = [o.city, [o.state, o.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
   return [o.address, cityLine].map(x => (x||"").trim()).filter(Boolean);
 }
-const initials = s => (s||"?").trim().split(/\s+/).filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join("") || "?";
+const initials = s => (s||"").trim().split(/\s+/).filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join("") || "–";
 
 /* money across every property an owner has */
 function ownerRoll(o){
@@ -2879,7 +2879,7 @@ function ownerCardHTML(o, props, opt){
   const name = ownerLabel(o), addr = ownerAddressLines(o), op = opt || {};
   return `
     <div class="owner-top">
-      <div class="avatar">${esc(initials(name))}</div>
+      <div class="avatar">${name ? esc(initials(name)) : icon("user")}</div>
       <div style="min-width:0">
         <h2>${name ? esc(o.name || o.company) : `<span class="muted">${esc(op.emptyTitle || "No owner yet")}</span>`}</h2>
         <div class="co">${o.name && o.company ? esc(o.company) : esc(op.emptySub || "")}</div>
@@ -3126,7 +3126,7 @@ function ownerStatementHTML(o, opt){
   const props = ownerProps(o), R = ownerRoll(o), money = usd;
   const addr = ownerAddressLines(o);
   const bill = `<div class="pv"><b>${esc(o.name || o.company || "—")}</b>${o.name && o.company ? `<br>${esc(o.company)}` : ""}${addr.map(l => `<br>${esc(l)}`).join("")}${o.email ? `<br><span class="m">${esc(o.email)}</span>` : ""}${o.phone ? `<br><span class="m">${esc(o.phone)}</span>` : ""}</div>`;
-  const label = inv => inv.reg.paid ? ["Paid","paid"] : inv.reg.dateSent ? ["Awaiting payment","sent"] : inv.full ? ["Not yet issued","ready"] : ["In progress","draft"];
+  const label = inv => inv.reg.paid ? ["Paid","paid"] : inv.reg.dateSent ? ["Awaiting payment","sent"] : inv.full || inv.final ? ["Not yet issued","ready"] : ["In progress","draft"];
 
   const summaryRows = props.map(p => { const r = ALL[p.id].roll;
     return `<tr><td>${esc(p.name)}<div class="sub">${p.feePct}% fee · ${r.invoices} invoice${r.invoices===1?"":"s"}</div></td><td class="r">${money(r.expenseC)}</td><td class="r">${money(r.feeC)}</td><td class="r">${money(r.chargesC)}</td><td class="r">${money(r.paidC)}</td><td class="r">${money(r.sentC)}</td></tr>`; }).join("");
@@ -3681,6 +3681,7 @@ function inboxCard(it){
       ${preview ? `<button class="btn sm ghost" data-x="prev">${INBOX.open[it.id] ? "Hide preview" : "Preview"}</button>` : ""}
     </div>
     ${isErr ? `<div class="ib-errline">${esc(it.error || "Unknown error")}</div>` : ""}
+    ${it.office_note && !isErr ? `<div class="ib-note">${icon("mail")}<div><b>${esc(it.source === "drive" ? "File name" : it.source === "Upload" ? "Note with the upload" : "Note from " + (String(it.from || "").split("@")[0] || "the office"))}</b><q>${esc(String(it.office_note).replace(/^Subject:\s*/i, "").replace(/^File name:\s*/i, "").replace(/\n+/g, " — "))}</q></div></div>` : ""}
     ${it.reason && !isErr ? `<div class="ib-why">${icon("bolt")} ${esc(it.reason)}</div>` : ""}
     ${it.pay_status && !isErr ? `<div class="ib-why ib-pay ${it.pay_status === "to_pay" ? "due" : ""}"><span class="tag ${it.pay_status === "to_pay" ? "gold" : "green"}">${it.pay_status === "to_pay" ? "Not paid yet" : "Already paid"}</span>${it.pay_note ? " " + esc(it.pay_note) : ""}${it.due_date && it.pay_status === "to_pay" ? ` · due ${esc(fdateS(it.due_date))}` : ""}</div>` : ""}
     <div class="ib-body">
@@ -3705,6 +3706,8 @@ function inboxCard(it){
         ${pmp && !d.credit ? `<div class="f2"><label class="fld"><span>This is</span><select data-f="pmPaid"><option value="paid" ${d.pmPaid !== "topay" ? "selected" : ""}>A receipt — already paid</option><option value="topay" ${d.pmPaid === "topay" ? "selected" : ""}>A vendor invoice — needs paying</option></select></label>
           <label class="fld"><span>Owner</span><select data-f="pmRec">${Object.entries(BILL_REC).map(([k, l]) => `<option value="${k}" ${(d.pmRec || (pmp.ownerId ? "deduct" : "phd")) === k ? "selected" : ""} ${k !== "phd" && !pmp.ownerId ? "disabled" : ""}>${l}</option>`).join("")}</select></label></div>` : ""}
         <label class="switchbox"><input type="checkbox" data-f="credit" ${d.credit ? "checked" : ""}> Refund / return — reduces the next open invoice</label>
+        ${prop ? `<div class="f2"><label class="fld"><span>Who pays for it ${helpQ("inboxWho")}</span><select data-f="billTo">${Object.entries(IB_BILLTO).map(([k, l]) => `<option value="${k}" ${d.billTo === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          ${d.billTo === "contractor" ? `<label class="fld"><span>Contractor or vendor</span><input type="text" data-f="party" value="${esc(d.party || "")}" placeholder="Who pays it back"></label>` : `<div class="ib-bt muted">${IB_BILLTO_HELP[d.billTo] || ""}</div>`}</div>` : ""}
         ${prop && !d.credit ? `<label class="switchbox"><input type="checkbox" data-f="toPay" ${d.toPay ? "checked" : ""}> The vendor still needs to be paid — keep it on the unpaid list${d.toPay ? ` <input type="date" data-f="due" value="${esc(d.due)}" title="Due" style="margin-left:8px">` : ""}</label>` : ""}
       </div>
       <div class="ib-side">
@@ -3726,7 +3729,7 @@ function inboxCard(it){
   card.querySelectorAll("[data-f]").forEach(inp => {
     const k = inp.dataset.f;
     const upd = () => { d[k] = inp.type === "checkbox" ? inp.checked : inp.value;
-      if(k === "propId" || k === "unit" || k === "credit" || k === "amount" || k === "toPay") card.replaceWith(inboxCard(it));
+      if(k === "propId" || k === "unit" || k === "credit" || k === "amount" || k === "toPay" || k === "billTo") card.replaceWith(inboxCard(it));
       else { const ok = inboxReady(d); card.querySelectorAll('[data-x="ok"],[data-x="edit"]').forEach(b => b.disabled = !ok); } };
     inp.addEventListener(inp.tagName === "SELECT" || inp.type === "checkbox" ? "change" : (k === "amount" ? "change" : "input"), upd);
   });
@@ -3744,12 +3747,16 @@ function inboxDraft(it, propId){
     propId: propId || (it.property_id && (S.properties.some(p => p.id === it.property_id) || pmProp(it.property_id)) ? it.property_id : ""),
     unit: it.unit_id || "", date: it.date || "", vendor: it.vendor || "", desc: it.description || "",
     amount: it.total ? String(it.total) : "", credit: !!it.is_credit,
-    pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || ""
+    pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || "",
+    billTo: {contractor:"contractor", phd:"phd", owner_paid_direct:"direct"}[it.bill_to] || (it.hold ? "hold" : it.no_fee ? "nofee" : "owner"),
+    party: it.party || "", pmRec: it.bill_to === "phd" ? "phd" : ""
   };
   const p = S.properties.find(x => x.id === d.propId);
   if(p && d.unit !== "split" && !p.units.some(u => u.id === d.unit)) d.unit = p.units.length === 1 ? p.units[0].id : "";
   return d;
 }
+const IB_BILLTO = {owner:"The owner (with our fee)", nofee:"The owner, no fee", hold:"The owner — hold for final billing", contractor:"A contractor or vendor (back-charge)", phd:"PHD — not billed", direct:"Owner paid the contractor directly — bill our fee only"};
+const IB_BILLTO_HELP = {owner:"Goes on the owner's next invoice with the project fee.", nofee:"Goes on the owner's invoice at cost.", hold:"Parked until final billing; nothing is invoiced yet.", phd:"Kept for the books, never invoiced.", direct:"The cost stays off the invoice; a line for our fee on it is added."};
 function inboxPmMonth(){ const open = pmMonths().filter(m => !(pmState().meta[m] || {}).closed); return open.length ? open[open.length - 1] : thisMonth(); }
 function inboxPmDupes(p, d, it){
   const c = cents(Number(d.amount) || 0); if(!c) return [];
@@ -3794,13 +3801,21 @@ async function inboxApprove(it, openAfter){
     amount: d.credit ? -amt : amt, scope, status:"billable", applyFee:true, allowPartial:true};
   if(d.toPay && !d.credit) rec.vendorDue = {since:todayISO(), due:d.due || "", note:it.pay_note || "", by:billWho()};
   if(d.credit && p.tags.some(t => t.id === RETURN_TAG_ID)) rec.tags = [RETURN_TAG_ID];
-  applyHoldRule(rec, p);
+  const bt = d.billTo || "owner";
+  if(it.office_note) rec.notes += " · Note: " + String(it.office_note).replace(/^(Subject|File name):\s*/i, "").replace(/\n+/g, " — ").slice(0, 200);
+  if(bt === "nofee") rec.applyFee = false;
+  else if(bt === "hold") rec.status = "review";
+  else if(bt === "phd") rec.status = "excluded";
+  else if(bt === "contractor"){ rec.status = "excluded"; rec.party = "Contractor"; rec.charge = {state:"open", party:(d.party || "").trim() || "Contractor", email:"", how:"invoice", note:it.office_note ? String(it.office_note).replace(/^(Subject|File name):\s*/i, "").slice(0, 200) : ""}; }
+  else if(bt === "direct"){ rec.direct = true; rec.status = "excluded"; }
+  if(bt === "owner" || bt === "nofee") applyHoldRule(rec, p);
   p.transactions.push(rec);
+  if(rec.direct && typeof directSync === "function") directSync(p);
   const msg = {decision:"approved", txnId:rec.id, propertyName:p.name, fileName};
   inboxDone()[it.id] = {txn:rec.id, msg};
   INBOX.items = INBOX.items.filter(x => x.id !== it.id); delete INBOX.draft[it.id];
   commit();
-  toast(`Added ${d.credit ? "credit " : ""}${usd(cents(amt))} to ${p.name}${rec.status === "review" ? " · on hold (labor)" : ""}`);
+  toast(`Added ${d.credit ? "credit " : ""}${usd(cents(amt))} to ${p.name}${{hold:" · on hold for final billing", nofee:" · no fee", phd:" · not billed (PHD pays)", contractor:" · billed to " + ((d.party || "").trim() || "the contractor"), direct:" · owner paid directly — fee line added"}[bt] || (rec.status === "review" ? " · on hold (labor)" : "")}`);
   if(INBOX.onDone) INBOX.onDone(it.id, rec.id);
   if(openAfter){ go("txns", p.id); openSheet(rec.id); }
   try{ await inboxPost(Object.assign({action:"decide", id:it.id}, msg)); delete inboxDone()[it.id]; Store.save(S); }catch(e){ /* retried on next check */ }
@@ -8241,7 +8256,7 @@ function pgCharges(){
   v.appendChild(hero);
   const bar = elm("div", "sc-bar");
   bar.innerHTML = `<div class="sc-seg">${[["open", "To collect", open.length], ["settled", "Settled", settled.length], ["all", "All", all.length]].map(([k, l, n]) => `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
-    <span class="muted" style="font-size:12.5px">To add one: open a transaction → Billing state → <b>Bill to a contractor or vendor</b>, or select several and use the bulk menu.</span>`;
+    <span class="muted" style="font-size:12.5px">To add one: open a transaction → Who pays for it → <b>Bill to a contractor or vendor</b>, or select several and use the bulk menu.</span>`;
   bar.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.chF = b.dataset.f; persistUi(); render(); });
   v.appendChild(bar);
   const list = f === "open" ? open : f === "settled" ? settled : all;
@@ -8475,6 +8490,113 @@ function budgetAlerts(){
   });
   return out.sort((a, b) => ({over:0, near:1, co:2}[a.kind] - {over:0, near:1, co:2}[b.kind]) || b.pct - a.pct);
 }
+
+/* =====================================================================
+   CLOSE OUT A PROJECT — the last invoice.
+   Invoices normally fill to the cap ($10,000). When no more work is
+   coming, the leftover under-cap invoice doesn't need to wait: closing
+   out a unit (p.closeout[unitId] = {at, by}) makes its last invoice the
+   final one, and if that one is short and the invoice before it hasn't
+   gone out, the two are combined and sent as one (the engine does the
+   combining in closeoutMerge, so every page agrees).
+   Offered on the Invoices page, and in the QuickBooks / email sheets
+   for the invoice it would combine into.
+   ===================================================================== */
+const coState = (p, unit) => (p.closeout || {})[unit.id] || null;
+const coSent = reg => !!(reg && (reg.dateSent || reg.paid || (reg.email && reg.email.sent)));
+const coInNk = reg => !!(reg && reg.nickel && reg.nickel.invoiceId && !reg.nickel.canceled);
+const coIssued = reg => coSent(reg) || coInNk(reg);
+// what closing out would do for this unit, or null when there's nothing to close
+function coOffer(p, unit){
+  if(coState(p, unit)) return null;
+  const C = ALL[p.id], invs = (C && C.units[unit.id]) || [];
+  const last = invs[invs.length - 1], prev = invs[invs.length - 2];
+  if(!last || coSent(last.reg) || last.full) return null;
+  const next = prev && prev.no === last.no - 1 && !coSent(prev.reg), merged = next && !coInNk(prev.reg) && !coInNk(last.reg);
+  if(!merged) return {only:last, blocked:next ? (n => `Invoice ${n} is already in QuickBooks/Nickel — to send them as one, delete it in Nickel first (open invoice ${n}), then close out`)(coInNk(prev.reg) ? prev.no : last.no) : ""};
+  return {into:prev, from:last, totalC:prev.expC + last.expC + Math.round((prev.feeBaseC + last.feeBaseC) * C.rate)};
+}
+function coClose(p, unit){
+  const o = coOffer(p, unit); if(!o) return null;
+  snapshot();
+  // a locked (not yet sent) invoice is unlocked, combined, and locked again
+  const relock = [o.into].filter(i => i && i.locked && !coIssued(i.reg)).map(i => i.no);
+  relock.forEach(no => { const g = p.register[unit.id + "|" + no]; if(g){ delete g.frozen; delete g.lock; } });
+  if(o.from && o.from.locked){ const g = p.register[unit.id + "|" + o.from.no]; if(g){ delete g.frozen; delete g.lock; } }
+  p.closeout = p.closeout || {};
+  p.closeout[unit.id] = {at:todayISO(), by:typeof billWho === "function" ? billWho() : ""};
+  commit();
+  if(relock.length){ relock.forEach(no => { (p.register[unit.id + "|" + no] = p.register[unit.id + "|" + no] || {}).lock = true; }); commit(); }
+  const no = (o.into || o.only).no;
+  toast(o.into ? `Closed out · invoice ${no} is the final invoice (${usd(o.totalC)})` : `Invoice ${no} marked as the final invoice`, true);
+  return ((ALL[p.id].units[unit.id]) || []).find(i => i.no === no) || null;
+}
+function coReopen(p, unit){
+  const C = ALL[p.id], fin = ((C && C.units[unit.id]) || []).find(i => i.final);
+  if(fin && coIssued(fin.reg) && !confirm(`The final invoice (${fin.no}) has already gone out — it stays as it was sent.\n\nReopen anyway, so new charges fill new invoices to the cap again?`)) return;
+  snapshot(); delete p.closeout[unit.id]; if(!Object.keys(p.closeout).length) delete p.closeout;
+  commit(); toast(`${p.units.length > 1 ? unit.name + " reopened" : "Project reopened"} — invoices fill to the cap again`, true);
+}
+const coHeld = (p, unit) => (p.transactions || []).filter(t => t.status === "review" && (t.scope.type === "single" ? t.scope.unit === unit.id : Number((t.scope.splits || {})[unit.id]) > 0));
+const coShare = (p, t, unit) => (unitShares(t, p.units)[unit.id] || 0);
+const coUnitWord = (p, unit) => p.units.length > 1 ? esc(unit.name) : "this project";
+// the strip on the Invoices page, under the totals
+function coStrip(p, unit){
+  const st = coState(p, unit), C = ALL[p.id], invs = (C && C.units[unit.id]) || [];
+  if(!invs.length) return null;
+  const box = elm("div", "co-strip");
+  if(st){
+    const fin = invs.find(i => i.final), allPaid = invs.every(i => i.reg && i.reg.paid);
+    box.classList.add("on");
+    box.innerHTML = `<span class="tag green">${p.units.length > 1 ? esc(unit.name) + " closed out" : "Closed out"}</span><span>${fin ? `Invoice ${fin.no} is the final invoice${fin.combined ? ` — it includes what would have been invoice ${fin.combined}` : ""}.` : "No more invoices for " + coUnitWord(p, unit) + "."} <span class="muted">Closed ${esc(fdateS(st.at))}${st.by ? " by " + esc(typeof cloudWhoSafe === "function" ? cloudWhoSafe(st.by) : st.by) : ""}</span></span>
+      <span style="flex:1"></span>${helpQ("closeout")}${allPaid && !p.archived ? `<button class="btn sm" data-co="arch" title="Moves it out of the lists — nothing is deleted">Everything's paid — archive</button>` : ""}<button class="btn sm ghost" data-co="reopen">Reopen</button>`;
+  } else {
+    const o = coOffer(p, unit);
+    if(!o){      // nothing to close (the last invoice is full, or already sent) — but held costs still need billing at the end
+      if(!coHeld(p, unit).length) return null;
+      box.innerHTML = `<span><b>Finishing the job?</b> Costs on hold for final billing are only invoiced once you bill them.</span><span style="flex:1"></span>${helpQ("closeout")}`;
+    } else box.innerHTML = o.into
+      ? `<span><b>Last invoice?</b> If no more work is coming, close out ${coUnitWord(p, unit)}: invoice ${o.from.no} (${usd(o.from.totalC)}) is added to invoice ${o.into.no}, and you send one final invoice of <b>${usd(o.totalC)}</b>.</span><span style="flex:1"></span>${helpQ("closeout")}<button class="btn sm" data-co="close">Close out &amp; combine</button>`
+      : `<span><b>Last invoice?</b> If no more work is coming, mark invoice ${o.only.no} (${usd(o.only.totalC)}) as the final invoice — it's ready to send even though it's under the cap.${o.blocked ? ` <span class="muted">${esc(o.blocked)}, so they can't be combined.</span>` : ""}</span><span style="flex:1"></span>${helpQ("closeout")}<button class="btn sm" data-co="close">Mark as final invoice</button>`;
+  }
+  // costs parked for final billing would never be invoiced after the last invoice — offer to bill them now
+  const held = coHeld(p, unit);
+  if(held.length) box.insertAdjacentHTML("beforeend", `<div class="co-held">${held.length} cost${held.length === 1 ? " is" : "s are"} still on hold for final billing (${usd(held.reduce((a, t) => a + coShare(p, t, unit), 0))}${p.units.length > 1 ? " for " + esc(unit.name) : ""}). ${st ? "Bill them now so they're on the final invoice." : "At the end of the job, bill them so they go on the last invoice."} <button class="btn sm" data-co="held" type="button">Bill held costs now</button></div>`);
+  // several units: one button for all of them
+  const others = p.units.filter(x => x.id !== unit.id && coOffer(p, x));
+  if(others.length && (st || coOffer(p, unit))) box.insertAdjacentHTML("beforeend", `<button class="btn sm ghost" data-co="all" title="${esc(others.map(x => x.name).join(", "))}">Close out ${st ? "the other unit" + (others.length > 1 ? "s" : "") : "all units"}</button>`);
+  const q = k => box.querySelector(`[data-co="${k}"]`);
+  if(q("held")) q("held").onclick = () => { if(!confirm(`Bill ${held.length} held cost${held.length === 1 ? "" : "s"} to the owner now?\n\n${held.map(t => "· " + (t.vendor || "") + " " + (t.desc || "") + " " + usd(cents(t.amount))).join("\n").slice(0, 900)}`)) return;
+    snapshot(); held.forEach(t => { t.status = "billable"; }); commit(); render(); toast(`${held.length} held cost${held.length === 1 ? "" : "s"} now billed`, true); };
+  if(q("all")) q("all").onclick = () => { const list = (st ? [] : [unit]).concat(others); let n = 0; list.forEach(x => { if(coClose(p, x)) n++; }); render(); toast(`${n} unit${n === 1 ? "" : "s"} closed out`, true); };
+  if(q("close")) q("close").onclick = () => { if(coClose(p, unit)) render(); };
+  if(q("reopen")) q("reopen").onclick = () => { coReopen(p, unit); render(); };
+  if(q("arch")) q("arch").onclick = () => { if(!confirm(`Archive ${p.name}? It leaves the lists; open it any time from the property menu → Archived.`)) return; snapshot(); p.archived = true; commit(); toast("Archived", true); go("portfolio"); };
+  return box;
+}
+(function(){
+  const base = pgInvoices;
+  pgInvoices = function(){
+    base();
+    const p = P(), u = p.units.find(x => x.id === S.ui.unit) || p.units[0], v = $("#view");
+    if(!u) return;
+    const strip = coStrip(p, u); if(!strip) return;
+    const head = [...v.children].find(c => c.classList.contains("card"));
+    if(head && head.nextSibling) v.insertBefore(strip, head.nextSibling); else v.appendChild(strip);
+  };
+  // when you go to put an invoice in QuickBooks or email it, ask the question at the right moment
+  const banner = (p, unit, inv, reopen) => {
+    const o = coOffer(p, unit); if(!o || !o.into || o.into.no !== inv.no) return;
+    const b = $("#sheet .sheet-b"); if(!b) return;
+    b.insertAdjacentHTML("afterbegin", `<div class="co-ask"><b>Is this the last invoice?</b> ${helpQ("closeout")} Invoice ${o.from.no} (${usd(o.from.totalC)}) hasn't gone out yet. If no more work is coming, close out and send them as one: <b>${usd(o.totalC)}</b>.
+      <div style="margin-top:8px"><button class="btn sm" id="coAsk" type="button">Close out &amp; combine</button> <span class="muted">or carry on to send invoice ${inv.no} by itself</span></div></div>`);
+    $("#coAsk").onclick = () => { const inv2 = coClose(p, unit); render(); if(inv2) reopen(inv2); };
+  };
+  const c0 = pjCreateSheet;
+  pjCreateSheet = async function(p, unit, inv){ await c0(p, unit, inv); banner(p, unit, inv, i => pjCreateSheet(p, unit, i)); };
+  const e0 = pjEmailSheet;
+  pjEmailSheet = function(p, unit, inv){ e0(p, unit, inv); if(!(inv.reg && inv.reg.nickel && inv.reg.nickel.invoiceId)) banner(p, unit, inv, i => pjEmailSheet(p, unit, i)); };
+})();
 
 /* ====================================================================
    QUICKBOOKS — project expenses checked against the books
@@ -10175,6 +10297,7 @@ function snapSheet(){
       <div class="sheet-b">
         ${conn ? "" : `<div class="pm-banner">Snapping receipts uses the receipt inbox, which isn't connected yet. <button class="btn sm" id="snConn" style="margin-left:6px">Connect it</button></div>`}
         <div class="bu-seg sc-seg"><button data-k="paid" class="${SNAP.kind === "paid" ? "on" : ""}">Already paid</button><button data-k="topay" class="${SNAP.kind === "topay" ? "on" : ""}">Still to pay</button></div>
+        <label class="fld sn-note"><span>Note <span class="muted" style="font-weight:400">· optional, read with the receipt</span> ${helpQ("snapnote")}</span><input type="text" id="snNote" value="${esc(SNAP.note || "")}" placeholder="e.g. 24 Bee, unit B · unpaid · return · bill to the contractor · no fee"></label>
         <div class="sn-picks">
           <label class="sn-pick primary ${conn ? "" : "dis"}">${icon("camera")}<b>Take a photo</b><span>Lay it flat, fill the frame</span>
             <input type="file" id="snCam" accept="image/*" capture="environment" ${conn ? "" : "disabled"}></label>
@@ -10185,8 +10308,9 @@ function snapSheet(){
       </div>
       <div class="sheet-f"><span style="flex:1"></span>
         ${done ? `<button class="btn" id="snSee">Review ${done} in the inbox</button>` : ""}<button class="btn primary" id="shCancel">Done</button></div>`;
-    $("#shClose").onclick = $("#shCancel").onclick = () => { closeSheet(); if(S.ui.view === "inbox" || S.ui.view === "today") render(); };
+    $("#shClose").onclick = $("#shCancel").onclick = () => { SNAP.note = ""; closeSheet(); if(S.ui.view === "inbox" || S.ui.view === "today") render(); };
     sh.querySelectorAll(".bu-seg [data-k]").forEach(b => b.onclick = () => { SNAP.kind = b.dataset.k; draw(); });
+    const nt = sh.querySelector("#snNote"); if(nt) nt.oninput = () => { SNAP.note = nt.value; };
     const c = sh.querySelector("#snConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
     const see = sh.querySelector("#snSee"); if(see) see.onclick = () => { closeSheet(); S.ui.ibSide = pm ? "pm" : "projects"; go("inbox"); };
     ["#snCam", "#snFile"].forEach(id => { const inp = sh.querySelector(id); inp.onchange = () => { snapAdd([...inp.files]); inp.value = ""; }; });
@@ -10211,11 +10335,11 @@ function receiptFile(file, i, n){
   return f;
 }
 // shrink, send and read one file; returns the inbox's answer
-async function receiptUpload(f, kind, side){
+async function receiptUpload(f, kind, side, note){
   const sm = await shrinkPhoto(f.file, f.mime);
   if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error("Photo is over 5 MB even after shrinking — try a PDF");
   const data = await buBase64(sm.file);
-  const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind, by:billWho(), side});
+  const r = await inboxPost({action:"upload", name:sm.name, mime:sm.mime, data, kind, by:billWho(), side, note:String(note || "").slice(0, 500)});
   delete f.file;
   if(r.item && !r.duplicate && !INBOX.items.some(x => x.id === r.item.id)) INBOX.items.unshift(r.item);
   return r;
@@ -10223,7 +10347,7 @@ async function receiptUpload(f, kind, side){
 const receiptErr = e => /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? "No connection to the receipt inbox — check the connection and try again" : e.message;
 function snapAdd(files){
   const side = S.ui.mode === "pm" ? "pm" : "projects";
-  files.forEach((file, i) => SNAP.files.push(Object.assign(receiptFile(file, i, files.length), {kind:SNAP.kind, side})));
+  files.forEach((file, i) => SNAP.files.push(Object.assign(receiptFile(file, i, files.length), {kind:SNAP.kind, side, note:SNAP.note || ""})));
   SNAP.redraw && SNAP.redraw(); snapPump();
 }
 async function snapPump(){
@@ -10234,7 +10358,7 @@ async function snapPump(){
     while((f = SNAP.files.find(x => x.state === "queued"))){
       f.state = "working"; redraw();
       try{
-        const r = await receiptUpload(f, f.kind, f.side);
+        const r = await receiptUpload(f, f.kind, f.side, f.note);
         f.item = r.item || null; f.state = r.duplicate || !r.item ? "dupe" : "done";
       }catch(e){ f.state = "error"; f.msg = receiptErr(e); }
       redraw();
@@ -11622,6 +11746,243 @@ render = function(){
   try{ NAV.cur = navSnap(); navTools(); navBackBtn(); navBrandSoon(); }catch(e){ console.warn(e); }
   return r;
 };
+
+/* =====================================================================
+   HELP — a small "?" beside each part of the console that explains, in
+   plain words, what it's for and how to use it. Written for someone in
+   the office who has never seen the console.
+   · Every page has one next to its title.
+   · The parts that need it most (tabs, tricky fields, sheets) have their
+     own, placed by HELP_SPOTS below.
+   · "How this works" at the bottom of the menu is the start-here guide;
+     pressing ? on the keyboard opens the help for the page you're on.
+   Topics are plain HTML: a one-line summary, then steps, then tips.
+   ===================================================================== */
+const HELP = {
+  start:{t:"How this console works", b:`
+    <p>The console has two sides — switch at the top of the menu.</p>
+    <h5>Projects (renovations)</h5>
+    <ol><li>Every receipt or bill becomes a <b>transaction</b> on its property — snap it, forward it to ProjectBilling@, or type it on Transactions.</li>
+      <li>The console packs transactions into <b>invoices</b> of up to $10,000 each (expenses plus our fee) — nothing to build by hand.</li>
+      <li>When an invoice says <b>Ready</b>, lock it, create it in QuickBooks, and email the owner — <b>Today</b> lists what's ready.</li>
+      <li>When the owner pays, it's marked paid automatically (or tick <b>Paid in full</b>).</li></ol>
+    <h5>Property management (rentals)</h5>
+    <ol><li><b>Month close</b>: enter rent as it comes in; fees and owner payouts work themselves out.</li>
+      <li><b>Bills</b>: vendor bills get paid and taken out of the owner's payout (or invoiced to them).</li>
+      <li>At month end, send owner statements and payouts, then close the month.</li></ol>
+    <p class="hp-tip">Every page has a <span class="hq-dot">?</span> by its title, and the trickier parts have their own. Press <kbd>?</kbd> on the keyboard for the page you're on.</p>`},
+
+  /* ---------- projects ---------- */
+  today:{t:"Today", b:`<p>Your to-do list for renovation billing. Each row has the button for the next step.</p>
+    <ul><li><b>Invoices to send</b> — full (or final) invoices waiting to go to the owner.</li>
+      <li><b>Waiting on owners</b> — sent and not paid. <b>Remind</b> emails the owner from billing@.</li>
+      <li><b>Back-charges to collect</b> — costs a contractor owes us.</li></ul>`},
+  todayPm:{t:"Today", b:`<p>Your to-do list for property management: late rent, bills to pay, owner payouts and invoices, statements, and the month close. Each row has the button that does it.</p>`},
+  portfolio:{t:"All properties", b:`<p>Every renovation project on one page: what's been billed, collected and still owed.</p>
+    <ul><li>Click a property to open it.</li><li><b>Held for final billing</b> is quoted work (usually labor) that isn't invoiced until the end.</li><li>To start a new project, press <b>New property</b> (top right).</li></ul>`},
+  overview:{t:"Project overview", b:`<p>Where every dollar on this project stands: invoiced, paid, ready, and still to bill.</p>
+    <ul><li><b>Scope of work</b> shows each work item against its budget.</li><li>Warnings (a missing amount, a split that doesn't add to 100%) show here until they're fixed.</li></ul>`},
+  txns:{t:"Transactions", b:`<p>Every cost on this project. Invoices are built from this list, in this order.</p>
+    <ol><li>Add one: type in the bar at the top — e.g. <i>Lowes 245.18 faucet unit b</i> — and press Enter. Or drop a receipt file on the page.</li>
+      <li>Click a row to edit it, attach the receipt, or change who pays for it.</li>
+      <li>Tick several rows to change them together (unit, status, tags).</li></ol>
+    <p class="hp-tip">The order matters: invoices fill from the top. <b>Reorder</b> sorts by date or amount. A row already on a sent invoice is <b>Locked</b> — fix it with a credit, not an edit.</p>`},
+  quick:{t:"Quick add", b:`<p>Type what you'd say out loud and press Enter:</p>
+    <ul><li><i>Lowes 245.18 kitchen faucet</i> — vendor, amount, item</li><li>add the unit (<i>unit b</i>), or <i>both</i> to split it</li>
+      <li>a date: <i>yesterday</i>, <i>9/12</i></li><li><i>no fee</i> · <i>hold</i> (bill at the end) · <i>return</i> (a credit)</li></ul>
+    <p>The chips under the box show what it understood. <b>Details</b> opens the full form.</p>`},
+  billstate:{t:"Who pays for this", b:`<ul>
+      <li><b>Bill to owner</b> — goes on the next invoice with our fee (untick “Add fee” for at cost).</li>
+      <li><b>On hold</b> — kept off invoices until final billing (quoted labor).</li>
+      <li><b>Not billable</b> — PHD absorbs it. Kept for the books only.</li>
+      <li><b>Bill to a contractor or vendor</b> — a back-charge; it shows on the Back-charges page to invoice them or deduct from what we pay them.</li>
+      <li><b>Owner paid them directly</b> — the owner paid the contractor; only our fee on it is billed (a fee line is added for you).</li></ul>`},
+  scope:{t:"Scope of work", b:`<p>The project's work items with a budget each. Spending fills in by itself from Transactions — never type actual costs here.</p>
+    <ol><li>Add items (or paste a list), each with a budget and a few <b>match words</b> like <i>tile</i> or <i>cabinet</i>.</li>
+      <li>Any transaction containing those words counts toward the item. You can also pin a transaction to an item from its edit form.</li>
+      <li>Open an item to add <b>change orders</b>.</li></ol>`},
+  co:{t:"Change orders", b:`<p>Work added (or removed) after the budget was agreed.</p>
+    <ul><li><b>Approved</b> change orders raise this item's budget; <b>pending</b> ones are shown but don't count yet.</li>
+      <li>Work taken out: enter a negative amount.</li><li>Items near or over budget, and pending change orders, are listed on Business → Budgets.</li></ul>`},
+  invoices:{t:"Invoices", b:`<p>Built for you from Transactions: each invoice fills up to the cap (usually $10,000, fee included) and the rest carries to the next.</p>
+    <ol><li>Open an invoice to see its lines.</li><li>When it says <b>Ready to send</b>: tick <b>Lock contents</b>, then <b>Create in QuickBooks + get pay link</b>.</li>
+      <li><b>Email owner</b> sends it from billing@. It's marked paid when Nickel sees the payment.</li></ol>
+    <p class="hp-tip">Last invoice of the job? Use <b>Close out</b> so the leftover goes out now instead of waiting to fill up.</p>`},
+  lock:{t:"Lock contents", b:`<p>Freezes this invoice's lines so new costs or reordering can't change it. Lock before creating it in QuickBooks.</p>
+    <p>Sent and paid invoices are always locked. If something on a sent invoice was wrong, add a credit on Transactions — it comes off the next invoice.</p>`},
+  closeout:{t:"Close out the project", b:`<p>Invoices normally wait until they reach the cap. When no more work is coming, close out:</p>
+    <ul><li>If the last invoice is short and the one before it hasn't been sent, the two are <b>combined into one final invoice</b> — e.g. $10,000 + $3,200 goes out as $13,200.</li>
+      <li>If the one before was already sent, the short one is simply marked <b>final</b> and ready to send.</li>
+      <li>Nothing already sent ever changes. <b>Reopen</b> undoes it if more work comes up.</li></ul>`},
+  settings:{t:"Property settings", b:`<ul><li><b>Invoice cap</b> — the most one invoice can total, fee included.</li>
+      <li><b>Project fee %</b> — added to every cost billed to the owner (unless it's marked no fee).</li>
+      <li><b>Units</b> — each unit gets its own invoices. The default split is used when a cost covers several units.</li>
+      <li><b>Deferred billing</b> — words like <i>labor</i> put matching costs on hold until final billing.</li></ul>`},
+  holdrules:{t:"Deferred billing", b:`<p>Costs whose vendor or item contains one of these words go <b>on hold</b> automatically when they're added — typically quoted labor that's billed at the end.</p>
+    <p>Existing costs only move when you press apply. Release held costs from Transactions (status → Bill to owner).</p>`},
+  owner:{t:"Owner", b:`<p>Who gets the invoices for this property: name, email (and anyone to copy), billing address and how they pay.</p>
+    <p>One owner can have several properties; editing them here updates all of them. Invoices still stay separate per property.</p>`},
+  owners:{t:"Owners", b:`<p>Everyone we bill, with what they owe across their properties. Click an owner to edit their details or see their properties.</p>`},
+  inbox:{t:"Receipt inbox", b:`<p>Receipts and bills arrive here already read — vendor, date, amount and a property guess. Nothing reaches the books until you approve it.</p>
+    <h5>Ways to send one in</h5>
+    <ul><li>Forward the email to <b>ProjectBilling@</b> (projects) or <b>PMBilling@</b> (rentals).</li><li>Snap a photo with the <b>Receipt</b> button, or drop a file on a project page.</li><li>Drop a PDF or photo in Drive → <b>PHD Receipts / _Drop here</b>.</li></ul>
+    <h5>Say what it is</h5>
+    <p>Write a line above the forwarded email (or in the Note when you snap one): <i>for 24 Bee, unpaid</i> · <i>refund</i> · <i>return</i> · <i>no fee</i> · <i>hold</i> · <i>bill to Armando</i> · <i>owner paid directly</i>. The inbox reads it and fills the form in — you'll see the note on the card.</p>
+    <p class="hp-tip">Check the property, unit and amount, then <b>Approve</b>. Arrives within about five minutes.</p>`},
+  inboxWho:{t:"Who pays for it", b:`<ul><li><b>The owner</b> — on their next invoice, with our fee.</li><li><b>No fee</b> — on the invoice at cost.</li><li><b>Hold for final billing</b> — kept off invoices until the end.</li>
+      <li><b>A contractor or vendor</b> — a back-charge; collect it on the Back-charges page.</li><li><b>PHD</b> — not billed to anyone.</li><li><b>Owner paid directly</b> — only our fee on it is billed.</li></ul>
+    <p>A note with the receipt (like “bill to Armando”) picks this for you.</p>`},
+  snapnote:{t:"Note with the receipt", b:`<p>Optional. Tell the inbox what this is, in your own words: <i>24 Bee unit B · unpaid · return · no fee · hold · bill to the contractor · owner paid directly</i>. It fills in the approve form for you.</p>`},
+  charges:{t:"Back-charges", b:`<p>Project costs a contractor or vendor pays back instead of the owner — a damaged item, a redo, a trip they caused.</p>
+    <ol><li>Mark a cost: open it on Transactions → Who pays → <b>Bill to a contractor or vendor</b>.</li><li>Here, per contractor: <b>Invoice</b> emails them from billing@, or note that it comes out of what we pay them.</li><li>Press <b>Mark settled</b> when it's paid back (or taken out of their payment).</li></ol>`},
+  inventory:{t:"Inventory", b:`<p>Things PHD buys in bulk (Costco, Lowe's) and uses on several jobs — locks, lights, filters.</p>
+    <ol><li>Add what was bought: <b>Add item</b>, paste your inventory sheet, or <b>Itemize</b> a store charge from QuickBooks (one charge → 20 locks, 10 lights…).</li>
+      <li>When some go to a job, press <b>Use on a project</b>: the owner is billed for what was used.</li><li><b>Post to QuickBooks</b> moves the cost of what was used out of Inventory into that job's materials.</li></ol>`},
+  invqb:{t:"QuickBooks for inventory", b:`<p>Bulk store charges should sit in <b>Inventory Asset</b> in QuickBooks until they're used.</p>
+    <ul><li><b>Itemize</b> splits one charge into the items it bought.</li><li><b>Move to inventory</b> recodes the charge in QuickBooks.</li><li>Used items: <b>Post to QuickBooks</b> makes the journal entry to the job.</li></ul>`},
+  business:{t:"Business", b:`<p>The back office for renovations, in four tabs: what we earn, budgets at risk, contractors (1099s, W-9s, insurance), and owner invoices that are overdue.</p>`},
+  bizProfit:{t:"Profit", b:`<p>What PHD earns on each project: the project fee, the fee on labor the owner paid directly, and the markup on inventory used. Split into collected, invoiced (not paid yet) and not invoiced yet.</p>`},
+  bizBudgets:{t:"Budgets", b:`<p>Work items, across every project, that have used 90% or more of their budget, gone over, or have a change order waiting for approval. Click one to open it.</p>`},
+  bizContractors:{t:"Contractors", b:`<p>Everyone we paid, by year — for 1099s. Click a contractor to record their W-9 date, insurance expiry and contract amounts.</p>
+    <ul><li>Corporations (Inc., Corp) usually don't get a 1099 — tick it on their record.</li><li><b>1099 list (CSV)</b> gives your accountant the year's list.</li></ul>`},
+  bizUnpaid:{t:"Unpaid invoices", b:`<p>Owner invoices sent and not paid, oldest first.</p>
+    <ul><li>A first reminder is due at 7 days, a second at 14 days (7 days after the first).</li><li><b>Send due reminders</b> emails all of them from billing@; each row also has its own button.</li></ul>`},
+  reconcile:{t:"Reconcile", b:`<p>Checks the console against QuickBooks and your bank or card statements, so nothing is billed twice or missed.</p>
+    <ul><li>The QuickBooks tabs sort every project cost by whether QuickBooks has it.</li><li><b>Find a transaction</b> searches every project by amount, vendor or note.</li><li><b>Match a statement</b> ticks off a statement line by line.</li></ul>`},
+  qb:{t:"QuickBooks check", b:`<p>Compares every project cost here with QuickBooks (synced hourly, or press <b>Sync now</b>).</p>
+    <p>The four numbers: what matches, what QuickBooks doesn't have yet, what needs fixing in QuickBooks, and project costs only QuickBooks has.</p>`},
+  qb_none:{t:"Not in QuickBooks", b:`<p>Costs in the console that QuickBooks doesn't have yet.</p>
+    <ul><li>Recent ones are often still in QuickBooks' Banking “For review” list — add them there.</li><li><b>Find in QuickBooks</b> lets you pick the matching QuickBooks line(s) by hand.</li><li><b>Not a QB expense</b> for things that never go through QuickBooks (paid by the owner, etc.).</li></ul>`},
+  qb_partial:{t:"Needs a look", b:`<p>A likely match was found but something differs — the amount, the date or the property. Open the row, compare, and confirm or pick a different line.</p>`},
+  qb_fix:{t:"Fix in QuickBooks", b:`<p>Lines that are in QuickBooks but coded wrong: no customer (property) or the wrong category.</p>
+    <ol><li>Check the category and customer on each row (change them if needed).</li><li>Tick the rows and press <b>Update in QuickBooks</b>.</li></ol>
+    <p class="hp-tip">Large labor goes to Labor, not Maintenance. Vendor choices are remembered for next time.</p>`},
+  qb_missing:{t:"In QuickBooks, not here", b:`<p>Project costs QuickBooks has that no transaction here matches. Press <b>Add here</b> to put one on its property, or mark it <b>Not a project cost</b>.</p>`},
+  qb_matched:{t:"Matched", b:`<p>Costs found in QuickBooks with the right amount and property. <b>Unmatch</b> if one was paired with the wrong line or customer.</p>`},
+  qb_skip:{t:"Not QuickBooks expenses", b:`<p>Costs you marked as never going through QuickBooks (paid by the owner, a card that isn't in QuickBooks…). Press <b>Check it again</b> if that was a mistake.</p>`},
+  find:{t:"Find a transaction", b:`<p>Type an amount (<i>245.18</i>), vendor or word to search every project at once. Handy when a charge on a statement doesn't say which job it was for.</p>`},
+  match:{t:"Match a statement", b:`<p>Paste the lines from a bank or card statement. Each line is matched to a transaction by amount and date; matched ones are ticked as reconciled, and what's left over is what's missing.</p>`},
+  checklist:{t:"Checklist", b:`<p>Tick each expense off by hand as you find it on a statement. Filter by property; <b>Export unreconciled</b> gives you the leftovers as a spreadsheet.</p>`},
+  order:{t:"Read an order", b:`<p>For a store order with returns or split payments (Lowe's, Home Depot, Costco, Amazon).</p>
+    <ol><li>Open the order on the store's site, select all, copy, and paste it here — or drop the order PDF.</li><li>Check what it found: what was billed, each return, and the payments.</li><li>Pick the property and unit and add — the purchase and each return become their own lines, so each matches its own charge or credit in QuickBooks.</li></ol>`},
+  payments:{t:"Payments", b:`<p>Money in and out through Nickel: owner payments, vendor payments, deposited checks, with receipts. <b>Setup</b> connects Nickel and picks the QuickBooks products invoices use.</p>
+    <p>Anything that moves money asks you to confirm it in Nickel's own window first.</p>`},
+  team:{t:"Team", b:`<p>Who can sign in to the console, and a log of who changed what.</p>`},
+
+  /* ---------- property management ---------- */
+  pmHome:{t:"Property management overview", b:`<p>Every rental at a glance: rent status this month, what needs action, and the month's numbers.</p>
+    <ul><li><b>Needs action</b> — late rent, payouts due, leases ending; each has its button.</li><li>Cards, table, or rent history — switch at the top of the list.</li></ul>`},
+  pmAlerts:{t:"Action center", b:`<p>Everything that needs doing on the rentals, most urgent first — also emailed to the team each morning.</p>
+    <ul><li>Press the button on a row to do it.</li><li><b>Snooze</b> hides one until a date; <b>Dismiss</b> if it doesn't apply.</li><li>When things count as late or due is set on <b>Alert rules</b>.</li></ul>`},
+  pmMonth:{t:"Month close", b:`<p>One row per rental for the month. Owner payout = rent − repairs − fees.</p>
+    <ol><li>Enter rent in <b>Received</b> as it arrives (MagicDoor fills paid rent in for you).</li><li>Repairs come from <b>Bills</b> — open a row to add or check them.</li>
+      <li>Send <b>Owner statements</b>, then mark payouts sent.</li><li><b>Close month</b> when everything adds up. A closed month can't be edited by accident.</li></ol>`},
+  pmProps:{t:"Properties", b:`<p>Every rental PHD manages: rent, fee rule and owner. Click one to open its page. Filter by leased, marketing, vacant or no longer managed.</p>`},
+  pmProperty:{t:"Rental property", b:`<p>One rental: this month's numbers, lease and owner details, and its history month by month.</p>
+    <ul><li><b>Record rent & bills</b> opens this month's row.</li><li><b>Statement</b> makes the owner statement; <b>Email statement</b> puts a draft in pm@'s Gmail.</li><li>Use ‹ › (or the [ ] keys) to step through properties.</li></ul>`},
+  pmBills:{t:"Bills", b:`<p>Vendor bills for the rentals: what's waiting to be paid, and everything paid.</p>
+    <ol><li><b>Add bill</b> (or approve one from the Receipt inbox).</li><li>Choose how the owner covers it: <b>deduct from their payout</b>, <b>invoice the owner</b>, or <b>PHD expense</b>.</li><li>Pay it through Nickel, or record it as paid.</li></ol>`},
+  pmInvoices:{t:"Owner invoices", b:`<p>Bills you chose to invoice to the owner (instead of deducting them from the payout), grouped by owner. Send them, and they're marked paid when the owner pays.</p>`},
+  pmVendors:{t:"Vendors", b:`<p>Everyone we pay for the rentals. Added automatically the first time you enter a bill from them. Bank details stay in Nickel — never here.</p>`},
+  pmDeposits:{t:"Security deposits", b:`<p>What PHD is holding for each tenant. At move-out, record what was returned and what was kept (and why).</p>`},
+  pmIncome:{t:"Income", b:`<p>PHD's management income month by month: PM fees, admin and leasing fees, application and late fees. Click a month to open it.</p>`},
+  pmSettings:{t:"Alert rules", b:`<p>When rent counts as late, when owner payouts are due, how early to warn about leases ending. Shared by everyone and used for the morning email.</p>`},
+  pmMd:{t:"MagicDoor", b:`<p>Reads leases, tenants, rent and owners from MagicDoor (read-only) and keeps the rentals here up to date — hourly, or press <b>Sync now</b>.</p>
+    <p>Each MagicDoor unit is linked to a property by address; fix a wrong link here. Closed months and fee rules are never changed.</p>`}
+};
+// the topic for the page you're on
+function helpPageKey(){
+  const v = S.ui.view;
+  if(v === "today") return S.ui.mode === "pm" ? "todayPm" : "today";
+  if(v === "pmPaySetup") return "payments";
+  if(v === "pmHome" && typeof pmState === "function" && !(pmState().properties || []).length) return "start";
+  return HELP[v] ? v : null;
+}
+const helpQ = (key, label) => HELP[key] ? `<button type="button" class="hq" data-help="${key}" aria-label="How ${esc(label || HELP[key].t)} works" title="How this works">?</button>` : "";
+/* where the smaller ?s go: a selector for the heading or control, the topic (or a function of the element) */
+const HELP_SPOTS = [
+  {sel:"#view .qe-row", key:"quick", end:true},
+  {sel:"#sheet label:has(> #e_status) > span", key:"billstate"},
+  {sel:"#view .inv-acts", key:"lock", after:'[data-x="lock"]'},
+  {sel:"#sheet .co-h .label", key:"co"},
+  {sel:"#view .card-h h3", text:/^Deferred billing$/, key:"holdrules"},
+  {sel:"#view .card-h h3", text:/^QuickBooks$/, key:el => S.ui.view === "inventory" ? "invqb" : "qb"},
+  {sel:"#view .qb-tabs", key:() => "qb_" + (S.ui.qbTab || "none"), end:true},
+  {sel:"#view .card-h h3", text:/^Find a transaction$/, key:"find"},
+  {sel:"#view .card-h h3", text:/^Match a statement$/, key:"match"},
+  {sel:"#view .qb-sub h3", text:/^Checklist$/, key:"checklist"},
+  {sel:"#view .sc-bar:has(> .sc-seg [data-t])", key:() => S.ui.view === "business" ? ({profit:"bizProfit", budgets:"bizBudgets", contractors:"bizContractors", unpaid:"bizUnpaid"})[S.ui.bizTab || "profit"] : null},
+  {sel:"#sheet .sheet-h h3", text:/^Read an order/, key:"order"},
+  {sel:"#view .card-h h3", text:/^Scope of work$/, key:"scope"}
+];
+function helpDecorate(){
+  HELP_SPOTS.forEach(sp => document.querySelectorAll(sp.sel).forEach(el => {
+    if(sp.text && !sp.text.test((el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild.textContent : el.textContent).trim())) return;
+    const key = typeof sp.key === "function" ? sp.key(el) : sp.key;
+    if(!HELP[key]) return;
+    const have = el.querySelector(":scope > .hq, :scope > * > .hq");
+    if(have){ if(have.dataset.help !== key){ have.dataset.help = key; have.setAttribute("aria-label", `How ${HELP[key].t} works`); } return; }
+    if(sp.after){ const a = el.querySelector(sp.after); const host = a && (a.closest("label") || a); if(host){ host.insertAdjacentHTML("afterend", helpQ(key)); return; } }
+    el.insertAdjacentHTML("beforeend", helpQ(key));
+  }));
+}
+// the page title's ?
+function helpTitle(){
+  const h = $("#pgTitle"); if(!h) return;
+  let b = $("#pgHelp");
+  const key = helpPageKey();
+  if(!b){ h.insertAdjacentHTML("afterend", `<button type="button" class="hq hq-title" id="pgHelp" title="How this page works">?</button>`); b = $("#pgHelp"); }
+  b.hidden = !key; if(key){ b.dataset.help = key; b.setAttribute("aria-label", `How ${HELP[key].t} works`); }
+}
+/* ---------- the popover ---------- */
+const HELPPOP = {el:null, btn:null};
+function helpClose(){ if(HELPPOP.el){ HELPPOP.el.remove(); HELPPOP.el = null; } if(HELPPOP.btn){ HELPPOP.btn.setAttribute("aria-expanded", "false"); HELPPOP.btn = null; } }
+function helpOpen(key, btn){
+  const h = HELP[key]; if(!h) return;
+  const same = HELPPOP.btn === btn && btn; helpClose(); if(same) return;
+  const pop = elm("div", "hp-pop"); pop.setAttribute("role", "dialog"); pop.setAttribute("aria-label", h.t);
+  pop.innerHTML = `<div class="hp-h"><b>${esc(h.t)}</b><button type="button" class="hp-x" aria-label="Close">✕</button></div><div class="hp-b">${h.b}</div>
+    ${key !== "start" ? `<div class="hp-f"><a href="#" data-hp-start>How the console works</a></div>` : ""}`;
+  document.body.appendChild(pop);
+  HELPPOP.el = pop; HELPPOP.btn = btn || null; if(btn) btn.setAttribute("aria-expanded", "true");
+  const place = () => {
+    if(!HELPPOP.el) return;
+    if(window.innerWidth < 720 || !btn){ pop.classList.add("hp-dock"); return; }
+    const r = btn.getBoundingClientRect(), w = pop.offsetWidth, hgt = pop.offsetHeight;
+    let left = Math.min(Math.max(12, r.left + r.width / 2 - 28), window.innerWidth - w - 12);
+    let top = r.bottom + 8; if(top + hgt > window.innerHeight - 12 && r.top - hgt - 8 > 12) top = r.top - hgt - 8;
+    pop.style.left = left + "px"; pop.style.top = Math.max(12, Math.min(top, window.innerHeight - hgt - 12)) + "px";
+  };
+  place();
+  pop.querySelector(".hp-x").onclick = () => { const b = HELPPOP.btn; helpClose(); if(b) b.focus(); };
+  const st = pop.querySelector("[data-hp-start]"); if(st) st.onclick = e => { e.preventDefault(); helpOpen("start", null); };
+  pop.querySelector(".hp-x").focus({preventScroll:true});
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("[data-help]");
+  if(b){ e.preventDefault(); e.stopPropagation(); helpOpen(b.dataset.help, b); return; }
+  if(HELPPOP.el && !HELPPOP.el.contains(e.target)) helpClose();
+}, true);
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && HELPPOP.el){ e.stopPropagation(); const b = HELPPOP.btn; helpClose(); if(b) b.focus(); return; }
+  if(e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName || "") && !e.target.isContentEditable){
+    e.preventDefault(); const k = helpPageKey() || "start"; helpOpen(k, $("#pgHelp") && !$("#pgHelp").hidden ? $("#pgHelp") : null);
+  }
+}, true);
+window.addEventListener("resize", helpClose);
+window.addEventListener("scroll", () => { if(HELPPOP.el && !HELPPOP.el.classList.contains("hp-dock")) helpClose(); }, {passive:true});
+/* keep the ?s in place as pages and sheets redraw */
+(function(){
+  const base = render;
+  render = function(){ helpClose(); const r = base.apply(this, arguments); helpTitle(); helpDecorate(); return r; };
+  let q = false;
+  const mo = new MutationObserver(() => { if(q) return; q = true; requestAnimationFrame(() => { q = false; helpDecorate(); }); });
+  const start = () => { ["#view", "#sheet"].forEach(s => { const n = $(s); if(n) mo.observe(n, {childList:true, subtree:true}); }); };
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+  // the start-here guide, at the bottom of the menu
+  const foot = document.querySelector(".rail-foot");
+  if(foot && !$("#helpStart")){ foot.insertAdjacentHTML("afterbegin", `<button type="button" class="help-start" id="helpStart" data-help="start"><span class="hq-dot" aria-hidden="true">?</span><span>How this works</span></button>`); }
+})();
 
 /* ===================== BOOT ===================== */
 function chip(){
