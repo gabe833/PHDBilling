@@ -3647,7 +3647,7 @@ function pgInbox(){
   head.innerHTML = `<span><b>${pend.length}</b> waiting for review${errs.length ? ` · <span style="color:var(--red)">${errs.length} couldn't be read</span>` : ""}</span>
     <span class="muted">Last checked ${new Date(INBOX.last).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}</span>`;
   v.appendChild(head);
-  [...pend, ...errs].forEach(it => v.appendChild(inboxCard(it)));
+  [...pend, ...errs].forEach(it => v.appendChild(inboxCardSafe(it)));
 }
 
 function inboxSetup(v){
@@ -3755,6 +3755,20 @@ function inboxCard(it){
   act("reject", () => inboxReject(it));
   act("retry", async () => { try{ toast("Reading it again…"); await inboxPost({action:"retry", id:it.id}); delete INBOX.draft[it.id]; inboxRefresh(); }catch(e){ toast(e.message); } });
   return card;
+}
+// one receipt that can't be drawn never hides the others: it shows what's known, why, and how to deal with it
+function inboxCardSafe(it){
+  try{ return inboxCard(it); }
+  catch(e){
+    console.error("Receipt inbox: couldn't show", it && it.id, e);
+    const c = elm("div","card ib-card");
+    c.innerHTML = `<div class="ib-top"><div class="ib-src">${icon("mail")}<div><b>${esc(it.vendor || it.subject || it.file_name || "Receipt")}${it.total ? " · " + usd(cents(Number(it.total) || 0)) : ""}</b><span>${esc([it.from, it.property_name, it.date].filter(Boolean).join(" · "))}</span></div></div>
+        ${it.file_url ? `<a class="btn sm" href="${esc(it.file_url)}" target="_blank" rel="noopener">${icon("file")} Open receipt</a>` : ""}</div>
+      <div class="ib-errline">This one couldn't be shown here (${esc(String(e && e.message || e))}). Tell Gabe the message, or add it by hand and dismiss it.</div>
+      <div class="ib-foot"><span style="flex:1"></span><button class="btn sm ghost danger" data-x="reject">Dismiss</button></div>`;
+    c.querySelector('[data-x="reject"]').onclick = () => inboxReject(it);
+    return c;
+  }
 }
 // what the approve form starts with; propId forces a property (a file dropped on that property's page)
 function inboxDraft(it, propId){
