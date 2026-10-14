@@ -3543,19 +3543,31 @@ function setInboxConn(v){
   if(typeof Cloud !== "undefined" && Cloud.ready){ S.inboxConn = v || null; Store.save(S); return; }
   try{ v ? localStorage.setItem(INBOX_KEY, JSON.stringify(v)) : localStorage.removeItem(INBOX_KEY); }catch(e){}
 }
+// the Apps Script web app: a phone on a weak connection can leave a request hanging, so give up after a while
+async function inboxFetch(url, opt, ms){
+  const ctl = typeof AbortController === "function" ? new AbortController() : null, t = ctl ? setTimeout(() => ctl.abort(), ms || 30000) : null;
+  try{
+    const r = await fetch(url, Object.assign({redirect:"follow", credentials:"omit", cache:"no-store"}, opt, ctl ? {signal:ctl.signal} : {}));
+    const txt = await r.text();
+    try{ return JSON.parse(txt); }
+    catch(e){ throw new Error(/<html|<!doctype/i.test(txt) ? "Google answered with a web page instead of the inbox — the script's deployment may need “Who has access: Anyone”" : "The inbox sent back something unreadable"); }
+  }catch(e){
+    if(e && e.name === "AbortError") throw new Error("The inbox took too long to answer — check the connection and try again");
+    if(/Failed to fetch|Load failed|NetworkError|network connection/i.test(String(e && e.message))) throw new Error("Couldn't reach Google from this device — check the connection (Wi-Fi or data) and try again");
+    throw e;
+  } finally { if(t) clearTimeout(t); }
+}
 async function inboxGet(params){
   const c = inboxConn(); if(!c) throw new Error("Not connected");
   const q = new URLSearchParams(Object.assign({token:c.token}, params || {}));
-  const r = await fetch(c.url + (c.url.includes("?") ? "&" : "?") + q.toString(), {method:"GET", redirect:"follow"});
-  const j = await r.json();
+  const j = await inboxFetch(c.url + (c.url.includes("?") ? "&" : "?") + q.toString(), {method:"GET"}, 30000);
   if(!j.ok) throw new Error(j.error === "unauthorized" ? "The inbox key was not accepted — paste it again from the script log" : (j.error || "Inbox error"));
   return j;
 }
 async function inboxPost(body){
   const c = inboxConn(); if(!c) throw new Error("Not connected");
   // text/plain keeps this a "simple" request, which Apps Script accepts from a local file
-  const r = await fetch(c.url, {method:"POST", redirect:"follow", body:JSON.stringify(Object.assign({token:c.token}, body))});
-  const j = await r.json();
+  const j = await inboxFetch(c.url, {method:"POST", body:JSON.stringify(Object.assign({token:c.token}, body))}, 120000);
   if(!j.ok) throw new Error(j.error || "Inbox error");
   return j;
 }
@@ -3607,11 +3619,14 @@ function pgInbox(){
            [INBOX.loading ? "Checking…" : "Check now", () => inboxRefresh(), "primary"]]);
 
   if(INBOX.err){
-    v.appendChild(elm("div","card ib-err",`<b>Couldn't reach the inbox.</b> <span>${esc(INBOX.err)}</span>`));
+    const er = elm("div","card ib-err",`<b>Couldn't load the inbox.</b> <span>${esc(INBOX.err)}</span> <button class="btn sm" type="button" style="margin-left:8px">Try again</button>`);
+    er.querySelector("button").onclick = () => inboxRefresh();
+    v.appendChild(er);
   }
   const sideOf = i => i.side || (pmProp(i.property_id) ? "pm" : S.properties.some(p => p.id === i.property_id) ? "projects" : "");
-  const F = S.ui.ibSide || (S.ui.mode === "pm" ? "pm" : "projects");
   const cnt = k => INBOX.items.filter(i => (i.status === "pending" || i.status === "error") && (k === "all" || sideOf(i) === k || !sideOf(i))).length;
+  let F = S.ui.ibSide || "all";
+  if(F !== "all" && !cnt(F) && cnt("all")) F = "all";      // never an empty page while the other side has receipts waiting
   const items = INBOX.items.filter(i => F === "all" || sideOf(i) === F || !sideOf(i));
   const pend = items.filter(i => i.status === "pending"), errs = items.filter(i => i.status === "error");
   if(INBOX.items.length){
