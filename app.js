@@ -7832,7 +7832,9 @@ function pjNickelPanel(p, unit, inv){
   if(q("mail")) q("mail").onclick = () => pjEmailSheet(p, unit, inv);
   if(reg.email && !reg.email.sent) setTimeout(() => bmCheckDraft(p, unit, inv), 0);
   if(q("sync")) q("sync").onclick = async e => { e.preventDefault(); e.target.textContent = "Checking…";
-    try{ const r = await payCall("nk.sync", {kind:"project", id:p.id, key}); toast(r.changed ? "Updated from Nickel" : "Nothing new in Nickel"); render(); }catch(er){ toast(er.message); e.target.textContent = "Check Nickel"; } };
+    try{ const r = await payCall("nk.sync", {kind:"project", id:p.id, key}); toast(r.changed ? "Updated from Nickel" : "Nothing new in Nickel"); render(); }
+    catch(er){ if(/not\s*found|does(n'?t| not) exist|404/i.test(er.message) && confirm(`Nickel can't find ${nk.number || "this invoice"} — it was probably deleted in Nickel.\n\nClear it here so you can create it again?`)){ snapshot(); const g = P().register[key]; if(g && g.nickel){ if(g.link === g.nickel.url) delete g.link; g.nickelOld = Object.assign({}, g.nickel, {deleted:new Date().toISOString(), deletedIn:"Nickel"}); delete g.nickel; } commit(); render(); return; }
+      toast(er.message); e.target.textContent = "Check Nickel"; } };
   if(q("charge")) q("charge").onclick = () => { const cust = nkOwner(p.ownerId);
     nkChargeSheet({title:`Charge ${nk.number || "invoice " + inv.no}`, dueC:nk.outstandingC != null ? nk.outstandingC : inv.totalC, onFile:cust.onFile || [],
       run:m => nkRun("project.charge", {propertyId:p.id, unitId:unit.id, no:inv.no, methodId:m.id}, `Charge ${nk.number || "invoice " + inv.no} to ${m.label}`)}); };
@@ -7840,7 +7842,13 @@ function pjNickelPanel(p, unit, inv){
     try{ const r = await nkRun("project.record", {propertyId:p.id, unitId:unit.id, no:inv.no}, `Mark ${nk.number || "invoice " + inv.no} paid in Nickel`); if(r.ok) toast("Marked paid in Nickel — QuickBooks follows"); render(); }catch(e){ toast(e.message); } };
   if(q("del")) q("del").onclick = async () => {
     if(!confirm(`Delete ${nk.number || "invoice " + inv.no} in Nickel?\n\nIts pay link stops working and Nickel removes it from QuickBooks. The invoice stays here, so you can create it again.`)) return;
-    try{ const r = await nkRun("project.delete", {propertyId:p.id, unitId:unit.id, no:inv.no}, `Delete ${nk.number || "invoice " + inv.no} in Nickel`); if(r.ok) toast("Deleted in Nickel — you can create it again"); render(); }catch(e){ toast(e.message); } };
+    // already deleted in Nickel's own app: Nickel answers "not found" — clear it here instead, so it can be created again
+    const gone = m => /not\s*found|does(n'?t| not) exist|no (such )?invoice|404|was deleted/i.test(String(m || ""));
+    const clear = () => { snapshot(); const g = P().register[key]; if(g && g.nickel){ if(g.link === g.nickel.url) delete g.link; g.nickelOld = Object.assign({}, g.nickel, {deleted:new Date().toISOString(), deletedIn:"Nickel"}); delete g.nickel; } commit(); render();
+      toast(`${nk.number || "Invoice " + inv.no} was already deleted in Nickel — cleared here, so you can create it again`); };
+    try{ const r = await nkRun("project.delete", {propertyId:p.id, unitId:unit.id, no:inv.no}, `Delete ${nk.number || "invoice " + inv.no} in Nickel`);
+      if(r.ok) toast("Deleted in Nickel — you can create it again"); else if(gone(r.error)) return clear(); render(); }
+    catch(e){ if(gone(e.message)) return clear(); toast(e.message); } };
   if(q("forget")) q("forget").onclick = e => { e.preventDefault();
     snapshot(); const g = P().register[key]; if(g){ if(g.link === nk.url) delete g.link; g.nickelOld = Object.assign({}, g.nickel, {deleted:g.nickel.deleted || new Date().toISOString()}); delete g.nickel; } commit(); render(); };
   return box;
