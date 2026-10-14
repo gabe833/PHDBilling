@@ -234,6 +234,17 @@ When the owner pays a contractor themselves, open that labor line → Billing st
 
 Open a Lowe's, Home Depot, Costco or Amazon order on the store's site, select all, copy and paste it — or drop the order PDF. The console finds what was billed, the tax rate, each return (items × price × tax; one return without items listed takes what's left of the refund total), and the payments a big order was split into. Check the lines, pick the property and unit, and it adds the purchase and every return as their own lines. Any line QuickBooks already has (the purchase, its pieces, each refund credit) is linked as it's added; lines that look like they're already in the project are flagged.
 
+### 7m. Each project's Drive folder (Settings → Drive folder)
+Connect the folder where a project's invoices, bills, receipts and returns are saved — once per property. **Find in Drive** searches by the street (e.g. *27 Smith*), or paste the folder's link.
+- **Organize the folder** reads everything in it (and its subfolders), pairs each file with its transaction (by the link, the receipt name, or the amount and date in the file name), and shows the plan before anything changes:
+  - **Rename** — every matched file gets one name: `2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85.pdf`; returns read `RETURN -$192.20`. The transaction's receipt name follows, and it gets a link to the file if it had none (a Nickel or QuickBooks link already there is kept).
+  - **Duplicates** — exact copies (same content, whatever the name) go to a **Duplicates** subfolder. Nothing is ever deleted.
+  - **Not in the console yet** — PDFs (and any photos you tick) are read and wait in the **Receipt inbox**, already set to that property.
+  - **Transactions with no file in this folder** — what's still missing.
+  - Google Docs/Sheets, quotes and anything that doesn't match a cost are left alone.
+- From then on, a receipt **approved** for that property is filed in its folder under that name. If the same file is already there, it isn't added again — the transaction links to the copy in the folder.
+- The receipt inbox (billing@) does the Drive work, so **billing@ needs Editor access**: share the parent folder (e.g. *PHD PM Properties*) with billing@phdproperties.realestate once. Needs the updated `apps-script/Code.gs` (paste, Save, Deploy → Manage deployments → ✏️ → New version).
+
 ### 7l. Close out a project (the last invoice)
 Invoices fill to the cap ($10,000) before they're sent, so the end of a job usually leaves one short invoice. When no more work is coming, close it out — on **Invoices** (the strip under the totals) or when you go to create an invoice in QuickBooks or email it:
 - If the last invoice is short and the one before it hasn't been sent, the two are **combined into one final invoice** — $10,000 + $3,200 goes out as one $13,200 invoice (the only time an invoice goes over the cap). A locked invoice is unlocked, combined and locked again for you.

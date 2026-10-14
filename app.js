@@ -8627,6 +8627,236 @@ function coStrip(p, unit){
   pjEmailSheet = function(p, unit, inv){ e0(p, unit, inv); if(!(inv.reg && inv.reg.nickel && inv.reg.nickel.invoiceId)) banner(p, unit, inv, i => pjEmailSheet(p, unit, i)); };
 })();
 
+/* =====================================================================
+   PROPERTY DRIVE FOLDERS — each project's own receipts folder in Drive.
+   Set once per property (p.driveFolder = {id, url, name, at, by}). The
+   receipt-inbox script in billing@ does the Drive work, so billing@ needs
+   Editor access to the folders (share the parent folder once).
+   · Organize: reads what's in the folder, pairs files with transactions,
+     renames them one way —
+       2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85.pdf
+     sets exact copies aside in a "Duplicates" subfolder (never deletes),
+     and sends files the console doesn't know yet to the Receipt inbox.
+   · Approving a receipt for the property files it in this folder under
+     that name, unless the same file is already there.
+   Google Docs/Sheets and anything that doesn't match a transaction are
+   never renamed or moved.
+   ===================================================================== */
+const DF = {scan:null, busy:false, plan:null};
+const dfFolderId = s => { const m = String(s || "").match(/folders\/([A-Za-z0-9_-]{10,})/) || String(s || "").match(/[?&]id=([A-Za-z0-9_-]{10,})/) || String(s || "").trim().match(/^([A-Za-z0-9_-]{20,})$/); return m ? m[1] : ""; };
+const dfOf = p => p && p.driveFolder && p.driveFolder.id ? p.driveFolder : null;
+const dfStreet = p => String(p.address || p.name || "").split(",")[0].replace(/\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|ct|court|blvd|way|cir|circle)\b\.?/gi, "").replace(/\s+/g, " ").trim();
+const dfMoney = c => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+const dfClean = s => String(s || "").replace(/[\\/:*?"<>|#%]+/g, "-").replace(/\s+/g, " ").trim();
+const dfExt = (name, mime) => { const m = String(name || "").match(/\.([a-z0-9]{2,5})$/i); return m ? "." + m[1].toLowerCase() : mime === "application/pdf" ? ".pdf" : /image\/(jpe?g)/.test(mime || "") ? ".jpg" : /image\/png/.test(mime || "") ? ".png" : ""; };
+const dfBase = n => String(n || "").replace(/\.[a-z0-9]{2,5}$/i, "").trim().toLowerCase();
+// the one way every receipt is named: date - vendor - what (unit) - amount
+function dfName(p, t, ext){
+  const amt = cents(t.amount), unit = p.units.length > 1 ? (t.scope && t.scope.type === "split" ? "Split" : ((p.units.find(u => u.id === (t.scope || {}).unit) || {}).name || "")) : "";
+  const what = dfClean(String(t.desc || "Receipt").replace(/\s+—\s+return$/i, "")).slice(0, 70);
+  return [t.date || todayISO(), dfClean(t.vendor || "Vendor").slice(0, 40), what + (unit ? ` (${dfClean(unit)})` : ""), (amt < 0 ? "RETURN " : "") + dfMoney(amt)].join(" - ") + (ext || "");
+}
+/* ---------- pair the folder's files with this property's transactions ---------- */
+function dfPlan(p, scan){
+  const T = (p.transactions || []).filter(t => !t.feeFor && !(t.inv && t.vendor === "PHD Inventory"));
+  const used = new Set(), plan = {renames:[], ok:[], dupes:[], unknown:[], other:[], inInbox:[], noFile:[], links:[]};
+  const files = scan.files.filter(f => !/^duplicates\b/i.test(f.path || ""));
+  // exact copies: keep the one a transaction already points at (else the oldest), set the rest aside
+  const byHash = {};
+  files.forEach(f => { if(f.hash) (byHash[f.hash] = byHash[f.hash] || []).push(f); });
+  const linkedIds = new Set(T.map(t => dfFolderIdOfFile(t.link)).filter(Boolean));
+  Object.values(byHash).filter(g => g.length > 1).forEach(g => {
+    g.sort((a, b) => (linkedIds.has(b.id) - linkedIds.has(a.id)) || String(a.created).localeCompare(String(b.created)));
+    g.slice(1).forEach(f => { f.dupeOf = g[0]; plan.dupes.push(f); });
+  });
+  const live = files.filter(f => !f.dupeOf);
+  const amtsIn = n => (String(n).match(/\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}/g) || []).map(x => Math.round(Number(x.replace(/,/g, "")) * 100));
+  const dateIn = (n, d) => { if(!d) return false; const [y, m, dd] = d.split("-"); return new RegExp(`${y}-?${m}-?${dd}|${+m}[./-]${+dd}[./-](${y}|${y.slice(2)})`).test(n); };
+  const match = f => {
+    const id = T.find(t => !used.has(t.id) && dfFolderIdOfFile(t.link) === f.id); if(id) return id;
+    if(f.inbox && f.inbox.txn){ const t = T.find(x => !used.has(x.id) && x.id === f.inbox.txn); if(t) return t; }
+    const nm = dfBase(f.name);
+    const byName = T.filter(t => !used.has(t.id) && t.receipt && dfBase(t.receipt) === nm); if(byName.length === 1) return byName[0];
+    const amts = amtsIn(f.name);
+    if(amts.length){
+      const c = T.filter(t => !used.has(t.id) && amts.includes(Math.abs(cents(t.amount))) && (dateIn(f.name, t.date) || (t.vendor && f.name.toLowerCase().includes(String(t.vendor).toLowerCase().split(/[\s']/)[0]))));
+      if(c.length === 1) return c[0];
+    }
+    return null;
+  };
+  live.forEach(f => {
+    if(f.google){ plan.other.push(f); return; }
+    const t = match(f);
+    if(t){
+      used.add(t.id);
+      const want = dfName(p, t, dfExt(f.name, f.mime));
+      if(!t.link) plan.links.push({t, f});
+      if(f.name === want) plan.ok.push({f, t}); else plan.renames.push({f, t, name:want});
+      return;
+    }
+    if(f.inbox && (f.inbox.status === "pending" || f.inbox.status === "error")){ plan.inInbox.push(f); return; }
+    if(!/^(application\/pdf|image\/(jpe?g|png|gif|webp))$/i.test(f.mime || "")){ plan.other.push(f); return; }
+    if(/^image\//.test(f.mime || "")) f.skip = true;      // photos are often not receipts: ticked by hand
+    plan.unknown.push(f);
+  });
+  plan.noFile = T.filter(t => !used.has(t.id) && t.status !== "excluded" && !(t.link && /drive\.google|docs\.google/.test(t.link)));
+  return plan;
+}
+const dfFolderIdOfFile = link => { const m = String(link || "").match(/\/d\/([A-Za-z0-9_-]{15,})|[?&]id=([A-Za-z0-9_-]{15,})/); return m ? (m[1] || m[2]) : ""; };
+
+/* ---------- the sheet ---------- */
+async function dfSheet(propId){
+  const p = S.properties.find(x => x.id === (propId || S.activeId)) || P(), sh = $("#sheet");
+  if(!inboxConn()){ toast("Connect the Receipt inbox first — it's what reaches Drive"); return go("inbox"); }
+  DF.scan = null; DF.plan = null;
+  const draw = () => {
+    const pl = DF.plan, sc = DF.scan, f = dfOf(p);
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Drive folder ${helpQ("drivefolder")}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · receipts, bills and returns</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">${!f ? dfPickHTML(p) : !sc ? `<div class="df-cur">${brandIc("drive")}<div><b>${esc(f.name || "Folder")}</b><a href="${esc(f.url)}" target="_blank" rel="noopener">Open in Drive</a></div><button class="btn sm ghost" data-df="change">Change</button></div>
+          <div class="df-load">${DF.busy ? `<span class="bu-spin" aria-hidden="true"></span> Reading the folder…` : DF.err ? `<span class="ib-errline" style="display:block">${esc(DF.err)}</span>` : ""}</div>`
+        : dfPlanHTML(p, f, sc, pl)}</div>
+      <div class="sheet-f">${f && pl ? `<span class="muted" style="font-size:12.5px">${dfSummary(pl)}</span><span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn primary" id="dfGo" ${dfCount(pl) ? "" : "disabled"}>Organize</button>`
+        : `<span style="flex:1"></span><button class="btn" id="shCancel">Close</button>`}</div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    dfWire(p, sh, draw);
+  };
+  DF.redraw = draw; DF.err = "";
+  draw(); openPanel();
+  if(dfOf(p)) dfScan(p, draw);
+}
+function dfPickHTML(p){
+  return `<p class="muted" style="margin-top:0;font-size:13px">Pick the folder where this property's invoices, bills, receipts and returns are saved (e.g. <i>${esc(dfStreet(p))} - Project Invoices &amp; Repairs</i>). You only do this once.</p>
+    <div class="df-find"><input type="text" id="dfQ" value="${esc(dfStreet(p))}" aria-label="Folder name contains"><button class="btn sm" data-df="find" type="button">Find in Drive</button></div>
+    <div id="dfHits" class="df-hits"></div>
+    <label class="fld" style="margin-top:14px"><span>Or paste the folder's link</span><input type="url" id="dfUrl" placeholder="https://drive.google.com/drive/folders/…"></label>
+    <button class="btn sm primary" data-df="use" type="button">Use this folder</button>
+    <p class="help" style="margin-top:14px">The receipt inbox (billing@) does the work in Drive, so billing@ needs <b>Editor</b> access. Easiest: share the parent folder (like <i>PHD PM Properties</i>) with billing@phdproperties.realestate once — every property folder inside it is covered.</p>`;
+}
+function dfPlanHTML(p, f, sc, pl){
+  const row = (a, b, c) => `<div class="df-r">${a}<div class="df-t">${b}</div>${c || ""}</div>`;
+  const chk = (k, id, on) => `<input type="checkbox" data-pk="${k}" data-id="${esc(id)}" ${on ? "checked" : ""} aria-label="Include">`;
+  const sec = (title, n, body, note) => n ? `<div class="df-sec"><div class="df-sh"><b>${title}</b><span class="muted">${n}</span>${note ? `<span class="muted df-note">${note}</span>` : ""}</div>${body}</div>` : "";
+  const fl = x => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a>${x.path ? ` <span class="muted">in ${esc(x.path)}</span>` : ""}`;
+  const tx = t => `<span class="muted">${esc(t.vendor || "")} · ${usd(cents(t.amount))} · ${esc(fdateS(t.date))}</span>`;
+  return `<div class="df-cur">${brandIc("drive")}<div><b>${esc(sc.folder.name)}</b><a href="${esc(sc.folder.url)}" target="_blank" rel="noopener">Open in Drive</a></div><button class="btn sm ghost" data-df="rescan">Read again</button><button class="btn sm ghost" data-df="change">Change</button></div>
+    ${!sc.folder.canEdit ? `<div class="ib-errline" style="border-radius:8px;margin-bottom:12px">billing@ can only view this folder, so it can't rename or file anything. Share the folder (or its parent) with billing@phdproperties.realestate as <b>Editor</b>, then press Read again.</div>` : ""}
+    <div class="df-stats"><div><b>${sc.files.length}</b><span>files</span></div><div><b>${pl.ok.length + pl.renames.length}</b><span>matched to transactions</span></div><div><b>${pl.dupes.length}</b><span>duplicates</span></div><div><b>${pl.noFile.length}</b><span>transactions with no file here</span></div></div>
+    ${sec("Rename", pl.renames.length, pl.renames.map(x => row(chk("ren", x.f.id, true), `${fl(x.f)}<div class="df-to">→ ${esc(x.name)}</div>${tx(x.t)}`)).join(""), "so every file reads date - vendor - what - amount")}
+    ${sec("Duplicates", pl.dupes.length, pl.dupes.map(x => row(chk("dup", x.id, true), `${fl(x)}<div class="muted">Same file as ${esc(x.dupeOf.name)}</div>`)).join(""), "moved to a “Duplicates” subfolder — nothing is deleted")}
+    ${sec("Not in the console yet", pl.unknown.length, pl.unknown.map(x => row(chk("read", x.id, !x.skip), fl(x) + (/^image\//.test(x.mime || "") ? ` <span class="muted">· photo — tick it if it's a receipt</span>` : ""))).join(""), "ticked ones are read and wait in the Receipt inbox to approve")}
+    ${sec("Waiting in the Receipt inbox", pl.inInbox.length, pl.inInbox.map(x => row("", fl(x))).join(""))}
+    ${sec("Transactions with no file in this folder", pl.noFile.length, `<div class="df-miss">${pl.noFile.slice(0, 40).map(t => `<div>${esc(t.vendor || "—")} · ${esc(t.desc || "")} <span class="num">${usd(cents(t.amount))}</span> <span class="muted">${esc(fdateS(t.date))}</span></div>`).join("")}${pl.noFile.length > 40 ? `<div class="muted">and ${pl.noFile.length - 40} more</div>` : ""}</div>`, "add their receipt to the folder, or attach a link on the transaction")}
+    ${sec("Already organized", pl.ok.length, `<p class="muted" style="margin:0;font-size:12.5px">${pl.ok.length} file${pl.ok.length === 1 ? " is" : "s are"} named the right way and linked to ${pl.ok.length === 1 ? "its" : "their"} transaction.</p>`)}
+    ${sec("Left alone", pl.other.length, `<p class="muted" style="margin:0;font-size:12.5px">${pl.other.map(x => esc(x.name)).slice(0, 12).join(" · ")}${pl.other.length > 12 ? " …" : ""}</p>`, "Docs, Sheets and other files aren't touched")}
+    ${sc.capped ? `<p class="help">Only the first 400 files were read.</p>` : ""}`;
+}
+const dfLeft = pl => ({ren:pl.renames.filter(x => !x.f.skip).length, dup:pl.dupes.filter(x => !x.skip).length, read:pl.unknown.filter(x => !x.skip).length, link:pl.links.length});
+const dfCount = pl => { const n = dfLeft(pl); return n.ren + n.dup + n.read + n.link; };
+const dfSummary = pl => { const n = dfLeft(pl); return [n.ren && `${n.ren} to rename`, n.dup && `${n.dup} duplicate${n.dup === 1 ? "" : "s"}`, n.read && `${n.read} to read`, n.link && `${n.link} to link`].filter(Boolean).join(" · ") || "Nothing to change"; };
+async function dfScan(p, draw){
+  const f = dfOf(p); if(!f) return;
+  DF.busy = true; DF.err = ""; draw();
+  try{ DF.scan = await inboxPost({action:"folderScan", folderId:f.id}); DF.plan = dfPlan(p, DF.scan);
+    if(DF.scan.folder && (DF.scan.folder.name !== f.name || DF.scan.folder.url !== f.url)){ p.driveFolder = Object.assign({}, f, {name:DF.scan.folder.name, url:DF.scan.folder.url}); commit(); } }
+  catch(e){ DF.err = /not found|no item|access|permission/i.test(e.message) ? "billing@ can't open this folder. Share it (or its parent folder) with billing@phdproperties.realestate as Editor, then try again." : e.message; }
+  DF.busy = false; draw();
+}
+function dfWire(p, sh, draw){
+  const q = k => sh.querySelector(`[data-df="${k}"]`);
+  if(q("find")) q("find").onclick = async () => {
+    const box = $("#dfHits"); box.innerHTML = `<span class="muted"><span class="bu-spin" aria-hidden="true"></span> Searching billing@'s Drive…</span>`;
+    try{ const r = await inboxPost({action:"folderFind", q:$("#dfQ").value}); const L = r.folders || [];
+      L.sort((a, b) => (/invoice|receipt|bill|repair/i.test(b.name) - /invoice|receipt|bill|repair/i.test(a.name)));
+      box.innerHTML = L.length ? L.map((x, i) => `<button type="button" class="df-hit" data-hit="${i}">${brandIc("drive")}<span><b>${esc(x.name)}</b><small>${x.parent ? "in " + esc(x.parent) : ""}</small></span></button>`).join("")
+        : `<span class="muted">No folder found that billing@ can see. Share the folder with billing@phdproperties.realestate, or paste its link below.</span>`;
+      box.querySelectorAll("[data-hit]").forEach(b => b.onclick = () => dfSet(p, L[+b.dataset.hit], draw));
+    }catch(e){ box.innerHTML = `<span class="ib-errline" style="display:block;border-radius:8px">${esc(e.message)}</span>`; }
+  };
+  if(q("use")) q("use").onclick = () => { const id = dfFolderId($("#dfUrl").value); if(!id) return toast("Paste the folder's link from Drive (it has /folders/ in it)"); dfSet(p, {id, url:`https://drive.google.com/drive/folders/${id}`, name:""}, draw); };
+  if(q("change")) q("change").onclick = () => { if(!confirm("Pick a different Drive folder for " + p.name + "?")) return; snapshot(); delete p.driveFolder; commit(); DF.scan = null; DF.plan = null; draw(); };
+  if(q("rescan")) q("rescan").onclick = () => dfScan(p, draw);
+  sh.querySelectorAll("[data-pk]").forEach(c => c.onchange = () => { const k = c.dataset.pk, id = c.dataset.id, L = k === "ren" ? DF.plan.renames.map(x => x.f) : k === "dup" ? DF.plan.dupes : DF.plan.unknown; const x = L.find(y => y.id === id); if(x) x.skip = !c.checked; const sm = sh.querySelector(".sheet-f .muted"); if(sm) sm.textContent = dfSummary(DF.plan); });
+  const go2 = $("#dfGo"); if(go2) go2.onclick = () => dfApply(p, go2, draw);
+}
+function dfSet(p, folder, draw){
+  snapshot(); p.driveFolder = {id:folder.id, url:folder.url || `https://drive.google.com/drive/folders/${folder.id}`, name:folder.name || "", at:todayISO(), by:typeof billWho === "function" ? billWho() : ""};
+  commit(); toast(`${p.name} → ${folder.name || "Drive folder"}`); dfScan(p, draw);
+}
+async function dfApply(p, btn, draw){
+  const pl = DF.plan, f = dfOf(p); if(!pl || !f) return;
+  btn.disabled = true; btn.textContent = "Organizing…";
+  const ren = pl.renames.filter(x => !x.f.skip), dup = pl.dupes.filter(x => !x.skip), rd = pl.unknown.filter(x => !x.skip);
+  const out = [];
+  try{
+    if(ren.length || dup.length){
+      const r = await inboxPost({action:"folderApply", folderId:f.id, renames:ren.map(x => ({id:x.f.id, name:x.name})), dupes:dup.map(x => x.id)});
+      out.push(`${r.renamed} renamed`); if(r.moved) out.push(`${r.moved} duplicate${r.moved === 1 ? "" : "s"} set aside`);
+      if(r.errors && r.errors.length) out.push(`${r.errors.length} couldn't be changed`);
+    }
+    // the transactions point at their file, under its new name
+    snapshot();
+    ren.forEach(x => { x.t.receipt = x.name; if(!x.t.link) x.t.link = x.f.url; });       // a link already there (a Nickel receipt, QuickBooks) is kept
+    pl.links.forEach(x => { if(!x.t.link) x.t.link = x.f.url; if(!x.t.receipt) x.t.receipt = x.f.name; });
+    commit();
+    if(pl.links.length) out.push(`${pl.links.length} linked`);
+    // unknown files: read a few at a time, they wait in the inbox
+    let read = 0;
+    for(let i = 0; i < rd.length; i += 5){
+      btn.textContent = `Reading ${Math.min(i + 5, rd.length)} of ${rd.length}…`;
+      const r = await inboxPost({action:"folderRead", folderId:f.id, propertyId:p.id, propertyName:p.name, fileIds:rd.slice(i, i + 5).map(x => x.id)});
+      (r.results || []).forEach(x => { if(x.item){ read++; if(!INBOX.items.some(y => y.id === x.item.id)) INBOX.items.unshift(x.item); } });
+    }
+    if(rd.length) out.push(`${read} sent to the Receipt inbox`);
+    renderNav();
+    toast(out.join(" · ") || "Done");
+    await dfScan(p, draw);
+  }catch(e){ toast(e.message); btn.disabled = false; btn.textContent = "Organize"; }
+}
+/* ---------- approved receipts land in the property's folder, named the same way ---------- */
+(function(){
+  const base = inboxApprove;
+  inboxApprove = async function(it, openAfter){
+    const d = INBOX.draft[it.id], p = d && S.properties.find(x => x.id === d.propId), f = dfOf(p);
+    if(!f) return base(it, openAfter);
+    // send the decision with the folder: wrap inboxPost for this one call
+    const post0 = inboxPost; let txnId = null;
+    inboxPost = async body => {
+      if(body && body.action === "decide" && body.id === it.id && body.decision === "approved"){
+        const t = p.transactions.find(x => x.id === body.txnId);
+        if(t){ body = Object.assign({}, body, {folderId:f.id, fileName:dfName(p, t, dfExt(it.file_name, ""))}); txnId = t.id; }
+        const r = await post0(body);
+        const t2 = t && p.transactions.find(x => x.id === t.id);
+        if(t2){
+          if(r.duplicateOf){ t2.link = r.duplicateOf.url; t2.receipt = r.duplicateOf.name; toast(`Already in ${f.name || "the Drive folder"} — linked to ${r.duplicateOf.name}`); }
+          else if(r.file){ t2.link = r.file.url; t2.receipt = r.file.name; }
+          else if(r.fileError) toast(r.fileError);
+          commit();
+        }
+        return r;
+      }
+      return post0(body);
+    };
+    try{ return await base(it, openAfter); } finally { inboxPost = post0; }
+  };
+})();
+/* ---------- the Settings card ---------- */
+(function(){
+  const base = pgSettings;
+  pgSettings = function(){
+    base();
+    const p = P(), f = dfOf(p), g = $("#view .grid2"); if(!g) return;
+    const c = elm("div", "card");
+    c.innerHTML = `<div class="card-h"><h3>Drive folder ${helpQ("drivefolder")}</h3></div><div class="card-b">
+      ${f ? `<div class="df-cur" style="margin:0 0 12px">${brandIc("drive")}<div><b>${esc(f.name || "Folder")}</b><a href="${esc(f.url)}" target="_blank" rel="noopener">Open in Drive</a></div></div>
+          <p class="help" style="margin-top:0">Approved receipts are filed here, named <i>date - vendor - what - amount</i>.</p>
+          <button class="btn sm primary" id="dfOpen">Organize the folder</button>`
+        : `<p class="muted" style="margin-top:0;font-size:13px">Connect the folder where this property's invoices, bills, receipts and returns are saved. The console reads what's in it, names everything the same way, sets duplicates aside, and files new receipts there.</p>
+          <button class="btn sm primary" id="dfOpen">Connect a folder</button>`}</div>`;
+    g.insertBefore(c, g.children[3] || null);
+    c.querySelector("#dfOpen").onclick = () => dfSheet(p.id);
+  };
+})();
+
 /* ====================================================================
    QUICKBOOKS — project expenses checked against the books
    --------------------------------------------------------------------
@@ -11675,7 +11905,7 @@ function navTools(){
   } else if(["overview","txns","invoices","scope","settings"].includes(v) && typeof P === "function"){
     drvLoad();
     const p = P(), street = String(p.address || p.name).split(",")[0], o = typeof ownerById === "function" && p.ownerId ? ownerById(p.ownerId) : null;
-    const f = drvFolder(p.name);
+    const f = p.driveFolder && p.driveFolder.url ? {url:p.driveFolder.url, exact:true} : drvFolder(p.name);
     link("drive", f.url, f.exact ? `Receipts for ${p.name} in Drive` : `Search Drive for ${street}`);
     const q = [`"${street}"`].concat(o && o.email ? String(o.email).split(/[,;\s]+/).filter(Boolean) : []).join(" OR ");
     link("gmail", gmailSearch(MAIL_BILL(), q), `Invoice emails for ${street} in ${MAIL_BILL()}`);
@@ -11843,6 +12073,13 @@ const HELP = {
     <ul><li>If the last invoice is short and the one before it hasn't been sent, the two are <b>combined into one final invoice</b> — e.g. $10,000 + $3,200 goes out as $13,200.</li>
       <li>If the one before was already sent, the short one is simply marked <b>final</b> and ready to send.</li>
       <li>Nothing already sent ever changes. <b>Reopen</b> undoes it if more work comes up.</li></ul>`},
+  drivefolder:{t:"The property's Drive folder", b:`<p>Connect the Drive folder where this project's invoices, bills, receipts and returns are saved — once per property (Settings → Drive folder).</p>
+    <ol><li><b>Organize</b> reads the folder and pairs each file with its transaction.</li>
+      <li>Matched files are renamed one way: <i>2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85</i>; returns read <i>RETURN -$192.20</i>.</li>
+      <li>Exact copies go to a <b>Duplicates</b> subfolder — nothing is deleted.</li>
+      <li>Files the console doesn't know yet are read and wait in the <b>Receipt inbox</b>.</li></ol>
+    <p>From then on, receipts you approve for this property are filed in the folder under that name — and if the same file is already there, it isn't added twice.</p>
+    <p class="hp-tip">Google Docs, Sheets, quotes and photos that don't match a cost are left alone. billing@ needs Editor access to the folder.</p>`},
   settings:{t:"Property settings", b:`<ul><li><b>Invoice cap</b> — the most one invoice can total, fee included.</li>
       <li><b>Project fee %</b> — added to every cost billed to the owner (unless it's marked no fee).</li>
       <li><b>Units</b> — each unit gets its own invoices. The default split is used when a cost covers several units.</li>

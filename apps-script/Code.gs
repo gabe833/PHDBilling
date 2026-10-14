@@ -233,6 +233,7 @@ function processDrop_(budget){
 function handleBlob_(blob, o){
   const hash = hash_(blob);
   if(o.seen.has(hash)){                                  // exact same file is already in the inbox
+    if(o.stay) return null;
     if(o.existing){ o.existing.setName('DUPLICATE - ' + o.existing.getName()); o.existing.moveTo(folderByName_(rootFolder_(), CFG.UNFILED_FOLDER)); }
     return null;
   }
@@ -246,6 +247,7 @@ function handleBlob_(blob, o){
     const x = extract_(blob, kind, o.context, o.bodyText, o.side, o.emailText, o.officeNote);
     Object.assign(row, x);
     applyNote_(row, o.officeNote, o.side);
+    if(o.prop && o.prop.id){ row.property_id = o.prop.id; row.property_name = o.prop.name || row.property_name; if(o.prop.reason) row.reason = o.prop.reason; }
     if(o.payTag){ row.pay_status = o.payTag; row.pay_note = (row.pay_note ? row.pay_note + ' · ' : '') + (o.payTag === 'to_pay' ? 'Marked UNPAID in the email' : 'Marked PAID in the email'); }
     if((o.kind === 'paid' || o.kind === 'topay') && !(o.officeNote && noteFlags_(o.officeNote).pay_status)) row.pay_status = o.kind === 'paid' ? 'paid' : 'to_pay';
     if(!x.is_receipt){ row.status = 'rejected'; row.error = 'Did not look like a receipt or invoice' + (x.notes ? ' — ' + x.notes : ''); }
@@ -253,7 +255,8 @@ function handleBlob_(blob, o){
     row.status = 'error';
     row.error = String(err && err.message || err).slice(0, 400);
   }
-  // file it
+  // file it (a file read in its property's own folder stays where it is, under its own name, until it's approved)
+  if(o.stay && o.existing){ row.file_id = o.existing.getId(); row.file_url = o.existing.getUrl(); row.file_name = o.existing.getName(); appendRow_(row); return row; }
   const folder = row.property_name ? folderByName_(rootFolder_(), safeName_(row.property_name)) : folderByName_(rootFolder_(), CFG.UNFILED_FOLDER);
   const name = fileName_(row, blob);
   let file;
@@ -481,8 +484,25 @@ function doPost(e){
         sh.getRange(i + 1, col('status') + 1).setValue(status);
         sh.getRange(i + 1, col('decided_at') + 1).setValue(new Date());
         if(b.txnId) sh.getRange(i + 1, col('txn_id') + 1).setValue(String(b.txnId).slice(0, 40));
-        // re-file the receipt under the property you approved it for
+        // re-file the receipt: into the property's own Drive folder when it has one (never twice), else PHD Receipts/<Property>
         const fid = data[i][col('file_id')];
+        if(fid && status === 'approved' && b.folderId){
+          const out = {ok:true};
+          try{
+            const f = DriveApp.getFileById(fid), target = DriveApp.getFolderById(String(b.folderId));
+            const dup = sameIn_(target, f);
+            if(dup){
+              out.duplicateOf = {id:dup.getId(), url:dup.getUrl(), name:dup.getName()};
+              f.setName(safeName_('DUPLICATE - ' + f.getName())); f.moveTo(folderByName_(rootFolder_(), '_Duplicates'));
+            } else {
+              f.moveTo(target); if(b.fileName) f.setName(safeName_(b.fileName));
+              out.file = {id:f.getId(), url:f.getUrl(), name:f.getName()};
+            }
+            sh.getRange(i + 1, col('property_name') + 1).setValue(b.propertyName || '');
+            sh.getRange(i + 1, col('file_name') + 1).setValue(dup ? dup.getName() : f.getName());
+          }catch(err){ out.fileError = 'Approved, but it could not be filed in the property folder: ' + String(err && err.message || err).slice(0, 200); }
+          return json_(out);
+        }
         if(fid && status === 'approved' && b.propertyName){
           try{
             const f = DriveApp.getFileById(fid);
@@ -515,6 +535,76 @@ function doPost(e){
         context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name, officeNote:String(b.note || '').slice(0, 500)});
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
+    }
+    if(b.action === 'folderFind'){
+      // folders billing@ can see whose name contains the words, e.g. "27 Smith"
+      const q = String(b.q || '').replace(/['\\]/g, ' ').trim().slice(0, 60);
+      if(!q) return json_({ok:true, folders:[]});
+      const out = [], it = DriveApp.searchFolders("title contains '" + q + "' and trashed = false");
+      while(it.hasNext() && out.length < 25){
+        const f = it.next(); let parent = '';
+        try{ const ps = f.getParents(); if(ps.hasNext()) parent = ps.next().getName(); }catch(e){}
+        out.push({id:f.getId(), name:f.getName(), url:f.getUrl(), parent});
+      }
+      return json_({ok:true, folders:out});
+    }
+    if(b.action === 'folderScan'){
+      // everything in a property's folder (and its subfolders), with a fingerprint wherever two files are the same size
+      const root = DriveApp.getFolderById(String(b.folderId));
+      const me = Session.getEffectiveUser().getEmail();
+      let canEdit = false;
+      try{ const a = root.getAccess(me); canEdit = a === DriveApp.Permission.OWNER || a === DriveApp.Permission.EDIT || a === DriveApp.Permission.ORGANIZER; }catch(e){}
+      const files = [], walk = (fo, path, depth) => {
+        const it = fo.getFiles();
+        while(it.hasNext() && files.length < 400){
+          const f = it.next(), mime = f.getMimeType();
+          files.push({id:f.getId(), name:f.getName(), url:f.getUrl(), mime, size:f.getSize(), created:f.getDateCreated().toISOString().slice(0, 10), path, google:/^application\/vnd\.google-apps/.test(mime)});
+        }
+        if(depth < 2){ const sub = fo.getFolders(); while(sub.hasNext()){ const s2 = sub.next(); walk(s2, (path ? path + ' / ' : '') + s2.getName(), depth + 1); } }
+      };
+      walk(root, '', 0);
+      const bySize = {};
+      files.forEach(f => { if(!f.google && f.size) (bySize[f.size] = bySize[f.size] || []).push(f); });
+      Object.keys(bySize).forEach(k => { if(bySize[k].length > 1) bySize[k].forEach(f => { try{ f.hash = hash_(DriveApp.getFileById(f.id).getBlob()); }catch(e){} }); });
+      // what the receipt inbox already knows about these files
+      const known = {};
+      readRows_().forEach(row => { if(row.file_id) known[String(row.file_id)] = {status:String(row.status || ''), txn:String(row.txn_id || ''), id:String(row.id)}; });
+      files.forEach(f => { if(known[f.id]) f.inbox = known[f.id]; });
+      return json_({ok:true, folder:{id:root.getId(), name:root.getName(), url:root.getUrl(), canEdit}, files, capped:files.length >= 400});
+    }
+    if(b.action === 'folderApply'){
+      // rename files and set duplicates aside — only files inside this folder (or its subfolders), never deleted
+      const root = DriveApp.getFolderById(String(b.folderId)), rootId = root.getId();
+      const inside = f => { const seen = {}; let ps = f.getParents(), n = 0;
+        while(ps.hasNext() && n++ < 20){ const p = ps.next(); if(p.getId() === rootId) return true; if(seen[p.getId()]) break; seen[p.getId()] = 1; ps = p.getParents(); }
+        return false; };
+      const res = {ok:true, renamed:0, moved:0, errors:[]};
+      let dupF = null;
+      (Array.isArray(b.renames) ? b.renames : []).slice(0, 300).forEach(x => {
+        try{ const f = DriveApp.getFileById(String(x.id)); if(!inside(f)) throw new Error('not in this folder'); const nm = safeName_(String(x.name || '')); if(nm && nm !== f.getName()){ f.setName(nm); res.renamed++; } }
+        catch(e){ res.errors.push((x.name || x.id) + ': ' + String(e && e.message || e).slice(0, 120)); }
+      });
+      (Array.isArray(b.dupes) ? b.dupes : []).slice(0, 300).forEach(id => {
+        try{ const f = DriveApp.getFileById(String(id)); if(!inside(f)) throw new Error('not in this folder'); dupF = dupF || folderByName_(root, 'Duplicates'); f.moveTo(dupF); res.moved++; }
+        catch(e){ res.errors.push(id + ': ' + String(e && e.message || e).slice(0, 120)); }
+      });
+      return json_(res);
+    }
+    if(b.action === 'folderRead'){
+      // read receipts already sitting in a property's folder; they stay there and wait in the inbox for approval
+      const root = DriveApp.getFolderById(String(b.folderId));
+      ensureHeaders_();
+      const seen = seenHashes_(), out = [];
+      (Array.isArray(b.fileIds) ? b.fileIds : []).slice(0, 5).forEach(id => {
+        try{
+          const f = DriveApp.getFileById(String(id)), blob = f.getBlob();
+          if(!MIME_OK[normMime_(blob)]){ out.push({id, skipped:'not a PDF or photo'}); return; }
+          const row = handleBlob_(blob, {source:'drive', subject:f.getName(), context:'A file already saved in the property\'s Drive folder "' + root.getName() + '". File name: ' + f.getName(),
+            seen, existing:f, stay:true, side:'projects', officeNote:fileNote_(f.getName()), prop:{id:String(b.propertyId || ''), name:String(b.propertyName || ''), reason:'In the property\'s Drive folder'}});
+          out.push(row ? {id, item:publicRow_(row)} : {id, duplicate:true});
+        }catch(e){ out.push({id, error:String(e && e.message || e).slice(0, 200)}); }
+      });
+      return json_({ok:true, results:out});
     }
     if(b.action === 'describe'){
       // one vendor invoice (from MagicDoor, via the console): say in a line what work was done, for an owner statement
@@ -678,6 +768,18 @@ function normMime_(b){
     if(n.endsWith('.pdf')) m = 'application/pdf'; else if(/\.jpe?g$/.test(n)) m = 'image/jpeg'; else if(n.endsWith('.png')) m = 'image/png';
   }
   return m;
+}
+// a file in this folder with exactly the same content (same size first, then the fingerprint) — or null
+function sameIn_(folder, file){
+  const size = file.getSize(), id = file.getId(); let mine = null;
+  const it = folder.getFiles();
+  while(it.hasNext()){
+    const g = it.next();
+    if(g.getId() === id || g.getSize() !== size) continue;
+    mine = mine || hash_(file.getBlob());
+    try{ if(hash_(g.getBlob()) === mine) return g; }catch(e){}
+  }
+  return null;
 }
 function hash_(blob){
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, blob.getBytes())
