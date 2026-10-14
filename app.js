@@ -8649,17 +8649,21 @@ const dfOf = p => p && p.driveFolder && p.driveFolder.id ? p.driveFolder : null;
 const dfStreet = p => String(p.address || p.name || "").split(",")[0].replace(/\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|ct|court|blvd|way|cir|circle)\b\.?/gi, "").replace(/\s+/g, " ").trim();
 const dfMoney = c => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
 const dfClean = s => String(s || "").replace(/[\\/:*?"<>|#%]+/g, "-").replace(/\s+/g, " ").trim();
-const dfExt = (name, mime) => { const m = String(name || "").match(/\.([a-z0-9]{2,5})$/i); return m ? "." + m[1].toLowerCase() : mime === "application/pdf" ? ".pdf" : /image\/(jpe?g)/.test(mime || "") ? ".jpg" : /image\/png/.test(mime || "") ? ".png" : ""; };
-const dfBase = n => String(n || "").replace(/\.[a-z0-9]{2,5}$/i, "").trim().toLowerCase();
+const dfExt = (name, mime) => { const m = String(name || "").match(/\.(pdf|jpe?g|png|gif|webp|heic|tiff?|txt|docx?|xlsx?|csv)$/i); return m ? "." + m[1].toLowerCase() : mime === "application/pdf" ? ".pdf" : /image\/(jpe?g)/.test(mime || "") ? ".jpg" : /image\/png/.test(mime || "") ? ".png" : ""; };
+const dfBase = n => String(n || "").replace(/\.(pdf|jpe?g|png|gif|webp|heic|tiff?|txt|docx?|xlsx?|csv)$/i, "").trim().toLowerCase();
 // the one way every receipt is named: date - vendor - what (unit) - amount
 function dfName(p, t, ext){
   const amt = cents(t.amount), unit = p.units.length > 1 ? (t.scope && t.scope.type === "split" ? "Split" : ((p.units.find(u => u.id === (t.scope || {}).unit) || {}).name || "")) : "";
-  const what = dfClean(String(t.desc || "Receipt").replace(/\s+—\s+return$/i, "")).slice(0, 70);
-  return [t.date || todayISO(), dfClean(t.vendor || "Vendor").slice(0, 40), what + (unit ? ` (${dfClean(unit)})` : ""), (amt < 0 ? "RETURN " : "") + dfMoney(amt)].join(" - ") + (ext || "");
+  const head = `${t.date || todayISO()} - ${dfClean(String(t.vendor || "Vendor").replace(/,?\s+(inc|llc|l\.l\.c|co|corp|ltd)\.?$/i, "")).slice(0, 40)} - `, tail = `${unit ? ` (${dfClean(unit)})` : ""} - ${amt < 0 ? "RETURN " : ""}${dfMoney(amt)}${ext || ""}`;
+  // the whole name stays under 120 characters: only the description is shortened, at a word, so the amount and type always survive
+  let what = dfClean(String(t.desc || "Receipt").replace(/\s+—\s+return$/i, ""));
+  const room = 118 - head.length - tail.length;
+  if(what.length > room){ what = what.slice(0, Math.max(12, room)); const sp = what.lastIndexOf(" "); if(sp > 12) what = what.slice(0, sp); what = what.replace(/[\s,&(—-]+$/, ""); const dash = Math.max(what.lastIndexOf(" — "), what.lastIndexOf(" - ")); if(dash > 12 && what.length - dash < 14) what = what.slice(0, dash); }
+  return head + what + tail;
 }
 /* ---------- pair the folder's files with this property's transactions ---------- */
 function dfPlan(p, scan){
-  const T = (p.transactions || []).filter(t => !t.feeFor && !(t.inv && t.vendor === "PHD Inventory"));
+  const T = (p.transactions || []).filter(t => !t.feeFor && !t.inv && t.vendor !== "PHD Inventory");      // fee lines and inventory use have no receipt of their own
   const used = new Set(), plan = {renames:[], ok:[], dupes:[], unknown:[], other:[], inInbox:[], noFile:[], links:[], add:[]};
   const files = scan.files.filter(f => !/^duplicates\b/i.test(f.path || ""));
   // exact copies: keep the one a transaction already points at (else the oldest), set the rest aside

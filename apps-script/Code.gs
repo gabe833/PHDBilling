@@ -495,7 +495,7 @@ function doPost(e){
               out.duplicateOf = {id:dup.getId(), url:dup.getUrl(), name:dup.getName()};
               f.setName(safeName_('DUPLICATE - ' + f.getName())); f.moveTo(folderByName_(rootFolder_(), '_Duplicates'));
             } else {
-              f.moveTo(target); if(b.fileName) f.setName(safeName_(b.fileName));
+              f.moveTo(target); if(b.fileName) f.setName(fileNm_(b.fileName));
               out.file = {id:f.getId(), url:f.getUrl(), name:f.getName()};
             }
             sh.getRange(i + 1, col('property_name') + 1).setValue(b.propertyName || '');
@@ -581,7 +581,7 @@ function doPost(e){
       const res = {ok:true, renamed:0, moved:0, errors:[]};
       let dupF = null;
       (Array.isArray(b.renames) ? b.renames : []).slice(0, 300).forEach(x => {
-        try{ const f = DriveApp.getFileById(String(x.id)); if(!inside(f)) throw new Error('not in this folder'); const nm = safeName_(String(x.name || '')); if(nm && nm !== f.getName()){ f.setName(nm); res.renamed++; } }
+        try{ const f = DriveApp.getFileById(String(x.id)); if(!inside(f)) throw new Error('not in this folder'); const nm = fileNm_(String(x.name || '')); if(nm && nm !== f.getName()){ f.setName(nm); res.renamed++; } }
         catch(e){ res.errors.push((x.name || x.id) + ': ' + String(e && e.message || e).slice(0, 120)); }
       });
       (Array.isArray(b.dupes) ? b.dupes : []).slice(0, 300).forEach(id => {
@@ -610,7 +610,7 @@ function doPost(e){
           if(blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('file is over 25 MB');
           const dup = sameBlobIn_(root, blob);
           if(dup){ res.duplicateOf = {id:dup.getId(), url:dup.getUrl(), name:dup.getName()}; }
-          else { const f = root.createFile(blob.setName(safeName_(String(x.name || blob.getName() || 'Receipt')))); res.file = {id:f.getId(), url:f.getUrl(), name:f.getName()}; }
+          else { const f = root.createFile(blob.setName(fileNm_(String(x.name || blob.getName() || 'Receipt')))); res.file = {id:f.getId(), url:f.getUrl(), name:f.getName()}; }
         }catch(e){ res.error = /access|permission|not found|no item/i.test(String(e && e.message || e)) ? 'billing@ can\'t open the original file — share it (or its folder) with billing@' : String(e && e.message || e).slice(0, 160); }
         out.push(res);
       });
@@ -830,6 +830,13 @@ function rootFolder_(){
 function folderByName_(parent, name){
   const it = parent.getFoldersByName(name);
   return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+// a file name for Drive that keeps its extension when it has to be shortened
+function fileNm_(s){
+  const clean = String(s || '').replace(/[\\/:*?"<>|#%]+/g, '-').replace(/\s+/g, ' ').trim() || 'Receipt';
+  if(clean.length <= 150) return clean;
+  const m = clean.match(/(\.[a-z0-9]{2,5})$/i), ext = m ? m[1] : '';
+  return clean.slice(0, 150 - ext.length).trim() + ext;
 }
 function safeName_(s){ return String(s || '').replace(/[\\/:*?"<>|#%]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Receipt'; }
 function fileName_(r, blob){
