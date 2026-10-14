@@ -392,7 +392,7 @@ const blankOwner = () => { const o = {}; OWNER_FIELDS.forEach(k => o[k] = ""); r
 function cleanOwner(o){ OWNER_FIELDS.forEach(k => { if(typeof o[k] !== "string") o[k] = o[k] == null ? "" : String(o[k]); }); if(!o.id) o.id = uid(); return o; }
 function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = "MagicDoor sync"; }
 const commit = () => {}, toast = () => {};
-function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee"}; }
+function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee", reimbursement:"reimbursement (PHD)"}; }
 function mdExactWant(g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
@@ -401,7 +401,7 @@ function mdExactWant(g){
   const rentPaid = Math.min(ownerPaid, r2(Math.max(0, rent - credits))), otherPaid = r2(Math.min(other, ownerPaid - rentPaid));
   const settled = paid >= phdCharged;          // PHD's charges count once the payment covers them
   return {rentDue:rent || null, rentReceived:paid > 0 ? r2(rentPaid) : null, otherIncome:otherPaid > 0 ? otherPaid : null,
-    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null,
+    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null, reimbursement:settled && g.phd ? r2(g.phd) : null,
     pending:r2(g.pending)};
 }
 function mdExactMonths(p, L, curM, out){
