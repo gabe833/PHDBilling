@@ -214,7 +214,8 @@ const PMCore = (function(){
     return {id:"all", combined:true, count:ls.length, rent:sum("rent"), balance:sum("balance"), depositPaid:sum("depositPaid"), depositDue:sum("depositDue"),
       pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
       start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
-      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut))};
+      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut)),
+      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
@@ -391,6 +392,32 @@ const blankOwner = () => { const o = {}; OWNER_FIELDS.forEach(k => o[k] = ""); r
 function cleanOwner(o){ OWNER_FIELDS.forEach(k => { if(typeof o[k] !== "string") o[k] = o[k] == null ? "" : String(o[k]); }); if(!o.id) o.id = uid(); return o; }
 function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = "MagicDoor sync"; }
 const commit = () => {}, toast = () => {};
+function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee"}; }
+function mdExactWant(g){
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
+  const phdCharged = r2((Number(g.filters) || 0) + (Number(g.lateFee) || 0) + (Number(g.applications) || 0) + (Number(g.phd) || 0));
+  const phdPaid = Math.min(paid, phdCharged), ownerPaid = r2(Math.max(0, paid - phdPaid));
+  const rentPaid = Math.min(ownerPaid, r2(Math.max(0, rent - credits))), otherPaid = r2(Math.min(other, ownerPaid - rentPaid));
+  const settled = paid >= phdCharged;          // PHD's charges count once the payment covers them
+  return {rentDue:rent || null, rentReceived:paid > 0 ? r2(rentPaid) : null, otherIncome:otherPaid > 0 ? otherPaid : null,
+    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null,
+    pending:r2(g.pending)};
+}
+function mdExactMonths(p, L, curM, out){
+  [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
+    const g = L.months[mm], rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
+    if(!g || !rr || rr.locked || rr.detailOnly || rr.deleted || mt.closed) return;
+    const want = mdExactWant(g), was = rr.md || {};
+    Object.keys(mdExactLabels()).forEach(k => {
+      const v = want[k]; if(v == null) return;
+      const cur = rr[k], has = PMCore.has(cur);
+      if(has && cents(cur) === cents(v)){ if(was[k] == null || cents(was[k]) !== cents(v)) out.exact.push({p, row:rr, k, from:cur, to:v, quiet:true}); return; }
+      const mine = !has || (was[k] != null && cents(cur) === cents(was[k])) || (k === "rentReceived" && rr.mdFilled && !was.rentReceived) || (k === "rentDue" && was[k] == null);
+      (mine ? out.exact : out.diffs).push({p, row:rr, k, from:has ? cur : "", to:v, pending:want.pending});
+    });
+  });
+}
 function mdLinks(){ if(!S.mdLinks) S.mdLinks = {links:{}, ignore:{}, auto:true, appliedAt:"", log:[]}; S.mdLinks.links = S.mdLinks.links || {}; S.mdLinks.ignore = S.mdLinks.ignore || {}; S.mdLinks.log = S.mdLinks.log || []; S.mdLinks.skip = S.mdLinks.skip || {}; return S.mdLinks; }
 function mdRowCount(pid){ let n = 0; for(const r of Object.values(pmState().rows)) if(r.propertyId === pid && !r.deleted) n++; return n; }
 function mdReady(){ return !!(S.md && Array.isArray(S.md.units)); }
@@ -439,9 +466,9 @@ function mdProjectMatch(p, li, b, used){
   return null;
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -457,6 +484,8 @@ function mdPlan(){
       const lastDue = Number((pmRow(curM, p.id) || pmRow(PMCore.monthAdd(curM, -1), p.id) || {}).rentDue) || 0;
       if(fee && L.rent > fee && !(lastDue && cents(L.rent) === cents(lastDue))) rentNet = Math.round((L.rent - fee) * 100) / 100; else fee = 0;
     }
+    const LG = L && L.months && L.months[curM];
+    if(LG && Number(LG.rent) > 0){ rentNet = Number(LG.rent); fee = building ? 0 : Number(LG.filters) || 0; if(fee && Number(p.monthlyFilters) > 0) fee = 0; }
     const put = (k, v, label) => { if(v == null || v === "") return; if(String(p[k] ?? "") !== String(v)) ch[k] = {from:p[k] ?? "", to:v, label}; };
     if(L && building){
       if(p.status !== "active") ch.status = {from:p.status, to:"active", label:"status", since:today};
@@ -489,10 +518,11 @@ function mdPlan(){
     if(Object.keys(ch).length) out.props.push({p, ch, md:m});
     // this month's rent, when MagicDoor shows it paid in full
     const r = pmRow(curM, p.id);
-    if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
+    if(L && L.months) mdExactMonths(p, L, curM, out);
+    else if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
       out.rows.push({p, row:r, amount:Number(r.rentDue), lastPayment:L.lastPayment});
     // the filter fee paid with that rent (PHD income)
-    if(fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
+    if(!(L && L.months) && fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
       out.filters.push({p, row:r, amount:fee});
     // vendor bills and owner distributions for open months (this one and last), when this property is the only one on that MagicDoor property
     if(!m.property || (x.linkedPerMdProp[m.property.id] || 0) > 1) return;
@@ -650,6 +680,12 @@ function mdApply(opts){
   plan.rows.forEach(({p, row, amount, lastPayment}) => {
     row.rentReceived = amount; row.mdFilled = lastPayment || today;
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
+  });
+  (plan.exact || []).forEach(({p, row, k, from, to, quiet}) => {
+    row[k] = to; row.md = Object.assign({}, row.md, {[k]:to, at:today});
+    if(k === "rentReceived") row.mdFilled = row.mdFilled || today;
+    if(typeof pmTouch === "function") pmTouch(row);
+    if(!quiet) lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} ${mdExactLabels()[k]} ${PMCore.has(from) ? usd(cents(from)) + " → " : ""}${usd(cents(to))} (MagicDoor ledger)`});
   });
   (plan.filters || []).forEach(({p, row, amount}) => {
     row.filters = amount;

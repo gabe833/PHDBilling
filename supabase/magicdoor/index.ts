@@ -189,6 +189,29 @@ function cleanRenewal(x: Obj) {
   const newRent = ((x.recurringChargeChanges as Obj[]) || []).reduce((a, c) => a + (N(c.newAmount) || 0), 0);
   return { id: S(x.id), leaseId: S(x.leaseId), propertyId: S(x.propertyId), unitId: S(x.unitId), status: S(x.status), newEnd: D(x.newEndDate), finalized: B(x.finalized), newRent: newRent || null };
 }
+// A lease ledger, summed by month (amounts only — no tenant, bank or payment-method details):
+//   rent        rent charged (Rent Income)            other     other charges the owner keeps
+//   filters / lateFee / applications / phd           charges PHD keeps (MagicDoor "company" charges and late fees)
+//   credits     credits given to the tenant           paid      payments that cleared    pending   payments still processing
+function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string) {
+  const out: Record<string, Record<string, number>> = {};
+  const names: Record<string, string> = { ...accounts };
+  ((body.chartOfAccounts as Obj[]) || []).forEach((a) => { names[S(a.id)] = S(a.name); });
+  const add = (m: string, k: string, v: number) => { const o = out[m] = out[m] || {}; o[k] = Math.round(((o[k] || 0) + v) * 100) / 100; };
+  for (const e of ((body.entries as Obj[]) || [])) {
+    const m = S(D(e.transactionDate) || "").slice(0, 7); if (!m || m < from) continue;
+    const st = S(e.status).toLowerCase(), type = S(e.type), amt = Math.abs(N(e.amount) || 0);
+    if (!amt || /void|deleted|cancel|reversed/.test(st)) continue;
+    const acct = names[S(((e.chartOfAccountIds as unknown[]) || [])[0])] || "";
+    if (type === "payment") { if (st === "settled" || st === "paid" || st === "completed") add(m, "paid", amt); else if (!/fail|return|declin/.test(st)) add(m, "pending", amt); continue; }
+    if (type === "credit") { add(m, "credits", amt); continue; }
+    if (type === "lateFee" || /late/i.test(acct)) { add(m, "lateFee", amt); continue; }
+    if (type !== "charge") continue;
+    if (B(e.companyCharge)) add(m, /filter|hvac/i.test(acct + " " + S(e.description)) ? "filters" : /applic/i.test(acct) ? "applications" : "phd", amt);
+    else add(m, S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other", amt);
+  }
+  return out;
+}
 const nameOf = (v: Obj) => S(v.name || v.companyName || v.displayName) || personName(v);
 
 async function sync() {
@@ -269,11 +292,30 @@ async function sync() {
     return out;
   };
   const keepEnded = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);   // ended leases kept 120 days (deposit returns)
+  const kept = leases.map(cleanLease).filter((l) => !l.draft && (!l.ended || (l.end && l.end >= keepEnded))).map(withReports);
+  // each lease's own ledger, month by month, so the console's numbers are MagicDoor's exact ones
+  const ledgerFrom = (() => { const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 3); return d.toISOString().slice(0, 7); })();
+  let ledgersRead = 0, ledgerFails = 0;
+  {
+    const queue = kept.filter((l) => !l.ended || (l.end && l.end >= ledgerFrom + "-01"));
+    const worker = async () => {
+      while (queue.length) {
+        const l = queue.shift()!;
+        try {
+          const r = await mdGet(`/company-app/leases/${encodeURIComponent(S(l.id))}/charges/ledger`);
+          if (r.status !== 200) { ledgerFails++; continue; }
+          (l as Obj).months = ledgerMonths(r.body as Obj, accounts, ledgerFrom); ledgersRead++;
+        } catch { ledgerFails++; }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    if (ledgerFails) notes.push(`Lease ledgers: ${ledgerFails} couldn't be read`);
+  }
   const snap = {
     v: 1, syncedAt: new Date().toISOString(),
     properties: props.map(cleanProperty),
     units: units.map(cleanUnit),
-    leases: leases.map(cleanLease).filter((l) => !l.draft && (!l.ended || (l.end && l.end >= keepEnded))).map(withReports),
+    leases: kept,
     owners: owners.map(cleanOwner),
     fees: Object.entries(feeMap).map(([k, amount]) => { const [propertyId, month] = k.split("|"); return { propertyId, month, amount }; }),
     bills, distributions: dists, renewals, staff,
@@ -283,7 +325,7 @@ async function sync() {
   await saveSnapshot(snap);
   let applied: unknown = null;
   try { applied = await applyToConsole(snap); } catch (e) { notes.push("Updating the console: " + String((e as Error).message || e)); }
-  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, lateLeases: Object.keys(late).length, prepaidLeases: Object.keys(prepaid).length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
+  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, lateLeases: Object.keys(late).length, ledgers: ledgersRead, prepaidLeases: Object.keys(prepaid).length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
 }
 
 // one document, shared/magicdoor, written with the service key (the console only reads it)

@@ -4106,7 +4106,8 @@ const PMCore = (function(){
     return {id:"all", combined:true, count:ls.length, rent:sum("rent"), balance:sum("balance"), depositPaid:sum("depositPaid"), depositDue:sum("depositDue"),
       pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
       start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
-      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut))};
+      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut)),
+      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
@@ -5800,10 +5801,40 @@ function mdProjectMatch(p, li, b, used){
   }
   return null;
 }
+/* The month's numbers straight from MagicDoor's lease ledger (open months only: this one and last):
+   rent charged, the owner's share of what cleared, other owner charges, and PHD's own charges (filters,
+   late fees, applications) once they're paid. A field MagicDoor filled before is kept in step; one a person
+   typed is never changed — a difference is listed for you to look at instead. */
+function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee"}; }
+function mdExactWant(g){
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
+  const phdCharged = r2((Number(g.filters) || 0) + (Number(g.lateFee) || 0) + (Number(g.applications) || 0) + (Number(g.phd) || 0));
+  const phdPaid = Math.min(paid, phdCharged), ownerPaid = r2(Math.max(0, paid - phdPaid));
+  const rentPaid = Math.min(ownerPaid, r2(Math.max(0, rent - credits))), otherPaid = r2(Math.min(other, ownerPaid - rentPaid));
+  const settled = paid >= phdCharged;          // PHD's charges count once the payment covers them
+  return {rentDue:rent || null, rentReceived:paid > 0 ? r2(rentPaid) : null, otherIncome:otherPaid > 0 ? otherPaid : null,
+    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null,
+    pending:r2(g.pending)};
+}
+function mdExactMonths(p, L, curM, out){
+  [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
+    const g = L.months[mm], rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
+    if(!g || !rr || rr.locked || rr.detailOnly || rr.deleted || mt.closed) return;
+    const want = mdExactWant(g), was = rr.md || {};
+    Object.keys(mdExactLabels()).forEach(k => {
+      const v = want[k]; if(v == null) return;
+      const cur = rr[k], has = PMCore.has(cur);
+      if(has && cents(cur) === cents(v)){ if(was[k] == null || cents(was[k]) !== cents(v)) out.exact.push({p, row:rr, k, from:cur, to:v, quiet:true}); return; }
+      const mine = !has || (was[k] != null && cents(cur) === cents(was[k])) || (k === "rentReceived" && rr.mdFilled && !was.rentReceived) || (k === "rentDue" && was[k] == null);
+      (mine ? out.exact : out.diffs).push({p, row:rr, k, from:has ? cur : "", to:v, pending:want.pending});
+    });
+  });
+}
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -5819,6 +5850,8 @@ function mdPlan(){
       const lastDue = Number((pmRow(curM, p.id) || pmRow(PMCore.monthAdd(curM, -1), p.id) || {}).rentDue) || 0;
       if(fee && L.rent > fee && !(lastDue && cents(L.rent) === cents(lastDue))) rentNet = Math.round((L.rent - fee) * 100) / 100; else fee = 0;
     }
+    const LG = L && L.months && L.months[curM];
+    if(LG && Number(LG.rent) > 0){ rentNet = Number(LG.rent); fee = building ? 0 : Number(LG.filters) || 0; if(fee && Number(p.monthlyFilters) > 0) fee = 0; }
     const put = (k, v, label) => { if(v == null || v === "") return; if(String(p[k] ?? "") !== String(v)) ch[k] = {from:p[k] ?? "", to:v, label}; };
     if(L && building){
       if(p.status !== "active") ch.status = {from:p.status, to:"active", label:"status", since:today};
@@ -5851,10 +5884,11 @@ function mdPlan(){
     if(Object.keys(ch).length) out.props.push({p, ch, md:m});
     // this month's rent, when MagicDoor shows it paid in full
     const r = pmRow(curM, p.id);
-    if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
+    if(L && L.months) mdExactMonths(p, L, curM, out);
+    else if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
       out.rows.push({p, row:r, amount:Number(r.rentDue), lastPayment:L.lastPayment});
     // the filter fee paid with that rent (PHD income)
-    if(fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
+    if(!(L && L.months) && fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
       out.filters.push({p, row:r, amount:fee});
     // vendor bills and owner distributions for open months (this one and last), when this property is the only one on that MagicDoor property
     if(!m.property || (x.linkedPerMdProp[m.property.id] || 0) > 1) return;
@@ -6020,6 +6054,12 @@ function mdApply(opts){
     row.rentReceived = amount; row.mdFilled = lastPayment || today;
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
   });
+  (plan.exact || []).forEach(({p, row, k, from, to, quiet}) => {
+    row[k] = to; row.md = Object.assign({}, row.md, {[k]:to, at:today});
+    if(k === "rentReceived") row.mdFilled = row.mdFilled || today;
+    if(typeof pmTouch === "function") pmTouch(row);
+    if(!quiet) lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} ${mdExactLabels()[k]} ${PMCore.has(from) ? usd(cents(from)) + " → " : ""}${usd(cents(to))} (MagicDoor ledger)`});
+  });
   (plan.filters || []).forEach(({p, row, amount}) => {
     row.filters = amount;
     if(typeof pmTouch === "function") pmTouch(row);
@@ -6122,7 +6162,7 @@ function pgPmMd(){
 
   // automatic updates + log
   const org = mdOrganizePlan(), orgN = mdOrganizeCount();
-  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length, pend = plan.props.length + plan.rows.length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
+  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length, pend = plan.props.length + plan.rows.length + (plan.exact || []).filter(x => !x.quiet).length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
@@ -6238,6 +6278,8 @@ function mdPreviewSheet(plan){
     ${plan.owners.length ? `<div class="label">New owners</div>${plan.owners.map(o => `<div class="md-log-l">${esc(o.name)} <span class="muted">${esc(o.email || "")}</span></div>`).join("")}` : ""}
     ${plan.props.length ? `<div class="label" style="margin-top:12px">Properties</div>${plan.props.map(({p, ch}) => `<div class="md-pv"><b>${esc(p.name)}</b>${Object.entries(ch).map(([k, c]) =>
       `<div class="md-pv-r"><span>${esc(c.label)}</span><span class="muted">${esc(k === "ownerId" ? "none" : k === "rent" ? usd(cents(c.from || 0)) : String(c.from || "—"))}</span><span>→ ${esc(k === "ownerId" ? (c.to.name || "") : k === "rent" ? usd(cents(c.to)) : String(c.to))}</span></div>`).join("")}</div>`).join("")}` : ""}
+    ${(plan.exact || []).filter(x => !x.quiet).length ? `<div class="label" style="margin-top:12px">From MagicDoor's ledger</div>${plan.exact.filter(x => !x.quiet).map(x => `<div class="md-pv-r"><span>${esc(x.p.name)} · ${esc(monthLabel(x.row.month))}</span><span class="muted">${esc(mdExactLabels()[x.k])}${PMCore.has(x.from) ? " " + usd(cents(x.from)) : ""}</span><span class="num">→ ${usd(cents(x.to))}</span></div>`).join("")}` : ""}
+    ${(plan.diffs || []).length ? `<div class="label" style="margin-top:12px">Typed by hand, different in MagicDoor — not changed</div>${plan.diffs.map(x => `<div class="md-pv-r"><span>${esc(x.p.name)} · ${esc(monthLabel(x.row.month))}</span><span class="muted">${esc(mdExactLabels()[x.k])} ${usd(cents(x.from))}</span><span class="num">MagicDoor ${usd(cents(x.to))}</span></div>`).join("")}<p class="help">Change the number on the month's row if MagicDoor is right.</p>` : ""}
     ${plan.rows.length ? `<div class="label" style="margin-top:12px">Rent to record</div>${plan.rows.map(r => `<div class="md-pv-r"><span>${esc(r.p.name)}</span><span class="muted">${r.lastPayment ? "paid " + esc(fdateS(r.lastPayment)) : "credit"}</span><span class="num">${usd(cents(r.amount))}</span></div>`).join("")}` : ""}
     ${(plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length) ? `<div class="label" style="margin-top:12px">Bills edited in MagicDoor</div>${[
         ...plan.memos.map(x => [x.p.name, `${x.it.vendor || ""} · “${x.memo}”`, x.it.amount]),
