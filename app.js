@@ -3723,6 +3723,7 @@ function inboxCard(it){
         <label class="switchbox"><input type="checkbox" data-f="credit" ${d.credit ? "checked" : ""}> Refund / return — reduces the next open invoice</label>
         ${prop ? `<div class="f2"><label class="fld"><span>Who pays for it ${helpQ("inboxWho")}</span><select data-f="billTo">${Object.entries(IB_BILLTO).map(([k, l]) => `<option value="${k}" ${d.billTo === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           ${d.billTo === "contractor" ? `<label class="fld"><span>Contractor or vendor</span><input type="text" data-f="party" value="${esc(d.party || "")}" placeholder="Who pays it back"></label>` : `<div class="ib-bt muted">${IB_BILLTO_HELP[d.billTo] || ""}</div>`}</div>` : ""}
+        ${prop && typeof dfOf === "function" && dfOf(prop) ? `<label class="switchbox"><input type="checkbox" data-f="toFolder" ${d.toFolder !== false ? "checked" : ""}> File it in the Drive folder <span class="muted">(${esc(dfOf(prop).name || "the property's folder")})</span></label>` : ""}
         ${prop && !d.credit ? `<label class="switchbox"><input type="checkbox" data-f="toPay" ${d.toPay ? "checked" : ""}> The vendor still needs to be paid — keep it on the unpaid list${d.toPay ? ` <input type="date" data-f="due" value="${esc(d.due)}" title="Due" style="margin-left:8px">` : ""}</label>` : ""}
       </div>
       <div class="ib-side">
@@ -8817,7 +8818,7 @@ async function dfApply(p, btn, draw){
   const base = inboxApprove;
   inboxApprove = async function(it, openAfter){
     const d = INBOX.draft[it.id], p = d && S.properties.find(x => x.id === d.propId), f = dfOf(p);
-    if(!f) return base(it, openAfter);
+    if(!f || d.toFolder === false) return base(it, openAfter);      // not connected, or you chose to leave the file where it is
     // send the decision with the folder: wrap inboxPost for this one call
     const post0 = inboxPost; let txnId = null;
     inboxPost = async body => {
