@@ -240,7 +240,8 @@ Connect the folder where a project's invoices, bills, receipts and returns are s
   - **Rename** — every matched file gets one name: `2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85.pdf`; returns read `RETURN -$192.20`. The transaction's receipt name follows, and it gets a link to the file if it had none (a Nickel or QuickBooks link already there is kept).
   - **Duplicates** — exact copies (same content, whatever the name) go to a **Duplicates** subfolder. Nothing is ever deleted.
   - **Not in the console yet** — PDFs (and any photos you tick) are read and wait in the **Receipt inbox**, already set to that property.
-  - **Transactions with no file in this folder** — what's still missing.
+  - **Add to the folder** — transactions already in the console whose receipt isn't in the folder: a **copy** of the receipt they're linked to (in another Drive folder, or the Nickel payment receipt) is added under the same naming. The original isn't moved. If the same file is already in the folder it's not added again. billing@ needs access to the original (files in your own Drive: share their folder with billing@).
+  - **Transactions with no receipt anywhere** — no file linked at all; add one to the folder or the transaction.
   - Google Docs/Sheets, quotes and anything that doesn't match a cost are left alone.
 - From then on, a receipt **approved** for that property is filed in its folder under that name. If the same file is already there, it isn't added again — the transaction links to the copy in the folder.
 - The receipt inbox (billing@) does the Drive work, so **billing@ needs Editor access**: share the parent folder (e.g. *PHD PM Properties*) with billing@phdproperties.realestate once. Needs the updated `apps-script/Code.gs` (paste, Save, Deploy → Manage deployments → ✏️ → New version).

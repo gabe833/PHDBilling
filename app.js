@@ -8660,7 +8660,7 @@ function dfName(p, t, ext){
 /* ---------- pair the folder's files with this property's transactions ---------- */
 function dfPlan(p, scan){
   const T = (p.transactions || []).filter(t => !t.feeFor && !(t.inv && t.vendor === "PHD Inventory"));
-  const used = new Set(), plan = {renames:[], ok:[], dupes:[], unknown:[], other:[], inInbox:[], noFile:[], links:[]};
+  const used = new Set(), plan = {renames:[], ok:[], dupes:[], unknown:[], other:[], inInbox:[], noFile:[], links:[], add:[]};
   const files = scan.files.filter(f => !/^duplicates\b/i.test(f.path || ""));
   // exact copies: keep the one a transaction already points at (else the oldest), set the rest aside
   const byHash = {};
@@ -8700,8 +8700,20 @@ function dfPlan(p, scan){
     if(/^image\//.test(f.mime || "")) f.skip = true;      // photos are often not receipts: ticked by hand
     plan.unknown.push(f);
   });
-  plan.noFile = T.filter(t => !used.has(t.id) && t.status !== "excluded" && !(t.link && /drive\.google|docs\.google/.test(t.link)));
+  // transactions whose receipt isn't in the folder: copy it in from wherever it is (Drive, or a Nickel receipt), else it's missing
+  T.filter(t => !used.has(t.id) && Number(t.amount)).forEach(t => {
+    const src = dfSource(t);
+    if(src) plan.add.push({t, src, name:dfName(p, t, src.ext)}); else plan.noFile.push(t);
+  });
   return plan;
+}
+// where a transaction's receipt can be copied from: a Drive file, or a Nickel receipt PDF
+function dfSource(t){
+  const id = dfFolderIdOfFile(t.link);
+  if(id && /drive\.google|docs\.google/.test(t.link)) return {fileId:id, ext:/docs\.google\.com\/(document|spreadsheets)/.test(t.link) ? ".pdf" : dfExt(t.receipt, "") || ".pdf", from:"Drive"};
+  const nk = [t.link, t.nickelPay && t.nickelPay.url].find(u => /^https:\/\/([a-z0-9-]+\.)*nickelpayments\.com\//i.test(String(u || "")));
+  if(nk) return {url:nk, ext:".pdf", from:"Nickel"};
+  return null;
 }
 const dfFolderIdOfFile = link => { const m = String(link || "").match(/\/d\/([A-Za-z0-9_-]{15,})|[?&]id=([A-Za-z0-9_-]{15,})/); return m ? (m[1] || m[2]) : ""; };
 
@@ -8721,7 +8733,7 @@ async function dfSheet(propId){
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     dfWire(p, sh, draw);
   };
-  DF.redraw = draw; DF.err = "";
+  DF.redraw = draw; DF.err = ""; DF.failed = [];
   draw(); openPanel();
   if(dfOf(p)) dfScan(p, draw);
 }
@@ -8740,20 +8752,22 @@ function dfPlanHTML(p, f, sc, pl){
   const fl = x => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a>${x.path ? ` <span class="muted">in ${esc(x.path)}</span>` : ""}`;
   const tx = t => `<span class="muted">${esc(t.vendor || "")} · ${usd(cents(t.amount))} · ${esc(fdateS(t.date))}</span>`;
   return `<div class="df-cur">${brandIc("drive")}<div><b>${esc(sc.folder.name)}</b><a href="${esc(sc.folder.url)}" target="_blank" rel="noopener">Open in Drive</a></div><button class="btn sm ghost" data-df="rescan">Read again</button><button class="btn sm ghost" data-df="change">Change</button></div>
+    ${DF.failed && DF.failed.length ? `<div class="ib-errline" style="border-radius:8px;margin-bottom:12px"><b>Couldn't add ${DF.failed.length}:</b><br>${DF.failed.slice(0, 8).map(esc).join("<br>")}</div>` : ""}
     ${!sc.folder.canEdit ? `<div class="ib-errline" style="border-radius:8px;margin-bottom:12px">billing@ can only view this folder, so it can't rename or file anything. Share the folder (or its parent) with billing@phdproperties.realestate as <b>Editor</b>, then press Read again.</div>` : ""}
-    <div class="df-stats"><div><b>${sc.files.length}</b><span>files</span></div><div><b>${pl.ok.length + pl.renames.length}</b><span>matched to transactions</span></div><div><b>${pl.dupes.length}</b><span>duplicates</span></div><div><b>${pl.noFile.length}</b><span>transactions with no file here</span></div></div>
+    <div class="df-stats"><div><b>${sc.files.length}</b><span>files</span></div><div><b>${pl.ok.length + pl.renames.length}</b><span>matched to transactions</span></div><div><b>${pl.dupes.length}</b><span>duplicates</span></div><div><b>${pl.add.length + pl.noFile.length}</b><span>transactions with no file here</span></div></div>
     ${sec("Rename", pl.renames.length, pl.renames.map(x => row(chk("ren", x.f.id, true), `${fl(x.f)}<div class="df-to">→ ${esc(x.name)}</div>${tx(x.t)}`)).join(""), "so every file reads date - vendor - what - amount")}
     ${sec("Duplicates", pl.dupes.length, pl.dupes.map(x => row(chk("dup", x.id, true), `${fl(x)}<div class="muted">Same file as ${esc(x.dupeOf.name)}</div>`)).join(""), "moved to a “Duplicates” subfolder — nothing is deleted")}
     ${sec("Not in the console yet", pl.unknown.length, pl.unknown.map(x => row(chk("read", x.id, !x.skip), fl(x) + (/^image\//.test(x.mime || "") ? ` <span class="muted">· photo — tick it if it's a receipt</span>` : ""))).join(""), "ticked ones are read and wait in the Receipt inbox to approve")}
     ${sec("Waiting in the Receipt inbox", pl.inInbox.length, pl.inInbox.map(x => row("", fl(x))).join(""))}
-    ${sec("Transactions with no file in this folder", pl.noFile.length, `<div class="df-miss">${pl.noFile.slice(0, 40).map(t => `<div>${esc(t.vendor || "—")} · ${esc(t.desc || "")} <span class="num">${usd(cents(t.amount))}</span> <span class="muted">${esc(fdateS(t.date))}</span></div>`).join("")}${pl.noFile.length > 40 ? `<div class="muted">and ${pl.noFile.length - 40} more</div>` : ""}</div>`, "add their receipt to the folder, or attach a link on the transaction")}
+    ${sec("Add to the folder", pl.add.length, pl.add.map(x => row(chk("add", x.t.id, !x.skip), `<b>${esc(x.name)}</b><div class="muted">a copy of the ${x.src.from === "Nickel" ? "Nickel payment receipt" : `<a href="${esc(x.t.link)}" target="_blank" rel="noopener">receipt linked to it</a>`} — the original stays where it is</div>`)).join(""), "receipts on transactions that aren't in this folder yet — copied in, skipped if the same file is already there")}
+    ${sec("Transactions with no receipt anywhere", pl.noFile.length, `<div class="df-miss">${pl.noFile.slice(0, 40).map(t => `<div>${esc(t.vendor || "—")} · ${esc(t.desc || "")} <span class="num">${usd(cents(t.amount))}</span> <span class="muted">${esc(fdateS(t.date))}</span></div>`).join("")}${pl.noFile.length > 40 ? `<div class="muted">and ${pl.noFile.length - 40} more</div>` : ""}</div>`, "add their receipt to the folder, or attach a link on the transaction")}
     ${sec("Already organized", pl.ok.length, `<p class="muted" style="margin:0;font-size:12.5px">${pl.ok.length} file${pl.ok.length === 1 ? " is" : "s are"} named the right way and linked to ${pl.ok.length === 1 ? "its" : "their"} transaction.</p>`)}
     ${sec("Left alone", pl.other.length, `<p class="muted" style="margin:0;font-size:12.5px">${pl.other.map(x => esc(x.name)).slice(0, 12).join(" · ")}${pl.other.length > 12 ? " …" : ""}</p>`, "Docs, Sheets and other files aren't touched")}
     ${sc.capped ? `<p class="help">Only the first 400 files were read.</p>` : ""}`;
 }
-const dfLeft = pl => ({ren:pl.renames.filter(x => !x.f.skip).length, dup:pl.dupes.filter(x => !x.skip).length, read:pl.unknown.filter(x => !x.skip).length, link:pl.links.length});
-const dfCount = pl => { const n = dfLeft(pl); return n.ren + n.dup + n.read + n.link; };
-const dfSummary = pl => { const n = dfLeft(pl); return [n.ren && `${n.ren} to rename`, n.dup && `${n.dup} duplicate${n.dup === 1 ? "" : "s"}`, n.read && `${n.read} to read`, n.link && `${n.link} to link`].filter(Boolean).join(" · ") || "Nothing to change"; };
+const dfLeft = pl => ({ren:pl.renames.filter(x => !x.f.skip).length, dup:pl.dupes.filter(x => !x.skip).length, read:pl.unknown.filter(x => !x.skip).length, link:pl.links.length, add:pl.add.filter(x => !x.skip).length});
+const dfCount = pl => { const n = dfLeft(pl); return n.ren + n.dup + n.read + n.link + n.add; };
+const dfSummary = pl => { const n = dfLeft(pl); return [n.add && `${n.add} to add`, n.ren && `${n.ren} to rename`, n.dup && `${n.dup} duplicate${n.dup === 1 ? "" : "s"}`, n.read && `${n.read} to read`, n.link && `${n.link} to link`].filter(Boolean).join(" · ") || "Nothing to change"; };
 async function dfScan(p, draw){
   const f = dfOf(p); if(!f) return;
   DF.busy = true; DF.err = ""; draw();
@@ -8776,7 +8790,7 @@ function dfWire(p, sh, draw){
   if(q("use")) q("use").onclick = () => { const id = dfFolderId($("#dfUrl").value); if(!id) return toast("Paste the folder's link from Drive (it has /folders/ in it)"); dfSet(p, {id, url:`https://drive.google.com/drive/folders/${id}`, name:""}, draw); };
   if(q("change")) q("change").onclick = () => { if(!confirm("Pick a different Drive folder for " + p.name + "?")) return; snapshot(); delete p.driveFolder; commit(); DF.scan = null; DF.plan = null; draw(); };
   if(q("rescan")) q("rescan").onclick = () => dfScan(p, draw);
-  sh.querySelectorAll("[data-pk]").forEach(c => c.onchange = () => { const k = c.dataset.pk, id = c.dataset.id, L = k === "ren" ? DF.plan.renames.map(x => x.f) : k === "dup" ? DF.plan.dupes : DF.plan.unknown; const x = L.find(y => y.id === id); if(x) x.skip = !c.checked; const sm = sh.querySelector(".sheet-f .muted"); if(sm) sm.textContent = dfSummary(DF.plan); });
+  sh.querySelectorAll("[data-pk]").forEach(c => c.onchange = () => { const k = c.dataset.pk, id = c.dataset.id, L = k === "ren" ? DF.plan.renames.map(x => x.f) : k === "dup" ? DF.plan.dupes : k === "add" ? DF.plan.add.map(x => Object.assign(x, {id:x.t.id})) : DF.plan.unknown; const x = L.find(y => y.id === id); if(x) x.skip = !c.checked; const sm = sh.querySelector(".sheet-f .muted"); if(sm) sm.textContent = dfSummary(DF.plan); });
   const go2 = $("#dfGo"); if(go2) go2.onclick = () => dfApply(p, go2, draw);
 }
 function dfSet(p, folder, draw){
@@ -8800,6 +8814,27 @@ async function dfApply(p, btn, draw){
     pl.links.forEach(x => { if(!x.t.link) x.t.link = x.f.url; if(!x.t.receipt) x.t.receipt = x.f.name; });
     commit();
     if(pl.links.length) out.push(`${pl.links.length} linked`);
+    // receipts on transactions that aren't in the folder: copy them in
+    const add = pl.add.filter(x => !x.skip);
+    let added = 0, same = 0; const failed = [];
+    for(let i = 0; i < add.length; i += 8){
+      btn.textContent = `Adding ${Math.min(i + 8, add.length)} of ${add.length}…`;
+      const part = add.slice(i, i + 8);
+      const r = await inboxPost({action:"folderAdd", folderId:f.id, items:part.map(x => ({txnId:x.t.id, fileId:x.src.fileId || "", url:x.src.url || "", name:x.name}))});
+      snapshot();
+      (r.results || []).forEach(res => {
+        const x = part.find(y => y.t.id === res.txnId); if(!x) return;
+        const got = res.file || res.duplicateOf;
+        if(got){ if(res.file) added++; else same++;
+          x.t.receipt = got.name;
+          if(x.src.fileId || !x.t.link) x.t.link = got.url;          // a Drive link moves to the folder copy; a Nickel receipt link is kept
+        } else failed.push(`${x.t.vendor || ""} ${usd(cents(x.t.amount))}: ${res.error || "not added"}`);
+      });
+      commit();
+    }
+    if(add.length) out.push(`${added} added to the folder${same ? ` (${same} already there)` : ""}`);
+    DF.failed = failed;
+    if(failed.length) out.push(`${failed.length} couldn't be added — listed in the panel`);
     // unknown files: read a few at a time, they wait in the inbox
     let read = 0;
     for(let i = 0; i < rd.length; i += 5){
@@ -12078,7 +12113,8 @@ const HELP = {
     <ol><li><b>Organize</b> reads the folder and pairs each file with its transaction.</li>
       <li>Matched files are renamed one way: <i>2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85</i>; returns read <i>RETURN -$192.20</i>.</li>
       <li>Exact copies go to a <b>Duplicates</b> subfolder — nothing is deleted.</li>
-      <li>Files the console doesn't know yet are read and wait in the <b>Receipt inbox</b>.</li></ol>
+      <li>Files the console doesn't know yet are read and wait in the <b>Receipt inbox</b>.</li>
+      <li>Transactions whose receipt isn't in the folder get a <b>copy</b> added from wherever it is (another Drive folder, or the Nickel payment receipt) — skipped if the same file is already there.</li></ol>
     <p>From then on, receipts you approve for this property are filed in the folder under that name — and if the same file is already there, it isn't added twice.</p>
     <p class="hp-tip">Google Docs, Sheets, quotes and photos that don't match a cost are left alone. billing@ needs Editor access to the folder.</p>`},
   settings:{t:"Property settings", b:`<ul><li><b>Invoice cap</b> — the most one invoice can total, fee included.</li>

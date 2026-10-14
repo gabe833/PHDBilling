@@ -590,6 +590,32 @@ function doPost(e){
       });
       return json_(res);
     }
+    if(b.action === 'folderAdd'){
+      // put a COPY of each transaction's receipt in the property's folder (the original stays where it is), never twice
+      const root = DriveApp.getFolderById(String(b.folderId)), out = [];
+      (Array.isArray(b.items) ? b.items : []).slice(0, 10).forEach(x => {
+        const res = {txnId:String(x.txnId || '')};
+        try{
+          let blob;
+          if(x.fileId){
+            const src = DriveApp.getFileById(String(x.fileId));
+            if(/^application\/vnd\.google-apps/.test(src.getMimeType())) blob = src.getAs('application/pdf');
+            else blob = src.getBlob();
+          } else if(x.url && /^https:\/\/([a-z0-9-]+\.)*nickelpayments\.com\//i.test(String(x.url))){
+            const resp = UrlFetchApp.fetch(String(x.url), {muteHttpExceptions:true, followRedirects:true});
+            const ct = String(resp.getHeaders()['Content-Type'] || resp.getHeaders()['content-type'] || '').toLowerCase();
+            if(resp.getResponseCode() !== 200 || !/pdf|image\//.test(ct)) throw new Error('the link did not return a PDF (' + resp.getResponseCode() + ')');
+            blob = resp.getBlob();
+          } else throw new Error('no file to copy');
+          if(blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('file is over 25 MB');
+          const dup = sameBlobIn_(root, blob);
+          if(dup){ res.duplicateOf = {id:dup.getId(), url:dup.getUrl(), name:dup.getName()}; }
+          else { const f = root.createFile(blob.setName(safeName_(String(x.name || blob.getName() || 'Receipt')))); res.file = {id:f.getId(), url:f.getUrl(), name:f.getName()}; }
+        }catch(e){ res.error = /access|permission|not found|no item/i.test(String(e && e.message || e)) ? 'billing@ can\'t open the original file — share it (or its folder) with billing@' : String(e && e.message || e).slice(0, 160); }
+        out.push(res);
+      });
+      return json_({ok:true, results:out});
+    }
     if(b.action === 'folderRead'){
       // read receipts already sitting in a property's folder; they stay there and wait in the inbox for approval
       const root = DriveApp.getFolderById(String(b.folderId));
@@ -777,6 +803,18 @@ function sameIn_(folder, file){
     const g = it.next();
     if(g.getId() === id || g.getSize() !== size) continue;
     mine = mine || hash_(file.getBlob());
+    try{ if(hash_(g.getBlob()) === mine) return g; }catch(e){}
+  }
+  return null;
+}
+// the same content already in this folder, for a file that isn't in Drive yet — or null
+function sameBlobIn_(folder, blob){
+  const size = blob.getBytes().length; let mine = null;
+  const it = folder.getFiles();
+  while(it.hasNext()){
+    const g = it.next();
+    if(g.getSize() !== size) continue;
+    mine = mine || hash_(blob);
     try{ if(hash_(g.getBlob()) === mine) return g; }catch(e){}
   }
   return null;
