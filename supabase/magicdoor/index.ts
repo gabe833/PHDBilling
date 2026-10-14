@@ -249,12 +249,31 @@ async function sync() {
       if (staff.length) break;
     } catch { /* not available on this account */ }
   }
+  // MagicDoor's own late-rent and prepaid numbers, by lease. Only lease fields are read from these reports —
+  // the tenant records they also carry (with SSN and date of birth) are never touched.
+  const late: Record<string, Obj> = {}, prepaid: Record<string, number> = {};
+  const leaseRows = (body: unknown) => (((body as Obj)?.groups as Obj[]) || []).flatMap((g) => ((g.items as Obj[]) || []).map((it) => ({ l: (it.lease || {}) as Obj, it })));
+  try {
+    const r = await mdGet("/company-app/reports/delinquency");
+    if (r.status === 200) for (const { l, it } of leaseRows(r.body)) if (l.id) late[S(l.id)] = { pastDueDays: N(l.pastDueDays) || 0, unpaidSince: D(l.earliestUnpaidBillDueDate), balance: N(l.balance), postedBalance: N(l.postedBalance), lateBills: N(it.delinquencyBillsCount) || 0, lastPayment: D(l.lastPaymentDate) };
+    else notes.push("Delinquency report answered " + r.status);
+  } catch (e) { notes.push("Delinquency report: " + String((e as Error).message || e)); }
+  try {
+    const r = await mdGet("/company-app/reports/prepaid-rent");
+    if (r.status === 200) for (const { l } of leaseRows(r.body)) if (l.id && (N(l.balance) || 0) < 0) prepaid[S(l.id)] = Math.abs(N(l.balance) || 0);
+  } catch (e) { notes.push("Prepaid rent report: " + String((e as Error).message || e)); }
+  const withReports = (l: ReturnType<typeof cleanLease>) => {
+    const x = late[l.id], out: Obj = { ...l };
+    if (x) { out.pastDueDays = x.pastDueDays; out.unpaidSince = x.unpaidSince || l.unpaidSince; if (x.balance != null) out.balance = x.balance; if (x.postedBalance != null) out.postedBalance = x.postedBalance; out.lateBills = x.lateBills; if (x.lastPayment) out.lastPayment = x.lastPayment; out.delinquent = true; }
+    if (prepaid[l.id]) out.prepaid = prepaid[l.id];
+    return out;
+  };
   const keepEnded = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);   // ended leases kept 120 days (deposit returns)
   const snap = {
     v: 1, syncedAt: new Date().toISOString(),
     properties: props.map(cleanProperty),
     units: units.map(cleanUnit),
-    leases: leases.map(cleanLease).filter((l) => !l.draft && (!l.ended || (l.end && l.end >= keepEnded))),
+    leases: leases.map(cleanLease).filter((l) => !l.draft && (!l.ended || (l.end && l.end >= keepEnded))).map(withReports),
     owners: owners.map(cleanOwner),
     fees: Object.entries(feeMap).map(([k, amount]) => { const [propertyId, month] = k.split("|"); return { propertyId, month, amount }; }),
     bills, distributions: dists, renewals, staff,
@@ -264,7 +283,7 @@ async function sync() {
   await saveSnapshot(snap);
   let applied: unknown = null;
   try { applied = await applyToConsole(snap); } catch (e) { notes.push("Updating the console: " + String((e as Error).message || e)); }
-  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
+  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, lateLeases: Object.keys(late).length, prepaidLeases: Object.keys(prepaid).length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
 }
 
 // one document, shared/magicdoor, written with the service key (the console only reads it)

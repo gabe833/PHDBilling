@@ -6252,7 +6252,7 @@ function mdPreviewSheet(plan){
 }
 
 async function mdProbeSheet(){
-  mdSheet("Check more MagicDoor data", `<p class="muted" style="margin-top:0">Rent payments, vendor bills, owner distributions and work orders aren't in the sync yet because MagicDoor doesn't document where they live. This checks the likely addresses and lists field names and types only — no names, addresses or amounts.</p>
+  mdSheet("Check more MagicDoor data", `<p class="muted" style="margin-top:0">The sync already reads properties, units, leases, owners, management fees, vendor bills, owner distributions, renewals, and MagicDoor's late-rent and prepaid reports. This checks other addresses MagicDoor might keep data at, and lists field names and types only — no names, addresses or amounts.</p>
     <div id="mdProbeOut"><p class="muted">Checking… this takes up to a minute.</p></div>`, [["Close", closeSheet, "ghost"]]);
   try{
     const d = await mdCall("probe");
