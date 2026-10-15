@@ -57,10 +57,11 @@ async function mdToken(): Promise<string> {
   tokenUntil = Date.now() + Math.max(60, Number(d.expiresIn || 900) - 60) * 1000;
   return token;
 }
-async function mdGet(path: string): Promise<{ status: number; body: unknown; text: string }> {
+const ACCOUNTING = "https://accounting.magicdoor.com/company-portal";   // owner statements and other reports live here
+async function mdGet(path: string, base = API): Promise<{ status: number; body: unknown; text: string }> {
   for (let attempt = 0; ; attempt++) {
     const t = await mdToken();
-    const r = await fetch(API + path, { headers: { Authorization: "Bearer " + t, Accept: "application/json" }, signal: AbortSignal.timeout(25000) });
+    const r = await fetch(base + path, { headers: { Authorization: "Bearer " + t, Accept: "application/json" }, signal: AbortSignal.timeout(25000) });
     if (r.status === 401 && attempt === 0) { token = ""; continue; }                     // token expired early: sign in again once
     if ((r.status === 429 || r.status >= 500) && attempt < 2) { await new Promise((ok) => setTimeout(ok, 1500 * (attempt + 1))); continue; }
     const text = await r.text();
@@ -212,6 +213,38 @@ function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string)
   }
   return out;
 }
+// One property's owner statement for one month — MagicDoor's own account of what the owner is paid.
+// Amounts only: tenants' names are never kept (their rent is one total); vendor names and descriptions are.
+//   begin / end    cash held for the owner at the start / end of the month
+//   rentIn         what tenants paid that counts for the owner this month
+//   fees           management fees (PM fee, and a leasing fee when there is one)
+//   bills / admin  vendor bills paid, and PHD's admin-fee lines on them
+//   dists          payouts to the owner        other   anything else (owner contributions, refunds), signed
+const r2 = (n: number) => Math.round(n * 100) / 100;
+function cleanStatement(e: Obj) {
+  const s = (e.summary || {}) as Obj;
+  const out = {
+    begin: N(s.beginningCashBalance) || 0, end: N(s.endingCashBalance) || 0, cashIn: N(s.cashIn) || 0, cashOut: N(s.cashOut) || 0,
+    contrib: N(s.ownerContributions) || 0, distTotal: N(s.ownerDistributions) || 0, unpaid: N(s.unpaidBills) || 0, net: N(s.netOwnerFunds),
+    rentIn: 0, fees: [] as number[], bills: [] as { d: string | null; v: string; t: string; a: number }[], admin: [] as { d: string | null; t: string; a: number }[],
+    dists: [] as { d: string | null; a: number }[], other: [] as { d: string | null; k: string; t: string; a: number }[],
+    pre: null as number | null, left: null as number | null,
+  };
+  for (const t of ((e.transactions as Obj[]) || [])) {
+    const k = S(t.entityType), inn = N(t.cashIn) || 0, outv = N(t.cashOut) || 0, party = (t.partyInfo || {}) as Obj, d = D(t.date), desc = S(t.description).slice(0, 160);
+    if (k === "leaseCharge") { out.rentIn = r2(out.rentIn + inn - outv); continue; }
+    if (k === "managementFee") { out.fees.push(r2(outv - inn)); continue; }
+    if (k === "ownerDistribution") { out.dists.push({ d, a: r2(outv - inn) }); continue; }
+    if (k === "vendorBill") {
+      const v = S(party.type) === "vendor" ? S(party.name).slice(0, 80) : "";
+      if (/\badmin(istrative)?\s*fee\b/i.test(desc)) out.admin.push({ d, t: desc, a: r2(outv - inn) });
+      else out.bills.push({ d, v, t: desc, a: r2(outv - inn) });
+      continue;
+    }
+    out.other.push({ d, k, t: S(party.type) === "tenant" ? "" : desc, a: r2(inn - outv) });
+  }
+  return out;
+}
 const nameOf = (v: Obj) => S(v.name || v.companyName || v.displayName) || personName(v);
 
 async function sync() {
@@ -311,6 +344,33 @@ async function sync() {
     await Promise.all([worker(), worker(), worker(), worker()]);
     if (ledgerFails) notes.push(`Lease ledgers: ${ledgerFails} couldn't be read`);
   }
+  // MagicDoor's owner statements, month by month (this one and the four before; the first is only read to tell
+  // rent paid early for a month apart from last month's money not paid out yet)
+  const stmts: Record<string, Record<string, ReturnType<typeof cleanStatement>>> = {};
+  let stmtMonths = 0;
+  {
+    const now = new Date(), ms: string[] = [];
+    for (let i = 4; i >= 0; i--) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); ms.push(d.toISOString().slice(0, 7)); }
+    for (const m of ms) {
+      const [y, mo] = m.split("-").map(Number), last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+      try {
+        const r = await mdGet(`/reports/owner-statement?startDate=${m}-01&endDate=${last}`, ACCOUNTING);
+        if (r.status !== 200) { notes.push(`Owner statement ${m} answered ${r.status}`); continue; }
+        const entries = (((r.body as Obj)?.entries as Obj[]) || []);
+        for (const e of entries) { const pid = S(e.propertyId); if (!pid) continue; (stmts[pid] = stmts[pid] || {})[m] = cleanStatement(e); }
+        stmtMonths++;
+      } catch (e) { notes.push(`Owner statement ${m}: ` + String((e as Error).message || e)); }
+    }
+    // rent paid early counts for the month it's for: what a month starts with, less last month's money still held
+    for (const pid of Object.keys(stmts)) {
+      for (const m of ms.slice(1)) {
+        const st = stmts[pid][m], prev = stmts[pid][ms[ms.indexOf(m) - 1]]; if (!st) continue;
+        const held = prev ? Math.max(0, prev.end) : 0;   // no statement last month: nothing was held
+        st.left = r2(held); st.pre = r2(Math.max(0, st.begin - held));
+      }
+      delete stmts[pid][ms[0]];
+    }
+  }
   const snap = {
     v: 1, syncedAt: new Date().toISOString(),
     properties: props.map(cleanProperty),
@@ -318,14 +378,14 @@ async function sync() {
     leases: kept,
     owners: owners.map(cleanOwner),
     fees: Object.entries(feeMap).map(([k, amount]) => { const [propertyId, month] = k.split("|"); return { propertyId, month, amount }; }),
-    bills, distributions: dists, renewals, staff,
+    bills, distributions: dists, renewals, staff, stmts,
     shapes, notes, took: 0,
   };
   snap.took = Math.round((Date.now() - t0) / 100) / 10;
   await saveSnapshot(snap);
   let applied: unknown = null;
   try { applied = await applyToConsole(snap); } catch (e) { notes.push("Updating the console: " + String((e as Error).message || e)); }
-  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, lateLeases: Object.keys(late).length, ledgers: ledgersRead, prepaidLeases: Object.keys(prepaid).length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
+  return { ok: true, syncedAt: snap.syncedAt, counts: { properties: snap.properties.length, units: snap.units.length, leases: snap.leases.length, lateLeases: Object.keys(late).length, ledgers: ledgersRead, statementMonths: stmtMonths, prepaidLeases: Object.keys(prepaid).length, owners: snap.owners.length, fees: snap.fees.length, bills: bills.length, distributions: dists.length, renewals: renewals.length }, took: snap.took, applied, notes };
 }
 
 // one document, shared/magicdoor, written with the service key (the console only reads it)

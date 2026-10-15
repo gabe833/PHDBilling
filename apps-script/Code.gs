@@ -1201,7 +1201,11 @@ const PMCore = (function(){
     const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
     if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
-    if(has(row.pmFee) && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
+    // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere
+    if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1)
+      flags.push({level:"warn", text:`Doesn't match MagicDoor's owner statement: MagicDoor says ${usd(cents(row.mdNet))}, the console works out ${usd(calcC)} (${usd(Math.abs(calcC - cents(row.mdNet)))} ${calcC > cents(row.mdNet) ? "more" : "less"})`});
+    const mdFee = row.md && has(row.md.pmFee) && cents(row.md.pmFee) === cents(row.pmFee);
+    if(has(row.pmFee) && !mdFee && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
@@ -1347,7 +1351,8 @@ const PMCore = (function(){
     return {id:"all", combined:true, count:ls.length, rent:sum("rent"), balance:sum("balance"), depositPaid:sum("depositPaid"), depositDue:sum("depositDue"),
       pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
       start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
-      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut))};
+      tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut)),
+      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
@@ -1363,19 +1368,80 @@ const PMCore = (function(){
     const twice = t && m.replace(/\s+/g, "") === (t + t).replace(/\s+/g, "");   // a memo pasted in twice
     return ((b && (b.lines || []).length <= 1 && !twice) ? (m || t) : (t || m));
   }
+  /* ---- MagicDoor's owner statements: the month a bill or a payout counts in is the month MagicDoor's owner statement
+     puts it in (cash basis — a bill dated the 28th and paid the 3rd counts the month it was paid), so every month here
+     adds up to what the owner was actually paid. Without statements: the bill date, and the payout date. ---- */
+  const vkey = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const _bm = new WeakMap();
+  function mdStmt(md, mdPropId, month){ const s = md && md.stmts && md.stmts[mdPropId]; return s ? s[month] || null : null; }
+  // bill line id → the statement month it was paid in
+  function mdBillMonths(md, mdPropId){
+    if(!md || !md.stmts || !md.stmts[mdPropId]) return null;
+    let byMd = _bm.get(md); if(!byMd){ byMd = {}; _bm.set(md, byMd); }
+    if(byMd[mdPropId]) return byMd[mdPropId];
+    const st = md.stmts[mdPropId], months = Object.keys(st).sort(), pool = [];
+    months.forEach(m => (st[m].bills || []).forEach(x => pool.push({m, v:vkey(x.v), c:cents(x.a), used:false})));
+    const lines = [];
+    (md.bills || []).forEach(b => { if(b.company || !b.date) return; (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) lines.push({li, b}); }); });
+    lines.sort((x, y) => String(x.b.date).localeCompare(y.b.date));
+    const map = new Map();
+    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7) && (!sameVendor || !e.v || !vkey(b.vendor) || e.v === vkey(b.vendor)));
+    [true, false].forEach(sameVendor => lines.forEach(({li, b}) => { if(map.has(li.id)) return; const e = take(li, b, sameVendor); if(e){ e.used = true; map.set(li.id, e.m); } }));
+    byMd[mdPropId] = map;
+    return map;
+  }
+  // vendor bill lines for one MagicDoor property in one month; company bills and fee/owner accounts left out
   function mdBillLines(md, mdPropId, month){
-    const out = [];
-    (md.bills || []).forEach(b => { if(b.company || !b.date || b.date.slice(0, 7) !== month) return;
-      (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed}); }); });
+    const out = [], paid = mdBillMonths(md, mdPropId);
+    (md.bills || []).forEach(b => { if(b.company || !b.date) return;
+      (b.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !mdIsRepairLine(li, b)) return;
+        const m = (paid && paid.get(li.id)) || b.date.slice(0, 7); if(m !== month) return;
+        out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed, paidIn:paid && paid.get(li.id) || null}); }); });
     return out;
   }
-  // which month an owner distribution pays: from the 20th of a month to the 19th of the next
-  function mdPayoutMonth(date){ const d = +date.slice(8, 10); return d >= 20 ? date.slice(0, 7) : monthAdd(date.slice(0, 7), -1); }
+  // which month an owner payout is for. PHD pays the owner mid-month for that month; a payout in the first days of a
+  // month is for the month before. MagicDoor's statement settles it when it has the payout.
+  function mdPayoutMonth(date){ return +date.slice(8, 10) <= 5 ? monthAdd(date.slice(0, 7), -1) : date.slice(0, 7); }
+  function mdDistMonth(md, mdPropId, date, amount){
+    const st = md && md.stmts && md.stmts[mdPropId];
+    if(st) for(const m of Object.keys(st)){
+      const x = st[m]; if(!(x.dists || []).some(d => d.d === date && cents(d.a) === cents(amount))) continue;
+      // last month's money still held when this month began is paid out first
+      return x.left > 0 && cents(amount) <= cents(x.left) + 1 ? monthAdd(m, -1) : m;
+    }
+    return mdPayoutMonth(date);
+  }
   function mdDistributions(md, mdPropId, month){
     const out = [];
-    (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId === mdPropId && x.date && (!month || mdPayoutMonth(x.date) === month)) out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId}); }));
+    (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !x.date) return;
+      const m = mdDistMonth(md, mdPropId, x.date, li.amount); if(month && m !== month) return;
+      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m}); }));
     return out;
   }
+  /* One month of a MagicDoor owner statement, in the console's terms (all in dollars):
+       recv     rent the owner received for the month (paid early last month + paid this month)
+       pmFee / leasing   MagicDoor's management fees, the PM fee being the one that matches the property's rate
+       bills / admin     repairs paid and PHD's admin fee on them        other   anything else (signed)
+       net      what the owner is owed for the month: MagicDoor's own number                           */
+  function mdStmtMonth(st, prop){
+    if(!st || st.pre == null) return null;
+    const recv = Math.round((st.pre + st.rentIn) * 100) / 100;
+    const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
+    const want = rule.type === "flat" ? cents(rule.amount) : Math.round(cents(recv) * Number(rule.rate || 0) / 100);
+    const fees = (st.fees || []).map(cents).filter(c => c);
+    let pmC = 0, leaseC = 0;
+    if(fees.length){
+      const i = fees.reduce((bi, c, j) => Math.abs(c - want) < Math.abs(fees[bi] - want) ? j : bi, 0);
+      // one fee far above the rate (no rent, or a lease-up month) is a leasing fee
+      if(fees.length === 1 && fees[0] > want * 2 + 5000) leaseC = fees[0];
+      else fees.forEach((c, j) => { if(j === i) pmC += c; else leaseC += c; });
+    }
+    const billsC = (st.bills || []).reduce((a, x) => a + cents(x.a), 0), adminC = (st.admin || []).reduce((a, x) => a + cents(x.a), 0);
+    const otherC = (st.other || []).reduce((a, x) => a + cents(x.a), 0);
+    const netC = cents(recv) - pmC - leaseC - billsC - adminC + otherC;
+    return {recv, pmFee:pmC / 100, leasing:leaseC / 100, bills:billsC / 100, admin:adminC / 100, other:otherC / 100, otherLines:st.other || [], net:netC / 100, unpaid:st.unpaid || 0};
+  }
+
   function mdRenewal(md, leaseId){ return (md.renewals || []).find(r => r.leaseId === leaseId && !r.finalized && /offered|signing|draft|pending/i.test(r.status || "")) || null; }
   function mdFee(md, mdPropId, month){ const f = (md.fees || []).find(x => x.propertyId === mdPropId && x.month === month); return f ? f.amount : null; }
 
@@ -1424,6 +1490,8 @@ const PMCore = (function(){
                detail:`Repairs and fees exceeded rent in ${monthLabel(m)}. It carries into next month automatically, or bill ${own || "the owner"} directly.`, action:"openRow"});
         c.flags.filter(f => f.level === "warn" && /Recorded payout/.test(f.text)).forEach(f =>
           add({key:`mismatch|${p.id}|${m}`, type:"mismatch", level:"info", propId:p.id, month:m, title:`Payout doesn't match the formula · ${p.name}`, detail:f.text, action:"openRow"}));
+        c.flags.filter(f => f.level === "warn" && /^Doesn't match MagicDoor/.test(f.text)).forEach(f =>
+          add({key:`mdstmt|${p.id}|${m}|${Math.round(c.calcC)}`, type:"mismatch", level:"warn", propId:p.id, month:m, title:`Doesn't match MagicDoor · ${p.name}`, detail:f.text.replace(/^Doesn't match MagicDoor's owner statement: /, "") + ` — ${monthLabel(m)}.`, action:"openRow"}));
       });
     });
 
@@ -1506,7 +1574,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdLineMemo, mdBillLines, mdPayoutMonth, mdDistributions, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdLineMemo, mdBillLines, mdBillMonths, mdPayoutMonth, mdDistMonth, mdDistributions, mdStmt, mdStmtMonth, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 /*PMCORE-END*/
 

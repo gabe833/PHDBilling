@@ -122,6 +122,18 @@ Late rent, evictions, deposit returns after a move-out, and PM fees that differ 
 
 ---
 
+
+**Owner statements are the source of truth.** Each sync also reads MagicDoor's owner statement for this month and the three before it. For every property that's one MagicDoor property, the open months are built from it, so they come out exactly as MagicDoor pays the owner:
+- **Rent received**: rent paid early in the month before, plus rent paid this month. So 1 Carriage Ln E's October is $1,879 paid in late September plus $10,736.63 paid in October, which is $12,615.63.
+- **PM fee and leasing fee**: MagicDoor's own amounts. The one matching the property's rate is the PM fee; any other is a leasing fee.
+- **Admin fee**: MagicDoor's admin fee when it isn't 10% of the bills, for example when PHD Handyman work carries no fee.
+- **Bills**: they count in the month MagicDoor paid them. A bill dated the 28th and paid on the 3rd moves to the month it was paid, and each bill is only ever counted once.
+- **Payouts**: they're marked for the month they pay. Oct 15 is October's payout; a payout in the first five days of a month pays the month before.
+- **Other statement lines**, such as an owner contribution or a refund, become one adjustment.
+- **Check**: every open month keeps MagicDoor's bottom line. If the console's own figure ever differs, the month is flagged "Doesn't match MagicDoor's owner statement" on Month close, on the property page and in the Action center. When it matches, the property page says so.
+
+Hand-typed numbers are never overwritten; differences are listed in the sync preview. Closed and imported months aren't changed.
+
 ### 7. Owner statement emails (from pm@)
 Month close → **Email statements** lists one email per property from **pm@phdproperties.realestate**, with the statement attached as a PDF. Open **Preview & edit** on any of them to see exactly what the owner gets and change the wording. Then **Send from pm@**, or **Save as Gmail draft** to send from Gmail yourself. From the list you can **Send N now** for everyone ticked, or **Send draft** for one already waiting in Gmail. Tick "Use this subject and message for every owner statement from now on" to change the standard wording. Sent emails keep the label **AutoDraft/Owner Statements**. Closing a month still makes drafts automatically unless you switch that off.
 
