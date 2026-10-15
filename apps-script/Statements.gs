@@ -45,7 +45,7 @@ function newKey_(){ return Utilities.getUuid().replace(/-/g, '') + Utilities.get
 function doGet(e){
   const p = (e && e.parameter) || {};
   if(!keyOk_(p.token)) return json_({ok:false, error:'unauthorized'});
-  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail(), fromName:CFG.FROM_NAME, signature:signature_(), canSend:true});
+  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail(), fromName:CFG.FROM_NAME, signature:signature_(), canSend:true, multiTo:true});
   return json_({ok:false, error:'unknown action'});
 }
 function doPost(e){
@@ -66,9 +66,13 @@ function makeDrafts_(items, send){
   const me = Session.getEffectiveUser().getEmail(), label = label_();
   const results = list.map(it => {
     try{
-      const to = String(it.to || '').trim();
-      if(!emailOk_(to)) throw new Error('Not a valid email: ' + to);
-      const cc = String(it.cc || '').split(',').map(x => x.trim()).filter(emailOk_).join(',');
+      // one owner can have several statement addresses: toAll lists them all (older consoles send just "to")
+      const toList = String(it.toAll || it.to || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+      const badTo = toList.filter(x => !emailOk_(x));
+      if(!toList.length || badTo.length) throw new Error('Not a valid email: ' + (badTo[0] || String(it.to || '')));
+      const to = toList.join(',');
+      const seen = toList.map(x => x.toLowerCase());
+      const cc = String(it.cc || '').split(',').map(x => x.trim()).filter(x => emailOk_(x) && seen.indexOf(x.toLowerCase()) < 0).join(',');
       const subject = String(it.subject || 'Owner Statement').slice(0, 200);
       const body = String(it.body || '').slice(0, 5000);
       const name = safeName_(String(it.fileName || 'Owner Statement').replace(/\.pdf$/i, '')) + '.pdf';

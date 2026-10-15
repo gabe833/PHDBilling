@@ -42,6 +42,7 @@ function render(){
     pmIncome: ["Property management", "Income", "PHD's management income, month by month"],
     pmBills:  ["Property management", "Bills", ""],
     pmInvoices:["Property management", "Owner invoices", ""],
+    pmStatements:["Property management", "Owner statements", ""],
     pmVendors:["Property management", "Vendors", ""],
     pmPaySetup:["Shared", "Payments", ""],
     payments: ["Shared", "Payments", ""],
@@ -55,7 +56,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -2788,7 +2789,7 @@ const icon = (n, cls) => `<svg class="ic${cls ? " " + cls : ""}" viewBox="0 0 16
    updates every property that bills them. Invoices never merge across
    properties — each property keeps its own cap, fee and numbering.
    ===================================================================== */
-const OWNER_FIELDS = ["name","company","email","phone","address","city","state","zip","method","terms","notes","cc"];
+const OWNER_FIELDS = ["name","company","email","phone","address","city","state","zip","method","terms","notes","cc","stmtTo"];
 const blankOwner = () => { const o = {}; OWNER_FIELDS.forEach(k => o[k] = ""); return o; };
 const ownerKeyName = o => String((o && (o.name || o.company)) || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const ownerHasData = o => !!o && OWNER_FIELDS.some(k => String(o[k] || "").trim());
@@ -2893,6 +2894,7 @@ function ownerCardHTML(o, props, opt){
       <dt>Pays by</dt><dd>${o.method ? esc(o.method) : `<span class="muted">—</span>`}</dd>
       <dt>Terms</dt><dd>${o.terms ? esc(o.terms) : `<span class="muted">—</span>`}</dd>
       ${o.cc ? `<dt>Also send to</dt><dd>${esc(o.cc)}</dd>` : ""}
+      ${o.stmtTo ? `<dt>Owner statements to</dt><dd>${esc(String(o.stmtTo).split(/[,;\s]+/).filter(Boolean).join(", "))}</dd>` : ""}
       ${op.extraKV || ""}
     </dl>
     ${o.email ? `<div style="padding:0 22px 22px;display:flex;gap:8px;flex-wrap:wrap">
@@ -2908,6 +2910,8 @@ function ownerFormHTML(o, footNote){
       <div class="f2">${f("name","Contact name","Jane Doe")}${f("company","Company or entity","Doe Holdings LLC")}</div>
       <div class="f2">${f("email","Email","owner@example.com","email")}${f("phone","Phone","(843) 555-0123","tel")}</div>
       ${f("cc","Also send invoices to","accountant@example.com")}
+      ${(typeof ownerPmProps === "function" && o.id && ownerPmProps(o).length) || (S.ui && S.ui.mode === "pm") ? `<label class="fld"><span>Owner statements go to</span><input type="text" data-own="stmtTo" value="${esc(o.stmtTo)}" placeholder="${esc(o.email || "owner@example.com")}, second@example.com" autocomplete="off">
+        <span class="help">Everyone here gets the monthly owner statement. Separate addresses with commas. Leave blank to use the email above.</span></label>` : ""}
       <div class="sectl" style="margin-top:6px">Billing address</div>
       ${f("address","Street","123 King St")}
       <div class="f3">${f("city","City","Charleston")}${f("state","State","SC")}${f("zip","ZIP","29401")}</div>
@@ -4412,7 +4416,7 @@ function pgPmMonth(){
                 ["›", () => { S.ui.pmMonth = monthAdd(m, 1); persistUi(); render(); }, "ghost"]];
   if(rows.length){
     acts.push(["Export CSV", () => pmExportCsv(m)]);
-    acts.push(["Owner statements", () => pmStatementSheet(m)]);
+    acts.push(["Owner statements", () => { S.ui.stMonth = m; go("pmStatements"); }]);
     { const nd = stmtCandidates(m).filter(x => !x.why && !x.done).length; acts.push([nd ? `Email statements (${nd})` : "Email statements", () => pmStatementMailSheet(m)]); }
     if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
     if(!closed && !mdReady()) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
@@ -6438,14 +6442,18 @@ const stmtAddr = p => (p.address || p.name || "").replace(/\s+/g, " ").trim();
 function stmtFileName(p, m){ return `Owner Statement - ${(p.name || "Property").replace(/\s*#\s*/g, " Unit ").replace(/[\\/:*?"<>|%]+/g, "-")} - ${monthLabel(m)}.pdf`; }
 const stmtEmailOk = e => /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(String(e || "").trim());
 function stmtCcList(o){ return String((o && o.cc) || "").split(/[,;\s]+/).filter(stmtEmailOk); }
+// everyone who gets this owner's statements: "Owner statements go to" on the owner, or their email
+const stmtSplit = s => String(s || "").split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+function stmtToList(o){ if(!o) return []; const l = stmtSplit(o.stmtTo); return l.length ? l : stmtSplit(o.email); }
 function stmtDrafted(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.drafts = mm.drafts || {}; return mm.drafts; }
 // who gets one: every property with a statement line this month, and why one can't be made
 function stmtCandidates(m){
   return pmMonthRows(m).filter(x => !x.row.detailOnly).map(({prop, row}) => {
     const o = prop.ownerId ? ownerById(prop.ownerId) : null;
-    const to = o && String(o.email || "").trim();
-    const why = !o ? "No owner on file" : !to ? "Owner has no email" : !stmtEmailOk(to) ? `Owner email “${to}” doesn't look right` : "";
-    return {p:prop, row, o, to:to || "", cc:stmtCcList(o), first:stmtFirstName(o), why, done:(pmState().meta[m] || {}).drafts && pmState().meta[m].drafts[prop.id]};
+    const list = stmtToList(o), bad = list.filter(e => !stmtEmailOk(e)), good = [...new Set(list.filter(stmtEmailOk).map(e => e.toLowerCase()))];
+    const why = !o ? "No owner on file" : !list.length ? "Owner has no email" : bad.length ? `“${bad[0]}” doesn't look like an email address` : "";
+    const cc = stmtCcList(o).filter(e => !good.includes(e.toLowerCase()));
+    return {p:prop, row, o, to:good.join(", "), toList:good, cc, first:stmtFirstName(o), why, done:(pmState().meta[m] || {}).drafts && pmState().meta[m].drafts[prop.id]};
   }).sort((a, b) => a.p.name.localeCompare(b.p.name, undefined, {numeric:true}));
 }
 
@@ -6515,7 +6523,11 @@ async function stmtMakeDrafts(m, list, opts){
     const items = [];
     for(const x of batch){
       const c = stmtCompose(m, x), extra = attach ? await stmtInvoiceFiles(x.row) : [];
-      items.push({id:x.p.id, to:c.to, cc:String(c.cc || "").split(/[,;\s]+/).filter(stmtEmailOk).join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id, {attach:extra.length > 0}), fileName:stmtFileName(x.p, m), extra});
+      // several recipients: all of them in To (toAll) with the pm@ script that knows it; an older script
+      // takes one To, so the rest ride along in Cc there — everyone still gets it
+      const toL = [...new Set(stmtSplit(c.to).filter(stmtEmailOk).map(e => e.toLowerCase()))];
+      const ccL = [...new Set(toL.slice(1).concat(stmtSplit(c.cc).filter(stmtEmailOk).map(e => e.toLowerCase())))].filter(e => e !== toL[0]);
+      items.push({id:x.p.id, to:toL[0] || "", toAll:toL.join(","), cc:ccL.join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id, {attach:extra.length > 0}), fileName:stmtFileName(x.p, m), extra});
     }
     let res;
     try{ res = await stmtCall({action:opts.send ? "send" : "drafts", items}); }
@@ -6684,7 +6696,9 @@ function stmtEmailSheet(m, pid){
   const keep = () => {
     snapshot();
     const E = stmtEdits(m), addr = stmtAddr(x.p), std = {subject:STMT_SUBJECT(addr, m), body:STMT_BODY(x.first, addr, m)};
-    const e = {to:$("#seTo").value.trim(), cc:$("#seCc").value.trim()};
+    // only what was changed here is kept for this month, so later changes to the owner's addresses still apply
+    const e = {}, toV = $("#seTo").value.trim(), ccV = $("#seCc").value.trim(), norm = v => stmtSplit(v).map(x => x.toLowerCase()).join(",");
+    if(norm(toV) !== norm(x.to)) e.to = toV; if(norm(ccV) !== norm(x.cc.join(", "))) e.cc = ccV;
     if(sub.value !== std.subject) e.subject = sub.value; if(body.value !== std.body) e.body = body.value;
     E[pid] = e;
     if($("#seTpl").checked){
@@ -6836,6 +6850,150 @@ async function stmtDescribe(it){
   const r = await inboxPost({action:"describe", name:f.name, mime:f.mime, data:f.data, vendor:it.vendor || "", amount:it.amount, text:it.memo || ""});
   if(!r.description) throw new Error("The invoice didn't say");
   return r.description;
+}
+
+/* =====================================================================
+   OWNER STATEMENTS PAGE (Property management → Owner statements)
+   One line per property for the month: who it goes to, the payout, and
+   whether it's been sent. Recipients are set per owner — as many
+   addresses as needed — and every statement to that owner uses them.
+   ===================================================================== */
+const STP = {ref:{}};
+function stMonth(){
+  const ms = pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly));
+  if(S.ui.stMonth && (ms.includes(S.ui.stMonth) || S.ui.stMonth === pmCurrentMonth())) return S.ui.stMonth;
+  const cl = ms.filter(mm => (pmState().meta[mm] || {}).closed);   // statements go out for the month just closed
+  return cl[cl.length - 1] || pmCurrentMonth();
+}
+function stState(x){
+  if(x.done && x.done.state === "sent") return "sent";
+  if(x.done) return "draft";
+  if(x.why) return "blocked";
+  return "todo";
+}
+function pgPmStatements(){
+  const P2 = pmState();
+  if(!P2.properties.length) return pmEmpty();
+  const m = stMonth(), meta = P2.meta[m] || {};
+  const months = [...new Set(pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly)).concat([m]))].sort().reverse();
+  const cands = stmtCandidates(m);
+  const by = {todo:[], draft:[], sent:[], blocked:[]}; cands.forEach(x => by[stState(x)].push(x));
+  $("#pgSub").textContent = `${monthLabel(m)} · ${meta.closed ? "month closed" : "month still open"} · sent from ${(stmtConn() || {}).mailbox || "pm@phdproperties.realestate"}`;
+  const nReady = cands.filter(x => !x.why && !x.done).length;
+  actions([["Print all", () => { const g = {}; cands.forEach(x => { const k = x.p.ownerId || "p:" + x.p.id; (g[k] = g[k] || []).push(x.p.id); }); printDoc(pmStatementHTML(m, null, Object.values(g))); }],
+           [nReady ? `Email statements (${nReady})` : "Email statements", () => pmStatementMailSheet(m), "primary"]]);
+  const v = $("#view");
+
+  if(!cands.length){
+    v.appendChild(elm("div", "card", `<div class="empty"><b>No statements for ${monthLabel(m)}</b><p>Statements come from Month close — start the month there and each property gets one.</p></div>`));
+    return;
+  }
+  if(!stmtConn()){
+    const b = elm("div", "pm-banner st-conn");
+    b.innerHTML = `<span>Connect pm@ to email statements from here. Until then you can still print them.</span> <button class="btn sm" type="button">Set up</button>`;
+    b.querySelector("button").onclick = () => pmStatementMailSheet(m);
+    v.appendChild(b);
+  }
+
+  const tiles = elm("div", "card pf-hero");
+  tiles.innerHTML = `
+    <div class="pf-cell"><div class="label">Statements</div><div class="pf-v">${cands.length}</div><div class="pf-note">${monthLabel(m)}</div></div>
+    <div class="pf-cell"><div class="label">Sent</div><div class="pf-v g">${by.sent.length}</div><div class="pf-note">${by.sent.length === cands.length ? "All sent" : `${cands.length - by.sent.length} to go`}</div></div>
+    <div class="pf-cell"><div class="label">Drafts in Gmail</div><div class="pf-v">${by.draft.length}</div><div class="pf-note">${by.draft.length ? "Waiting in pm@ to be sent" : "None waiting"}</div></div>
+    <div class="pf-cell"><div class="label">Not sent yet</div><div class="pf-v a">${by.todo.length}</div><div class="pf-note">${by.todo.length ? "Ready to email" : "Nothing left"}</div></div>
+    <div class="pf-cell"><div class="label">Need an email</div><div class="pf-v"${by.blocked.length ? ' style="color:var(--red)"' : ""}>${by.blocked.length}</div><div class="pf-note">${by.blocked.length ? "Owner or address missing" : "Everyone has one"}</div></div>`;
+  v.appendChild(tiles);
+
+  const f = S.ui.stFilter && by[S.ui.stFilter] ? S.ui.stFilter : "all", q = (S.ui.stQ || "").toLowerCase();
+  const bar = elm("div", "sc-bar"); bar.style.marginTop = "16px";
+  bar.innerHTML = `<select id="stM" class="st-month" aria-label="Statement month">${months.map(mm => `<option value="${mm}" ${mm === m ? "selected" : ""}>${monthLabel(mm)}</option>`).join("")}</select>
+    <div class="sc-seg">${[["all", "All", cands.length], ["todo", "Not sent", by.todo.length], ["draft", "Drafts", by.draft.length], ["sent", "Sent", by.sent.length], ["blocked", "Need an email", by.blocked.length]]
+      .map(([k, l, n]) => `<button data-sf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
+    <div class="sc-q"><input type="text" id="stQ" placeholder="Find a property, owner or email…" value="${esc(S.ui.stQ || "")}"></div>`;
+  v.appendChild(bar);
+  bar.querySelector("#stM").onchange = e => { S.ui.stMonth = e.target.value; persistUi(); render(); };
+  bar.querySelectorAll("[data-sf]").forEach(b => b.onclick = () => { S.ui.stFilter = b.dataset.sf; render(); });
+  const qi = bar.querySelector("#stQ");
+  qi.oninput = () => { S.ui.stQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#stQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 160); };
+
+  const vis = (f === "all" ? cands : by[f]).filter(x => !q || `${x.p.name} ${x.p.address || ""} ${ownerLabel(x.o)} ${x.to} ${x.cc.join(" ")}`.toLowerCase().includes(q));
+  const card = elm("div", "card");
+  const wrap = elm("div", "tbl-wrap"), t = elm("table", "tbl st-tbl");
+  t.innerHTML = `<thead><tr><th>Property</th><th>Goes to</th><th class="r">Owner payout</th><th>Status</th><th></th></tr></thead>`;
+  const tb = elm("tbody");
+  vis.forEach(x => {
+    const st = stState(x), c = pmCalc(x.row, x.p);
+    const tr = elm("tr"); tr.dataset.st = x.p.id;
+    const status = st === "sent" ? `<span class="tag green" title="${esc("Sent to " + (x.done.to || x.to))}">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
+      : st === "draft" ? `<span class="tag gold" title="${esc("Made " + fdateS(String(x.done.at).slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`
+      : st === "blocked" ? `<span class="tag red">${esc(x.why)}</span>` : `<span class="tag grey">Not sent</span>`;
+    const to = x.toList.length ? `<div class="st-to">${x.toList.map(e => `<span>${esc(e)}</span>`).join("")}</div>${x.cc.length ? `<div class="item-s">cc ${esc(x.cc.join(", "))}</div>` : ""}` : `<span class="muted">—</span>`;
+    tr.innerHTML = `<td><div class="item-t">${esc(x.p.name)}</div><div class="item-s">${x.o ? esc(ownerLabel(x.o)) : `<span style="color:var(--red)">No owner on file</span>`}</div></td>
+      <td>${to}</td>
+      <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b></td>
+      <td>${status}</td>
+      <td class="st-acts">${x.o ? `<button class="btn sm ghost" data-strc="${x.o.id}" type="button">Recipients</button>` : `<button class="btn sm" data-pp="${x.p.id}" type="button">Add owner</button>`}
+        <button class="btn sm" data-pv="${x.p.id}" type="button" ${x.why ? "disabled" : ""}>${st === "sent" ? "View" : "Preview & send"}</button>
+        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Open the statement PDF">PDF</button></td>`;
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
+  if(!vis.length) card.appendChild(elm("div", "empty", `<b>Nothing here</b><p>No statements match this filter.</p>`));
+  v.appendChild(card);
+  t.querySelectorAll("[data-strc]").forEach(b => b.onclick = () => stRecipientsSheet(b.dataset.strc));
+  t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
+  t.querySelectorAll("[data-pv]").forEach(b => b.onclick = () => stmtEmailSheet(m, b.dataset.pv));
+  t.querySelectorAll("[data-pdf]").forEach(b => b.onclick = () => printDoc(pmStatementPdfHTML(m, b.dataset.pdf)));
+
+  // ask Gmail once a minute which drafts were sent or deleted
+  if(stmtConn() && Date.now() - (STP.ref[m] || 0) > 60000){
+    STP.ref[m] = Date.now();
+    stmtRefresh(m).then(ch => { if(ch && S.ui.view === "pmStatements") render(); }).catch(() => {});
+  }
+}
+
+/* ---------- who gets one owner's statements ---------- */
+function stRecipientsSheet(oid){
+  const o = ownerById(oid); if(!o) return;
+  let list = stmtToList(o).slice(), cc = stmtCcList(o).join(", ");
+  if(!list.length) list = [""];
+  const props = (typeof ownerPmProps === "function" ? ownerPmProps(o) : []).map(p => p.name);
+  const sh = $("#sheet");
+  const draw = msg => {
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Statement recipients</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(ownerLabel(o) || "Owner")}${props.length ? " · " + esc(props.join(", ")) : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <p class="muted" style="font-size:13.3px;margin-top:0">Everyone listed gets every owner statement for ${props.length === 1 ? "this property" : "this owner's properties"}, all on the To line.</p>
+        ${msg ? `<div class="pm-banner">${msg}</div>` : ""}
+        <div class="rc-list">${list.map((e, i) => `<div class="rc-r"><input type="email" data-rci="${i}" value="${esc(e)}" placeholder="name@example.com" autocomplete="off" aria-label="Email ${i + 1}">
+          <button class="btn sm ghost" data-rm="${i}" type="button" aria-label="Remove" ${list.length === 1 ? "disabled" : ""}>Remove</button></div>`).join("")}</div>
+        <button class="btn sm" id="rcAdd" type="button" style="margin-top:8px">+ Add another address</button>
+        <label class="fld" style="margin-top:18px"><span>Cc (optional)</span><input type="text" id="rcCc" value="${esc(cc)}" placeholder="accountant@example.com">
+          <span class="help">Copied on statements and on project invoices. Separate with commas.</span></label>
+        <p class="help" style="margin:4px 0 0">The owner's main email (${o.email ? esc(o.email) : "none yet"}) is still used for everything else.</p>
+      </div>
+      <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="rcSave">Save</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const grab = () => { list = [...sh.querySelectorAll("[data-rci]")].map(i => i.value.trim()); cc = $("#rcCc").value.trim(); };
+    sh.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { grab(); list.splice(+b.dataset.rm, 1); draw(); });
+    $("#rcAdd").onclick = () => { grab(); list.push(""); draw(); const ins = sh.querySelectorAll("[data-rci]"); ins[ins.length - 1].focus(); };
+    sh.querySelectorAll("[data-rci]").forEach(i => i.onkeydown = e => { if(e.key === "Enter"){ e.preventDefault(); $("#rcSave").click(); } });
+    $("#rcSave").onclick = () => {
+      grab();
+      const clean = [...new Set(list.map(e => e.trim()).filter(Boolean).map(e => e.toLowerCase()))];
+      const bad = clean.filter(e => !stmtEmailOk(e)).concat(stmtSplit(cc).filter(e => !stmtEmailOk(e)));
+      if(bad.length) return draw(`“${esc(bad[0])}” doesn't look like an email address.`);
+      if(!clean.length) return draw("Add at least one address.");
+      snapshot();
+      // just the main email → keep the field blank so it follows the main email if that changes
+      o.stmtTo = clean.length === 1 && o.email && clean[0] === String(o.email).trim().toLowerCase() ? "" : clean.join(", ");
+      o.cc = stmtSplit(cc).join(", ");
+      if(!o.email) o.email = clean[0];
+      commit(); closeSheet();
+      toast(`Statements for ${ownerLabel(o) || "this owner"} go to ${clean.length === 1 ? clean[0] : clean.length + " addresses"}`);
+    };
+  };
+  draw(); openPanel();
+  setTimeout(() => { const i = sh.querySelector("[data-rci]"); if(i && !i.value) i.focus(); }, 60);
 }
 
 /* =====================================================================
@@ -11310,7 +11468,7 @@ function todayPm(v){
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
 const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections"]);
-const PM_VIEWS = new Set(["pmBills","pmInvoices","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
+const PM_VIEWS = new Set(["pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
   S.ui.mode = mode;
@@ -11341,6 +11499,11 @@ function renderNavPM(){
   const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
   mk("pmBills", "Bills", "receipt", nOpen ? `<i class="badge">${nOpen}</i>` : null);
   mk("pmInvoices", "Owner invoices", "file", nInv ? `<i class="badge">${nInv}</i>` : null);
+  { // statements still to go out for the month being sent
+    let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
+      // only for a month closed here recently — not history imported from the workbook
+      if(!mt.closed || String(mt.closedBy || "").startsWith("Imported") || !mt.closedAt || Date.now() - Date.parse(mt.closedAt) > 40 * 864e5) nSt = 0; }catch(e){}
+    mk("pmStatements", "Owner statements", "mail", nSt ? `<i class="badge" title="Not sent yet">${nSt}</i>` : null); }
   mk("pmVendors", "Vendors", "user");
   // rent, MagicDoor and reporting: one tap away, folded unless you're in it
   const rrOpen = S.ui.pmRR === true || PM_RR.has(S.ui.view);
@@ -12109,6 +12272,13 @@ render = function(){
    Topics are plain HTML: a one-line summary, then steps, then tips.
    ===================================================================== */
 const HELP = {
+  pmStatements:{t:"Owner statements", b:`
+    <p>One statement per property each month — who it goes to, the payout, and whether it's been sent.</p>
+    <ol><li>Pick the month at the top left (it opens on the month you closed last).</li>
+      <li><b>Email statements</b> makes them all at once — as Gmail drafts in pm@ to check first, or sent straight away.</li>
+      <li><b>Preview &amp; send</b> on a row opens one statement to read, edit and send on its own. <b>PDF</b> opens the statement itself.</li>
+      <li><b>Recipients</b> sets who gets that owner's statements — add as many addresses as you need. Everyone listed is on the To line, every month.</li></ol>
+    <p class="hp-tip"><b>Need an email</b> lists properties with no owner or no address — fix those with <b>Add owner</b> or <b>Recipients</b>.</p>`},
   start:{t:"How this console works", b:`
     <p>The console has two sides — switch at the top of the menu.</p>
     <h5>Projects (renovations)</h5>

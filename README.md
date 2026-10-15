@@ -140,6 +140,12 @@ Month close → **Email statements** lists one email per property from **pm@phdp
 
 The key is kept with the office's shared settings. If it's ever exposed, run **rotateConsoleKey()** in that script and paste the new one.
 
+### 7a. Owner statements page (Property management → Owner statements)
+- One line per property for the month (it opens on the month you closed last; change it top left): who it goes to, the payout, and **Not sent / Draft in Gmail / Sent**. Filters for Not sent, Drafts, Sent and **Need an email** (no owner, or an address that isn't valid).
+- **Email statements** makes them all at once (Gmail drafts in pm@, or sent straight away); **Preview & send** does one; **PDF** opens the statement; **Print all** prints every owner's statement.
+- **Recipients** sets who gets an owner's statements — as many addresses as needed, plus an optional Cc. The same list is on the owner's page as **Owner statements go to** (blank = their main email). Every address is on the To line once the updated `apps-script/Statements.gs` is pasted into pm@'s script and deployed as a new version; until then the first address is To and the rest are Cc'd, so everyone still gets it.
+- The menu shows how many statements haven't gone out yet for a month closed in the last 40 days.
+
 ### 7b. Project invoice emails (sent from billing@)
 On a project invoice, **Email owner** writes the email the way the office sends it ("Hi Ken, … Here is the project invoice link for 3108 Terry Dr: 3108TERRY-002"). The invoice number links to the pay link. You see it and can edit it in the console, with a live preview, then press **Send from billing@** or **Save as Gmail draft**. Sent emails sit in billing@'s Sent folder with the label **Console/Project Invoices**, and the invoice shows when and to whom it went. Tick "Use this subject and message for future invoice emails" to change the standard wording.
 

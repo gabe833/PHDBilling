@@ -1631,3 +1631,16 @@ label .hq{vertical-align:-4px}
   .cn-r.cn-set .cn-a{grid-column:1}
 }
 
+/* ---------- owner statements page ---------- */
+.st-month{width:auto;min-width:150px;font-weight:550}
+.st-tbl td{vertical-align:middle}
+.st-to{display:flex;flex-wrap:wrap;gap:4px}
+.st-to span{font-size:12.3px;padding:2px 8px;border-radius:12px;background:var(--sunken);border:1px solid var(--line-2);white-space:nowrap}
+.st-acts{white-space:nowrap;text-align:right}
+.st-acts .btn{margin-left:4px}
+.st-conn{display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:16px}
+.rc-list{display:flex;flex-direction:column;gap:8px}
+.rc-r{display:flex;gap:8px;align-items:center}
+.rc-r input{flex:1;min-width:0}
+@media (max-width:720px){.st-acts{white-space:normal}.st-acts .btn{margin:4px 4px 0 0}}
+
