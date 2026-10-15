@@ -125,7 +125,7 @@ kbd{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:4px;b
 .btn.sm{padding:4px 10px;font-size:12.5px;border-radius:var(--r-xs)}
 .btn:disabled{opacity:.42;cursor:not-allowed;box-shadow:none}
 .btn kbd{margin-left:2px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);color:inherit}
-input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],select,textarea{background:var(--panel);
+input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],select,textarea{background:var(--panel);
   border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;width:100%;transition:border-color .12s,box-shadow .12s;color:var(--ink)}
 input::placeholder,textarea::placeholder{color:var(--faint)}
 input:hover,select:hover,textarea:hover{border-color:var(--line-3)}
@@ -1140,10 +1140,10 @@ input[type=text],input[type=number],input[type=date],input[type=email],input[typ
 .tool:hover{background:var(--panel-2);color:var(--ink)}
 .tool .brand-ic{width:16px;height:16px}
 .tool svg.ic,.tool .b-maps svg{width:16px;height:16px}
-.pager{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:10px;background:var(--panel);height:36px}
-.pager button{border:0;background:none;width:30px;height:34px;font-size:18px;line-height:1;color:var(--ink-2);cursor:pointer;border-radius:9px}
-.pager button:hover{background:var(--panel-2);color:var(--ink)}
-.pager span{font-size:12px;color:var(--muted);padding:0 4px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hd-tools .pager{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:10px;background:var(--panel);height:36px;padding:0;gap:0}
+.hd-tools .pager button{border:0;background:none;width:30px;height:34px;font-size:18px;line-height:1;color:var(--ink-2);cursor:pointer;border-radius:9px}
+.hd-tools .pager button:hover{background:var(--panel-2);color:var(--ink)}
+.hd-tools .pager span{font-size:12px;color:var(--muted);padding:0 4px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .brand-ic{display:inline-flex;width:15px;height:15px;flex:none;vertical-align:-3px}
 .brand-ic svg{width:100%;height:100%;display:block}
 .b-maps{color:var(--ink-2)}
@@ -1576,4 +1576,58 @@ label .hq{vertical-align:-4px}
 .df-miss{font-size:12.5px;max-height:220px;overflow:auto;border:1px solid var(--line-2);border-radius:8px;padding:6px 10px}
 .df-miss>div{padding:3px 0}
 @media (max-width:720px){.df-stats{grid-template-columns:1fr 1fr}}
+
+/* ---------- polish: menu, header, connections ---------- */
+.switch-wrap.in-nav{padding:0;margin:0 0 2px}
+.switch-wrap.in-nav .switcher{padding:8px 10px;border-radius:8px}
+.switch-wrap.in-nav .switcher .nm{font-size:13.2px}
+.switch-wrap.in-nav .switcher .sub{font-size:11px}
+.nav-prop{margin-top:4px}
+#propMenu{z-index:120}
+.rail .nav{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.14) transparent}
+.foot-conn{position:relative}
+.foot-conn .ic{width:15px;height:15px;color:var(--dock-faint)}
+.foot-conn[aria-current="true"]{background:rgba(255,255,255,.08);color:#fff}
+.foot-conn .fc-dot{display:none;width:7px;height:7px;border-radius:50%;background:var(--gold);margin-left:auto}
+.foot-conn.warn .fc-dot{display:block}
+/* header: secondary actions under More */
+.more-wrap{position:relative;display:inline-flex}
+.more-btn{gap:4px}
+.more-btn .ic{width:13px;height:13px;opacity:.7;transition:transform .15s var(--ease)}
+.more-wrap.on .more-btn .ic{transform:rotate(180deg)}
+.more-menu{display:none;position:fixed;min-width:210px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--sh-lift);z-index:60;flex-direction:column;gap:1px}
+.more-wrap.on .more-menu{display:flex;animation:pop .14s var(--ease)}
+.more-menu .btn.mi{justify-content:flex-start;width:100%;background:none;border:0;box-shadow:none;padding:7px 10px;font-size:13px;color:var(--ink);border-radius:7px;text-align:left;white-space:nowrap}
+.more-menu .btn.mi:hover{background:var(--sunken)}
+.more-menu .btn.mi:disabled{opacity:.45}
+/* breadcrumbs always present, so titles don't jump between pages */
+#pgCrumb{min-height:16px}
+/* month close: note about hidden columns */
+.pm-tbl .pm-in{width:124px;margin-left:auto;display:block}
+.pol-cols{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;padding:10px 16px;border-top:1px solid var(--line-2);font-size:12.3px;color:var(--muted)}
+/* property settings: two columns that don't stretch */
+.grid2.set-cols{display:block;columns:2 360px;column-gap:16px}
+.grid2.set-cols>.card{break-inside:avoid;margin:0 0 16px;display:block;width:100%}
+/* page change */
+@media (prefers-reduced-motion:no-preference){
+  #view.v-enter{animation:vIn .2s var(--ease)}
+  @keyframes vIn{from{opacity:.001;transform:translateY(4px)}to{opacity:1;transform:none}}
+}
+/* settings & connections */
+.cn-list{display:flex;flex-direction:column}
+.cn-r{display:grid;grid-template-columns:10px minmax(0,1fr) 250px 128px;gap:14px;align-items:center;padding:13px 18px;border-top:1px solid var(--line-2)}
+.cn-r:first-child{border-top:0}
+.cn-r.cn-set{grid-template-columns:minmax(0,1fr) 128px}
+.cn-dot{width:9px;height:9px;border-radius:50%;background:var(--line-3)}
+.cn-dot.ok{background:var(--green)} .cn-dot.warn{background:var(--gold)} .cn-dot.part{background:var(--accent-2)}
+.cn-t b{display:block;font-size:13.6px;font-weight:600}
+.cn-t span{display:block;font-size:12.4px;color:var(--muted);margin-top:2px;line-height:1.4}
+.cn-a{text-align:right}
+.cn-s{text-align:right}
+@media (max-width:720px){
+  .cn-r{grid-template-columns:10px minmax(0,1fr);row-gap:8px}
+  .cn-r .cn-s,.cn-r .cn-a{grid-column:2;text-align:left}
+  .cn-r.cn-set{grid-template-columns:minmax(0,1fr)}
+  .cn-r.cn-set .cn-a{grid-column:1}
+}
 

@@ -14,8 +14,8 @@ function render(){
   const p = P();
   const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.view === "inventory" || S.ui.view === "business" || S.ui.mode === "pm";
   renderModeSwitch();
-  $("#swName").textContent = S.ui.view === "portfolio" ? "All properties" : S.ui.view === "reconcile" ? "Reconcile" : S.ui.view === "owners" ? "Owners" : S.ui.view === "inbox" ? "Receipt inbox" : S.ui.view === "team" ? "Team" : S.ui.view === "payments" ? "Payments" : S.ui.view === "today" ? "Today" : S.ui.view === "charges" ? "Back-charges" : S.ui.view === "inventory" ? "Inventory" : S.ui.view === "business" ? "Business" : p.name;
-  $("#swSub").textContent  = portfolioView
+  $("#swName").textContent = p.name;   // the switcher always names the property you're working in
+  $("#swSub").textContent  = false
     ? `${live().length} propert${live().length===1?"y":"ies"}`
     : `${usd0(cents(p.invoiceTarget))} cap · ${p.feePct}% fee`;
   renderMenu(); renderNav();
@@ -49,12 +49,13 @@ function render(){
     charges:  ["Projects", "Back-charges", ""],
     inventory:["Projects", "Inventory", ""],
     business: ["Projects", "Business", ""],
+    connections:["Shared", "Settings & connections", "Every service the console uses, whether it's working, and where to set it up"],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -63,7 +64,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team","payments","today"].includes(view)) S.ui.mode = "projects";
+  else if(!["owners","inbox","team","payments","today","connections"].includes(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -11308,7 +11309,7 @@ function todayPm(v){
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
-const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today"]);
+const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections"]);
 const PM_VIEWS = new Set(["pmBills","pmInvoices","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
@@ -12340,6 +12341,311 @@ window.addEventListener("scroll", () => { if(HELPPOP.el && !HELPPOP.el.classList
   const foot = document.querySelector(".rail-foot");
   if(foot && !$("#helpStart")){ foot.insertAdjacentHTML("afterbegin", `<button type="button" class="help-start" id="helpStart" data-help="start"><span class="hq-dot" aria-hidden="true">?</span><span>How this works</span></button>`); }
 })();
+
+/* =====================================================================
+   POLISH — calmer, better-organized console
+   · Menu (Projects side) grouped the same way as Property management:
+     Today · Projects · the property you're in · Shared. The property
+     switcher now sits on that property's heading, so it always names the
+     property its pages belong to.
+   · Page headers keep three buttons at most; the rest go under "More".
+   · Every page has a breadcrumb, so titles never jump between pages.
+   · Month close hides columns that are empty for the whole month.
+   · Property settings: cards flow in two columns, no stretched empty
+     boxes; the Autosave card only shows when working off a file.
+   · Settings & connections: one page that lists every service the
+     console uses, whether it's working, and where to set it up.
+   · A short fade when you change pages (off when the system asks for
+     reduced motion).
+   ===================================================================== */
+
+/* ---------- menu ---------- */
+const polNav0 = renderNav;
+renderNav = function(){
+  const sw = document.querySelector(".switch-wrap"), menu = $("#propMenu");
+  // the property menu floats over everything, so the scrolling menu can't clip it
+  if(menu && menu.parentElement !== document.body) document.body.appendChild(menu);
+  const rail = document.querySelector(".rail");
+  if(S.ui.mode === "pm"){
+    if(sw && rail && sw.parentElement !== rail) rail.insertBefore(sw, $("#nav"));   // parked (hidden on this side)
+    return polNav0.apply(this, arguments);
+  }
+  if(sw) sw.remove();
+  const n = $("#nav"); n.innerHTML = "";
+  const mk = (k, lbl, ic, badge, fn) => {
+    const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`);
+    b.setAttribute("aria-current", S.ui.view === k);
+    b.onclick = fn || (() => go(k)); n.appendChild(b); return b;
+  };
+  const head = t => n.appendChild(elm("div", "nav-head", esc(t)));
+  const gold = (t, title) => `<i class="badge" style="color:var(--gold)"${title ? ` title="${esc(title)}"` : ""}>${t}</i>`;
+  const pr = portfolioRoll();
+
+  mk("today", "Today", "bolt");
+
+  head("Projects");
+  mk("portfolio", "All properties", "grid", pr.issues ? `<i class="badge alert">${pr.issues}</i>` : `<i class="badge">${pr.props}</i>`);
+  const qbN = typeof qbCounts === "function" ? qbCounts() : null;
+  const unrec = qbN ? qbN.none + qbN.gone : reconcileEntries().filter(e => !e.reconciled).length;
+  mk("reconcile", "Reconcile", "check", unrec ? `<i class="badge"${qbN ? ' title="Project expenses not in QuickBooks"' : ""}>${unrec}</i>` : null);
+  { const nCh = typeof chOpenCount === "function" ? chOpenCount() : 0; mk("charges", "Back-charges", "receipt", nCh ? gold(nCh) : null); }
+  if(typeof pgInventory === "function"){ const nLow = invLowCount(); mk("inventory", "Inventory", "box", nLow ? gold(nLow + " low", "Running low") : null); }
+  if(typeof pgBusiness === "function"){ const nDue = bizRemindersDue(); mk("business", "Business", "chart", nDue ? gold(nDue + " due", "Invoice reminders due") : null); }
+
+  // the property you're working in — its heading is the switcher
+  if(live().length || S.properties.length){
+    n.appendChild(elm("div", "nav-gap"));
+    if(sw){ sw.classList.add("in-nav"); n.appendChild(sw); }
+    const p = P();
+    const errs = (COMP.notes.filter(x => x.level === "err").length) + AUDIT.length;
+    const sub = elm("div", "nav-sub nav-prop"); n.appendChild(sub);
+    const mk2 = (k, lbl, ic, badge) => { const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`); b.setAttribute("aria-current", S.ui.view === k); b.onclick = () => go(k); sub.appendChild(b); };
+    mk2("overview", "Overview", "home", errs ? `<i class="badge alert">${errs}</i>` : null);
+    mk2("txns", "Transactions", "list", `<i class="badge">${p.transactions.length}</i>`);
+    mk2("invoices", "Invoices", "file", `<i class="badge">${COMP.roll.invoices}</i>`);
+    mk2("scope", "Scope of work", "clip", (p.scope || []).length ? `<i class="badge">${(p.scope || []).length}</i>` : null);
+    mk2("owner", "Owner", "user", ownerName(p) ? null : gold("add"));
+    mk2("settings", "Settings", "gear");
+  }
+
+  n.appendChild(elm("div", "nav-gap"));
+  head("Shared");
+  mk("owners", "Owners", "user", `<i class="badge">${(S.owners || []).filter(ownerLabel).length}</i>`, () => { S.ui.ownerId = null; go("owners"); });
+  { const nIn = inboxCount();
+    mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (inboxConn() ? null : gold("set up")), () => { go("inbox"); inboxRefresh(); }); }
+  if(typeof payOnline === "function" && payOnline()) mk("payments", "Payments", "card", payNavBadge());
+  if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
+};
+// the switcher: always the property you're in; the menu opens beside it
+(function(){
+  const b = $("#switcher"); if(!b) return;
+  b.setAttribute("aria-label", "Switch property");
+  b.title = "Switch property";
+  b.onclick = e => {
+    e.stopPropagation();
+    const m = $("#propMenu"); if(!m) return;
+    const open = !m.classList.contains("on");
+    m.classList.toggle("on", open);
+    if(open){
+      const r = b.getBoundingClientRect(), w = Math.max(r.width, 260);
+      m.style.position = "fixed"; m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px"; m.style.width = w + "px"; m.style.right = "auto";
+      const below = window.innerHeight - r.bottom - 12;
+      if(below >= 240){ m.style.top = (r.bottom + 4) + "px"; m.style.bottom = "auto"; m.style.maxHeight = below + "px"; }
+      else { m.style.top = "auto"; m.style.bottom = (window.innerHeight - r.top + 4) + "px"; m.style.maxHeight = (r.top - 16) + "px"; }
+    }
+  };
+  window.addEventListener("resize", () => { const m = $("#propMenu"); if(m) m.classList.remove("on"); });
+  const nav = $("#nav"); if(nav) nav.addEventListener("scroll", () => { const m = $("#propMenu"); if(m) m.classList.remove("on"); }, {passive:true});
+})();
+
+/* ---------- page header: three buttons at most, the rest under More ---------- */
+const POL_MORE = /^(export|import|download|restore|duplicate|expand all|collapse all|report$|client report|paste|build (it )?from|read an order|all properties$|settings$|check nickel|refresh)/i;
+function polMore(){
+  const box = $("#pgActions"); if(!box || box._pol) return;
+  box._pol = true;
+  try{
+    const old = box.querySelector(":scope > .more-wrap");
+    if(old){ old.querySelectorAll(".more-menu > *").forEach(x => { x.classList.remove("mi"); box.insertBefore(x, old); }); old.remove(); }
+    const narrow = window.innerWidth < 760;
+    // arrows (‹ ›) and Undo stay where they are
+    const sec = [...box.children].filter(x => x.matches(".btn, a.btn") && !x.classList.contains("primary") && !x.hidden && x.style.display !== "none" && x.textContent.trim().length > 1 && !/^undo$/i.test(x.textContent.trim()));
+    if(!sec.length) return;
+    let move = narrow ? sec.slice() : sec.filter(x => POL_MORE.test(x.textContent.trim()));
+    let keep = sec.filter(x => !move.includes(x));
+    while(keep.length > 3) move.unshift(keep.shift());
+    if(move.length < (narrow ? 1 : 2) && keep.length + move.length <= 3 && !polWrapped()) return;
+    const wrap = elm("div", "more-wrap");
+    wrap.innerHTML = `<button type="button" class="btn more-btn" aria-haspopup="true" aria-expanded="false">More<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg></button><div class="more-menu" role="menu"></div>`;
+    const mm = wrap.querySelector(".more-menu"), mb = wrap.querySelector(".more-btn");
+    sec.filter(x => move.includes(x)).forEach(x => { x.classList.add("mi"); x.setAttribute("role", "menuitem"); mm.appendChild(x); });
+    const primary = [...box.children].find(x => x.classList.contains("primary"));
+    box.insertBefore(wrap, primary || null);
+    // still too wide for one line? fold the next button in, until it fits
+    while(keep.length && polWrapped()){ const x = keep.shift(); x.classList.add("mi"); x.setAttribute("role", "menuitem"); mm.insertBefore(x, mm.firstChild); }
+    const close = () => { wrap.classList.remove("on"); mb.setAttribute("aria-expanded", "false"); };
+    mb.onclick = e => {
+      e.stopPropagation(); const on = !wrap.classList.contains("on");
+      document.querySelectorAll(".more-wrap.on").forEach(w => w.classList.remove("on"));
+      wrap.classList.toggle("on", on); mb.setAttribute("aria-expanded", String(on));
+      if(on){   // fixed to the screen, so a scrolling header row on phones can't clip it
+        const r = mb.getBoundingClientRect(), w = mm.offsetWidth, h = mm.offsetHeight;
+        mm.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + "px";
+        mm.style.top = (r.bottom + h + 12 > window.innerHeight && r.top - h - 6 > 8 ? r.top - h - 6 : r.bottom + 6) + "px";
+      }
+    };
+    mm.addEventListener("click", () => setTimeout(close, 0));
+  } finally { box._pol = false; if(typeof polMO !== "undefined" && polMO) polMO.takeRecords(); }   // our own moves aren't news
+}
+let polMO = null;
+document.addEventListener("click", e => { if(!e.target.closest || !e.target.closest(".more-wrap")) document.querySelectorAll(".more-wrap.on").forEach(w => { w.classList.remove("on"); const b = w.querySelector(".more-btn"); if(b) b.setAttribute("aria-expanded", "false"); }); });
+document.addEventListener("keydown", e => { if(e.key === "Escape") document.querySelectorAll(".more-wrap.on").forEach(w => w.classList.remove("on")); });
+window.addEventListener("scroll", () => document.querySelectorAll(".more-wrap.on").forEach(w => w.classList.remove("on")), {passive:true});
+{ let q = 0; const soon = () => { if(q) return; q = requestAnimationFrame(() => { q = 0; polMore(); }); };
+  const pa = $("#pgActions"); if(pa){ polMO = new MutationObserver(() => { if(!pa._pol) soon(); }); polMO.observe(pa, {childList:true}); }
+  let lw = window.innerWidth; window.addEventListener("resize", () => { if((lw < 760) !== (window.innerWidth < 760)){ lw = window.innerWidth; soon(); } }); }
+
+// the header's buttons dropped below the title instead of sitting beside it
+function polWrapped(){
+  const t = document.querySelector("#topbar .hd-title"), r = document.querySelector("#topbar .hd-right");
+  if(!t || !r || window.innerWidth < 760) return false;
+  return r.getBoundingClientRect().top > t.getBoundingClientRect().top + 24;
+}
+
+/* ---------- breadcrumb on every page ---------- */
+function polCrumb(){
+  const c = $("#pgCrumb"); if(!c || c.textContent.trim()) return;
+  c.textContent = SHARED_VIEWS.has(S.ui.view) && S.ui.view !== "today" ? "Shared" : S.ui.mode === "pm" ? "Property management" : "Projects";
+}
+
+/* ---------- month close: hide columns with nothing in them ---------- */
+function polCompact(){
+  if(S.ui.view !== "pmMonth") return;
+  const t = document.querySelector("#view table.pm-tbl"); if(!t) return;
+  const ths = [...t.tHead.rows[0].cells];
+  const body = [...t.tBodies[0].rows].filter(r => !r.classList.contains("ow-tot") && r.cells.length === ths.length);
+  if(body.length < 3) return;
+  const empty = [];
+  ths.forEach((th, i) => {
+    if(i === 0 || !th.textContent.trim() || /^(rent due|received|owner payout|paid out)$/i.test(th.textContent.trim())) return;
+    if(body.every(r => { const c = r.cells[i]; return !c.querySelector("input,button,select") && /^(—|-|)$/.test(c.textContent.trim()); })) empty.push(i);
+  });
+  if(!empty.length) return;
+  const names = empty.map(i => ths[i].textContent.trim());
+  const show = !!S.ui.pmAllCols;
+  if(!show) [...t.rows].forEach(r => { if(r.cells.length === ths.length) empty.forEach(i => r.cells[i].hidden = true); });
+  const card = t.closest(".card"); if(!card) return;
+  const note = elm("div", "pol-cols");
+  note.innerHTML = show ? `<button type="button" class="linkish">Hide empty columns</button>`
+    : `<span>Nothing this month in ${names.map(esc).join(", ").replace(/, ([^,]*)$/, " or $1")} — hidden to keep this readable.</span> <button type="button" class="linkish">Show all columns</button>`;
+  note.querySelector("button").onclick = () => { S.ui.pmAllCols = !show; render(); };
+  card.appendChild(note);
+}
+
+/* ---------- property settings: two calm columns ---------- */
+function polSettings(){
+  if(S.ui.view !== "settings") return;
+  const g = document.querySelector("#view > .grid2"); if(!g) return;
+  const cards = [...g.children].filter(x => x.classList.contains("card"));
+  const by = re => cards.find(c => { const h = c.querySelector(".card-h h3"); return h && re.test(h.textContent.trim()); });
+  const auto = by(/^Autosave$/);
+  if(auto && typeof Cloud !== "undefined" && Cloud.ready) auto.remove();
+  const order = [cards[0], by(/^Units$/), by(/^Drive folder/), by(/^Deferred billing/), by(/^Tags$/), by(/^This property$/), auto && auto.isConnected ? auto : null].filter(Boolean);
+  cards.forEach(c => { if(!order.includes(c) && c.isConnected) order.push(c); });
+  g.classList.add("set-cols");
+  order.forEach(c => g.appendChild(c));
+}
+
+/* ---------- a short fade when the page changes ---------- */
+const polGo0 = go;
+go = function(view){
+  const before = S.ui.view + "|" + S.activeId + "|" + (S.ui.pmPropId || "") + "|" + (S.ui.ownerId || "");
+  const r = polGo0.apply(this, arguments);
+  const after = S.ui.view + "|" + S.activeId + "|" + (S.ui.pmPropId || "") + "|" + (S.ui.ownerId || "");
+  if(before !== after){ const v = $("#view"); if(v){ v.classList.remove("v-enter"); void v.offsetWidth; v.classList.add("v-enter"); clearTimeout(v._ve); v._ve = setTimeout(() => v.classList.remove("v-enter"), 260); } }
+  return r;
+};
+
+/* ---------- after every render ---------- */
+const polRender0 = render;
+render = function(){
+  const r = polRender0.apply(this, arguments);
+  try{ polCrumb(); polCompact(); polSettings(); polMore(); polFootLink(); }catch(e){ console.warn(e); }
+  return r;
+};
+
+/* =====================================================================
+   SETTINGS & CONNECTIONS
+   ===================================================================== */
+function polFootLink(){
+  const foot = document.querySelector(".rail-foot"); if(!foot) return;
+  let b = $("#footConn");
+  if(!b){
+    b = elm("button", "help-start foot-conn"); b.id = "footConn"; b.type = "button";
+    b.innerHTML = `${icon("gear")}<span>Settings &amp; connections</span><i class="fc-dot" aria-hidden="true"></i>`;
+    b.onclick = () => go("connections");
+    const hs = $("#helpStart"); if(hs) hs.insertAdjacentElement("afterend", b); else foot.insertBefore(b, foot.firstChild);
+  }
+  b.setAttribute("aria-current", S.ui.view === "connections");
+  const bad = polConnList().filter(c => c.state === "warn").length;
+  b.classList.toggle("warn", bad > 0);
+  b.title = bad ? `${bad} connection${bad === 1 ? " needs" : "s need"} attention` : "Settings & connections";
+}
+const polAgo = iso => { if(!iso) return ""; try{ return typeof mdAgo === "function" ? mdAgo(iso) : new Date(iso).toLocaleString(); }catch(e){ return ""; } };
+function polConnList(){
+  const hosted = typeof Cloud !== "undefined" && Cloud.ready;
+  const L = [];
+  L.push({k:"cloud", name:"Shared database", what:"Keeps everyone in the office on the same numbers, saved as you work.",
+    state: hosted ? "ok" : "off", status: hosted ? `Signed in as ${Cloud.name || Cloud.email}` : "This browser only",
+    btn: hosted ? ["Team", () => go("team")] : null});
+  if(!hosted){
+    const st = typeof AutoFile !== "undefined" ? AutoFile.state : "";
+    L.push({k:"file", name:"Autosave file", what:"Writes every change to a file you choose, so nothing is lost if this browser is cleared.",
+      state: st === "on" ? "ok" : st === "needs" ? "warn" : "off", status: st === "on" ? `Saving to ${AutoFile.name}` : st === "needs" ? "Needs one click to reconnect" : "Off",
+      btn: typeof AutoFile !== "undefined" && AutoFile.supported() ? [st === "on" ? "Change file" : st === "needs" ? "Reconnect" : "Turn on", () => st === "needs" ? AutoFile.regrant() : AutoFile.connect()] : null});
+  }
+  const ib = typeof inboxConn === "function" && inboxConn();
+  L.push({k:"inbox", name:"Receipt inbox", what:"Reads receipts and invoices emailed to billing@ and files them in Drive once you approve.",
+    state: ib ? "ok" : "warn", status: ib ? (inboxCount() ? `${inboxCount()} waiting` : "Connected") : "Not set up",
+    btn:[ib ? "Open inbox" : "Set up", () => { go("inbox"); if(ib) inboxRefresh(); }]});
+  const md = typeof mdReady === "function" && mdReady();
+  L.push({k:"md", name:"MagicDoor", what:"Brings in leases, tenants and each month's rent ledger for Month close.",
+    state: md ? "ok" : hosted ? "warn" : "off", status: md ? `Synced ${polAgo(S.md.syncedAt)}` : hosted ? "Not synced yet" : "Needs the hosted console",
+    btn: md || hosted ? ["Open", () => go("pmMd")] : null});
+  const nk = typeof nickelOn === "function" && nickelOn();
+  L.push({k:"nickel", name:"Nickel", what:"Pays vendor bills and collects owner invoices; payments match themselves here.",
+    state: nk ? "ok" : hosted ? "warn" : "off", status: nk ? "Connected" : hosted ? "Not connected" : "Needs the hosted console",
+    btn: hosted ? ["Payments setup", () => go("pmPaySetup")] : null});
+  const qb = S.qbo && S.qbo.syncedAt;
+  L.push({k:"qbo", name:"QuickBooks", what:"Checks every project expense against the books on Reconcile.",
+    state: qb ? "ok" : hosted ? "warn" : "off", status: qb ? `Synced ${typeof qbAgo === "function" ? qbAgo(S.qbo.syncedAt) : polAgo(S.qbo.syncedAt)}` : hosted ? "Not synced yet" : "Needs the hosted console",
+    btn:["Reconcile", () => go("reconcile")]});
+  const sm = typeof stmtConn === "function" && stmtConn();
+  L.push({k:"stmt", name:"Owner statement email", what:"Sends monthly owner statements from pm@phdproperties.realestate.",
+    state: sm ? "ok" : "warn", status: sm ? "Connected" : "Not set up",
+    btn: typeof pmStatementMailSheet === "function" ? [sm ? "Email statements" : "Set up", () => { if(S.ui.mode !== "pm") S.ui.mode = "pm"; pmStatementMailSheet(pmCurrentMonth()); }] : null});
+  const bm = typeof bmConn === "function" && bmConn();
+  L.push({k:"bm", name:"Project invoice email", what:"Emails project invoices to owners from billing@phdproperties.realestate.",
+    state: bm ? "ok" : "off", status: bm ? "Connected" : "Set up the first time you email an invoice",
+    btn:null});
+  const props = live(), withF = props.filter(p => p.driveFolder && p.driveFolder.id).length;
+  L.push({k:"drive", name:"Drive folders", what:"Each project's receipts folder — read, renamed and kept free of duplicates.",
+    state: !props.length ? "off" : withF === props.length ? "ok" : withF ? "part" : "off", status: props.length ? `${withF} of ${props.length} projects connected` : "No projects yet",
+    btn: props.length ? ["Connect one", () => { const p = props.find(x => !(x.driveFolder && x.driveFolder.id)) || props[0]; go("settings", p.id); }] : null});
+  return L;
+}
+function pgConnections(){
+  const v = $("#view");
+  const L = polConnList();
+  const tag = c => c.state === "ok" ? `<span class="tag green">${esc(c.status)}</span>` : c.state === "warn" ? `<span class="tag gold">${esc(c.status)}</span>` : c.state === "part" ? `<span class="tag acc">${esc(c.status)}</span>` : `<span class="tag grey">${esc(c.status)}</span>`;
+  const card = elm("div", "card");
+  card.innerHTML = `<div class="card-h"><h3>Connections</h3><span class="muted td-n">${L.filter(c => c.state === "ok").length} of ${L.length} working</span></div>
+    <div class="cn-list">${L.map((c, i) => `<div class="cn-r">
+      <i class="cn-dot ${c.state}" aria-hidden="true"></i>
+      <div class="cn-t"><b>${esc(c.name)}</b><span>${esc(c.what)}</span></div>
+      <div class="cn-s">${tag(c)}</div>
+      <div class="cn-a">${c.btn ? `<button class="btn sm" data-cn="${i}">${esc(c.btn[0])}</button>` : ""}</div></div>`).join("")}</div>`;
+  v.appendChild(card);
+  card.querySelectorAll("[data-cn]").forEach(b => b.onclick = () => L[+b.dataset.cn].btn[1]());
+
+  const pm = typeof pmState === "function" && (pmState().properties || []).length;
+  const set = [
+    ["Property settings", "Units, fee, invoice cap, hold rules and tags for one project.", "Open", () => go("settings")],
+    pm ? ["Alert rules", "When rent counts as late, payouts as due, and leases as ending.", "Open", () => go("pmSettings")] : null,
+    ["Download a backup", "Everything — every property, owner and month — in one file.", "Download", () => backup()],
+    ["Restore a backup", "Replace what's here with a backup file. You can undo right after.", "Choose file", () => $("#filePick").click()],
+    ["How the console works", "The start-here guide, written for someone who has never used it.", "Read", () => typeof helpOpen === "function" && helpOpen("start", null)]
+  ].filter(Boolean);
+  const s = elm("div", "card"); s.style.marginTop = "16px";
+  s.innerHTML = `<div class="card-h"><h3>Settings</h3></div><div class="cn-list">${set.map((x, i) => `<div class="cn-r cn-set">
+      <div class="cn-t"><b>${esc(x[0])}</b><span>${esc(x[1])}</span></div><div class="cn-a"><button class="btn sm" data-st="${i}">${esc(x[2])}</button></div></div>`).join("")}</div>`;
+  v.appendChild(s);
+  s.querySelectorAll("[data-st]").forEach(b => b.onclick = () => set[+b.dataset.st][3]());
+}
+HELP.connections = {t:"Settings & connections", b:`
+  <p>Everything the console talks to, in one list — green means it's working.</p>
+  <ol><li>Gold means it needs setting up or has stopped working. Press the button on that row to fix it.</li>
+    <li>Grey means it's optional, or only works in the hosted console (signed in at phdbilling.vercel.app).</li></ol>
+  <p class="hp-tip">A gold dot on <b>Settings &amp; connections</b> at the bottom of the menu means something here needs attention.</p>`};
 
 /* ===================== BOOT ===================== */
 function chip(){
