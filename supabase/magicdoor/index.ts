@@ -184,7 +184,13 @@ function cleanDistribution(x: Obj) {
   return {
     id: S(x.id), date: D(x.distributionDate), ownerId: S(x.ownerId), total: N(x.totalAmount), memo: S(x.memo).slice(0, 200),
     // where the payout stands in MagicDoor (a payout stuck "pending" hasn't reached the owner)
-    status: S(x.status || x.paymentStatus || x.distributionStatus || x.state || x.transactionStatus).toLowerCase().slice(0, 40),
+    // MagicDoor gives no status on a payout: it's paid once nothing is left due on it and a payment (not voided) is applied
+    status: (() => {
+      const due = N(x.dueAmount) || 0, lines = ((x.lineItems as Obj[]) || []), allocs = lines.flatMap((li) => ((li.allocations as Obj[]) || []));
+      const live = allocs.filter((a) => !a.voided && a.applied);
+      if (due > 0.004) return live.length ? "partly paid" : (allocs.length ? "failed" : "pending");
+      return "paid";
+    })(),
     lines: ((x.lineItems as Obj[]) || []).map((li) => ({ propertyId: S(li.propertyId), amount: N(li.amount), text: S(li.description).slice(0, 120) })),
   };
 }

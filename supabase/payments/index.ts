@@ -970,21 +970,23 @@ async function ownerPayouts(): Promise<number> {
   } catch (_) { /* fall back to the bill's own status */ }
   const main = await docData("shared", "main"), owners: Obj[] = (main && main.owners) || [];
   const ownerOf = (p: Obj) => owners.find((o) => o.id === p.ownerId) || null;
-  let changed = 0;
+  let changed = 0; const unmatched: string[] = [];
   for (const b of bills) {
     const ref = S(b.invoiceNumber || b.billNumber || b.reference).toUpperCase(), m = ref.match(/^OWN-(\d{4})-(\d{2})-(.+)$/);
     if (!m) continue;
     const month = `${m[1]}-${m[2]}`, key = alnum(m[3]), amt = cAmt(b);
     const vend = alnum(b.vendorName || (b.vendor && b.vendor.name));
     // the property: its name starts with the key; when several do (342 King St #A/#B/#C), the owner's name and the amount decide
-    let hits = props.filter((p) => key && (alnum(p.name).startsWith(key) || alnum(String(p.address || "").split(",")[0]).startsWith(key)));
+    // "140MARINE" is 140 W Mariners Cay Dr: compare with and without the direction word
+    const forms = (t: unknown) => { const x = String(t || "").split(",")[0]; return [alnum(x), alnum(x.replace(/\b(N|S|E|W|NE|NW|SE|SW|North|South|East|West)\b\.?/gi, " "))]; };
+    let hits = props.filter((p) => key && [...forms(p.name), ...forms(p.address)].some((f) => f && f.startsWith(key)));
     if (hits.length > 1 && vend) { const h = hits.filter((p) => { const o = ownerOf(p); return o && (alnum(o.name) === vend || alnum(o.company) === vend || (alnum(o.name) && vend.includes(alnum(o.name)))); }); if (h.length) hits = h; }
     if (hits.length > 1) {
       const h: Obj[] = [];
       for (const p of hits) { const r = await docData("pm_row", `${month}|${p.id}`); if (r && r.ownerPayout != null && Math.round(Number(r.ownerPayout) * 100) === amt) h.push(p); }
       if (h.length === 1) hits = h;
     }
-    if (hits.length !== 1) continue;
+    if (hits.length !== 1) { unmatched.push(`${ref} · ${S(b.vendorName)} · ${(amt / 100).toFixed(2)}${hits.length ? ` · ${hits.length} properties match` : ""}`); continue; }
     const p = hits[0], rowId = `${month}|${p.id}`;
     const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [];
     const ms = moneyState[ref] || "";
@@ -1004,6 +1006,7 @@ async function ownerPayouts(): Promise<number> {
     });
     changed++;
   }
+  try { await setSetting("nk_owner_unmatched", JSON.stringify({ at: new Date().toISOString(), bills: unmatched })); } catch (_) { /* only for checking */ }
   return changed;
 }
 async function refresh(only?: Obj) {

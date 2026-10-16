@@ -4176,7 +4176,7 @@ const PMCore = (function(){
     return mdPayoutMonth(date);
   }
   // a payout MagicDoor hasn't finished sending (pending, processing, failed, cancelled) isn't paid
-  const mdDistOpen = st => /pend|process|schedul|queue|draft|await|hold|approv/.test(String(st || "")), mdDistDead = st => /cancel|void|fail|reject|return|revers|delet/.test(String(st || ""));
+  const mdDistOpen = st => /pend|process|schedul|queue|draft|await|hold|approv|partly/.test(String(st || "")), mdDistDead = st => /cancel|void|fail|reject|return|revers|delet/.test(String(st || ""));
   function mdDistributions(md, mdPropId, month, all){
     const out = [];
     (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !x.date) return;
