@@ -1380,12 +1380,15 @@ const PMCore = (function(){
     let byMd = _bm.get(md); if(!byMd){ byMd = {}; _bm.set(md, byMd); }
     if(byMd[mdPropId]) return byMd[mdPropId];
     const st = md.stmts[mdPropId], months = Object.keys(st).sort(), pool = [];
-    months.forEach(m => (st[m].bills || []).forEach(x => pool.push({m, v:vkey(x.v), c:cents(x.a), used:false})));
+    months.forEach(m => (st[m].bills || []).forEach(x => pool.push({m, v:vkey(x.v), c:cents(x.a), unpaid:!!x.unpaid, used:false})));
     const lines = [];
     (md.bills || []).forEach(b => { if(b.company || !b.date) return; (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) lines.push({li, b}); }); });
     lines.sort((x, y) => String(x.b.date).localeCompare(y.b.date));
     const map = new Map();
-    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7) && (!sameVendor || !e.v || !vkey(b.vendor) || e.v === vkey(b.vendor)));
+    // a bill still owed in MagicDoor can only be one of the statement's unpaid bills, and a paid one only a payment;
+    // an entry with a vendor name only matches that vendor
+    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7)
+      && e.unpaid === (Number(b.owed) > 0) && (e.v ? !vkey(b.vendor) || e.v === vkey(b.vendor) : !sameVendor || true));
     [true, false].forEach(sameVendor => lines.forEach(({li, b}) => { if(map.has(li.id)) return; const e = take(li, b, sameVendor); if(e){ e.used = true; map.set(li.id, e.m); } }));
     byMd[mdPropId] = map;
     return map;
@@ -1434,7 +1437,9 @@ const PMCore = (function(){
     const base = cents(st.pre + st.rentIn);
     // money that came in after last month's payout (last month was paid out, and it ended with a balance) is this
     // month's: the part MagicDoor charged the PM fee on is rent, the rest other income (a pet fee, say)
-    const late = st.prevDist > 0 && st.left > 0 ? cents(st.left) : 0;
+    // money MagicDoor held over from last month without taking its PM fee on it (it came in after that month's payout)
+    const unfeed = st.prevIn != null && rate > 0 && rule.type !== "flat" ? Math.max(0, cents(st.prevIn) - Math.round(cents(st.prevFees || 0) * 100 / rate)) : 0;
+    const late = st.left > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
     const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);

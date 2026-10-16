@@ -387,6 +387,9 @@ async function sync() {
         st.left = r2(held); st.pre = r2(Math.max(0, st.begin - held));
         // was last month paid out? then what it ended with arrived after the payout and belongs to this month
         (st as Obj).prevDist = prev ? prev.distTotal : 0;
+        // what came in last month and what MagicDoor charged its PM fee on then: money it never took a fee on is this month's
+        (st as Obj).prevIn = prev ? r2((prev.pre || 0) + prev.rentIn) : 0;
+        (st as Obj).prevFees = prev ? r2(prev.fees.reduce((a, f) => a + f, 0)) : 0;
       }
       delete stmts[pid][ms[0]];
     }

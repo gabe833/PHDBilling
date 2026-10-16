@@ -247,12 +247,15 @@ const PMCore = (function(){
     let byMd = _bm.get(md); if(!byMd){ byMd = {}; _bm.set(md, byMd); }
     if(byMd[mdPropId]) return byMd[mdPropId];
     const st = md.stmts[mdPropId], months = Object.keys(st).sort(), pool = [];
-    months.forEach(m => (st[m].bills || []).forEach(x => pool.push({m, v:vkey(x.v), c:cents(x.a), used:false})));
+    months.forEach(m => (st[m].bills || []).forEach(x => pool.push({m, v:vkey(x.v), c:cents(x.a), unpaid:!!x.unpaid, used:false})));
     const lines = [];
     (md.bills || []).forEach(b => { if(b.company || !b.date) return; (b.lines || []).forEach(li => { if(li.propertyId === mdPropId && mdIsRepairLine(li, b)) lines.push({li, b}); }); });
     lines.sort((x, y) => String(x.b.date).localeCompare(y.b.date));
     const map = new Map();
-    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7) && (!sameVendor || !e.v || !vkey(b.vendor) || e.v === vkey(b.vendor)));
+    // a bill still owed in MagicDoor can only be one of the statement's unpaid bills, and a paid one only a payment;
+    // an entry with a vendor name only matches that vendor
+    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7)
+      && e.unpaid === (Number(b.owed) > 0) && (e.v ? !vkey(b.vendor) || e.v === vkey(b.vendor) : !sameVendor || true));
     [true, false].forEach(sameVendor => lines.forEach(({li, b}) => { if(map.has(li.id)) return; const e = take(li, b, sameVendor); if(e){ e.used = true; map.set(li.id, e.m); } }));
     byMd[mdPropId] = map;
     return map;
@@ -301,7 +304,9 @@ const PMCore = (function(){
     const base = cents(st.pre + st.rentIn);
     // money that came in after last month's payout (last month was paid out, and it ended with a balance) is this
     // month's: the part MagicDoor charged the PM fee on is rent, the rest other income (a pet fee, say)
-    const late = st.prevDist > 0 && st.left > 0 ? cents(st.left) : 0;
+    // money MagicDoor held over from last month without taking its PM fee on it (it came in after that month's payout)
+    const unfeed = st.prevIn != null && rate > 0 && rule.type !== "flat" ? Math.max(0, cents(st.prevIn) - Math.round(cents(st.prevFees || 0) * 100 / rate)) : 0;
+    const late = st.left > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
     const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
@@ -570,9 +575,9 @@ function mdProjectMatch(p, li, b, used){
   return null;
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -648,6 +653,14 @@ function mdPlan(){
           if(pm){ out.skips.push({p, row:rr, it, why:"project", auto:true, pj:pm.pj, t:pm.t, li:f.li, b:f.b}); return; }
         }
         if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it); return; }
+        // a MagicDoor bill the sync put in this month that MagicDoor counts in another month: take it back out
+        if(it.source === "MagicDoor" && PMCore.mdStmt(S.md, m.property.id, mm)){
+          const paidMap = PMCore.mdBillMonths(S.md, m.property.id), want = (paidMap && paidMap.get(it.mdLine)) || String(f.b.date || "").slice(0, 7);
+          if(want && want !== mm){ const other = pmRow(want, p.id);
+            if(other && other !== rr && !other.locked && !other.detailOnly && !((pmState().meta[want] || {}).closed)) out.moves.push({p, from:rr, to:other, it, li:f.li});
+            else out.misplaced.push({p, row:rr, it, want});
+            return; }
+        }
         if(!PMCore.mdIsRepairLine(f.li, f.b)){ out.unbills.push({p, row:rr, it}); return; }
         // MagicDoor's description changed (and nobody retyped it here): follow it
         const want = PMCore.mdLineMemo(f.li, f.b);
@@ -866,6 +879,11 @@ function mdApply(opts){
     row.repairItems = row.repairItems.filter(i => i !== it);
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} removed ${it.vendor || "bill"} ${usd(cents(it.amount))} — deleted in MagicDoor`});
+  });
+  (plan.misplaced || []).forEach(({p, row, it, want}) => {
+    row.repairItems = (row.repairItems || []).filter(i => i !== it);
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)}: took out ${it.vendor || "a bill"} ${usd(cents(it.amount))} (${fdateS(it.date || "")}) — MagicDoor counts it in ${monthLabel(want)}, not this month`});
   });
   (plan.moves || []).forEach(({p, from, to, it}) => {
     from.repairItems = (from.repairItems || []).filter(i => i !== it);
