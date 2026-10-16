@@ -949,62 +949,106 @@ async function saveToolSchemas() {
   await setSetting("nk_tools_at", String(Date.now()));
 }
 /* ---- owner payouts paid in Nickel ----
-   The office pays owners as Nickel bills numbered OWN-<year>-<month>-<property> (e.g. OWN-2026-10-228MORNIN).
-   Each one is matched to that property's month and recorded as its payout: paid (with the date), or scheduled.
+   The office pays owners as Nickel bills. Two ways they're found and recorded on a property's month:
+   1. One bill per property, numbered OWN-<year>-<month>-<property> (OWN-2026-10-228MORNIN, OWN-2026-10-342KING-A).
+   2. Several bills paying several properties together — an owner with more than one property, or a couple paid
+      separately plus a joint account (Susan, Stephen and their joint account for 12 Bee #D, 31 and 90 Radcliffe).
+      Bills to the same owners are grouped with those owners' properties, and the payouts are recorded only when
+      the bills add up exactly to what those properties' owners are owed for the month.
    A payout recorded by hand in the console is never overwritten; one taken from MagicDoor is replaced, because
-   the payout actually went out from Nickel. */
+   the payout actually went out from Nickel. A payout Nickel shows as pending says so, and a stopped one comes off. */
 const alnum = (x: unknown) => S(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
 const cAmt = (b: Obj) => { for (const k of ["amountInCents", "totalAmountInCents", "amountCents", "totalInCents"]) if (b[k] != null && !isNaN(Number(b[k]))) return Math.round(Number(b[k])); for (const k of ["amount", "totalAmount", "total"]) if (b[k] != null && !isNaN(Number(b[k]))) return Math.round(Number(b[k]) * 100); return 0; };
+const refOf = (b: Obj) => S(b.invoiceNumber || b.billNumber || b.reference).toUpperCase();
+const OWN_RE = /^OWN-(\d{4})-(\d{2})-(.+)$/;
+const STREET_WORDS = /\b(N|S|E|W|NE|NW|SE|SW|NORTH|SOUTH|EAST|WEST|ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|BLVD|BOULEVARD|LN|LANE|CT|COURT|CIR|CIRCLE|WAY|PL|PLACE|PKWY|HWY|UNIT|APT|SUITE)\b\.?/gi;
+// a property's name as the office abbreviates it: "140 W Mariners Cay Dr" → 140WMARINERSCAYDR, 140MARINERSCAY…; "342 King St #A" → 342KINGA
+const nameForms = (t: unknown) => { const x = String(t || "").split(",")[0]; return [alnum(x), alnum(x.replace(/\b(N|S|E|W|NE|NW|SE|SW|North|South|East|West)\b\.?/gi, " ")), alnum(x.replace(STREET_WORDS, " "))]; };
+// the people an owner record names: "Susan Reed and Stephen Welt - Joint Account" → Susan Reed, Stephen Welt
+const NOT_NAME = /^(LLC|INC|THE|AND|JOINT|ACCOUNT|TRUST|PROPERTIES|PROPERTY|HOLDINGS|GROUP|DBA|OWNER|LIVING|INVESTMENTS?|COMPANY|CO|LP|LTD)$/;
+const surnames = (o: Obj) => { const out = new Set<string>(); [S(o.name), S(o.company)].join(" / ").split(/\s+(?:and|&)\s+|[\/,()]|\s+-\s*|\s*-\s+/i).forEach((part) => { const w = part.split(/\s+/).map(alnum).filter((x) => x.length >= 3 && !NOT_NAME.test(x)); if (w.length >= 2) out.add(w[w.length - 1]); }); return [...out]; };
 async function ownerPayouts(): Promise<number> {
   const from = new Date(Date.now() - 75 * 864e5).toISOString().slice(0, 10);
-  const rows = await readAll("search_bills", { query: "OWN-", invoiceDateAfter: from }, 10);
-  const bills = rows.filter((b) => /^OWN-\d{4}-\d{2}-/i.test(S(b.invoiceNumber || b.billNumber || b.reference)));
-  try { if (bills[0]) await setSetting("nk_owner_bill_shape", JSON.stringify(Object.keys(bills[0]))); } catch (_) { /* only for checking */ }
-  if (!bills.length) return 0;
-  const props = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data).filter((p) => p && p.id);
-  // where each payout's money actually stands (a bill can read "paid" while its payment is still pending or was stopped)
-  const moneyState: Record<string, string> = {};
-  try {
-    const acts = await readAll("search_payment_activities", { source: "PAYABLE", payableFilters: { billLabel: "OWN-" }, startDate: from, endDate: today() }, 6);
-    acts.sort((x, y) => S(x.createdAt).localeCompare(S(y.createdAt))).forEach((r) => { const k = S(r.billNumber || r.invoiceLabel).toUpperCase(); if (k) moneyState[k] = S(r.status).toUpperCase(); });
-  } catch (_) { /* fall back to the bill's own status */ }
+  const props = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data).filter((p) => p && p.id && !p.deleted);
   const main = await docData("shared", "main"), owners: Obj[] = (main && main.owners) || [];
   const ownerOf = (p: Obj) => owners.find((o) => o.id === p.ownerId) || null;
+  // bills: every OWN-… bill, plus any recent bill to a vendor who is one of the owners (paid under another number)
+  const vendTokens = (b: Obj) => new Set(S(b.vendorName || (b.vendor && b.vendor.name)).split(/[^A-Za-z0-9]+/).map(alnum).filter(Boolean));
+  const ownerHit = (b: Obj, o: Obj | null) => { if (!o) return false; const t = vendTokens(b); return surnames(o).some((x) => t.has(x)) || [o.company, o.name].some((n) => alnum(n).length >= 6 && alnum(b.vendorName).includes(alnum(n))); };
+  const byId = new Map<string, Obj>();
+  for (const b of await readAll("search_bills", { query: "OWN-", invoiceDateAfter: from }, 10)) if (OWN_RE.test(refOf(b))) byId.set(S(b.id), b);
+  try { for (const b of await readAll("search_bills", { invoiceDateAfter: from }, 10)) if (!byId.has(S(b.id)) && owners.some((o) => ownerHit(b, o))) byId.set(S(b.id), b); } catch (_) { /* OWN- bills only */ }
+  const bills = [...byId.values()];
+  try { if (bills[0]) await setSetting("nk_owner_bill_shape", JSON.stringify(Object.keys(bills[0]))); } catch (_) { /* only for checking */ }
+  if (!bills.length) return 0;
+  // where each payout's money stands (a bill can read "paid" while its payment is pending, or was stopped)
+  const moneyState: Record<string, string> = {};
+  try {
+    const acts = await readAll("search_payment_activities", { source: "PAYABLE", startDate: from, endDate: today() }, 10);
+    acts.sort((x, y) => S(x.createdAt).localeCompare(S(y.createdAt))).forEach((r) => { const k = S(r.billNumber || r.invoiceLabel).toUpperCase(); if (k) moneyState[k] = S(r.status).toUpperCase(); });
+  } catch (_) { /* the bill's own status */ }
+  const stateOf = (b: Obj) => {
+    const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [], ms = moneyState[refOf(b)] || "";
+    if (/FAIL|REJECT|CANCEL|RETURN/.test(ms)) return null;
+    if (st === "PAID" && !(Number(b.amountScheduled) > 0)) return { date: day(b.paidDate) || today(), pending: /PEND|PROCESS/.test(ms) };
+    if (st === "SCHEDULED" || sch.length || Number(b.amountScheduled) > 0) return { date: day((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate || b.dueDate) || today(), scheduled: true, arrives: day((sch[0] || {}).estimatedArrivalDate) };
+    return null;
+  };
+  const rowCache = new Map<string, Obj | null>();
+  const rowOf = async (m: string, pid: string) => { const k = `${m}|${pid}`; if (!rowCache.has(k)) rowCache.set(k, await docData("pm_row", k)); return rowCache.get(k) || null; };
+  const owedOf = (r: Obj | null) => r ? (r.mdNet != null ? Math.round(Number(r.mdNet) * 100) : r.ownerPayout != null ? Math.round(Number(r.ownerPayout) * 100) : null) : null;
   let changed = 0; const unmatched: string[] = [];
-  for (const b of bills) {
-    const ref = S(b.invoiceNumber || b.billNumber || b.reference).toUpperCase(), m = ref.match(/^OWN-(\d{4})-(\d{2})-(.+)$/);
-    if (!m) continue;
-    const month = `${m[1]}-${m[2]}`, key = alnum(m[3]), amt = cAmt(b);
-    const vend = alnum(b.vendorName || (b.vendor && b.vendor.name));
-    // the property: its name starts with the key; when several do (342 King St #A/#B/#C), the owner's name and the amount decide
-    // "140MARINE" is 140 W Mariners Cay Dr: compare with and without the direction word
-    const forms = (t: unknown) => { const x = String(t || "").split(",")[0]; return [alnum(x), alnum(x.replace(/\b(N|S|E|W|NE|NW|SE|SW|North|South|East|West)\b\.?/gi, " "))]; };
-    let hits = props.filter((p) => key && [...forms(p.name), ...forms(p.address)].some((f) => f && f.startsWith(key)));
-    if (hits.length > 1 && vend) { const h = hits.filter((p) => { const o = ownerOf(p); return o && (alnum(o.name) === vend || alnum(o.company) === vend || (alnum(o.name) && vend.includes(alnum(o.name)))); }); if (h.length) hits = h; }
-    if (hits.length > 1) {
-      const h: Obj[] = [];
-      for (const p of hits) { const r = await docData("pm_row", `${month}|${p.id}`); if (r && r.ownerPayout != null && Math.round(Number(r.ownerPayout) * 100) === amt) h.push(p); }
-      if (h.length === 1) hits = h;
-    }
-    if (hits.length !== 1) { unmatched.push(`${ref} · ${S(b.vendorName)} · ${(amt / 100).toFixed(2)}${hits.length ? ` · ${hits.length} properties match` : ""}`); continue; }
-    const p = hits[0], rowId = `${month}|${p.id}`;
-    const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [];
-    const ms = moneyState[ref] || "";
-    const stopped = /FAIL|REJECT|CANCEL|RETURN/.test(ms), pending = /PEND|PROCESS/.test(ms);
-    const paid = !stopped && st === "PAID" && !(Number(b.amountScheduled) > 0), scheduled = !stopped && (st === "SCHEDULED" || sch.length > 0 || Number(b.amountScheduled) > 0);
-    const rec: Obj | null = paid ? { date: day(b.paidDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, ...(pending ? { pending: true } : {}) }
-      : scheduled ? { date: day((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate || b.dueDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, scheduled: true, arrives: day((sch[0] || {}).estimatedArrivalDate) }
-      : null;
-    const cur = await docData("pm_row", rowId); if (!cur) continue;
+  const write = async (month: string, p: Obj, rec: Obj | null, billIds: string[]) => {
+    const rowId = `${month}|${p.id}`, cur = await rowOf(month, p.id); if (!cur) return;
     const was = cur.paidOut || null;
-    if (was && !["MagicDoor", "Nickel"].includes(S(was.by))) continue;                 // marked by a person: theirs
-    if (!rec && !(was && was.by === "Nickel" && was.nickelBillId === S(b.id))) continue;   // nothing paid yet, nothing to undo
-    if (rec && was && JSON.stringify(was) === JSON.stringify(rec)) continue;
-    await updateDoc("pm_row", rowId, (r) => {
-      if (rec) r.paidOut = rec; else delete r.paidOut;          // a Nickel payment that was cancelled comes off again
-      r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync";
-    });
+    if (was && !["MagicDoor", "Nickel"].includes(S(was.by))) return;                                        // marked by a person: theirs
+    if (!rec && !(was && was.by === "Nickel" && billIds.includes(S(was.nickelBillId) || S((was.group || {}).ids?.[0])))) return;
+    if (rec && was && JSON.stringify(was) === JSON.stringify(rec)) return;
+    await updateDoc("pm_row", rowId, (r) => { if (rec) r.paidOut = rec; else delete r.paidOut; r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync"; });
     changed++;
+  };
+  // 1) one bill per property, by its OWN- number
+  const done = new Set<string>(), left: Obj[] = [];
+  for (const b of bills) {
+    const ref = refOf(b), m = ref.match(OWN_RE); if (!m) { left.push(b); continue; }
+    const month = `${m[1]}-${m[2]}`, key = alnum(m[3]), amt = cAmt(b);
+    let hits = props.filter((p) => key && [...nameForms(p.name), ...nameForms(p.address)].some((f) => f && f.startsWith(key)));
+    if (hits.length > 1) { const h = hits.filter((p) => ownerHit(b, ownerOf(p))); if (h.length) hits = h; }
+    if (hits.length > 1) { const h: Obj[] = []; for (const p of hits) if (owedOf(await rowOf(month, p.id)) === amt) h.push(p); if (h.length === 1) hits = h; }
+    if (hits.length !== 1) { (b as Obj)._month = month; left.push(b); continue; }
+    const p = hits[0], s0 = stateOf(b);
+    await write(month, p, s0 ? { date: s0.date, method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, ...(s0.pending ? { pending: true } : {}), ...(s0.scheduled ? { scheduled: true, arrives: s0.arrives } : {}) } : null, [S(b.id)]);
+    done.add(`${month}|${p.id}`);
+  }
+  // 2) bills paying several properties together: group bills and properties that share owners, and record the
+  //    payouts only when the bills add up exactly to what those properties are owed
+  const monthOf = (b: Obj) => (b as Obj)._month || S(b.invoiceDate || b.dueDate || b.paidDate).slice(0, 7);
+  const groups: { month: string; bills: Obj[]; props: Map<string, Obj> }[] = [];
+  for (const b of left) {
+    const month = monthOf(b); if (!/^\d{4}-\d{2}$/.test(month)) { unmatched.push(`${refOf(b)} · ${S(b.vendorName)} · ${(cAmt(b) / 100).toFixed(2)} · no month`); continue; }
+    const mine = props.filter((p) => !done.has(`${month}|${p.id}`) && ownerHit(b, ownerOf(p)));
+    if (!mine.length) { unmatched.push(`${refOf(b)} · ${S(b.vendorName)} · ${(cAmt(b) / 100).toFixed(2)} · no property with this owner`); continue; }
+    const into = groups.filter((g) => g.month === month && mine.some((p) => g.props.has(p.id)));
+    const g = into[0] || { month, bills: [], props: new Map() };
+    if (!into.length) groups.push(g);
+    into.slice(1).forEach((o) => { o.bills.forEach((x) => g.bills.push(x)); o.props.forEach((v, k) => g.props.set(k, v)); groups.splice(groups.indexOf(o), 1); });
+    g.bills.push(b); mine.forEach((p) => g.props.set(p.id, p));
+  }
+  for (const g of groups) {
+    const billC = g.bills.reduce((a, b) => a + cAmt(b), 0);
+    const owed: { p: Obj; c: number }[] = [];
+    for (const p of g.props.values()) { const r = await rowOf(g.month, p.id), c = owedOf(r); if (r && c != null && c > 0) owed.push({ p, c }); }
+    const owedC = owed.reduce((a, x) => a + x.c, 0), refs = g.bills.map(refOf), ids = g.bills.map((b) => S(b.id));
+    if (!owed.length || Math.abs(owedC - billC) > 1) {
+      unmatched.push(`${refs.join(" + ")} · ${(billC / 100).toFixed(2)} for ${[...g.props.values()].map((p) => p.name).join(", ")} · owed ${(owedC / 100).toFixed(2)}`);
+      continue;
+    }
+    const states = g.bills.map(stateOf);
+    const any = (k: string) => states.some((x) => x && (x as Obj)[k]);
+    const recFor = (c: number): Obj | null => states.some((x) => !x) ? null : {
+      date: states.map((x) => x!.date).sort().pop(), method: "Nickel", by: "Nickel", amount: c / 100, nickelBillId: ids[0], ref: refs.join(" + "),
+      group: { ids, refs, totalC: billC, props: owed.map((x) => x.p.name) }, ...(any("pending") ? { pending: true } : {}), ...(any("scheduled") ? { scheduled: true } : {}) };
+    for (const x of owed) await write(g.month, x.p, recFor(x.c), ids);
   }
   try { await setSetting("nk_owner_unmatched", JSON.stringify({ at: new Date().toISOString(), bills: unmatched })); } catch (_) { /* only for checking */ }
   return changed;
