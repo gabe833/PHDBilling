@@ -966,6 +966,8 @@ const STREET_WORDS = /\b(N|S|E|W|NE|NW|SE|SW|NORTH|SOUTH|EAST|WEST|ST|STREET|AVE
 const nameForms = (t: unknown) => { const x = String(t || "").split(",")[0]; return [alnum(x), alnum(x.replace(/\b(N|S|E|W|NE|NW|SE|SW|North|South|East|West)\b\.?/gi, " ")), alnum(x.replace(STREET_WORDS, " "))]; };
 // the people an owner record names: "Susan Reed and Stephen Welt - Joint Account" → Susan Reed, Stephen Welt
 const NOT_NAME = /^(LLC|INC|THE|AND|JOINT|ACCOUNT|TRUST|PROPERTIES|PROPERTY|HOLDINGS|GROUP|DBA|OWNER|LIVING|INVESTMENTS?|COMPANY|CO|LP|LTD)$/;
+// first and last name of each person an owner record names: "Susan Reed and Stephen Welt" → [SUSAN, REED], [STEPHEN, WELT]
+const people = (o: Obj) => { const out: string[][] = []; [S(o.name), S(o.company)].join(" / ").split(/\s+(?:and|&)\s+|[\/,()]|\s+-\s*|\s*-\s+/i).forEach((part) => { const w = part.split(/\s+/).map(alnum).filter((x) => x.length >= 2 && !NOT_NAME.test(x)); if (w.length >= 2) out.push([w[0], w[w.length - 1]]); }); return out; };
 const surnames = (o: Obj) => { const out = new Set<string>(); [S(o.name), S(o.company)].join(" / ").split(/\s+(?:and|&)\s+|[\/,()]|\s+-\s*|\s*-\s+/i).forEach((part) => { const w = part.split(/\s+/).map(alnum).filter((x) => x.length >= 3 && !NOT_NAME.test(x)); if (w.length >= 2) out.add(w[w.length - 1]); }); return [...out]; };
 async function ownerPayouts(): Promise<number> {
   const from = new Date(Date.now() - 75 * 864e5).toISOString().slice(0, 10);
@@ -1026,7 +1028,14 @@ async function ownerPayouts(): Promise<number> {
   const groups: { month: string; bills: Obj[]; props: Map<string, Obj> }[] = [];
   for (const b of left) {
     const month = monthOf(b); if (!/^\d{4}-\d{2}$/.test(month)) { unmatched.push(`${refOf(b)} · ${S(b.vendorName)} · ${(cAmt(b) / 100).toFixed(2)} · no month`); continue; }
-    const mine = props.filter((p) => !done.has(`${month}|${p.id}`) && ownerHit(b, ownerOf(p)));
+    let mine = props.filter((p) => !done.has(`${month}|${p.id}`) && ownerHit(b, ownerOf(p)));
+    // the bill names a person in full (Wade Judy, Susan Reed): only that person's properties, not everyone sharing the last name
+    const t = vendTokens(b), full = mine.filter((p) => people(ownerOf(p) || {}).some(([f, l]) => t.has(f) && t.has(l)));
+    if (full.length) mine = full;
+    // a property already paid for the month some other way (MagicDoor, or by hand) isn't part of this payout
+    const open: Obj[] = [];
+    for (const p of mine) { const po = ((await rowOf(month, p.id)) || {}).paidOut; if (!po || (S(po.by) === "Nickel") || po.pending) open.push(p); }
+    mine = open;
     if (!mine.length) { unmatched.push(`${refOf(b)} · ${S(b.vendorName)} · ${(cAmt(b) / 100).toFixed(2)} · no property with this owner`); continue; }
     const into = groups.filter((g) => g.month === month && mine.some((p) => g.props.has(p.id)));
     const g = into[0] || { month, bills: [], props: new Map() };
