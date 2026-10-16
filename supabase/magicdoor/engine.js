@@ -532,12 +532,14 @@ function mdOwned(k){ return k === "mdNet" || k === "mdAdj"; }
 function mdExactWant(g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
-  const phdCharged = r2((Number(g.filters) || 0) + (Number(g.lateFee) || 0) + (Number(g.applications) || 0) + (Number(g.phd) || 0));
-  const phdPaid = Math.min(paid, phdCharged), ownerPaid = r2(Math.max(0, paid - phdPaid));
-  const rentPaid = Math.min(ownerPaid, r2(Math.max(0, rent - credits))), otherPaid = r2(Math.min(other, ownerPaid - rentPaid));
-  const settled = paid >= phdCharged;          // PHD's charges count once the payment covers them
+  // filters, late fees and application fees come out of a payment first; the owner's rent and charges next; PHD's
+  // reimbursement charges (utilities and the like) last — the order MagicDoor's owner statement pays them in
+  const firstC = r2((Number(g.filters) || 0) + (Number(g.lateFee) || 0) + (Number(g.applications) || 0)), lastC = r2(g.phd);
+  const ownerPaid = r2(Math.max(0, paid - Math.min(paid, firstC)));
+  const rentPaid = Math.min(ownerPaid, r2(Math.max(0, rent - credits))), otherPaid = r2(Math.max(0, Math.min(other, ownerPaid - rentPaid)));
+  const settled = paid >= firstC, phdSettled = paid >= r2(firstC + rent - credits + other + lastC) - 0.005;
   return {rentDue:rent || null, rentReceived:paid > 0 ? r2(rentPaid) : null, otherIncome:otherPaid > 0 ? otherPaid : null,
-    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null, reimbursement:settled && g.phd ? r2(g.phd) : null,
+    filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null, reimbursement:phdSettled && g.phd ? r2(g.phd) : null,
     pending:r2(g.pending)};
 }
 function mdStmtCap(x, g, st){
@@ -559,7 +561,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
   // a vacant month that ended owing (bills paid with no rent coming in) is taken off this month, as MagicDoor does,
   // unless the console already has those costs on last month's row
   const prev = pmRow(PMCore.monthAdd(mm, -1), p.id);
-  if(st.left < 0 && !(st.prevIn > 0) && !(st.prevDist > 0) && !(prev && ((prev.repairItems || []).length || PMCore.has(prev.repairs) || (prev.adjustments || []).length))){
+  if(st.left < 0 && !(st.prevIn > 0) && !(st.prevDist > 0) && !(prev && ((prev.repairItems || []).length || Number(prev.repairs) > 0 || (prev.adjustments || []).some(a => Number(a.amount))))){
     const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
     x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});
   }
@@ -576,11 +578,18 @@ function mdStmtWant(p, rr, mpId, mm, g){
     mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
-function mdExactMonths(p, L, curM, out, mpId){
+function mdExactMonths(p, L, curM, out, mpId, mdPid){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
     const g = L && L.months ? L.months[mm] : null, rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
     if(!rr || rr.locked || rr.detailOnly || rr.deleted || mt.closed) return;
-    const want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
+    let want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
+    // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
+    // month's statement) belongs to this month's owner payout
+    const pm0 = PMCore.monthAdd(mm, -1), g0 = L && L.months ? L.months[pm0] : null, st0 = mdPid ? PMCore.mdStmt(S.md, mdPid, pm0) : null;
+    if(!mpId && mm === curM && g0 && !pmRow(pm0, p.id) && st0 && !(st0.distTotal > 0) && st0.end > 0){
+      const w0 = mdExactWant(g0), r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+      if(w0.rentReceived > 0 || w0.otherIncome > 0) want = Object.assign({}, want, {rentReceived:r2((want.rentReceived || 0) + (w0.rentReceived || 0)), otherIncome:r2((want.otherIncome || 0) + (w0.otherIncome || 0)) || null});
+    }
     const was = rr.md || {};
     Object.keys(mdExactLabels()).forEach(k => {
       const v = want[k];
@@ -701,7 +710,7 @@ function mdPlan(){
     const r = pmRow(curM, p.id);
     const oneToOne = m.property && (x.linkedPerMdProp[m.property.id] || 0) === 1;
     const hasStmt = oneToOne && S.md.stmts && S.md.stmts[m.property.id];
-    if((L && L.months) || hasStmt) mdExactMonths(p, L, curM, out, hasStmt ? m.property.id : null);
+    if((L && L.months) || hasStmt) mdExactMonths(p, L, curM, out, hasStmt ? m.property.id : null, m.property ? m.property.id : null);
     else if(!meta.closed && r && !r.locked && !r.detailOnly && L && !PMCore.has(r.rentReceived) && r.rentDue && PMCore.mdPaidThisMonth(L, curM))
       out.rows.push({p, row:r, amount:Number(r.rentDue), lastPayment:L.lastPayment});
     // the filter fee paid with that rent (PHD income)
