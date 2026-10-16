@@ -385,6 +385,8 @@ async function sync() {
         // a month begins with last month's closing balance plus rent paid early for this month
         const held = prev ? prev.end : 0;
         st.left = r2(held); st.pre = r2(Math.max(0, st.begin - held));
+        // was last month paid out? then what it ended with arrived after the payout and belongs to this month
+        (st as Obj).prevDist = prev ? prev.distTotal : 0;
       }
       delete stmts[pid][ms[0]];
     }

@@ -4193,20 +4193,29 @@ const PMCore = (function(){
        net      what the owner is owed for the month: MagicDoor's own number                           */
   function mdStmtMonth(st, prop){
     if(!st || st.pre == null) return null;
-    const recv = Math.round((st.pre + st.rentIn) * 100) / 100;
-    const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
-    const want = rule.type === "flat" ? cents(rule.amount) : Math.round(cents(recv) * Number(rule.rate || 0) / 100);
+    const rule = (prop && prop.feeRule) || {type:"pct", rate:10}, rate = Number(rule.rate || 0);
     const fees = (st.fees || []).map(cents).filter(c => c);
-    // management fees: the PM fee can come in pieces (350 + 4.97 on rent paid early); a fee well above the rate is a leasing fee
-    let pmC = 0, leaseC = 0;
-    const big = c => c > want * 1.5 + 5000;
-    fees.forEach(c => { if(big(c)) leaseC += c; else pmC += c; });
-    if(!pmC && leaseC && fees.length > 1){ const s = [...fees].sort((a, b) => a - b); pmC = s[0]; leaseC -= s[0]; }
+    const base = cents(st.pre + st.rentIn);
+    // money that came in after last month's payout (last month was paid out, and it ended with a balance) is this
+    // month's: the part MagicDoor charged the PM fee on is rent, the rest other income (a pet fee, say)
+    const late = st.prevDist > 0 && st.left > 0 ? cents(st.left) : 0;
+    // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
+    const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
+    const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
+    const best = {pm:fees.filter(c => !isLease(c)), recvC:base};
+    const pmC = best.pm.reduce((a, c) => a + c, 0), leaseC = fees.reduce((a, c) => a + c, 0) - pmC;
+    // the rent part of late money: what the PM fee was worked out on, above this month's own rent
+    let rentC = best.recvC, lateOtherC = 0;
+    if(late && rate > 0 && rule.type !== "flat"){
+      const feeBase = Math.round(pmC * 100 / rate), extra = Math.max(0, Math.min(late, feeBase - base));
+      rentC = base + extra; lateOtherC = late - extra;
+    } else if(late && best.recvC === base) lateOtherC = 0;
     const billsC = (st.bills || []).reduce((a, x) => a + cents(x.a), 0), adminC = (st.admin || []).reduce((a, x) => a + cents(x.a), 0);
     const otherC = (st.other || []).reduce((a, x) => a + cents(x.a), 0);
-    const netC = cents(recv) - pmC - leaseC - billsC - adminC + otherC;
-    return {recv, pmFee:pmC / 100, leasing:leaseC / 100, bills:billsC / 100, admin:adminC / 100, other:otherC / 100, otherLines:st.other || [], net:netC / 100, unpaid:st.unpaid || 0};
+    const netC = rentC + lateOtherC - pmC - leaseC - billsC - adminC + otherC;
+    return {recv:rentC / 100, lateOther:lateOtherC / 100, pmFee:pmC / 100, leasing:leaseC / 100, bills:billsC / 100, admin:adminC / 100, other:otherC / 100, otherLines:st.other || [], net:netC / 100, unpaid:st.unpaid || 0};
   }
+
 
   function mdRenewal(md, leaseId){ return (md.renewals || []).find(r => r.leaseId === leaseId && !r.finalized && /offered|signing|draft|pending/i.test(r.status || "")) || null; }
   function mdFee(md, mdPropId, month){ const f = (md.fees || []).find(x => x.propertyId === mdPropId && x.month === month); return f ? f.amount : null; }
@@ -5905,7 +5914,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
   const st = PMCore.mdStmt(S.md, mpId, mm), x = PMCore.mdStmtMonth(st, p); if(!x) return null;
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const led = g ? mdExactWant(g) : {};
-  const other = Math.min(r2(led.otherIncome || 0), x.recv), rent = r2(x.recv - other);
+  const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
   const own = ((st.bills || []).reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
@@ -5916,7 +5925,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
     leasingFee:x.leasing > 0 || (rr.md && PMCore.has(rr.md.leasingFee)) ? x.leasing : null,
     adminFee:adminOver ? x.admin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
     mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
-    mdNet:r2(x.net - (mm === todayISO().slice(0, 7) ? x.unpaid : 0))});
+    mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
 function mdExactMonths(p, L, curM, out, mpId){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
