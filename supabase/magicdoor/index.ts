@@ -236,7 +236,7 @@ function cleanStatement(e: Obj) {
     contrib: N(s.ownerContributions) || 0, distTotal: N(s.ownerDistributions) || 0, unpaid: N(s.unpaidBills) || 0, net: N(s.netOwnerFunds),
     rentIn: 0, fees: [] as number[], bills: [] as { d: string | null; v: string; t: string; a: number }[], admin: [] as { d: string | null; t: string; a: number }[],
     dists: [] as { d: string | null; a: number }[], other: [] as { d: string | null; k: string; t: string; a: number }[],
-    pre: null as number | null, left: null as number | null,
+    pre: null as number | null, left: null as number | null, deposits: 0,
   };
   for (const t of ((e.transactions as Obj[]) || [])) {
     const k = S(t.entityType), inn = N(t.cashIn) || 0, outv = N(t.cashOut) || 0, party = (t.partyInfo || {}) as Obj, d = D(t.date), desc = S(t.description).slice(0, 160);
@@ -249,7 +249,16 @@ function cleanStatement(e: Obj) {
       else out.bills.push({ d, v, t: desc, a: r2(outv - inn) });
       continue;
     }
+    // security deposits moving in or out are held for the tenant, not the owner's money for the month
+    if (k === "ledgerTransfer" || /deposit/i.test(S(t.sourceType)) || /SecurityDeposit/i.test(desc)) { out.deposits = r2((out.deposits || 0) + inn - outv); continue; }
     out.other.push({ d, k, t: S(party.type) === "tenant" ? "" : desc, a: r2(inn - outv) });
+  }
+  // bills not paid yet: the owner statement already takes them off what the owner is owed
+  for (const u of ((e.unpaidBills as Obj[]) || [])) {
+    const a = r2(N(u.dueAmount ?? u.amount ?? u.totalAmount ?? u.cashOut) || 0); if (!a) continue;
+    const desc = S(u.description || u.memo || u.name).slice(0, 160), v = S(((u.vendor || u.partyInfo || {}) as Obj).name || u.vendorName).slice(0, 80), d = D(u.billDate || u.date || u.dueDate);
+    if (/\badmin(istrative)?\s*fee\b/i.test(desc)) out.admin.push({ d, t: desc, a, unpaid: true } as never);
+    else out.bills.push({ d, v, t: desc, a, unpaid: true } as never);
   }
   return out;
 }
@@ -362,7 +371,7 @@ async function sync() {
     for (const m of ms) {
       const [y, mo] = m.split("-").map(Number), last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
       try {
-        const r = await mdGet(`/reports/owner-statement?startDate=${m}-01&endDate=${last}`, ACCOUNTING);
+        const r = await mdGet(`/reports/owner-statement?startDate=${m}-01&endDate=${last}&withUnpaidBills=true`, ACCOUNTING);
         if (r.status !== 200) { notes.push(`Owner statement ${m} answered ${r.status}`); continue; }
         const entries = (((r.body as Obj)?.entries as Obj[]) || []);
         for (const e of entries) { const pid = S(e.propertyId); if (!pid) continue; (stmts[pid] = stmts[pid] || {})[m] = cleanStatement(e); }
@@ -373,7 +382,8 @@ async function sync() {
     for (const pid of Object.keys(stmts)) {
       for (const m of ms.slice(1)) {
         const st = stmts[pid][m], prev = stmts[pid][ms[ms.indexOf(m) - 1]]; if (!st) continue;
-        const held = prev ? Math.max(0, prev.end) : 0;   // no statement last month: nothing was held
+        // a month begins with last month's closing balance plus rent paid early for this month
+        const held = prev ? prev.end : 0;
         st.left = r2(held); st.pre = r2(Math.max(0, st.begin - held));
       }
       delete stmts[pid][ms[0]];

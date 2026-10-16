@@ -4197,13 +4197,11 @@ const PMCore = (function(){
     const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
     const want = rule.type === "flat" ? cents(rule.amount) : Math.round(cents(recv) * Number(rule.rate || 0) / 100);
     const fees = (st.fees || []).map(cents).filter(c => c);
+    // management fees: the PM fee can come in pieces (350 + 4.97 on rent paid early); a fee well above the rate is a leasing fee
     let pmC = 0, leaseC = 0;
-    if(fees.length){
-      const i = fees.reduce((bi, c, j) => Math.abs(c - want) < Math.abs(fees[bi] - want) ? j : bi, 0);
-      // one fee far above the rate (no rent, or a lease-up month) is a leasing fee
-      if(fees.length === 1 && fees[0] > want * 2 + 5000) leaseC = fees[0];
-      else fees.forEach((c, j) => { if(j === i) pmC += c; else leaseC += c; });
-    }
+    const big = c => c > want * 1.5 + 5000;
+    fees.forEach(c => { if(big(c)) leaseC += c; else pmC += c; });
+    if(!pmC && leaseC && fees.length > 1){ const s = [...fees].sort((a, b) => a - b); pmC = s[0]; leaseC -= s[0]; }
     const billsC = (st.bills || []).reduce((a, x) => a + cents(x.a), 0), adminC = (st.admin || []).reduce((a, x) => a + cents(x.a), 0);
     const otherC = (st.other || []).reduce((a, x) => a + cents(x.a), 0);
     const netC = cents(recv) - pmC - leaseC - billsC - adminC + otherC;
