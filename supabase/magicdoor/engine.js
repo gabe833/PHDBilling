@@ -254,7 +254,10 @@ const PMCore = (function(){
     const map = new Map();
     // a bill still owed in MagicDoor can only be one of the statement's unpaid bills, and a paid one only a payment;
     // an entry with a vendor name only matches that vendor
-    const take = (li, b, sameVendor) => pool.find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7)
+    // a bill MagicDoor still owes belongs to the latest statement that lists it (that's the month it comes off what the
+    // owner is paid); a paid one to the statement it was paid in
+    const rev = pool.slice().reverse();
+    const take = (li, b, sameVendor) => (Number(b.owed) > 0 ? rev : pool).find(e => !e.used && e.c === cents(li.amount) && e.m >= b.date.slice(0, 7)
       && e.unpaid === (Number(b.owed) > 0) && (e.v ? !vkey(b.vendor) || e.v === vkey(b.vendor) : !sameVendor || true));
     [true, false].forEach(sameVendor => lines.forEach(({li, b}) => { if(map.has(li.id)) return; const e = take(li, b, sameVendor); if(e){ e.used = true; map.set(li.id, e.m); } }));
     byMd[mdPropId] = map;
@@ -489,14 +492,14 @@ function mdExactWant(g){
     filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null, reimbursement:settled && g.phd ? r2(g.phd) : null,
     pending:r2(g.pending)};
 }
-function mdStmtCap(x, g){
-  if(!x || !g) return x;
+function mdStmtCap(x, g, st){
+  if(!x || !g || !st || !(st.pre > 0)) return x;
   const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100;
   const due = Math.max(0, r2(n(g.rent) + n(g.other) - n(g.credits)));
   const cash = r2(n(g.paid) + n(g.pending) - n(g.filters) - n(g.lateFee) - n(g.applications) - n(g.phd));
   const cap = Math.max(due, cash);
   if(!(due > 0 || n(g.paid) > 0) || x.recv <= cap + 1) return x;
-  const cut = r2(x.recv - cap);
+  const cut = r2(Math.min(x.recv - cap, st.pre));   // only money carried in from last month can be the double count
   return Object.assign({}, x, {recv:cap, net:r2(x.net - cut), heldOver:cut});
 }
 function mdStmtWant(p, rr, mpId, mm, g){
@@ -504,7 +507,14 @@ function mdStmtWant(p, rr, mpId, mm, g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const led = g ? mdExactWant(g) : {};
   const oneLease = (S.md.leases || []).filter(l => l.propertyId === mpId && !l.ended && !l.draft).length === 1;
-  if(oneLease) x = mdStmtCap(x, g);
+  if(oneLease) x = mdStmtCap(x, g, st);
+  // a vacant month that ended owing (bills paid with no rent coming in) is taken off this month, as MagicDoor does,
+  // unless the console already has those costs on last month's row
+  const prev = pmRow(PMCore.monthAdd(mm, -1), p.id);
+  if(st.left < 0 && !(st.prevIn > 0) && !(st.prevDist > 0) && !(prev && ((prev.repairItems || []).length || PMCore.has(prev.repairs) || (prev.adjustments || []).length))){
+    const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
+    x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});
+  }
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
@@ -525,7 +535,9 @@ function mdExactMonths(p, L, curM, out, mpId){
     const want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
     const was = rr.md || {};
     Object.keys(mdExactLabels()).forEach(k => {
-      const v = want[k]; if(v == null) return;
+      const v = want[k];
+      // something MagicDoor filled in earlier that its data no longer shows (a charge moved to PHD's side, say) comes off
+      if(v == null){ if(g && /^(otherIncome|reimbursement|lateFee|filters|applications)$/.test(k) && was[k] != null && PMCore.has(rr[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
       if(mdOwned(k)){
         const same = k === "mdAdj" ? JSON.stringify(was.mdAdj || null) === JSON.stringify(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
         if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet"});
