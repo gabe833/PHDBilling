@@ -1411,11 +1411,15 @@ const PMCore = (function(){
     }
     return mdPayoutMonth(date);
   }
-  function mdDistributions(md, mdPropId, month){
+  // a payout MagicDoor hasn't finished sending (pending, processing, failed, cancelled) isn't paid
+  const mdDistOpen = st => /pend|process|schedul|queue|draft|await|hold|approv/.test(String(st || "")), mdDistDead = st => /cancel|void|fail|reject|return|revers|delet/.test(String(st || ""));
+  function mdDistributions(md, mdPropId, month, all){
     const out = [];
     (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !x.date) return;
+      const pending = mdDistOpen(x.status), dead = mdDistDead(x.status);
+      if(!all && (pending || dead)) return;
       const m = mdDistMonth(md, mdPropId, x.date, li.amount); if(month && m !== month) return;
-      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m}); }));
+      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m, status:x.status || "", pending, dead}); }));
     return out;
   }
   /* One month of a MagicDoor owner statement, in the console's terms (all in dollars):

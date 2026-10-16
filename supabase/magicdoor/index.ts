@@ -183,6 +183,8 @@ function cleanBill(x: Obj, vendors: Record<string, string>, accounts: Record<str
 function cleanDistribution(x: Obj) {
   return {
     id: S(x.id), date: D(x.distributionDate), ownerId: S(x.ownerId), total: N(x.totalAmount), memo: S(x.memo).slice(0, 200),
+    // where the payout stands in MagicDoor (a payout stuck "pending" hasn't reached the owner)
+    status: S(x.status || x.paymentStatus || x.distributionStatus || x.state || x.transactionStatus).toLowerCase().slice(0, 40),
     lines: ((x.lineItems as Obj[]) || []).map((li) => ({ propertyId: S(li.propertyId), amount: N(li.amount), text: S(li.description).slice(0, 120) })),
   };
 }
@@ -291,7 +293,7 @@ async function sync() {
       } catch { shapes.hydratedFiles = { status: "failed" }; }
     }
   } catch (e) { notes.push("Vendor bills: " + String((e as Error).message || e)); }
-  try { dists = (await listAll("/company-app/owners/distributions")).map(cleanDistribution).filter((x) => x.date && x.date >= cutDay); }
+  try { const rawD = await listAll("/company-app/owners/distributions"); shapes.distList = mergeShapes(rawD.slice(0, 40).map((x) => typeOf("", x))); dists = rawD.map(cleanDistribution).filter((x) => x.date && x.date >= cutDay); }
   catch (e) { notes.push("Owner distributions: " + String((e as Error).message || e)); }
   try { renewals = (await listAll("/company-app/leases/renewals")).map(cleanRenewal); }
   catch (e) { notes.push("Renewals: " + String((e as Error).message || e)); }

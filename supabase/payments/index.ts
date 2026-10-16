@@ -948,6 +948,56 @@ async function saveToolSchemas() {
   await setSetting("nk_tools", JSON.stringify({ at: new Date().toISOString(), names: all.map((t) => S(t.name)), tools: keep }));
   await setSetting("nk_tools_at", String(Date.now()));
 }
+/* ---- owner payouts paid in Nickel ----
+   The office pays owners as Nickel bills numbered OWN-<year>-<month>-<property> (e.g. OWN-2026-10-228MORNIN).
+   Each one is matched to that property's month and recorded as its payout: paid (with the date), or scheduled.
+   A payout recorded by hand in the console is never overwritten; one taken from MagicDoor is replaced, because
+   the payout actually went out from Nickel. */
+const alnum = (x: unknown) => S(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
+const cAmt = (b: Obj) => { for (const k of ["amountInCents", "totalAmountInCents", "amountCents", "totalInCents"]) if (b[k] != null && !isNaN(Number(b[k]))) return Math.round(Number(b[k])); for (const k of ["amount", "totalAmount", "total"]) if (b[k] != null && !isNaN(Number(b[k]))) return Math.round(Number(b[k]) * 100); return 0; };
+async function ownerPayouts(): Promise<number> {
+  const from = new Date(Date.now() - 75 * 864e5).toISOString().slice(0, 10);
+  const rows = await readAll("search_bills", { query: "OWN-", invoiceDateAfter: from }, 10);
+  const bills = rows.filter((b) => /^OWN-\d{4}-\d{2}-/i.test(S(b.invoiceNumber || b.billNumber || b.reference)));
+  try { if (bills[0]) await setSetting("nk_owner_bill_shape", JSON.stringify(Object.keys(bills[0]))); } catch (_) { /* only for checking */ }
+  if (!bills.length) return 0;
+  const props = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data).filter((p) => p && p.id);
+  const main = await docData("shared", "main"), owners: Obj[] = (main && main.owners) || [];
+  const ownerOf = (p: Obj) => owners.find((o) => o.id === p.ownerId) || null;
+  let changed = 0;
+  for (const b of bills) {
+    const ref = S(b.invoiceNumber || b.billNumber || b.reference).toUpperCase(), m = ref.match(/^OWN-(\d{4})-(\d{2})-(.+)$/);
+    if (!m) continue;
+    const month = `${m[1]}-${m[2]}`, key = alnum(m[3]), amt = cAmt(b);
+    const vend = alnum(b.vendorName || (b.vendor && b.vendor.name));
+    // the property: its name starts with the key; when several do (342 King St #A/#B/#C), the owner's name and the amount decide
+    let hits = props.filter((p) => key && (alnum(p.name).startsWith(key) || alnum(String(p.address || "").split(",")[0]).startsWith(key)));
+    if (hits.length > 1 && vend) { const h = hits.filter((p) => { const o = ownerOf(p); return o && (alnum(o.name) === vend || alnum(o.company) === vend || (alnum(o.name) && vend.includes(alnum(o.name)))); }); if (h.length) hits = h; }
+    if (hits.length > 1) {
+      const h: Obj[] = [];
+      for (const p of hits) { const r = await docData("pm_row", `${month}|${p.id}`); if (r && r.ownerPayout != null && Math.round(Number(r.ownerPayout) * 100) === amt) h.push(p); }
+      if (h.length === 1) hits = h;
+    }
+    if (hits.length !== 1) continue;
+    const p = hits[0], rowId = `${month}|${p.id}`;
+    const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [];
+    const paid = st === "PAID" && !(Number(b.amountScheduled) > 0), scheduled = st === "SCHEDULED" || sch.length > 0 || Number(b.amountScheduled) > 0;
+    const rec: Obj | null = paid ? { date: day(b.paidDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref }
+      : scheduled ? { date: day((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate || b.dueDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, scheduled: true, arrives: day((sch[0] || {}).estimatedArrivalDate) }
+      : null;
+    const cur = await docData("pm_row", rowId); if (!cur) continue;
+    const was = cur.paidOut || null;
+    if (was && !["MagicDoor", "Nickel"].includes(S(was.by))) continue;                 // marked by a person: theirs
+    if (!rec && !(was && was.by === "Nickel" && was.nickelBillId === S(b.id))) continue;   // nothing paid yet, nothing to undo
+    if (rec && was && JSON.stringify(was) === JSON.stringify(rec)) continue;
+    await updateDoc("pm_row", rowId, (r) => {
+      if (rec) r.paidOut = rec; else delete r.paidOut;          // a Nickel payment that was cancelled comes off again
+      r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync";
+    });
+    changed++;
+  }
+  return changed;
+}
 async function refresh(only?: Obj) {
   if (!TOKEN) return { changed: 0, skipped: "no token" };
   if (!only) { try { await saveToolSchemas(); } catch (_) { /* next hour */ } }
@@ -976,6 +1026,7 @@ async function refresh(only?: Obj) {
     if (only ? !(only.kind === "project" && only.id === row.id && (!only.key || only.key === key)) : (g.nickel.done && g.paid)) continue;
     try { if (await syncProject(row.id, key, g, bud)) changed++; } catch (_) { /* next hour */ }
   }
+  if (!only || only.kind === "ownerPayouts") { try { changed += await ownerPayouts(); } catch (_) { /* next hour */ } }
   if (!only) { try { changed += await linkBills(bud, map); } catch (_) { /* next hour */ } }
   if (!only || only.kind === "projects") { try { changed += await linkAllProjects(); } catch (_) { /* next hour */ } }
   if (!only || only.kind === "expenses") { try { changed += await projExpenses(only ? { left: 30 } : bud); } catch (_) { /* next hour */ } }

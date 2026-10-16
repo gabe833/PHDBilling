@@ -278,11 +278,15 @@ const PMCore = (function(){
     }
     return mdPayoutMonth(date);
   }
-  function mdDistributions(md, mdPropId, month){
+  // a payout MagicDoor hasn't finished sending (pending, processing, failed, cancelled) isn't paid
+  const mdDistOpen = st => /pend|process|schedul|queue|draft|await|hold|approv/.test(String(st || "")), mdDistDead = st => /cancel|void|fail|reject|return|revers|delet/.test(String(st || ""));
+  function mdDistributions(md, mdPropId, month, all){
     const out = [];
     (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !x.date) return;
+      const pending = mdDistOpen(x.status), dead = mdDistDead(x.status);
+      if(!all && (pending || dead)) return;
       const m = mdDistMonth(md, mdPropId, x.date, li.amount); if(month && m !== month) return;
-      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m}); }));
+      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m, status:x.status || "", pending, dead}); }));
     return out;
   }
   /* One month of a MagicDoor owner statement, in the console's terms (all in dollars):
@@ -559,9 +563,9 @@ function mdProjectMatch(p, li, b, used){
   return null;
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -675,6 +679,9 @@ function mdPlan(){
       });
       const dropped = new Set(out.dupes.filter(x => x.row === rr).map(x => x.drop));
       if(dropped.size) out.memos = out.memos.filter(x => !dropped.has(x.it));
+      // a payout this console took from MagicDoor that MagicDoor now shows as not sent (pending, failed, cancelled) comes off
+      if(rr.paidOut && rr.paidOut.by === "MagicDoor" && !PMCore.mdDistributions(S.md, m.property.id, mm).length && PMCore.mdDistributions(S.md, m.property.id, mm, true).length)
+        out.unpays.push({p, row:rr, why:PMCore.mdDistributions(S.md, m.property.id, mm, true).some(d => d.pending) ? "still pending in MagicDoor" : "didn't go through in MagicDoor"});
       if(!rr.paidOut){
         const ds = PMCore.mdDistributions(S.md, m.property.id, mm);
         if(ds.length) out.payouts.push({p, row:rr, date:ds.map(d => d.date).sort().pop(), amount:Math.round(ds.reduce((a, d) => a + (d.amount || 0), 0) * 100) / 100});
@@ -866,6 +873,11 @@ function mdApply(opts){
     row.repairItems.push({id:uid(), date:li.date, vendor:li.vendor || "", memo, mdMemo:memo, amount:li.amount, feeMode:"auto", mdLine:li.id, mdBill:li.billId, source:"MagicDoor"});
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} bill added: ${li.vendor || "vendor"} ${usd(cents(li.amount))}${li.memo ? " — " + li.memo.slice(0, 60) : ""}`});
+  });
+  (plan.unpays || []).forEach(({p, row, why}) => {
+    const was = row.paidOut; delete row.paidOut;
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} payout ${usd(cents(was.amount || 0))} (${fdateS(was.date)}) no longer counted as sent — ${why}`});
   });
   plan.payouts.forEach(({p, row, date, amount}) => {
     row.paidOut = {date, method:"MagicDoor", by:"MagicDoor", amount};

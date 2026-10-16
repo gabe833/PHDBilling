@@ -4175,11 +4175,15 @@ const PMCore = (function(){
     }
     return mdPayoutMonth(date);
   }
-  function mdDistributions(md, mdPropId, month){
+  // a payout MagicDoor hasn't finished sending (pending, processing, failed, cancelled) isn't paid
+  const mdDistOpen = st => /pend|process|schedul|queue|draft|await|hold|approv/.test(String(st || "")), mdDistDead = st => /cancel|void|fail|reject|return|revers|delet/.test(String(st || ""));
+  function mdDistributions(md, mdPropId, month, all){
     const out = [];
     (md.distributions || []).forEach(x => (x.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !x.date) return;
+      const pending = mdDistOpen(x.status), dead = mdDistDead(x.status);
+      if(!all && (pending || dead)) return;
       const m = mdDistMonth(md, mdPropId, x.date, li.amount); if(month && m !== month) return;
-      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m}); }));
+      out.push({id:x.id, date:x.date, amount:li.amount, ownerId:x.ownerId, month:m, status:x.status || "", pending, dead}); }));
     return out;
   }
   /* One month of a MagicDoor owner statement, in the console's terms (all in dollars):
@@ -4559,7 +4563,7 @@ function pgPmMonth(){
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}</td>
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
-      <td class="pm-po">${row.paidOut ? `<button class="po-done" data-unpay="${prop.id}" title="Sent ${esc(row.paidOut.date)}${row.paidOut.method ? " by " + esc(row.paidOut.method) : ""}${row.paidOut.by ? " · marked by " + esc(row.paidOut.by) : ""} — click to undo">✓ ${esc(fdateS(row.paidOut.date))}</button>`
+      <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
           : locked ? `<span class="muted">—</span>` : c.recv > 0 && c.payoutC > 0 ? `<button class="btn sm" data-pay="${prop.id}">Mark sent</button>` : `<span class="muted">—</span>`}</td>
       <td class="act">${warn.length ? `<span class="pm-dot warn" title="${esc(warn.map(x => x.text).join("\n"))}"></span>` : info.length ? `<span class="pm-dot" title="${esc(info.map(x => x.text).join("\n"))}"></span>` : ""}<span class="sc-go">›</span></td>`;
     tr.onclick = e => { if(e.target.closest("input,button")) return; pmRowSheet(m, prop.id); };
@@ -5638,7 +5642,7 @@ function pgPmProperty(){
       ${PMCore.has(r.mdNet) && !pending ? (Math.abs(c.calcC - cents(r.mdNet)) <= 1
           ? `<div class="pp-mdchk ok">✓ Matches MagicDoor's owner statement · ${usd(cents(r.mdNet))} to the owner</div>`
           : `<div class="pp-mdchk off"><b>Doesn't match MagicDoor's owner statement.</b> MagicDoor: ${usd(cents(r.mdNet))} · here: ${usd(c.calcC)} (${usd(Math.abs(c.calcC - cents(r.mdNet)))} ${c.calcC > cents(r.mdNet) ? "more" : "less"}). Open the month to see which line differs.</div>`) : ""}
-      <div class="pp-foot">${r.paidOut ? `<span class="tag green">Paid out ${esc(fdateS(r.paidOut.date))}${r.paidOut.method ? " · " + esc(r.paidOut.method) : ""}</span>`
+      <div class="pp-foot">${r.paidOut ? (r.paidOut.scheduled ? `<span class="tag gold">Payout scheduled in Nickel · ${esc(fdateS(r.paidOut.date))}${r.paidOut.arrives ? " · arrives " + esc(fdateS(r.paidOut.arrives)) : ""}</span>` : `<span class="tag green">Paid out ${esc(fdateS(r.paidOut.date))}${r.paidOut.method ? " · " + esc(r.paidOut.method) : ""}${PMCore.has(r.paidOut.amount) ? " · " + usd(cents(r.paidOut.amount)) : ""}</span>`)
           : r.locked ? `<span class="muted">Imported from the workbook</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout to send</span>` : ""}
         ${closed ? `<span class="muted">Month closed</span>` : ""}
         <button class="btn sm ${pending ? "primary" : ""}" id="ppEdit" style="margin-left:auto">${r.locked || closed ? "View details" : pending ? "Record rent & bills" : "Edit month"}</button></div>`;
@@ -5938,9 +5942,9 @@ function mdExactMonths(p, L, curM, out, mpId){
   });
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], moves:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -6054,6 +6058,9 @@ function mdPlan(){
       });
       const dropped = new Set(out.dupes.filter(x => x.row === rr).map(x => x.drop));
       if(dropped.size) out.memos = out.memos.filter(x => !dropped.has(x.it));
+      // a payout this console took from MagicDoor that MagicDoor now shows as not sent (pending, failed, cancelled) comes off
+      if(rr.paidOut && rr.paidOut.by === "MagicDoor" && !PMCore.mdDistributions(S.md, m.property.id, mm).length && PMCore.mdDistributions(S.md, m.property.id, mm, true).length)
+        out.unpays.push({p, row:rr, why:PMCore.mdDistributions(S.md, m.property.id, mm, true).some(d => d.pending) ? "still pending in MagicDoor" : "didn't go through in MagicDoor"});
       if(!rr.paidOut){
         const ds = PMCore.mdDistributions(S.md, m.property.id, mm);
         if(ds.length) out.payouts.push({p, row:rr, date:ds.map(d => d.date).sort().pop(), amount:Math.round(ds.reduce((a, d) => a + (d.amount || 0), 0) * 100) / 100});
@@ -6252,6 +6259,11 @@ function mdApply(opts){
     row.repairItems.push({id:uid(), date:li.date, vendor:li.vendor || "", memo, mdMemo:memo, amount:li.amount, feeMode:"auto", mdLine:li.id, mdBill:li.billId, source:"MagicDoor"});
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} bill added: ${li.vendor || "vendor"} ${usd(cents(li.amount))}${li.memo ? " — " + li.memo.slice(0, 60) : ""}`});
+  });
+  (plan.unpays || []).forEach(({p, row, why}) => {
+    const was = row.paidOut; delete row.paidOut;
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} payout ${usd(cents(was.amount || 0))} (${fdateS(was.date)}) no longer counted as sent — ${why}`});
   });
   plan.payouts.forEach(({p, row, date, amount}) => {
     row.paidOut = {date, method:"MagicDoor", by:"MagicDoor", amount};

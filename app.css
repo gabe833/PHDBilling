@@ -1648,4 +1648,5 @@ label .hq{vertical-align:-4px}
 .pp-mdchk{margin:10px 0 0;padding:8px 12px;border-radius:8px;font-size:12.6px;line-height:1.45}
 .pp-mdchk.ok{background:var(--green-soft);color:var(--green)}
 .pp-mdchk.off{background:var(--gold-soft);color:#7A5715;border:1px solid var(--gold-line)}
+.po-done.sched{color:#7A5715;background:var(--gold-soft);border-color:var(--gold-line)}
 

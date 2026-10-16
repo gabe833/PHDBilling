@@ -318,6 +318,16 @@ To reconnect later, use Settings → **Connect again**. If Intuit asks, add `htt
 
 ---
 
+### 8a. Owner payouts paid in Nickel
+- Pay owners in Nickel as bills numbered **OWN-<year>-<month>-<property>**, for example `OWN-2026-10-228MORNIN`. The property part is the start of the property's name with no spaces.
+- Every hour the console reads those bills and records the payout on that property's month:
+  - **Paid** shows the date and the amount, and "Nickel".
+  - **Scheduled** shows the withdrawal date and when it arrives.
+  - A cancelled Nickel payment comes off again.
+- When several properties share the same start (342 King St #A, #B, #C), the owner's name on the bill decides which one it is.
+- A payout you mark by hand is never changed. A payout taken from MagicDoor is replaced by the Nickel one.
+- MagicDoor payouts that are still pending, failed or cancelled in MagicDoor no longer count as sent. Any already recorded that way come off at the next sync.
+
 ### 8. Payments: Nickel (free plan, through Nickel's MCP server)
 **Today** (top of the left menu on both sides) lists what needs doing, each with the button that does it. On the Projects side: invoices to send, invoices waiting on owners (with a reminder button after two weeks), receipts to review and checks to apply. On the Property mgmt side: rent collected and who's late, bills to pay and payments on the way, owner payouts to send, owner invoices, month close and owner statements, leases and deposits, and bills paid in the last week. **Payments** is in the left menu on both sides (Projects and Property mgmt). It has two tabs:
 - **Money in & out:** Nickel balances, every payment in and out with a **Receipt** button (Nickel's PDF) and a link to the console record it belongs to, and **Deposited checks to apply**. A check you deposited in Nickel can be put toward any open owner or project invoice without moving money again.
