@@ -12868,7 +12868,7 @@ go = function(view){
 const polRender0 = render;
 render = function(){
   const r = polRender0.apply(this, arguments);
-  try{ polCrumb(); polCompact(); polSettings(); polMore(); polFootLink(); }catch(e){ console.warn(e); }
+  try{ polCrumb(); polCompact(); polSettings(); polMore(); polFootLink(); polMdWarn(); }catch(e){ console.warn(e); }
   return r;
 };
 
@@ -12965,6 +12965,17 @@ HELP.connections = {t:"Settings & connections", b:`
   <ol><li>Gold means it needs setting up or has stopped working. Press the button on that row to fix it.</li>
     <li>Grey means it's optional, or only works in the hosted console (signed in at phdbilling.vercel.app).</li></ol>
   <p class="hp-tip">A gold dot on <b>Settings &amp; connections</b> at the bottom of the menu means something here needs attention.</p>`};
+
+/* MagicDoor won't let the sync read owner statements: say so where the numbers are, so nobody trusts estimates */
+function polMdWarn(){
+  if(!["pmMonth", "pmProperty", "pmHome", "pmStatements"].includes(S.ui.view)) return;
+  const notes = (S.md && S.md.notes) || [];
+  if(!notes.some(n => /^Owner statement .* answered 403/.test(n))) return;
+  const v = $("#view"); if(!v || v.querySelector(".md-key-warn")) return;
+  const b = elm("div", "pm-banner md-key-warn");
+  b.innerHTML = `<b>Rent and fees here are estimates.</b> MagicDoor isn't letting the sync read owner statements (its API key can't read accounting reports), so rent paid early, MagicDoor's exact fees and unpaid bills are missing. Fix: in MagicDoor make an API key that can read accounting/reports, and put it in Supabase → Edge Functions → Secrets as MAGICDOOR_API_KEY.`;
+  v.insertBefore(b, v.firstChild);
+}
 
 /* ===================== BOOT ===================== */
 function chip(){
