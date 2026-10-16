@@ -4692,6 +4692,7 @@ function pmStartMonth(m, quiet){
 /* the first person to open the console in a new month starts it, so nobody has to remember */
 function pmAutoStart(){
   const m = thisMonth(), P2 = pmState();
+  if(P2.properties.length && pmMonthRows(m).length && S.ui._filled !== m){ S.ui._filled = m; if(mdFillMonth(m)){ commit(); } return false; }
   if(!P2.properties.length || pmMonthRows(m).length || S.ui._autoTried === m) return false;
   S.ui._autoTried = m;
   if(!pmMonths().includes(monthAdd(m, -1))) return false;        // only continue an existing run of months
@@ -6204,10 +6205,35 @@ function mdOrganize(lines){
 function mdOrganizeCount(){ if(mdLinks().organize === false) return 0; const o = mdOrganizePlan(); return o.merge.length + o.create.length + o.rename.length + o.reactivate.length + o.retire.length + o.remove.length + o.portfolio.length; }
 
 /* ---------- apply it ---------- */
+/* A leased property added after a month was started still belongs in that month's close: give it the row starting
+   the month would have (rent due, recurring charges, filters), unless the month is closed, its row was removed on
+   purpose, or it had dropped out of earlier months. */
+function mdFillMonth(m, lines){
+  const P2 = pmState(), mt = P2.meta[m] || {};
+  if(mt.closed || !Object.values(P2.rows).some(r => r.month === m && !r.deleted)) return 0;
+  const label = {active:"", marketing:"Marketing", vacant:"Vacant"};
+  let n = 0;
+  (P2.properties || []).forEach(p => {
+    // leased ones only, and not one that dropped out of the monthly close before (rows in the past, none last month)
+    if(p.deleted || p.status !== "active") return;
+    const k = m + "|" + p.id; if(P2.rows[k]) return;
+    const prevK = PMCore.monthAdd(m, -1) + "|" + p.id;
+    if(!P2.rows[prevK] && Object.values(P2.rows).some(r => r.propertyId === p.id && r.month < m)) return;
+    const row = {propertyId:p.id, month:m, rentDue:p.status === "active" && p.rent != null ? p.rent : null, status:label[p.status], repairItems:[], adjustments:[], auto:true};
+    if(p.status === "active"){
+      (p.recurring || []).filter(x => x && Number(x.amount) > 0).forEach(x => row.repairItems.push({id:uid(), date:m + "-01", vendor:x.vendor || "", memo:x.memo || "Monthly service", amount:Number(x.amount), feeMode:x.feeMode || "auto", recurring:true}));
+      if(Number(p.monthlyFilters) > 0) row.filters = Number(p.monthlyFilters);
+    }
+    P2.rows[k] = row; n++;
+    if(lines) lines.push({prop:p.name, pid:p.id, what:"added to this month's close (it was missing)"});
+  });
+  return n;
+}
 function mdApply(opts){
   opts = opts || {};
   const lines = [];
   if(!opts.rowsOnly && mdLinks().organize !== false) mdOrganize(lines);
+  mdFillMonth(todayISO().slice(0, 7), lines);
   const plan = mdPlan(), L = mdLinks(), who = (typeof Cloud !== "undefined" && Cloud.name) || "You";
   const today = todayISO();
   if(!opts.rowsOnly){

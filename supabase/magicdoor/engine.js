@@ -478,6 +478,27 @@ const blankOwner = () => { const o = {}; OWNER_FIELDS.forEach(k => o[k] = ""); r
 function cleanOwner(o){ OWNER_FIELDS.forEach(k => { if(typeof o[k] !== "string") o[k] = o[k] == null ? "" : String(o[k]); }); if(!o.id) o.id = uid(); return o; }
 function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = "MagicDoor sync"; }
 const commit = () => {}, toast = () => {};
+function mdFillMonth(m, lines){
+  const P2 = pmState(), mt = P2.meta[m] || {};
+  if(mt.closed || !Object.values(P2.rows).some(r => r.month === m && !r.deleted)) return 0;
+  const label = {active:"", marketing:"Marketing", vacant:"Vacant"};
+  let n = 0;
+  (P2.properties || []).forEach(p => {
+    // leased ones only, and not one that dropped out of the monthly close before (rows in the past, none last month)
+    if(p.deleted || p.status !== "active") return;
+    const k = m + "|" + p.id; if(P2.rows[k]) return;
+    const prevK = PMCore.monthAdd(m, -1) + "|" + p.id;
+    if(!P2.rows[prevK] && Object.values(P2.rows).some(r => r.propertyId === p.id && r.month < m)) return;
+    const row = {propertyId:p.id, month:m, rentDue:p.status === "active" && p.rent != null ? p.rent : null, status:label[p.status], repairItems:[], adjustments:[], auto:true};
+    if(p.status === "active"){
+      (p.recurring || []).filter(x => x && Number(x.amount) > 0).forEach(x => row.repairItems.push({id:uid(), date:m + "-01", vendor:x.vendor || "", memo:x.memo || "Monthly service", amount:Number(x.amount), feeMode:x.feeMode || "auto", recurring:true}));
+      if(Number(p.monthlyFilters) > 0) row.filters = Number(p.monthlyFilters);
+    }
+    P2.rows[k] = row; n++;
+    if(lines) lines.push({prop:p.name, pid:p.id, what:"added to this month's close (it was missing)"});
+  });
+  return n;
+}
 function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee", reimbursement:"reimbursement (PHD)",
   pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout"}; }
 function mdOwned(k){ return k === "mdNet" || k === "mdAdj"; }
@@ -817,6 +838,7 @@ function mdApply(opts){
   opts = opts || {};
   const lines = [];
   if(!opts.rowsOnly && mdLinks().organize !== false) mdOrganize(lines);
+  mdFillMonth(todayISO().slice(0, 7), lines);
   const plan = mdPlan(), L = mdLinks(), who = (typeof Cloud !== "undefined" && Cloud.name) || "You";
   const today = todayISO();
   if(!opts.rowsOnly){
