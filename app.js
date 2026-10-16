@@ -4225,6 +4225,21 @@ const PMCore = (function(){
   }
 
 
+  /* MagicDoor bills don't say which unit they're for. When several console properties share one MagicDoor property
+     (1635 Memminger #A and #B), each bill there waits for someone to pick the unit; the pick is kept in mdLinks.billUnit. */
+  function mdUnitPending(md, mdx, links, rows, months, ok){
+    if(!md || !mdx) return [];
+    const pick = (links && links.billUnit) || {}, on = new Set();
+    Object.values(rows || {}).forEach(r => { if(!r.deleted) (r.repairItems || []).forEach(i => { if(i.mdLine) on.add(String(i.mdLine)); }); });
+    const units = {};
+    Object.entries(mdx.byProp).forEach(([pid, x]) => { if(x.property && mdx.linkedPerMdProp[x.property.id] > 1 && (!ok || ok.has(pid))) (units[x.property.id] = units[x.property.id] || []).push(pid); });
+    const out = [];
+    Object.entries(units).forEach(([mpId, pids]) => months.forEach(m => mdBillLines(md, mpId, m).forEach(li => {
+      if(pick[li.id] || on.has(String(li.id)) || /admin\s*fee/i.test(String(li.memo || "") + " " + String(li.account || ""))) return;
+      out.push(Object.assign({mdPropId:mpId, month:m, units:pids}, li));
+    })));
+    return out;
+  }
   function mdRenewal(md, leaseId){ return (md.renewals || []).find(r => r.leaseId === leaseId && !r.finalized && /offered|signing|draft|pending/i.test(r.status || "")) || null; }
   function mdFee(md, mdPropId, month){ const f = (md.fees || []).find(x => x.propertyId === mdPropId && x.month === month); return f ? f.amount : null; }
 
@@ -4343,6 +4358,17 @@ const PMCore = (function(){
           }
         }
       });
+      // MagicDoor bills on a property several units here share: someone picks the unit
+      {
+        const pend = mdUnitPending(md, mdx, o.mdLinks, rows, [prevM, curM].filter(m => !(meta[m] || {}).closed), new Set(live.filter(p => !p.skipClose).map(p => p.id)));
+        const byMp = {}; pend.forEach(l => (byMp[l.mdPropId] = byMp[l.mdPropId] || []).push(l));
+        Object.entries(byMp).forEach(([mpId, ls]) => {
+          const mp = (md.properties || []).find(z => z.id === mpId), tot = ls.reduce((a, l) => a + cents(l.amount), 0);
+          add({key:`mdunit|${mpId}|${ls.map(l => l.id).sort().join(",").slice(-60)}`, type:"mismatch", level:"warn", mdPropId:mpId,
+            title:`Pick the unit for ${ls.length} MagicDoor bill${ls.length === 1 ? "" : "s"} · ${mp ? mp.name : "shared property"}`,
+            detail:`${usd(tot)} — MagicDoor doesn't say which unit, so ${ls.length === 1 ? "it isn't" : "they aren't"} on any owner payout yet.`, action:"mdUnit"});
+        });
+      }
       // rent MagicDoor shows as paid this month that isn't in Month close yet (Fill from MagicDoor does it in one click)
       const unrec = monthRows(curM).filter(r => { const x = mdOf(r.propertyId); return x && x.lease && !has(r.rentReceived) && mdPaidThisMonth(x.lease, curM); });
       if(unrec.length) add({key:`mdrec|${curM}|${unrec.length}`, type:"setup", level:"info", month:curM, title:`${unrec.length} rent payment${unrec.length === 1 ? "" : "s"} in MagicDoor not recorded yet`, detail:`Paid in full in MagicDoor for ${monthLabel(curM)}. Fill from MagicDoor in Month close records them.`, action:"openMonth"});
@@ -4358,7 +4384,7 @@ const PMCore = (function(){
     return out.sort((a, b) => rank[a.level] - rank[b.level] || String(a.month || "").localeCompare(String(b.month || "")) || a.title.localeCompare(b.title));
   }
 
-  return {normAddr, mdIndex, mdCombine, mdIsRepairLine, mdLineMemo, mdBillLines, mdBillMonths, mdPayoutMonth, mdDistMonth, mdDistributions, mdStmt, mdStmtMonth, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
+  return {mdUnitPending, normAddr, mdIndex, mdCombine, mdIsRepairLine, mdLineMemo, mdBillLines, mdBillMonths, mdPayoutMonth, mdDistMonth, mdDistributions, mdStmt, mdStmtMonth, mdRenewal, mdFee, mdPaidThisMonth, cents, has, nz, usd, usd0, calc, alerts, rentStatus, itemFee, feeRuleText, monthLabel, monthAdd, endOfMonth, dayNum, isoOf, shortDate, DEFAULTS, EXTRA};
 })();
 
 /* =====================================================================
@@ -5391,9 +5417,10 @@ function pmAlertAct(a){
   if(a.action === "openDeposit"){ go("pmDeposits"); return setTimeout(() => pmDepositSheet(a.propId), 30); }
   if(a.action === "openInbox"){ go("inbox"); return inboxRefresh(); }
   if(a.action === "openMd") return go("pmMd");
+  if(a.action === "mdUnit") return mdUnitSheet(a.mdPropId);
   if(a.action === "openProps"){ S.ui.pmPropF = "active"; return go("pmProps"); }
 }
-const PM_ACT_LABEL = {openProps:"Assign owners", startMonth:"Start month", openMonth:"Open month", openRow:"Open", markPaid:"Mark sent", openProp:"Open property", openDeposit:"Open deposit", openInbox:"Review"};
+const PM_ACT_LABEL = {openProps:"Assign owners", startMonth:"Start month", openMonth:"Open month", openRow:"Open", markPaid:"Mark sent", openProp:"Open property", openDeposit:"Open deposit", openInbox:"Review", mdUnit:"Pick unit"};
 function pmAlertSet(key, st){
   snapshot();
   const A = pmAlertState(), today = todayISO();
@@ -6048,7 +6075,8 @@ function mdPlan(){
     if(!(L && L.months) && !hasStmt && fee && !meta.closed && r && !r.locked && !r.detailOnly && !PMCore.has(r.filters) && PMCore.mdPaidThisMonth(L, curM))
       out.filters.push({p, row:r, amount:fee});
     // vendor bills and owner distributions for open months (this one and last), when this property is the only one on that MagicDoor property
-    if(!m.property || (x.linkedPerMdProp[m.property.id] || 0) > 1) return;
+    if(!m.property) return;
+    const shared = (x.linkedPerMdProp[m.property.id] || 0) > 1, pick = mdLinks().billUnit || {};
     // every MagicDoor bill line already on this property, in any month — a bill is only ever counted once
     const onProp = new Map();
     Object.values(pmState().rows).forEach(r0 => { if(r0.propertyId !== p.id || r0.deleted) return; (r0.repairItems || []).forEach(i => { if(i.mdLine) onProp.set(i.mdLine, {row:r0, it:i}); }); });
@@ -6085,6 +6113,7 @@ function mdPlan(){
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
+        if(shared && pick[li.id] !== p.id) return;      // a shared MagicDoor property: only the bills picked for this unit
         if(have.has(li.id) || (SK[li.id] && !SK[li.id].keep)) return;
         const there = onProp.get(li.id);
         if(there){
@@ -6111,6 +6140,7 @@ function mdPlan(){
       });
       const dropped = new Set(out.dupes.filter(x => x.row === rr).map(x => x.drop));
       if(dropped.size) out.memos = out.memos.filter(x => !dropped.has(x.it));
+      if(shared) return;                                 // payouts and statements are for the whole MagicDoor property
       // a payout this console took from MagicDoor that MagicDoor now shows as not sent (pending, failed, cancelled) comes off
       if(rr.paidOut && rr.paidOut.by === "MagicDoor" && !PMCore.mdDistributions(S.md, m.property.id, mm).length && PMCore.mdDistributions(S.md, m.property.id, mm, true).length)
         out.unpays.push({p, row:rr, why:PMCore.mdDistributions(S.md, m.property.id, mm, true).some(d => d.pending) ? "still pending in MagicDoor" : "didn't go through in MagicDoor"});
@@ -6495,6 +6525,27 @@ function mdAddProperty(unitId, uLabel){
   toast(`${p.name} added — check its PM fee rule`); render();
 }
 
+/* pick the unit for MagicDoor bills on a property several units here share */
+function mdUnitSheet(mdPropId){
+  const x = mdx(); if(!x) return;
+  const P = pmState(), m = todayISO().slice(0, 7), months = [PMCore.monthAdd(m, -1), m].filter(k => !((P.meta[k] || {}).closed));
+  const ok = new Set(pmLiveProps().filter(p => !p.skipClose).map(p => p.id));
+  const ls = PMCore.mdUnitPending(S.md, x, mdLinks(), P.rows, months, ok).filter(l => l.mdPropId === mdPropId);
+  const mp = (S.md.properties || []).find(z => z.id === mdPropId);
+  if(!ls.length){ toast("Nothing left to pick here"); return; }
+  const units = ls[0].units.map(pmProp).filter(Boolean);
+  const body = `<p class="muted" style="margin-top:0">MagicDoor keeps these bills on ${esc(mp ? mp.name : "the property")} without saying which unit. Pick one and the bill (with its admin fee) goes on that unit's month; the sync remembers it.</p>
+    <div class="mu-list">${ls.map(l => `<div class="mu-r" data-li="${esc(l.id)}"><div><b>${esc(l.vendor || "Vendor")}</b> · <span class="num">${usd(cents(l.amount))}</span><div class="item-s">${esc(l.memo || "")} · ${esc(shortDate(l.date))} · ${esc(monthLabel(l.month))}</div></div>
+      <div class="mu-btns">${units.map(u => `<button class="btn sm" data-mu="${esc(u.id)}">${esc(u.name.replace(/^.*?(#\s*\S+|Unit\s+\S+)$/i, "$1") || u.name)}</button>`).join("")}</div></div>`).join("")}</div>`;
+  mdSheet(`Which unit? · ${mp ? mp.name : ""}`, body, []);
+  document.querySelectorAll(".mu-r [data-mu]").forEach(b => b.onclick = () => {
+    const li = b.closest(".mu-r").dataset.li; snapshot();
+    const L = mdLinks(); L.billUnit = L.billUnit || {}; L.billUnit[li] = b.dataset.mu;
+    mdApply({rowsOnly:true, quiet:true}); commit();
+    b.closest(".mu-r").remove(); toast(`Added to ${pmProp(b.dataset.mu).name}`);
+    if(!document.querySelector(".mu-r")) closeSheet();
+  });
+}
 function mdSheet(title, body, buttons){
   const sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><h3>${esc(title)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
