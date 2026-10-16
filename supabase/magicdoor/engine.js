@@ -339,7 +339,8 @@ const PMCore = (function(){
     const out = [];
     const add = a => { const st = state[a.key]; if(st && (st.state === "dismissed" || (st.state === "snoozed" && st.until > today))) return; out.push(a); };
     const live = props.filter(p => p.status !== "inactive");
-    const monthRows = m => Object.values(rows).filter(r => r.month === m && !r.deleted && !r.detailOnly);
+    const skip = new Set(props.filter(p => p.skipClose).map(p => p.id));
+    const monthRows = m => Object.values(rows).filter(r => r.month === m && !r.deleted && !r.detailOnly && !skip.has(r.propertyId));
     const ownerName = id => { const w = owners.find(x => x.id === id); return w ? (w.name || w.company || "") : ""; };
     const md = o.md && Array.isArray(o.md.units) ? o.md : null;
     const mdx = md ? mdIndex(md, props, o.mdLinks) : null;
@@ -485,7 +486,7 @@ function mdFillMonth(m, lines){
   let n = 0;
   (P2.properties || []).forEach(p => {
     // leased ones only, and not one that dropped out of the monthly close before (rows in the past, none last month)
-    if(p.deleted || p.status !== "active") return;
+    if(p.deleted || p.status !== "active" || p.skipClose) return;
     const k = m + "|" + p.id; if(P2.rows[k]) return;
     const prevK = PMCore.monthAdd(m, -1) + "|" + p.id;
     if(!P2.rows[prevK] && Object.values(P2.rows).some(r => r.propertyId === p.id && r.month < m)) return;

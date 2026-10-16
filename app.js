@@ -4236,7 +4236,8 @@ const PMCore = (function(){
     const out = [];
     const add = a => { const st = state[a.key]; if(st && (st.state === "dismissed" || (st.state === "snoozed" && st.until > today))) return; out.push(a); };
     const live = props.filter(p => p.status !== "inactive");
-    const monthRows = m => Object.values(rows).filter(r => r.month === m && !r.deleted && !r.detailOnly);
+    const skip = new Set(props.filter(p => p.skipClose).map(p => p.id));
+    const monthRows = m => Object.values(rows).filter(r => r.month === m && !r.deleted && !r.detailOnly && !skip.has(r.propertyId));
     const ownerName = id => { const w = owners.find(x => x.id === id); return w ? (w.name || w.company || "") : ""; };
     const md = o.md && Array.isArray(o.md.units) ? o.md : null;
     const mdx = md ? mdIndex(md, props, o.mdLinks) : null;
@@ -4427,7 +4428,7 @@ function pmLiveStatus(m, p){
 function pmMonthRows(m){
   const P2 = pmState();
   return Object.values(P2.rows).filter(r => r.month === m && !r.deleted)
-    .map(r => ({row:r, prop:pmProp(r.propertyId)})).filter(x => x.prop)
+    .map(r => ({row:r, prop:pmProp(r.propertyId)})).filter(x => x.prop && !x.prop.skipClose)
     .sort((a, b) => a.prop.name.localeCompare(b.prop.name, undefined, {numeric:true}));
 }
 function pmMonthRoll(m){
@@ -4661,7 +4662,7 @@ function pmTouch(r){ r.updatedAt = new Date().toISOString(); r.updatedBy = (type
    rent due from each lease, recurring vendor charges (pest control, lawn care…),
    the monthly filter fee, and any balance an owner still owes from last month. */
 function pmStartMonth(m, quiet){
-  const props = pmLiveProps();
+  const props = pmLiveProps().filter(p => !p.skipClose);
   if(!props.length) return toast("Add properties first");
   snapshot();
   const P2 = pmState(), prevM = monthAdd(m, -1);
@@ -5000,6 +5001,7 @@ function pmPropSheet(id){
       <div class="pm-recs">${p.recurring.map(recRow).join("")}</div>
       <button class="btn sm" id="pp_addRec">${icon("plus")} Add a recurring charge</button>
       <label class="fld" style="margin-top:14px"><span>Notes</span><textarea id="pp_notes" rows="3">${esc(p.notes || "")}</textarea></label>
+      <label class="chk" style="margin-top:10px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="pp_sc" ${p.skipClose ? "checked" : ""}> Leave out of month close <span class="help" style="margin:0">— hidden from Month close, owner payouts and totals until you turn this off</span></label>
     </div>
     <div class="sheet-f">${isNew ? "" : `<button class="btn" id="pp_page">Open property page</button>`}<span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="ppSave">${isNew ? "Add property" : "Save"}</button></div>`;
     wire();
@@ -5037,7 +5039,7 @@ function pmPropSheet(id){
         leaseStart:$("#pp_ls").value || null, leaseEnd:$("#pp_le").value || null, tenantEmail:$("#pp_te").value.trim(), tenantPhone:$("#pp_tp").value.trim(),
         monthlyFilters:$("#pp_mf").value === "" ? null : Number($("#pp_mf").value),
         adminRate:Number($("#pp_ar").value) || 0, recurring:p.recurring.filter(x => x.amount > 0 && (x.vendor || x.memo)),
-        feeRule:newRule});
+        feeRule:newRule, skipClose:$("#pp_sc").checked || undefined});
       delete p.feeRule.check; delete p._statusDraft;          // saving confirms the rule
       const L = pmState().properties;
       if(isNew) L.push(p); else L[L.findIndex(x => x.id === p.id)] = p;
@@ -5048,6 +5050,7 @@ function pmPropSheet(id){
   const snap = () => { ["name","addr","rent","ten","ls","le","te","tp","fv","ar","mf","notes"].forEach(k => { const el = $("#pp_" + k); if(el) p["_f_" + k] = el.value; });
     p.name = p._f_name; p.address = p._f_addr; p.rent = p._f_rent === "" ? null : Number(p._f_rent); p.tenants = p._f_ten; p.leaseStart = p._f_ls; p.leaseEnd = p._f_le;
     p.tenantEmail = p._f_te; p.tenantPhone = p._f_tp; p.adminRate = Number(p._f_ar); p.monthlyFilters = p._f_mf === "" ? null : Number(p._f_mf); p.notes = p._f_notes;
+    const sc = $("#pp_sc"); if(sc) p.skipClose = sc.checked || undefined;
     p.ownerId = $("#pp_owner").value === "__new" ? p.ownerId : ($("#pp_owner").value || null);
     p._statusDraft = $("#pp_status").value;
     const ck = p.feeRule.check; p.feeRule = $("#pp_ft").value === "flat" ? {type:"flat", amount:Number(p._f_fv) || 0} : {type:"pct", rate:Number(p._f_fv) || 0}; if(ck) p.feeRule.check = ck;
@@ -6215,7 +6218,7 @@ function mdFillMonth(m, lines){
   let n = 0;
   (P2.properties || []).forEach(p => {
     // leased ones only, and not one that dropped out of the monthly close before (rows in the past, none last month)
-    if(p.deleted || p.status !== "active") return;
+    if(p.deleted || p.status !== "active" || p.skipClose) return;
     const k = m + "|" + p.id; if(P2.rows[k]) return;
     const prevK = PMCore.monthAdd(m, -1) + "|" + p.id;
     if(!P2.rows[prevK] && Object.values(P2.rows).some(r => r.propertyId === p.id && r.month < m)) return;
