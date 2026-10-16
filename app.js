@@ -11241,7 +11241,7 @@ function nkChargeSheet(o){
 }
 const PAYV = {data:null, loading:false, err:"", key:"", deps:null, depsLoading:false};
 const nkMoneyIn = r => ["RECEIVABLE", "DEPOSIT", "INTEREST", "CHARGEBACK_WON"].includes(r.source);
-const NK_SRC = {RECEIVABLE:"Owner payment", PAYABLE:"Vendor payment", REFUND:"Refund", RETURN:"ACH return", CHARGEBACK:"Chargeback", CHARGEBACK_WON:"Chargeback won", DEPOSIT:"Deposit", WITHDRAWAL:"Transfer out", FEE:"Nickel fee", INTEREST:"Interest"};
+const NK_SRC = {RECEIVABLE:"Payment received", PAYABLE:"Bill payment", OWNER:"Owner payout", REFUND:"Refund", RETURN:"ACH return", CHARGEBACK:"Chargeback", CHARGEBACK_WON:"Chargeback won", DEPOSIT:"Deposit", WITHDRAWAL:"Transfer out", FEE:"Nickel fee", INTEREST:"Interest"};
 const nkStatusTag = s => { const u = String(s || "").toUpperCase();
   const cls = /COMPLETE|DELIVER|DEPOSIT|SUCCEED|SENT/.test(u) ? "green" : /FAIL|REJECT|RETURN|CANCEL/.test(u) ? "red" : /PEND|SCHED|PROCESS/.test(u) ? "gold" : "grey";
   return `<span class="tag ${cls}">${esc(u.charAt(0) + u.slice(1).toLowerCase().replace(/_/g, " "))}</span>`; };
@@ -11253,7 +11253,12 @@ async function nkOpenReceipt(source, id, url){
   catch(e){ if(w) w.close(); toast(e.message); }
 }
 // which console record a Nickel payment belongs to
-function nkWhereFrom(entityId){
+function nkWhereFrom(entityId, r){
+  // an owner payout: the property's month it pays (by its OWN-… number)
+  if(r && r.owner && r.what){
+    const row = Object.values(pmState().rows || {}).find(x => x.paidOut && x.paidOut.ref && x.paidOut.ref === String(r.what).toUpperCase());
+    if(row){ const p = pmProp(row.propertyId); if(p) return {label:`${p.name} · ${monthLabel(row.month)} payout`, open:() => { setMode("pm"); S.ui.pmPropId = p.id; S.ui.pmPropM = row.month; go("pmProperty"); }}; }
+  }
   if(!entityId) return null;
   const b = billList().find(x => x.pay && (x.pay.paymentId === entityId || (x.pay.receipt && x.pay.receipt.id === entityId)));
   if(b) return {label:`Bill · ${b.vendor} · ${(pmProp(b.propertyId) || {}).name || ""}`, open:() => { setMode("pm"); go("pmBills"); setTimeout(() => billSheet(b.id), 60); }};
@@ -11304,7 +11309,7 @@ function pgPayments(){
   }
   // filters
   const bar = elm("div","sc-bar");
-  const F = [["","All"], ["RECEIVABLE","Owner payments"], ["PAYABLE","Vendor payments"], ["DEPOSIT","Deposits"], ["WITHDRAWAL","Transfers out"], ["REFUND","Refunds"]];
+  const F = [["","All"], ["RECEIVABLE","Money received"], ["OWNERPAY","Owner payouts"], ["PAYABLE","Vendor & bill payments"], ["DEPOSIT","Deposits"], ["WITHDRAWAL","Transfers out"], ["REFUND","Refunds"]];
   bar.innerHTML = `<div class="sc-seg">${F.map(([k, l]) => `<button data-s="${k}" class="${src === k ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="sc-q"><input type="text" id="pyQ" placeholder="Owner or vendor name…" value="${esc(q)}"></div>`;
   v.appendChild(bar);
@@ -11317,13 +11322,13 @@ function pgPayments(){
   if(!d.items.length){ card.innerHTML = `<div class="empty"><b>Nothing here</b><p>Try another filter.</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl py-tbl");
   t.innerHTML = `<thead><tr><th>Date</th><th>What</th><th>Status</th><th class="r">Amount</th><th></th></tr></thead><tbody>
-    ${d.items.map((r, i) => { const inn = nkMoneyIn(r), from = nkWhereFrom(r.entityId), hasRc = ["RECEIVABLE", "PAYABLE"].includes(r.source) && r.entityId;
+    ${d.items.map((r, i) => { const inn = nkMoneyIn(r), from = nkWhereFrom(r.entityId, r), hasRc = ["RECEIVABLE", "PAYABLE"].includes(r.source) && r.entityId;
       return `<tr><td class="nw muted">${esc(fdateS(String(r.at).slice(0, 10)))}</td>
-        <td><div class="item-t">${esc(r.who || NK_SRC[r.source] || "")}${r.what ? ` <span class="muted">· ${esc(r.what)}</span>` : ""}</div><div class="item-s">${esc(NK_SRC[r.source] || r.source)}${r.account ? " · " + esc(r.account) : ""}${from ? ` · <a href="#" data-from="${i}">${esc(from.label)}</a>` : r.desc && r.desc !== r.what ? " · " + esc(r.desc.slice(0, 90)) : ""}</div></td>
+        <td><div class="item-t">${esc(r.who || NK_SRC[r.source] || "")}${r.what ? ` <span class="muted">· ${esc(r.what)}</span>` : ""}</div><div class="item-s">${esc(r.owner ? NK_SRC.OWNER : NK_SRC[r.source] || r.source)}${r.account ? " · " + esc(r.account) : ""}${from ? ` · <a href="#" data-from="${i}">${esc(from.label)}</a>` : r.desc && r.desc !== r.what ? " · " + esc(r.desc.slice(0, 90)) : ""}</div></td>
         <td>${nkStatusTag(r.status)}</td><td class="r num" style="color:${inn ? "var(--green)" : "inherit"}">${inn ? "+" : "−"}${usd(Math.abs(r.amountC))}</td>
         <td class="r nw">${hasRc ? `<button class="btn sm ghost" data-rc="${i}">Receipt</button>` : ""}${r.link ? `<a class="btn sm ghost" href="${esc(r.link)}" target="_blank" rel="noopener">Nickel</a>` : ""}</td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-rc]").forEach(b => b.onclick = () => { const r = d.items[Number(b.dataset.rc)]; nkOpenReceipt(r.source, r.entityId); });
-  t.querySelectorAll("[data-from]").forEach(a => a.onclick = e => { e.preventDefault(); const f = nkWhereFrom(d.items[Number(a.dataset.from)].entityId); if(f) f.open(); });
+  t.querySelectorAll("[data-from]").forEach(a => a.onclick = e => { e.preventDefault(); const r = d.items[Number(a.dataset.from)], f = nkWhereFrom(r.entityId, r); if(f) f.open(); });
   const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w);
   if(d.hasMore){
     const more = elm("div", null, `<div style="padding:12px 16px;display:flex;gap:10px;align-items:center"><button class="btn sm" id="pyMore">Show more</button><span class="muted" style="font-size:12.5px">${d.items.length} of ${d.total}</span></div>`);

@@ -1041,10 +1041,15 @@ async function activity(body: Obj) {
   let balances: Obj[] = [];
   try { balances = items(await read("list_nickel_banking_accounts")).map((a) => ({ id: S(a.id), name: S(a.nickname) || "Nickel account", last4: S(a.accountNumberLast4), balanceC: cIn(a.balance), holdsC: cIn(a.pendingCardHolds), link: S(a.dashboardUrl) })); } catch { /* not on Nickel Banking */ }
   const args: Obj = { page: Math.max(1, Number(body.page) || 1), pageSize: 25 };
-  if (["RECEIVABLE", "PAYABLE", "REFUND", "RETURN", "DEPOSIT", "WITHDRAWAL", "FEE", "INTEREST"].includes(S(body.source))) args.source = S(body.source);
+  const src = S(body.source);
+  if (["RECEIVABLE", "PAYABLE", "REFUND", "RETURN", "DEPOSIT", "WITHDRAWAL", "FEE", "INTEREST"].includes(src)) args.source = src;
+  // owner payouts are bills numbered OWN-…; "PAYABLE" on its own means every other bill payment
+  if (src === "OWNERPAY") { args.source = "PAYABLE"; args.payableFilters = { billLabel: "OWN-" }; }
   if (S(body.q).trim()) args.customerName = S(body.q).trim().slice(0, 60);
   const d = await read("search_payment_activities", args);
-  const rows = items(d).map((r) => ({ id: S(r.id), entityId: S(r.entityId), source: S(r.source), status: S(r.status), at: S(r.createdAt), amountC: Number(r.amountInCents) || 0, who: S(r.counterpartyName), what: S(r.invoiceLabel || r.billNumber), desc: S(r.description).slice(0, 220), link: S(r.dashboardUrl), account: S(r.nickelBalanceAccount && r.nickelBalanceAccount.nickname) }));
+  const isOwn = (r: Obj) => S(r.source) === "PAYABLE" && /^OWN-\d{4}-\d{2}-/i.test(S(r.billNumber || r.invoiceLabel));
+  const kept = items(d).filter((r) => src === "OWNERPAY" ? isOwn(r) : src === "PAYABLE" ? !isOwn(r) : true);
+  const rows = kept.map((r) => ({ owner: isOwn(r), id: S(r.id), entityId: S(r.entityId), source: S(r.source), status: S(r.status), at: S(r.createdAt), amountC: Number(r.amountInCents) || 0, who: S(r.counterpartyName), what: S(r.invoiceLabel || r.billNumber), desc: S(r.description).slice(0, 220), link: S(r.dashboardUrl), account: S(r.nickelBalanceAccount && r.nickelBalanceAccount.nickname) }));
   return { balances, items: rows, hasMore: !!(d && d.hasMore), total: Number(d && d.totalResults) || rows.length };
 }
 async function receipt(body: Obj) {
