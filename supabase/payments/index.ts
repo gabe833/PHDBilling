@@ -932,8 +932,25 @@ async function linkAllProjects(): Promise<number> {
   }
   return n;
 }
+// What Nickel's payment tools accept (tool names, descriptions and option lists — no data), saved once a day,
+// so the console can offer the choices Nickel supports (for example how fast a payment goes out).
+async function saveToolSchemas() {
+  const last = Number(await getSetting("nk_tools_at") || 0);
+  if (Date.now() - last < 20 * 3600e3) return;
+  await open();
+  const all: Obj[] = []; let cursor = "";
+  for (let i = 0; i < 10; i++) {
+    const res = await rpc("tools/list", cursor ? { cursor } : {});
+    all.push(...((res.tools as Obj[]) || []));
+    cursor = S(res.nextCursor); if (!cursor) break;
+  }
+  const keep = all.filter((t) => /bill|pay|vendor/i.test(S(t.name))).map((t) => ({ name: S(t.name), description: S(t.description).slice(0, 2000), input: t.inputSchema || null }));
+  await setSetting("nk_tools", JSON.stringify({ at: new Date().toISOString(), names: all.map((t) => S(t.name)), tools: keep }));
+  await setSetting("nk_tools_at", String(Date.now()));
+}
 async function refresh(only?: Obj) {
   if (!TOKEN) return { changed: 0, skipped: "no token" };
+  if (!only) { try { await saveToolSchemas(); } catch (_) { /* next hour */ } }
   let changed = 0; const bud: Budget = { left: only ? 12 : 140 };
   const map = await nkMap();
   if (!only) { try { await syncMatches(); } catch (_) { /* next time */ } }
