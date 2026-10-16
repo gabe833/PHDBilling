@@ -962,6 +962,12 @@ async function ownerPayouts(): Promise<number> {
   try { if (bills[0]) await setSetting("nk_owner_bill_shape", JSON.stringify(Object.keys(bills[0]))); } catch (_) { /* only for checking */ }
   if (!bills.length) return 0;
   const props = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data).filter((p) => p && p.id);
+  // where each payout's money actually stands (a bill can read "paid" while its payment is still pending or was stopped)
+  const moneyState: Record<string, string> = {};
+  try {
+    const acts = await readAll("search_payment_activities", { source: "PAYABLE", payableFilters: { billLabel: "OWN-" }, startDate: from, endDate: today() }, 6);
+    acts.sort((x, y) => S(x.createdAt).localeCompare(S(y.createdAt))).forEach((r) => { const k = S(r.billNumber || r.invoiceLabel).toUpperCase(); if (k) moneyState[k] = S(r.status).toUpperCase(); });
+  } catch (_) { /* fall back to the bill's own status */ }
   const main = await docData("shared", "main"), owners: Obj[] = (main && main.owners) || [];
   const ownerOf = (p: Obj) => owners.find((o) => o.id === p.ownerId) || null;
   let changed = 0;
@@ -981,8 +987,10 @@ async function ownerPayouts(): Promise<number> {
     if (hits.length !== 1) continue;
     const p = hits[0], rowId = `${month}|${p.id}`;
     const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [];
-    const paid = st === "PAID" && !(Number(b.amountScheduled) > 0), scheduled = st === "SCHEDULED" || sch.length > 0 || Number(b.amountScheduled) > 0;
-    const rec: Obj | null = paid ? { date: day(b.paidDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref }
+    const ms = moneyState[ref] || "";
+    const stopped = /FAIL|REJECT|CANCEL|RETURN/.test(ms), pending = /PEND|PROCESS/.test(ms);
+    const paid = !stopped && st === "PAID" && !(Number(b.amountScheduled) > 0), scheduled = !stopped && (st === "SCHEDULED" || sch.length > 0 || Number(b.amountScheduled) > 0);
+    const rec: Obj | null = paid ? { date: day(b.paidDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, ...(pending ? { pending: true } : {}) }
       : scheduled ? { date: day((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate || b.dueDate) || today(), method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, scheduled: true, arrives: day((sch[0] || {}).estimatedArrivalDate) }
       : null;
     const cur = await docData("pm_row", rowId); if (!cur) continue;
