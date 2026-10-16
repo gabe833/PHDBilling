@@ -5915,10 +5915,27 @@ function mdExactWant(g){
    counts for the month (paid early last month, or this month), the PM and leasing fees are MagicDoor's own, and the
    admin fee is MagicDoor's when it differs from 10% of the repairs. The statement's bottom line is kept as mdNet, so
    any month that doesn't come out the same is flagged. */
+/* MagicDoor's one-month statements sometimes leave out a payment that cleared late in the month and show it in the
+   next month's opening balance instead — so that money gets counted as "paid early" for the next month while the next
+   month's own payments are counted too (2428 Midland, Oct 2026: $1,020 carried + $980 + $1,000 = $3,000 on $2,000 rent).
+   The tenant's ledger says what the month really brought in: rent can't be more than what was due for the month or what
+   the tenant actually paid that month (less PHD's own charges), whichever is larger. Anything above that is left out. */
+function mdStmtCap(x, g){
+  if(!x || !g) return x;
+  const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100;
+  const due = Math.max(0, r2(n(g.rent) + n(g.other) - n(g.credits)));
+  const cash = r2(n(g.paid) + n(g.pending) - n(g.filters) - n(g.lateFee) - n(g.applications) - n(g.phd));
+  const cap = Math.max(due, cash);
+  if(!(due > 0 || n(g.paid) > 0) || x.recv <= cap + 1) return x;
+  const cut = r2(x.recv - cap);
+  return Object.assign({}, x, {recv:cap, net:r2(x.net - cut), heldOver:cut});
+}
 function mdStmtWant(p, rr, mpId, mm, g){
-  const st = PMCore.mdStmt(S.md, mpId, mm), x = PMCore.mdStmtMonth(st, p); if(!x) return null;
+  const st = PMCore.mdStmt(S.md, mpId, mm); let x = PMCore.mdStmtMonth(st, p); if(!x) return null;
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const led = g ? mdExactWant(g) : {};
+  const oneLease = (S.md.leases || []).filter(l => l.propertyId === mpId && !l.ended && !l.draft).length === 1;
+  if(oneLease) x = mdStmtCap(x, g);
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
