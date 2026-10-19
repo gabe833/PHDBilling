@@ -13365,8 +13365,8 @@ function finStatus(s){
   if(/CANCEL|VOID|DELETED/.test(x)) return "cancelled";
   if(/HOLD/.test(x)) return "held";
   if(/PART/.test(x)) return "partial";
-  if(/PEND|PROCESS|INITIAT|SCHEDUL|SUBMIT|AWAIT|QUEUE|TRANSIT|APPROV/.test(x)) return "processing";
-  if(/COMPLET|SUCCE|PAID|SETTL|DEPOSIT|SENT|CLEAR|DONE|WON/.test(x)) return "completed";
+  if(/PEND|PROCESS|INITIAT|SCHEDUL|SUBMIT|AWAIT|QUEUE|TRANSIT|APPROV|^SENT$|MAILED/.test(x)) return "processing";
+  if(/COMPLET|SUCCE|PAID|SETTL|DEPOSIT|CLEAR|DONE|WON|DELIVER/.test(x)) return "completed";
   return "unknown";
 }
 const FIN_ST = {completed:["Completed","green"], processing:["Processing","acc"], partial:["Partly paid","gold"], failed:["Failed","red"], returned:["Returned","red"],
@@ -13376,10 +13376,13 @@ const finBad = st => st === "failed" || st === "returned" || st === "cancelled";
 const finDay = s => String(s || "").slice(0, 10);
 
 /* ---------- the ledger ---------- */
-function finLedger(){ return ((S.ledger && S.ledger.items) || []).map(r => r._st ? r : Object.assign(r, {_st:finStatus(r.status), _in:typeof nkMoneyIn === "function" ? nkMoneyIn(r) : /RECEIVABLE|DEPOSIT|INTEREST/.test(r.source)})); }
+/* Nickel gives amounts without a sign: the kind of payment says which way the money went.
+   Moves between PHD's own accounts (Nickel to Nickel, Nickel to the bank) are transfers: never income or expense. */
+const FIN_IN = new Set(["RECEIVABLE", "DEPOSIT", "INTEREST", "RETURN", "CHARGEBACK_WON"]), FIN_XFER = new Set(["NB_TRANSFER", "WITHDRAWAL"]);
+function finLedger(){ return ((S.ledger && S.ledger.items) || []).map(r => r._st ? r : Object.assign(r, {_st:finStatus(r.status), _in:FIN_IN.has(r.source), _xfer:FIN_XFER.has(r.source)})); }
 const finLedgerAt = () => S.ledger && S.ledger.at;
-const FIN_SRC = {RECEIVABLE:"Payment received", PAYABLE:"Bill payment", REFUND:"Refund", RETURN:"Returned payment", DEPOSIT:"Deposit", WITHDRAWAL:"Transfer out", FEE:"Nickel fee", INTEREST:"Interest", CHARGEBACK:"Chargeback"};
-const finSrc = r => r.owner ? "Owner payout" : FIN_SRC[r.source] || String(r.source || "").toLowerCase();
+const FIN_SRC = {RECEIVABLE:"Payment received", PAYABLE:"Bill payment", REFUND:"Refund", RETURN:"Payment returned to PHD", DEPOSIT:"Deposit", WITHDRAWAL:"Transfer out of Nickel", NB_TRANSFER:"Transfer between Nickel accounts", FEE:"Nickel fee", INTEREST:"Interest", CHARGEBACK:"Chargeback"};
+const finSrc = r => r.owner || /^OWN-/i.test(r.ref || "") ? "Owner payout" : r.source === "DEPOSIT" && /PAYABLI/i.test(r.who || "") ? "Rent from MagicDoor" : FIN_SRC[r.source] || String(r.source || "").toLowerCase().replace(/_/g, " ");
 
 /* which console property an owner-payout number names: OWN-2026-10-342KING-A → 342 King St #A */
 const FIN_STREET = /\b(N|S|E|W|NE|NW|SE|SW|NORTH|SOUTH|EAST|WEST|ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|BLVD|BOULEVARD|LN|LANE|CT|COURT|CIR|CIRCLE|WAY|PL|PLACE|PKWY|HWY|UNIT|APT|SUITE)\b\.?/gi;
@@ -13392,8 +13395,11 @@ function finOwnRef(ref){
   if(!FIN_OWN.map.has(k)) FIN_OWN.map.set(k, finOwnRef0(k));
   return FIN_OWN.map.get(k);
 }
+const FIN_MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 function finOwnRef0(ref){
-  const m = String(ref || "").toUpperCase().match(/^OWN-(\d{4})-(\d{2})-(.+)$/); if(!m) return null;
+  let m = String(ref || "").toUpperCase().match(/^OWN-(\d{4})-(\d{2})-(.+)$/);
+  if(!m){ const n = String(ref || "").toUpperCase().match(/^OWN-([A-Z]{3})(\d{2})-(.+)$/); if(n && FIN_MON.includes(n[1])) m = [n[0], "20" + n[2], String(FIN_MON.indexOf(n[1]) + 1).padStart(2, "0"), n[3]]; }
+  if(!m) return null;
   const key = finAlnum(m[3]), props = pmState().properties.filter(p => !p.deleted);
   let hits = props.filter(p => key && [...finForms(p.name), ...finForms(p.address)].some(f => f && f.startsWith(key)));
   return {month:`${m[1]}-${m[2]}`, props:hits};
@@ -13507,6 +13513,7 @@ function finReconRow(m, row, prop, ctx){
     const ref = String(r.ref || "").toUpperCase();
     let hit = refs.has(ref);
     if(!hit && /^OWN-/.test(ref)){ const o = finOwnRef(ref); hit = !!(o && o.month === m && o.props.length === 1 && o.props[0].id === prop.id); }
+    if(!hit && /^OWN-/.test(ref) && !refs.size){ const o = finOwnRef(ref); hit = !!(o && o.month === m && o.props.length > 1 && o.props.some(p => p.id === prop.id) && Math.abs(Math.abs(r.amountC) - owedC) <= 1); }
     if(!hit || seen.has(r.id)) return; seen.add(r.id);
     const group = po && po.group && ((po.group.refs || []).length > 1 || (po.group.props || []).length > 1) && refs.has(ref);
     attempts.push({sys:"Nickel", date:finDay(r.at), amountC:group ? null : Math.abs(r.amountC), st:r._st, raw:r.status, id:r.id, ref:r.ref, link:r.link, group:group ? po.group : null});
@@ -13568,8 +13575,9 @@ function finLegEvidence(l, t){
   const near = r => Math.abs(Date.parse(r.at) - n) < 10 * 864e5 && Math.abs(Math.abs(r.amountC) - l.amountC) <= 1;
   const L = finLedger();
   const used = new Set(finState().transfers.flatMap(x => (x.legs || []).map(y => y !== l && y.ledgerId).filter(Boolean)));
-  const out = /nickel/i.test(l.from || "") ? L.find(r => !used.has(r.id) && (l.ledgerId ? r.id === l.ledgerId : r.source === "WITHDRAWAL" && near(r))) : null;
-  const inn = /nickel/i.test(l.to || "") ? L.find(r => !used.has(r.id) && r.source === "DEPOSIT" && near(r)) : null;
+  const out = /nickel/i.test(l.from || "") ? L.find(r => !used.has(r.id) && (l.ledgerId ? r.id === l.ledgerId : (r.source === "WITHDRAWAL" || r.source === "NB_TRANSFER") && near(r))) : null;
+  // a move between two Nickel accounts is one record: it left one and arrived in the other
+  const inn = out && out.source === "NB_TRANSFER" ? out : /nickel/i.test(l.to || "") ? L.find(r => !used.has(r.id) && r.source === "DEPOSIT" && near(r)) : null;
   // QuickBooks: a Transfer of the same amount within ten days, between accounts that look like these (books, from the bank feed)
   const words = s => new Set(String(s || "").toUpperCase().split(/[^A-Z0-9]+/).filter(w => w.length >= 3 && !/^(THE|AND|ACCOUNT|BANK)$/.test(w)));
   const like = (a, b) => { const A = words(a), B = words(b); for(const w of A) if(B.has(w)) return true; return false; };
@@ -13753,7 +13761,7 @@ function finSearch(q){
 function finLedgerTab(v){
   const q = S.ui.mnQ || "", f = S.ui.mnLf || "all";
   const bar = elm("div", "sc-bar");
-  const F = [["all","All"],["in","Money in"],["out","Money out"],["owner","Owner payouts"],["processing","Processing"],["problem","Failed / returned"]];
+  const F = [["all","All"],["in","Money in"],["out","Money out"],["owner","Owner payouts"],["xfer","Transfers"],["processing","Processing"],["problem","Failed / returned"]];
   bar.innerHTML = `<div class="sc-seg">${F.map(([k, l]) => `<button data-lf="${k}" class="${f === k ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="sc-q"><input type="text" id="mnQ" placeholder="Name, address, amount, invoice or reference…" value="${esc(q)}"></div><button class="btn sm ghost" id="mnLx">Export CSV</button>`;
   bar.querySelectorAll("[data-lf]").forEach(b => b.onclick = () => { S.ui.mnLf = b.dataset.lf; render(); });
@@ -13763,15 +13771,15 @@ function finLedgerTab(v){
   const card = elm("div", "card");
   if(!S.ledger){ card.innerHTML = `<div class="empty"><b>No ledger yet</b><p>The payments function copies Nickel's payments here every hour. Press <b>Refresh from Nickel</b> to read it now.</p></div>`; v.appendChild(card); return; }
   const ix = finRefIndex();
-  const rows = finSearch(q).filter(r => f === "all" || (f === "in" ? r._in : f === "out" ? !r._in : f === "owner" ? r.owner : f === "processing" ? r._st === "processing" : finBad(r._st)));
-  const inC = rows.filter(r => r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0), outC = rows.filter(r => !r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0);
+  const rows = finSearch(q).filter(r => f === "all" || (f === "in" ? r._in : f === "out" ? !r._in && !r._xfer : f === "owner" ? r.owner : f === "xfer" ? r._xfer : f === "processing" ? r._st === "processing" : finBad(r._st) || r.source === "RETURN"));
+  const inC = rows.filter(r => r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0), outC = rows.filter(r => !r._in && !r._xfer && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0), xC = rows.filter(r => r._xfer && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0);
   const shown = rows.slice(0, S.ui.mnMore ? 2000 : 150);
-  card.innerHTML = `<div class="mn-sum"><span>${rows.length} payment${rows.length === 1 ? "" : "s"}</span><span>In <b class="num" style="color:var(--green)">${usd(inC)}</b></span><span>Out <b class="num">${usd(outC)}</b></span><span class="muted">Completed only · transfers between PHD's accounts are shown but aren't income or expense</span></div>
+  card.innerHTML = `<div class="mn-sum"><span>${rows.length} payment${rows.length === 1 ? "" : "s"}</span><span>In <b class="num" style="color:var(--green)">${usd(inC)}</b></span><span>Out <b class="num">${usd(outC)}</b></span><span>Moved between accounts <b class="num">${usd(xC)}</b></span><span class="muted">Completed only · transfers aren't income or expense</span></div>
     <div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Date</th><th>Who</th><th>What it's for</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
     ${shown.map((r, i) => { const ab = finAbout(r, ix), note = finState().notes[r.id];
       return `<tr data-l="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(finDay(r.at)))}</td><td><div class="item-t">${r.who ? `<button class="linkish" data-who="${esc(r.who)}">${esc(r.who)}</button>` : "—"}</div><div class="item-s">${esc(finSrc(r))}${r.account ? " · " + esc(r.account) : ""}</div></td>
-        <td><div class="item-t">${esc(ab ? ab.label : r.ref || "")}${ab && ab.inferred ? ` <span class="muted" title="Matched by the payout number">· by number</span>` : ""}</div><div class="item-s">${esc(r.ref && ab ? r.ref : (r.desc || "").slice(0, 80))}${note && note.reconciled ? ` · <span style="color:var(--green)">reconciled</span>` : ""}</div></td>
-        <td>${finTag(r._st)}</td><td class="r num" style="color:${r._in ? "var(--green)" : "inherit"}">${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))}</td></tr>`; }).join("")}</tbody></table></div>
+        <td><div class="item-t">${esc(ab ? ab.label : r.ref || "")}${ab && ab.inferred ? ` <span class="muted" title="Matched by the payout number">· by number</span>` : ""}</div><div class="item-s">${esc(ab ? r.ref || "" : (r.desc && r.desc !== r.ref ? r.desc : "").slice(0, 80))}${note && note.reconciled ? ` · <span style="color:var(--green)">reconciled</span>` : ""}</div></td>
+        <td>${finTag(r._st)}</td><td class="r num" style="color:${r._in ? "var(--green)" : r._xfer ? "var(--muted)" : "inherit"}">${r._xfer ? "⇄ " : r._in ? "+" : "−"}${usd(Math.abs(r.amountC))}</td></tr>`; }).join("")}</tbody></table></div>
     ${rows.length > shown.length ? `<div style="padding:12px 16px"><button class="btn sm" id="mnMore">Show all ${rows.length}</button></div>` : ""}`;
   card.querySelectorAll("[data-l]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-who]")) return; finTxnSheet(shown[+tr.dataset.l].id); });
   card.querySelectorAll("[data-who]").forEach(a => a.onclick = e => { e.stopPropagation(); finPartySheet(a.dataset.who); });
@@ -13784,11 +13792,14 @@ function finTxnSheet(id){
   const r = finLedger().find(x => x.id === id); if(!r) return toast("That payment isn't in the ledger any more");
   const ab = finAbout(r), note = finState().notes[id] || {}, sh = $("#sheet");
   const rc = ab && ab.kind === "payout" ? ab.rows.map(x => { const row = pmRow(x.m, x.pid), p = pmProp(x.pid); return row && p ? finReconRow(x.m, row, p) : null; }).filter(Boolean) : [];
+  const back = r._st === "failed" ? finLedger().find(x => x.source === "RETURN" && Math.abs(x.amountC) === Math.abs(r.amountC) && Date.parse(x.at) >= Date.parse(r.at) - 864e5 && Date.parse(x.at) - Date.parse(r.at) < 45 * 864e5) : null;
   const same = finLedger().filter(x => x.id !== id && Math.abs(x.amountC) === Math.abs(r.amountC) && finAlnum(x.who) === finAlnum(r.who) && Math.abs(Date.parse(x.at) - Date.parse(r.at)) < 45 * 864e5);
   sh.innerHTML = `<div class="sheet-h"><div><h3>${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))} · ${esc(r.who || finSrc(r))}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(finSrc(r))} · ${esc(new Date(r.at).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"}))}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <div class="mn-story"><div><span class="label">Status</span>${finTag(r._st)}<div class="item-s">Nickel says “${esc(String(r.status || "").toLowerCase())}”</div></div><div><span class="label">Account</span><b>${esc(r.account || "—")}</b></div><div><span class="label">Reference</span><b>${esc(r.ref || "—")}</b></div></div>
       ${r.desc ? `<p class="help">${esc(r.desc)}</p>` : ""}
+      ${back ? `<p class="pm-banner">The money came back: ${usd(Math.abs(back.amountC))} returned to PHD on ${esc(fdateS(finDay(back.at)))}. If it's still owed, it has to be paid again.</p>` : ""}
+      ${r._xfer ? `<p class="help">A move between PHD's own accounts — not income, not an expense.</p>` : ""}
       ${ab ? `<div class="label" style="margin:14px 0 6px">What it's for</div><p style="margin:0">${esc(ab.label)}${ab.inferred ? ` <span class="muted">· matched by the payout number, not confirmed</span>` : ""} ${ab.open ? `<button class="linkish" id="ftOpen">open</button>` : ""}</p>` : `<p class="muted">Not linked to anything in the console.</p>`}
       ${rc.map(x => `<div class="mn-card"><div style="display:flex;gap:8px;align-items:center"><b>${esc(x.prop.name)} · ${monthLabel(x.m)}</b><span style="margin-left:auto">${finResTag(x.result)}</span></div><div class="item-s">Owed ${usd(x.owedC)} · paid ${usd(x.paidC)}${x.note ? " · " + esc(x.note) : ""}</div><button class="linkish" data-fp="${esc(x.m + "|" + x.prop.id)}">See every attempt</button></div>`).join("")}
       ${same.length ? `<div class="label" style="margin:14px 0 6px">Same amount, same name, within 45 days</div>${same.map(x => `<div class="md-r" style="grid-template-columns:1fr auto auto;cursor:pointer" data-sm="${esc(x.id)}"><span>${esc(fdateS(finDay(x.at)))} · ${esc(x.ref || finSrc(x))}</span>${finTag(x._st)}<b class="num">${usd(Math.abs(x.amountC))}</b></div>`).join("")}<p class="help">Not automatically a duplicate: a replacement for a failed payment, or a regular monthly amount, looks the same. Check the statuses.</p>` : ""}
