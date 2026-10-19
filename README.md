@@ -426,7 +426,7 @@ Setup:
 1. Sign up at **console.groq.com** → **API Keys** → **Create API key**. Don't paste it anywhere but the next step.
 2. Optional but recommended: in Groq, **Settings → Data Controls** (console.groq.com/settings/data-controls), turn on Zero Data Retention. Groq already doesn't keep questions by default; this also stops its 30-day abuse-check copies.
 3. In Supabase → **Edge Functions → Secrets**, add `GROQ_API_KEY` with the key.
-   Optional: `GROQ_MODEL` picks another Groq model (default `llama-3.3-70b-versatile`; `openai/gpt-oss-120b` allows more tokens a day on the free plan).
+   Optional: `GROQ_MODEL` picks another Groq model. Without it, Ask uses `openai/gpt-oss-120b`, and if Groq doesn't offer that to your account it moves on to `openai/gpt-oss-20b`, then `llama-3.3-70b-versatile`, then `qwen/qwen3.8-27b`.
 4. Deploy the function from `supabase/ask/` (two files: `index.ts` and `pmcore.js`) under the name `ask`, with **JWT verification off**. The function checks the Team list itself.
 
 `pmcore.js` is a copy of the console's own month math (`PMCore`, from `supabase/magicdoor/engine.js`), so Ask's numbers match the screens. Re-copy it when that changes.

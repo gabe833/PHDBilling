@@ -21,7 +21,9 @@ const SB = Deno.env.get("SUPABASE_URL")!;
 const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const ANON = Deno.env.get("SUPABASE_ANON_KEY") || "";
 const KEY = (Deno.env.get("GROQ_API_KEY") || "").trim();
-const MODEL = (Deno.env.get("GROQ_MODEL") || "llama-3.3-70b-versatile").trim();
+// Groq retires and gates models, so a model the account can't use is skipped for the next one on the list
+const MODELS = [...new Set([(Deno.env.get("GROQ_MODEL") || "").trim(), "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "qwen/qwen3.8-27b"].filter(Boolean))];
+let MODEL = MODELS[0];
 const BUDGET = Number(Deno.env.get("ASK_CONTEXT_CHARS")) || 22_000;   // ≈ 6,000 tokens of records per question
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -292,20 +294,30 @@ Rules:
 }
 
 async function groq(messages: Obj[]): Promise<{ text: string; usage: Obj }> {
-  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST", headers: { Authorization: "Bearer " + KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: MODEL, messages, temperature: 0.1, max_tokens: 900 }),
-  });
-  if (r.status === 429) {
-    const wait = r.headers.get("retry-after");
-    const body = await r.text();
-    const daily = /per day|TPD|RPD/i.test(body);
-    throw new Error(daily ? "Groq's free daily limit is used up. It resets within 24 hours." : `Groq's free plan is busy — try again in ${wait ? Math.ceil(Number(wait)) + " seconds" : "a minute"}.`);
+  for (let i = Math.max(0, MODELS.indexOf(MODEL)); i < MODELS.length; i++) {
+    const model = MODELS[i], oss = model.startsWith("openai/gpt-oss");
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST", headers: { Authorization: "Bearer " + KEY, "Content-Type": "application/json" },
+      // gpt-oss thinks before answering; "low" keeps that short so the free token allowance lasts
+      body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: oss ? 1500 : 900, ...(oss ? { reasoning_effort: "low" } : {}) }),
+    });
+    if (r.status === 429) {
+      const wait = r.headers.get("retry-after");
+      const body = await r.text();
+      const daily = /per day|TPD|RPD/i.test(body);
+      throw new Error(daily ? "Groq's free daily limit is used up. It resets within 24 hours." : `Groq's free plan is busy — try again in ${wait ? Math.ceil(Number(wait)) + " seconds" : "a minute"}.`);
+    }
+    if (r.status === 401) throw new Error("Groq didn't accept the key. Make a new one at console.groq.com and update GROQ_API_KEY in Supabase → Edge Functions → Secrets.");
+    if (!r.ok) {
+      const t = await r.text();
+      if ((r.status === 404 || r.status === 400 || r.status === 403) && /model_not_found|does not exist|decommissioned|not have access|model_terms_required/i.test(t) && i < MODELS.length - 1) continue;
+      throw new Error(`Groq answered ${r.status}: ${t.slice(0, 200)}`);
+    }
+    MODEL = model;
+    const j = await r.json();
+    return { text: S(j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content).trim(), usage: j.usage || {} };
   }
-  if (r.status === 401) throw new Error("Groq didn't accept the key. Make a new one at console.groq.com and update GROQ_API_KEY in Supabase → Edge Functions → Secrets.");
-  if (!r.ok) throw new Error(`Groq answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  const j = await r.json();
-  return { text: S(j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content).trim(), usage: j.usage || {} };
+  throw new Error(`None of these Groq models are available to this account: ${MODELS.join(", ")}. Set GROQ_MODEL in Supabase → Edge Functions → Secrets to one listed at console.groq.com/docs/models.`);
 }
 
 /* ====================================================================
