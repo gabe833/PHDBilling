@@ -4569,8 +4569,11 @@ function pgPmMonth(){
 
   /* ---- filters ---- */
   const f = S.ui.pmFilter || "all", q = (S.ui.pmQ || "").toLowerCase();
+  // a property with nothing at all this month (no rent due or received, no costs, no payout) stays out of the list
+  const pmEmptyRow = (row, prop) => { const c = pmCalc(row, prop); return !c.dueC && !c.recv && !c.repairsC && !c.adminC && !c.pmFeeC && !c.leasingC && !(c.otherC + c.adjC) && !c.payoutC && !(row.payments || []).length && !(row.repairItems || []).length && !row.paidOut; };
+  const nEmpty = rows.filter(x => !x.row.detailOnly && pmEmptyRow(x.row, x.prop)).length;
   const bar = elm("div","sc-bar"); bar.style.marginTop = "16px";
-  const counts = {all:rows.filter(x => !x.row.detailOnly).length, attn:0, short:0, repairs:0, payout:0};
+  const counts = {all:rows.filter(x => !x.row.detailOnly && !pmEmptyRow(x.row, x.prop)).length, attn:0, short:0, repairs:0, payout:0};
   rows.forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop);
     if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueC > 0 && c.recv < c.dueC) counts.short++; if(c.repairsC) counts.repairs++;
     if(!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))) counts.payout++; });
@@ -4591,6 +4594,7 @@ function pgPmMonth(){
   const vis = rows.filter(({row, prop}) => {
     if(row.detailOnly) return false;
     if(q && !`${prop.name} ${prop.address} ${ownerLabel(ownerById(prop.ownerId))}`.toLowerCase().includes(q)) return false;
+    if(!q && !S.ui.pmShowEmpty && pmEmptyRow(row, prop)) return false;
     if(f === "all") return true;
     const c = pmCalc(row, prop);
     return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueC > 0 && c.recv < c.dueC) : f === "repairs" ? c.repairsC > 0
@@ -4625,6 +4629,8 @@ function pgPmMonth(){
     <td class="r num"><b>${usd(R.leasingC)}</b></td><td class="r num"><b>${usd(R.otherC)}</b></td><td class="r num"><b>${usd(R.payoutC)}</b></td><td></td><td></td>`;
   tb.appendChild(foot);
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
+  if(nEmpty && !q){ const e = elm("button", "pm-empty-tog", S.ui.pmShowEmpty ? `Hide ${nEmpty} with nothing this month` : `${nEmpty} propert${nEmpty === 1 ? "y" : "ies"} with nothing this month not shown · show`);
+    e.type = "button"; e.onclick = () => { S.ui.pmShowEmpty = !S.ui.pmShowEmpty; render(); }; card.appendChild(e); }
   if(!vis.length) card.appendChild(elm("div","empty",`<b>Nothing here</b><p>No properties match this filter.</p>`));
   v.appendChild(card);
 
