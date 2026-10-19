@@ -4570,7 +4570,7 @@ function pgPmMonth(){
   /* ---- filters ---- */
   const f = S.ui.pmFilter || "all", q = (S.ui.pmQ || "").toLowerCase();
   // a property with nothing at all this month (no rent due or received, no costs, no payout) stays out of the list
-  const pmEmptyRow = (row, prop) => { const c = pmCalc(row, prop); return !c.dueC && !c.recv && !c.repairsC && !c.adminC && !c.pmFeeC && !c.leasingC && !(c.otherC + c.adjC) && !c.payoutC && !(row.payments || []).length && !(row.repairItems || []).length && !row.paidOut; };
+  const pmEmptyRow = (row, prop) => { const c = pmCalc(row, prop); return !c.dueC && !c.recv && !c.repairsC && !c.adminC && !c.pmFeeC && !c.leasingC && !(c.otherC + c.adjC) && !c.payoutC && !(row.payments || []).some(x => cents(x.amount)) && !row.paidOut; };
   const nEmpty = rows.filter(x => !x.row.detailOnly && pmEmptyRow(x.row, x.prop)).length;
   const bar = elm("div","sc-bar"); bar.style.marginTop = "16px";
   const counts = {all:rows.filter(x => !x.row.detailOnly && !pmEmptyRow(x.row, x.prop)).length, attn:0, short:0, repairs:0, payout:0};
