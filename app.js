@@ -4361,13 +4361,13 @@ const PMCore = (function(){
       });
       // MagicDoor bills on a property several units here share: someone picks the unit
       {
-        const pend = mdUnitPending(md, mdx, o.mdLinks, rows, [prevM, curM].filter(m => !(meta[m] || {}).closed), new Set(live.filter(p => !p.skipClose).map(p => p.id)));
+        const pend = mdUnitPending(md, mdx, {billUnit:o.billUnit || {}}, rows, [prevM, curM].filter(m => !(meta[m] || {}).closed), new Set(live.filter(p => !p.skipClose).map(p => p.id)));
         const byMp = {}; pend.forEach(l => (byMp[l.mdPropId] = byMp[l.mdPropId] || []).push(l));
         Object.entries(byMp).forEach(([mpId, ls]) => {
           const mp = (md.properties || []).find(z => z.id === mpId), tot = ls.reduce((a, l) => a + cents(l.amount), 0);
           add({key:`mdunit|${mpId}|${ls.map(l => l.id).sort().join(",").slice(-60)}`, type:"mismatch", level:"warn", mdPropId:mpId,
             title:`Pick the unit for ${ls.length} MagicDoor bill${ls.length === 1 ? "" : "s"} · ${mp ? mp.name : "shared property"}`,
-            detail:`${usd(tot)} — MagicDoor doesn't say which unit, so ${ls.length === 1 ? "it isn't" : "they aren't"} on any owner payout yet.`, action:"mdUnit"});
+            detail:`${usd(tot)} — MagicDoor doesn't say which unit, so ${ls.length === 1 ? "it isn't" : "they aren't"} on any owner payout yet.`, action:"mdUnit", lines:ls});
         });
       }
       // rent MagicDoor shows as paid this month that isn't in Month close yet (Fill from MagicDoor does it in one click)
@@ -4436,7 +4436,7 @@ function pmSettings(){ return Object.assign({}, PMCore.DEFAULTS, S.pmSettings ||
 function pmAlertState(){ if(!S.pmAlerts || typeof S.pmAlerts !== "object") S.pmAlerts = {}; return S.pmAlerts; }
 function pmAlerts(){
   if(!pmState().properties.length) return [];
-  return PMCore.alerts({pm:pmState(), owners:S.owners || [], settings:pmSettings(), today:todayISO(), state:pmAlertState(), md:mdReady() ? S.md : null, mdLinks:mdLinks().links,
+  return PMCore.alerts({pm:pmState(), owners:S.owners || [], settings:pmSettings(), today:todayISO(), state:pmAlertState(), md:mdReady() ? S.md : null, mdLinks:mdLinks().links, billUnit:mdLinks().billUnit || {},
                         inbox:(typeof INBOX !== "undefined" ? INBOX.items : [])});
 }
 function pmRentStatus(m, p){ const r = pmRow(m, p.id); if(r) r._lateAfter = pmSettings().lateAfterDay; return PMCore.rentStatus(r, p, todayISO()); }
@@ -5625,7 +5625,7 @@ function pmAlertAct(a){
   if(a.action === "openDeposit"){ go("pmDeposits"); return setTimeout(() => pmDepositSheet(a.propId), 30); }
   if(a.action === "openInbox"){ go("inbox"); return inboxRefresh(); }
   if(a.action === "openMd") return go("pmMd");
-  if(a.action === "mdUnit") return mdUnitSheet(a.mdPropId);
+  if(a.action === "mdUnit") return mdUnitSheet(a.mdPropId, a.lines);
   if(a.action === "openProps"){ S.ui.pmPropF = "active"; return go("pmProps"); }
 }
 const PM_ACT_LABEL = {openProps:"Assign owners", startMonth:"Start month", openMonth:"Open month", openRow:"Open", markPaid:"Mark sent", openProp:"Open property", openDeposit:"Open deposit", openInbox:"Review", mdUnit:"Pick unit"};
@@ -5652,13 +5652,18 @@ function pmWireAlerts(root, list){
   const find = k => list.find(a => a.key === k);
   root.querySelectorAll("[data-aact]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.aact); if(a) pmAlertAct(a); });
   root.querySelectorAll("[data-amenu]").forEach(b => b.onclick = e => { e.stopPropagation(); const m = b.nextElementSibling;
-    root.querySelectorAll(".al-menu.on").forEach(x => { if(x !== m) x.classList.remove("on"); }); m.classList.toggle("on"); });
+    document.querySelectorAll(".al-menu.on").forEach(x => { if(x !== m) x.classList.remove("on"); });
+    if(!m.classList.toggle("on")) return;
+    // the card clips its contents, so the menu is placed against the window, flipping up near the bottom
+    const r = b.getBoundingClientRect(); m.style.position = "fixed"; m.style.right = Math.max(8, innerWidth - r.right) + "px"; m.style.left = "auto";
+    const h = m.offsetHeight; m.style.top = (r.bottom + 4 + h > innerHeight - 8 ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px"; });
   root.querySelectorAll(".al-menu [data-asnz]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
     const until = PMCore.isoOf(PMCore.dayNum(todayISO()) + Number(b.dataset.asnz)); pmAlertSet(key, {state:"snoozed", until}); toast(`Snoozed until ${fdateS(until)}`, true); });
   root.querySelectorAll(".al-menu [data-adis]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
     const note = prompt("Dismiss this alert — add a short reason (optional)") ; if(note === null) return; pmAlertSet(key, {state:"dismissed", note:note.trim()}); toast("Dismissed", true); });
 }
 document.addEventListener("click", () => document.querySelectorAll(".al-menu.on").forEach(x => x.classList.remove("on")));
+window.addEventListener("scroll", () => document.querySelectorAll(".al-menu.on").forEach(x => x.classList.remove("on")), true);
 
 /* ====================================================================
    OVERVIEW — every property at a glance, and what needs doing
@@ -6743,11 +6748,13 @@ function mdAddProperty(unitId, uLabel){
 }
 
 /* pick the unit for MagicDoor bills on a property several units here share */
-function mdUnitSheet(mdPropId){
-  const x = mdx(); if(!x) return;
+function mdUnitSheet(mdPropId, given){
+  const x = mdx(); if(!x && !given) return toast("MagicDoor isn't loaded yet — try again after it syncs");
   const P = pmState(), m = todayISO().slice(0, 7), months = [PMCore.monthAdd(m, -1), m].filter(k => !((P.meta[k] || {}).closed));
   const ok = new Set(pmLiveProps().filter(p => !p.skipClose).map(p => p.id));
-  const ls = PMCore.mdUnitPending(S.md, x, mdLinks(), P.rows, months, ok).filter(l => l.mdPropId === mdPropId);
+  // the same lines the alert counted, so the button always opens what the alert describes
+  const picked = mdLinks().billUnit || {};
+  const ls = (given && given.length ? given : PMCore.mdUnitPending(S.md, x, mdLinks(), P.rows, months, ok)).filter(l => l.mdPropId === mdPropId && !picked[l.id]);
   const mp = (S.md.properties || []).find(z => z.id === mdPropId);
   if(!ls.length){ toast("Nothing left to pick here"); return; }
   const units = ls[0].units.map(pmProp).filter(Boolean);

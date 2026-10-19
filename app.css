@@ -683,7 +683,7 @@ body.mode-pm #qReconcile{display:none}
 .al-txt span{display:block;font-size:12.5px;color:var(--muted);margin-top:1px}
 .al-btns{display:flex;gap:4px;align-items:center;flex:none}
 .al-more{position:relative}
-.al-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--sh-lift);padding:4px;z-index:30;min-width:170px}
+.al-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--sh-lift);padding:4px;z-index:200;min-width:170px}
 .al-menu.on{display:block}
 .al-menu button{display:block;width:100%;text-align:left;background:none;border:0;padding:7px 10px;border-radius:7px;font-size:13px;cursor:pointer;color:var(--ink)}
 .al-menu button:hover{background:var(--sunken)}
