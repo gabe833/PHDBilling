@@ -414,6 +414,23 @@ To reconnect later, use Settings → **Connect again**. If Intuit asks, add `htt
 
 ---
 
+### 9. Ask (AI answers about the books, free on Groq)
+**Ask** (the button beside Search, or type a question into ⌘K) answers questions like "Why is 2014 Alton $1,350 behind?", "What did we pay Judy Lee in September?" or "Which properties had repairs over $500 this month?".
+
+- **What it reads:** month close rows (rent, repairs, fees, payouts and whether they were sent), bills, deposits, holds, the Nickel ledger, the Action center and the MagicDoor copy the hourly sync keeps. That copy is as fresh as the last sync, not live.
+- **What it sends to Groq:** only the records the question is about: the properties, owners, vendors and months it names, or a one-line-per-property summary of the month for questions across the portfolio. Never tenant or owner phone numbers, emails or addresses, and never the mail, inbox, Nickel or QuickBooks connection details.
+- **It only reads.** It can't change records, send emails or move money. Answers come from an AI model and can be wrong, so check the property page before acting on one.
+- **Free plan limits:** Groq's free plan counts tokens per day. Each question uses roughly 2,000–7,000 tokens, so expect a few dozen questions a day on the default model. When the day's allowance is used up, Ask says so and it resets within 24 hours. Groq's paid "Developer" plan raises the limits.
+
+Setup:
+1. Sign up at **console.groq.com** → **API Keys** → **Create API key**. Don't paste it anywhere but the next step.
+2. Optional but recommended: in Groq, **Settings → Data Controls** (console.groq.com/settings/data-controls), turn on Zero Data Retention. Groq already doesn't keep questions by default; this also stops its 30-day abuse-check copies.
+3. In Supabase → **Edge Functions → Secrets**, add `GROQ_API_KEY` with the key.
+   Optional: `GROQ_MODEL` picks another Groq model (default `llama-3.3-70b-versatile`; `openai/gpt-oss-120b` allows more tokens a day on the free plan).
+4. Deploy the function from `supabase/ask/` (two files: `index.ts` and `pmcore.js`) under the name `ask`, with **JWT verification off**. The function checks the Team list itself.
+
+`pmcore.js` is a copy of the console's own month math (`PMCore`, from `supabase/magicdoor/engine.js`), so Ask's numbers match the screens. Re-copy it when that changes.
+
 ## How it keeps data safe
 - **Invite-only.** Signing in with Google proves who someone is; the team list decides whether they get in. Anyone not on it sees "No access yet" and can't read a single record. This is enforced by the database itself (row-level security), not just the screen.
 - **The key in `config.js` is meant to be public.** It only lets people sign in. The database rules keep data private, and they were tested: an outsider's reads return nothing and their writes are refused.
