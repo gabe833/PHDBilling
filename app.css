@@ -1763,3 +1763,14 @@ button.st{cursor:pointer}
 .st-quiet{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
 .st-quiet i{width:6px;height:6px;border-radius:50%;background:var(--green);opacity:.7}
 .pm-empty-tog{all:unset;cursor:pointer;display:block;padding:10px 16px;font-size:12.5px;color:var(--muted);border-top:1px solid var(--line-2)} .pm-empty-tog:hover{color:var(--ink,inherit)}
+/* Ask */
+#askBtn{display:inline-flex;align-items:center;gap:6px}
+.ask-log{display:flex;flex-direction:column;gap:10px}
+.ask-q{align-self:flex-end;max-width:85%;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:12px 12px 2px 12px;padding:8px 12px;white-space:pre-wrap}
+.ask-a{align-self:flex-start;max-width:100%;background:var(--panel-2);border:1px solid var(--line-2);border-radius:12px 12px 12px 2px;padding:10px 13px;line-height:1.5}
+.ask-a p{margin:0 0 6px} .ask-a p:last-of-type{margin-bottom:0} .ask-a ul{margin:4px 0 6px;padding-left:18px}
+.ask-err{color:var(--red,#B42318)}
+.ask-src{margin-top:8px;font-size:11.5px;color:var(--muted)}
+.ask-ex{display:block;width:100%;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 11px;margin-bottom:6px;font:inherit;cursor:pointer;color:inherit}
+.ask-ex:hover{border-color:var(--accent-line);background:var(--accent-soft)}
+.ask-f textarea{flex:1;resize:none;font:inherit;padding:8px 10px;border:1px solid var(--line-3);border-radius:var(--r-sm);background:var(--panel);color:inherit}
