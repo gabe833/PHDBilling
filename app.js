@@ -13570,12 +13570,18 @@ function finLegEvidence(l, t){
   const used = new Set(finState().transfers.flatMap(x => (x.legs || []).map(y => y !== l && y.ledgerId).filter(Boolean)));
   const out = /nickel/i.test(l.from || "") ? L.find(r => !used.has(r.id) && (l.ledgerId ? r.id === l.ledgerId : r.source === "WITHDRAWAL" && near(r))) : null;
   const inn = /nickel/i.test(l.to || "") ? L.find(r => !used.has(r.id) && r.source === "DEPOSIT" && near(r)) : null;
-  return {out, inn};
+  // QuickBooks: a Transfer of the same amount within ten days, between accounts that look like these (books, from the bank feed)
+  const words = s => new Set(String(s || "").toUpperCase().split(/[^A-Z0-9]+/).filter(w => w.length >= 3 && !/^(THE|AND|ACCOUNT|BANK)$/.test(w)));
+  const like = (a, b) => { const A = words(a), B = words(b); for(const w of A) if(B.has(w)) return true; return false; };
+  const usedQb = new Set(finState().transfers.flatMap(x => (x.legs || []).map(y => y !== l && y.qbId).filter(Boolean)));
+  const qb = ((S.qbo && S.qbo.bank) || []).find(x => x.type === "Transfer" && !usedQb.has(x.id) && (l.qbId ? x.id === l.qbId :
+    Math.abs(cents(x.amount) - l.amountC) <= 1 && Math.abs(Date.parse(x.date) - n) < 10 * 864e5 && (like(x.from && x.from.name, l.from) || like(x.to && x.to.name, l.to)))) || null;
+  return {out, inn, qb};
 }
 function finLegState(l, t){
   if(l.status === "failed") return "failed";
   const ev = finLegEvidence(l, t);
-  const debit = l.debitOk || !!(ev.out && ev.out._st === "completed"), credit = l.creditOk || !!(ev.inn && ev.inn._st === "completed");
+  const debit = l.debitOk || !!(ev.out && ev.out._st === "completed") || !!ev.qb, credit = l.creditOk || !!(ev.inn && ev.inn._st === "completed") || !!ev.qb;
   if(debit && credit) return "completed";
   if(ev.out && ev.out._st === "failed") return "failed";
   if(debit || credit || l.status === "sent" || (ev.out && ev.out._st === "processing")) return "processing";
@@ -13622,6 +13628,10 @@ function finExceptions(){
   // PHD income from the last closed month that hasn't been moved
   const last = new Date().getDate() >= 20 || pmMonthRows(cur).some(x => x.row.source === "workbook") ? cur : null;
   if(last){ const R = pmMonthRoll(last), left = R.netC - finMovedFor(last); if(left > 100) add("info", "inc|" + last, `PHD income to move · ${monthLabel(last)}`, `${usd(left)} of ${usd(R.netC)} hasn't been recorded as moved to PM Operating.`, () => finTransferSheet(null, {period:last}), "Record transfer"); }
+  const o = finOwed();
+  o.ownerInv.filter(x => x.late > 14).forEach(x => add("warn", "inv|" + x.v.id, `Owner invoice ${x.late} days past due · ${ownerLabel(ownerById(x.v.ownerId)) || "Owner"}`, `${usd(x.dueC)} on ${x.v.no || "the invoice"}, due ${fdateS(x.v.due)}.`, () => { S.ui.mode = "pm"; S.ui.invOpen = x.v.id; go("pmInvoices"); }, "Open"));
+  const lateBills = o.bills.filter(x => x.late > 0);
+  if(lateBills.length) add("warn", "bills|" + lateBills.length, `${lateBills.length} vendor bill${lateBills.length === 1 ? "" : "s"} past due`, `${usd(lateBills.reduce((a, x) => a + x.c, 0))} · ${lateBills.slice(0, 4).map(x => x.b.vendor).join(", ")}${lateBills.length > 4 ? "…" : ""}`, () => { S.ui.mode = "pm"; go("pmBills"); }, "Open bills");
   const rank = {urgent:0, warn:1, info:2};
   return out.sort((a, b) => rank[a.level] - rank[b.level]);
 }
@@ -13663,6 +13673,7 @@ function pgMoney(){
   exc.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => ex[+b.dataset.ex].act());
   const ea = exc.querySelector("#mnExAll"); if(ea) ea.onclick = () => { S.ui.mnExAll = true; render(); };
   v.appendChild(exc);
+  finOwedCard(v);
 
   // tabs
   const tab = S.ui.mnTab || "payouts";
@@ -13685,7 +13696,9 @@ function finPayoutsTab(v){
   const sum = k => all.filter(r => k(r)).reduce((a, r) => a + r.owedC, 0);
   const head = elm("div", "sc-bar");
   head.innerHTML = `<div class="mn-mo"><button class="btn sm ghost" id="mnPrev">‹</button><b>${monthLabel(m)}</b><button class="btn sm ghost" id="mnNext">›</button></div>
-    <div class="sc-seg">${F.map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n(k)}</span></button>`).join("")}</div>`;
+    <div class="sc-seg">${F.map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n(k)}</span></button>`).join("")}</div>
+    <button class="btn sm ghost" id="mnExp" style="margin-left:auto">Export CSV</button>`;
+  head.querySelector("#mnExp").onclick = () => finExportPayouts(m);
   head.querySelector("#mnPrev").onclick = () => { S.ui.mnMonth = monthAdd(m, -1); render(); };
   head.querySelector("#mnNext").onclick = () => { S.ui.mnMonth = monthAdd(m, 1); render(); };
   head.querySelectorAll("[data-pf]").forEach(b => b.onclick = () => { S.ui.mnPf = b.dataset.pf; render(); });
@@ -13717,9 +13730,10 @@ function finPayoutSheet(m, pid){
       <div class="label" style="margin:16px 0 6px">Recent months</div>
       <table class="pm-sum">${hist.map(h => `<tr><td>${monthLabel(h.m)}</td><td class="r num">${usd(h.owedC)}</td><td class="r">${finResTag(h.result)}</td></tr>`).join("")}</table>
     </div>
-    <div class="sheet-f"><button class="btn" id="fpRow">Open the month row</button><span style="flex:1"></span>${r.hold ? "" : `<button class="btn" id="fpNewHold">Put on hold…</button>`}</div>`;
+    <div class="sheet-f"><button class="btn" id="fpRow">Open the month row</button>${r.owner ? `<button class="btn ghost" id="fpWho">${esc(ownerLabel(r.owner))}'s history</button>` : ""}<span style="flex:1"></span>${r.hold ? "" : `<button class="btn" id="fpNewHold">Put on hold…</button>`}</div>`;
   $("#shClose").onclick = closeSheet;
   $("#fpRow").onclick = () => { closeSheet(); S.ui.mode = "pm"; S.ui.pmMonth = m; go("pmMonth"); setTimeout(() => pmRowSheet(m, pid), 40); };
+  const fw = $("#fpWho"); if(fw) fw.onclick = () => finPartySheet(r.owner.name || ownerLabel(r.owner));
   const nh = $("#fpNewHold"); if(nh) nh.onclick = () => finHoldSheet(null, {ownerId:prop.ownerId, propIds:[pid], from:m});
   const oh = $("#fpHold"); if(oh) oh.onclick = () => finHoldSheet(r.hold.id);
   openPanel();
@@ -13741,7 +13755,7 @@ function finLedgerTab(v){
   const bar = elm("div", "sc-bar");
   const F = [["all","All"],["in","Money in"],["out","Money out"],["owner","Owner payouts"],["processing","Processing"],["problem","Failed / returned"]];
   bar.innerHTML = `<div class="sc-seg">${F.map(([k, l]) => `<button data-lf="${k}" class="${f === k ? "on" : ""}">${l}</button>`).join("")}</div>
-    <div class="sc-q"><input type="text" id="mnQ" placeholder="Name, address, amount, invoice or reference…" value="${esc(q)}"></div>`;
+    <div class="sc-q"><input type="text" id="mnQ" placeholder="Name, address, amount, invoice or reference…" value="${esc(q)}"></div><button class="btn sm ghost" id="mnLx">Export CSV</button>`;
   bar.querySelectorAll("[data-lf]").forEach(b => b.onclick = () => { S.ui.mnLf = b.dataset.lf; render(); });
   const qi = bar.querySelector("#mnQ");
   qi.oninput = () => { S.ui.mnQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#mnQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 180); };
@@ -13755,11 +13769,13 @@ function finLedgerTab(v){
   card.innerHTML = `<div class="mn-sum"><span>${rows.length} payment${rows.length === 1 ? "" : "s"}</span><span>In <b class="num" style="color:var(--green)">${usd(inC)}</b></span><span>Out <b class="num">${usd(outC)}</b></span><span class="muted">Completed only · transfers between PHD's accounts are shown but aren't income or expense</span></div>
     <div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Date</th><th>Who</th><th>What it's for</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
     ${shown.map((r, i) => { const ab = finAbout(r, ix), note = finState().notes[r.id];
-      return `<tr data-l="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(finDay(r.at)))}</td><td><div class="item-t">${esc(r.who || "—")}</div><div class="item-s">${esc(finSrc(r))}${r.account ? " · " + esc(r.account) : ""}</div></td>
+      return `<tr data-l="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(finDay(r.at)))}</td><td><div class="item-t">${r.who ? `<button class="linkish" data-who="${esc(r.who)}">${esc(r.who)}</button>` : "—"}</div><div class="item-s">${esc(finSrc(r))}${r.account ? " · " + esc(r.account) : ""}</div></td>
         <td><div class="item-t">${esc(ab ? ab.label : r.ref || "")}${ab && ab.inferred ? ` <span class="muted" title="Matched by the payout number">· by number</span>` : ""}</div><div class="item-s">${esc(r.ref && ab ? r.ref : (r.desc || "").slice(0, 80))}${note && note.reconciled ? ` · <span style="color:var(--green)">reconciled</span>` : ""}</div></td>
         <td>${finTag(r._st)}</td><td class="r num" style="color:${r._in ? "var(--green)" : "inherit"}">${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))}</td></tr>`; }).join("")}</tbody></table></div>
     ${rows.length > shown.length ? `<div style="padding:12px 16px"><button class="btn sm" id="mnMore">Show all ${rows.length}</button></div>` : ""}`;
-  card.querySelectorAll("[data-l]").forEach(tr => tr.onclick = () => finTxnSheet(shown[+tr.dataset.l].id));
+  card.querySelectorAll("[data-l]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-who]")) return; finTxnSheet(shown[+tr.dataset.l].id); });
+  card.querySelectorAll("[data-who]").forEach(a => a.onclick = e => { e.stopPropagation(); finPartySheet(a.dataset.who); });
+  const lx = bar.querySelector("#mnLx"); if(lx) lx.onclick = () => finExportLedger(rows);
   const mo = card.querySelector("#mnMore"); if(mo) mo.onclick = () => { S.ui.mnMore = true; render(); };
   v.appendChild(card);
 }
@@ -13925,9 +13941,10 @@ function finTransferSheet(id, seed){
             <label class="fld"><span>To</span><select data-lt="${i}">${opts(l.to)}</select>${l.to && !accts.includes(l.to) ? `<input type="text" data-ltt="${i}" value="${esc(l.to)}">` : ""}</label>
             <label class="fld"><span>Amount</span><input type="number" step="0.01" data-la="${i}" value="${l.amountC ? (l.amountC / 100).toFixed(2) : ""}"></label></div>
             <div class="mn-legst">${finTag(st)}
-              <label class="switchbox"><input type="checkbox" data-ld="${i}" ${l.debitOk || (ev.out && ev.out._st === "completed") ? "checked" : ""} ${ev.out && ev.out._st === "completed" ? "disabled" : ""}> Left ${esc(l.from || "the source")}${ev.out ? ` <span class="muted">· Nickel ${esc(String(ev.out.status).toLowerCase())} ${esc(fdateS(finDay(ev.out.at)))}</span>` : ""}</label>
-              <label class="switchbox"><input type="checkbox" data-lc="${i}" ${l.creditOk || (ev.inn && ev.inn._st === "completed") ? "checked" : ""} ${ev.inn && ev.inn._st === "completed" ? "disabled" : ""}> Arrived in ${esc(l.to || "the destination")}${ev.inn ? ` <span class="muted">· Nickel ${esc(String(ev.inn.status).toLowerCase())}</span>` : ""}</label>
+              <label class="switchbox"><input type="checkbox" data-ld="${i}" ${l.debitOk || (ev.out && ev.out._st === "completed") || ev.qb ? "checked" : ""} ${(ev.out && ev.out._st === "completed") || ev.qb ? "disabled" : ""}> Left ${esc(l.from || "the source")}${ev.out ? ` <span class="muted">· Nickel ${esc(String(ev.out.status).toLowerCase())} ${esc(fdateS(finDay(ev.out.at)))}</span>` : ""}</label>
+              <label class="switchbox"><input type="checkbox" data-lc="${i}" ${l.creditOk || (ev.inn && ev.inn._st === "completed") || ev.qb ? "checked" : ""} ${(ev.inn && ev.inn._st === "completed") || ev.qb ? "disabled" : ""}> Arrived in ${esc(l.to || "the destination")}${ev.inn ? ` <span class="muted">· Nickel ${esc(String(ev.inn.status).toLowerCase())}</span>` : ""}</label>
               ${(t.legs || []).length > 1 ? `<button class="linkish" data-lx="${i}">remove</button>` : ""}</div>
+            ${ev.qb ? `<p class="help" style="margin:4px 0 0">QuickBooks has this transfer: ${esc(fdateS(ev.qb.date))} · ${esc((ev.qb.from || {}).name || "")} → ${esc((ev.qb.to || {}).name || "")} · ${usd(cents(ev.qb.amount))}${ev.qb.memo ? " · " + esc(ev.qb.memo) : ""} — from the books, so check the bank statement if anything looks off.</p>` : ""}
             ${(l.debitOk || l.creditOk) && l.okBy ? `<p class="help" style="margin:4px 0 0">Checked by ${esc(l.okBy)}${l.okAt ? " · " + esc(fdateS(finDay(l.okAt))) : ""}</p>` : ""}</div>`; }).join("")}
         <button class="btn sm" id="tAdd">Add a leg</button>
         <p class="help">A leg is confirmed when the money shows leaving one account and arriving in the other. Nickel transfers are checked against Nickel's records automatically; tick the bank side once you see it on the statement.</p>
@@ -14076,6 +14093,80 @@ function finBatchSheet(id){
       finLog(`Payout batch ${isNew ? "recorded" : "updated"}: ${fdateS(b.date)} ${usd(b.amountC)} · ${b.status} · ${lines.length} payouts`); commit(); toast("Saved"); closeSheet(); };
   };
   draw(); openPanel();
+}
+
+/* ====================================================================
+   STAGE 2 — money owed in both directions, payment histories, exports
+   ==================================================================== */
+const finToday = () => todayISO();
+const finDaysPast = d => d ? Math.floor((Date.parse(finToday()) - Date.parse(d)) / 864e5) : 0;
+/* what others owe PHD, and what PHD owes */
+function finOwed(){
+  const out = {ownerInv:[], projInv:[], projReady:[], bills:[], billsPaying:[]};
+  if(typeof invList === "function") invList().forEach(v => { if(v.status !== "sent") return; const t = invTotals(v); if(t.dueC > 0) out.ownerInv.push({v, dueC:t.dueC, late:v.due && v.due < finToday() ? finDaysPast(v.due) : 0}); });
+  if(typeof live === "function" && typeof ALL !== "undefined") live().forEach(p => { const c = ALL[p.id]; if(!c || !c.roll) return;
+    if(c.roll.sentC > 0) out.projInv.push({p, dueC:c.roll.sentC}); if(c.roll.readyC > 0) out.projReady.push({p, dueC:c.roll.readyC}); });
+  if(typeof billList === "function") billList().forEach(b => { if(b.status === "open") out.bills.push({b, c:cents(b.amount), late:b.due && b.due < finToday() ? finDaysPast(b.due) : 0}); else if(b.status === "paying") out.billsPaying.push({b, c:cents(b.amount)}); });
+  const sum = (a, k) => a.reduce((s, x) => s + x[k], 0);
+  out.toPhdC = sum(out.ownerInv, "dueC") + sum(out.projInv, "dueC"); out.readyC = sum(out.projReady, "dueC");
+  out.phdOwesC = sum(out.bills, "c"); out.payingC = sum(out.billsPaying, "c");
+  out.lateInvC = out.ownerInv.filter(x => x.late > 0).reduce((s, x) => s + x.dueC, 0); out.lateBillsC = out.bills.filter(x => x.late > 0).reduce((s, x) => s + x.c, 0);
+  return out;
+}
+function finOwedCard(v){
+  const o = finOwed(), c = elm("div", "pm-grid2 mn-owed");
+  const li = (rows) => rows.length ? `<table class="pm-sum">${rows.join("")}</table>` : `<p class="muted" style="margin:0">Nothing</p>`;
+  const top = (arr, f, n) => arr.slice().sort((a, b) => (b.dueC || b.c) - (a.dueC || a.c)).slice(0, n || 5).map(f);
+  c.innerHTML = `<div class="card"><div class="card-h"><h3>Owed to PHD</h3><b class="num" style="margin-left:auto">${usd(o.toPhdC)}</b></div><div class="card-b">
+      <div class="label" style="margin-bottom:6px">Owner invoices sent · ${usd(o.ownerInv.reduce((s, x) => s + x.dueC, 0))}${o.lateInvC ? ` · <span style="color:var(--red)">${usd(o.lateInvC)} past due</span>` : ""}</div>
+      ${li(top(o.ownerInv, x => `<tr data-oi="${esc(x.v.id)}" style="cursor:pointer"><td>${esc(ownerLabel(ownerById(x.v.ownerId)) || "Owner")} · ${esc(x.v.no || "")}${x.late ? ` <span class="tag red">${x.late}d late</span>` : ""}</td><td class="r num">${usd(x.dueC)}</td></tr>`))}
+      <div class="label" style="margin:12px 0 6px">Renovation invoices sent, not paid · ${usd(o.projInv.reduce((s, x) => s + x.dueC, 0))}</div>
+      ${li(top(o.projInv, x => `<tr data-pj="${esc(x.p.id)}" style="cursor:pointer"><td>${esc(x.p.name)}</td><td class="r num">${usd(x.dueC)}</td></tr>`))}
+      ${o.readyC ? `<p class="help" style="margin:10px 0 0">${usd(o.readyC)} more is ready to invoice on ${o.projReady.length} project${o.projReady.length === 1 ? "" : "s"}: ${o.projReady.map(x => esc(x.p.name)).join(", ")}.</p>` : ""}</div></div>
+    <div class="card"><div class="card-h"><h3>PHD owes</h3><b class="num" style="margin-left:auto">${usd(o.phdOwesC + o.payingC)}</b></div><div class="card-b">
+      <div class="label" style="margin-bottom:6px">Vendor bills to pay · ${usd(o.phdOwesC)}${o.lateBillsC ? ` · <span style="color:var(--red)">${usd(o.lateBillsC)} past due</span>` : ""}</div>
+      ${li(top(o.bills, x => `<tr data-bl="${esc(x.b.id)}" style="cursor:pointer"><td>${esc(x.b.vendor || "Vendor")} · ${esc((pmProp(x.b.propertyId) || {}).name || "")}${x.late ? ` <span class="tag red">${x.late}d late</span>` : x.b.due ? ` <span class="muted">due ${esc(fdateS(x.b.due))}</span>` : ""}</td><td class="r num">${usd(x.c)}</td></tr>`, 6))}
+      ${o.billsPaying.length ? `<div class="label" style="margin:12px 0 6px">Being paid in Nickel · ${usd(o.payingC)}</div>${li(top(o.billsPaying, x => `<tr><td>${esc(x.b.vendor || "Vendor")}</td><td class="r num">${usd(x.c)}</td></tr>`))}` : ""}
+      <p class="help" style="margin:10px 0 0">Owner payouts aren't here — they're above, under Owed to owners.</p></div></div>`;
+  c.querySelectorAll("[data-oi]").forEach(r => r.onclick = () => { S.ui.mode = "pm"; S.ui.invOpen = r.dataset.oi; go("pmInvoices"); });
+  c.querySelectorAll("[data-pj]").forEach(r => r.onclick = () => { S.ui.mode = "projects"; go("invoices", r.dataset.pj); });
+  c.querySelectorAll("[data-bl]").forEach(r => r.onclick = () => { S.ui.mode = "pm"; go("pmBills"); });
+  v.appendChild(c);
+}
+/* everything paid to or received from one name */
+const finNameKey = s => finAlnum(String(s || "").replace(/\b(LLC|INC|CO|CORP|THE|DBA)\b\.?/gi, " "));
+function finPartySheet(name){
+  const k = finNameKey(name), L = finLedger().filter(r => k && finNameKey(r.who) === k), sh = $("#sheet");
+  const tot = st => L.filter(r => r._st === st).reduce((a, r) => a + (r._in ? 1 : -1) * Math.abs(r.amountC), 0);
+  const inC = L.filter(r => r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0), outC = L.filter(r => !r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0);
+  const owner = (S.owners || []).find(o => [o.name, o.company].some(n => finNameKey(n) && (finNameKey(n) === k || finNameKey(n).includes(k) || k.includes(finNameKey(n)))));
+  const props = owner ? pmState().properties.filter(p => !p.deleted && p.ownerId === owner.id) : [];
+  const hold = owner ? finHolds().find(h => h.ownerId === owner.id) : null;
+  const rows = props.flatMap(p => Object.values(pmState().rows).filter(r => r.propertyId === p.id && !r.deleted && !r.detailOnly).map(r => finReconRow(r.month, r, p))).filter(r => r.owedC > 0).sort((a, b) => b.m.localeCompare(a.m) || a.prop.name.localeCompare(b.prop.name)).slice(0, 24);
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${esc(name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${owner ? "Owner · " + props.length + " propert" + (props.length === 1 ? "y" : "ies") : "Payment history"} · last 120 days in Nickel</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${hold ? `<div class="pm-banner mn-hold">Payouts on hold: <b>${esc(hold.title)}</b> · ${usd(finHeldC(hold))} held.</div>` : ""}
+      <div class="mn-story"><div><span class="label">Received from</span><b class="num" style="color:var(--green)">${usd(inC)}</b></div><div><span class="label">Paid to</span><b class="num">${usd(outC)}</b></div><div><span class="label">Processing / failed</span><b class="num">${usd(Math.abs(tot("processing")))} · ${L.filter(r => finBad(r._st)).length}</b></div></div>
+      ${rows.length ? `<div class="label" style="margin:14px 0 6px">Owner payouts</div><table class="pm-sum">${rows.map(r => `<tr data-fp="${esc(r.m + "|" + r.prop.id)}" style="cursor:pointer"><td>${monthLabel(r.m)} · ${esc(r.prop.name)}</td><td class="r num">${usd(r.owedC)}</td><td class="r">${finResTag(r.result)}</td></tr>`).join("")}</table>` : ""}
+      <div class="label" style="margin:14px 0 6px">Nickel payments</div>
+      ${L.length ? `<table class="pm-sum">${L.slice(0, 60).map(r => `<tr data-tx="${esc(r.id)}" style="cursor:pointer"><td>${esc(fdateS(finDay(r.at)))} · ${esc(r.ref || finSrc(r))}</td><td class="r">${finTag(r._st)}</td><td class="r num" style="color:${r._in ? "var(--green)" : "inherit"}">${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))}</td></tr>`).join("")}</table>` : `<p class="muted">No Nickel payments with this name.</p>`}
+    </div>`;
+  $("#shClose").onclick = closeSheet;
+  sh.querySelectorAll("[data-fp]").forEach(b => b.onclick = () => { const [m, pid] = b.dataset.fp.split("|"); finPayoutSheet(m, pid); });
+  sh.querySelectorAll("[data-tx]").forEach(b => b.onclick = () => finTxnSheet(b.dataset.tx));
+  openPanel();
+}
+const finCsv = (name, rows) => download(name, rows.map(r => r.map(c => /[",\n]/.test(String(c ?? "")) ? `"${String(c).replace(/"/g, '""')}"` : (c ?? "")).join(",")).join("\n"));
+function finExportPayouts(m){
+  finCsv(`PHD owner payouts ${monthLabel(m)}.csv`, [["Property","Owner","Owed","Paid","Result","Note","MagicDoor","Nickel / other","On hold"], ...finRecon(m).map(r => [r.prop.address || r.prop.name, ownerLabel(r.owner), (r.owedC / 100).toFixed(2), (r.paidC / 100).toFixed(2), (FIN_RES[r.result] || [r.result])[0], r.note,
+    r.attempts.filter(a => a.sys === "MagicDoor").map(a => `${a.st} ${(a.amountC / 100).toFixed(2)} ${a.date}`).join("; "), r.attempts.filter(a => a.sys !== "MagicDoor").map(a => `${a.sys} ${a.st} ${(a.amountC / 100).toFixed(2)} ${a.date}${a.ref ? " " + a.ref : ""}`).join("; "), r.hold ? r.hold.title : ""])]);
+  finLog(`Exported owner payouts · ${monthLabel(m)}`);
+}
+function finExportLedger(rows){
+  const ix = finRefIndex();
+  finCsv(`PHD Nickel ledger ${finToday()}.csv`, [["Date","Direction","Type","Counterparty","Reference","For","Account","Status","Nickel status","Amount","Reconciled","Note"], ...rows.map(r => { const ab = finAbout(r, ix), n = finState().notes[r.id] || {};
+    return [finDay(r.at), r._in ? "in" : "out", finSrc(r), r.who, r.ref, ab ? ab.label : "", r.account, r._st, r.status, ((r._in ? 1 : -1) * Math.abs(r.amountC) / 100).toFixed(2), n.reconciled ? "yes" : "", n.text || ""]; })]);
+  finLog(`Exported the Nickel ledger (${rows.length} payments)`);
 }
 
 /* ===================== BOOT ===================== */

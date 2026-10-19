@@ -175,6 +175,14 @@ async function sync() {
   const notes: string[] = [];
   const pull = async (entity: string) => { try { return (await queryAll(entity, `TxnDate >= '${from}'`)).map((x) => cleanTxn(entity, x)); } catch (e) { notes.push(`${entity}: ${String((e as Error).message || e)}`); return []; } };
   const [purchases, bills, credits] = await Promise.all([pull("Purchase"), pull("Bill"), pull("VendorCredit")]);
+  // money moved between PHD's accounts, and deposits — the bank side for the console's transfer checks (last 150 days)
+  const bankFrom = new Date(Date.now() - 150 * 864e5).toISOString().slice(0, 10);
+  const pullBank = async (entity: string) => { try { return await queryAll(entity, `TxnDate >= '${bankFrom}'`); } catch (e) { notes.push(`${entity}: ${String((e as Error).message || e)}`); return [] as Obj[]; } };
+  const [transfers, deposits] = await Promise.all([pullBank("Transfer"), pullBank("Deposit")]);
+  const bank = [
+    ...transfers.map((x) => ({ type: "Transfer", id: S(x.Id), date: S(x.TxnDate), amount: N(x.Amount), from: ref(x.FromAccountRef), to: ref(x.ToAccountRef), memo: S(x.PrivateNote).slice(0, 200) })),
+    ...deposits.map((x) => ({ type: "Deposit", id: S(x.Id), date: S(x.TxnDate), amount: N(x.TotalAmt), from: (() => { const l = ((x.Line as Obj[]) || []).find((y) => y.DepositLineDetail && y.DepositLineDetail.AccountRef); return l ? ref(l.DepositLineDetail.AccountRef) : null; })(), to: ref(x.DepositToAccountRef), memo: S(x.PrivateNote).slice(0, 200) })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
   const snap = {
     v: 1, syncedAt: new Date().toISOString(), env: QBO_ENV, company: S(ci.CompanyName), from,
     accounts: accounts.map((a) => ({ id: S(a.Id), name: S(a.FullyQualifiedName || a.Name), type: S(a.AccountType), sub: S(a.AccountSubType), cls: S(a.Classification),
@@ -185,10 +193,11 @@ async function sync() {
     classes: classes.map((c) => ({ id: S(c.Id), name: S(c.FullyQualifiedName) })),
     items: items.map((i) => ({ id: S(i.Id), name: S(i.FullyQualifiedName), type: S(i.Type), expAccount: i.ExpenseAccountRef ? S(i.ExpenseAccountRef.value) : "" })),
     txns: [...purchases, ...bills, ...credits].sort((a, b) => b.date.localeCompare(a.date)),
+    bank, bankFrom,
     notes, took: Math.round((Date.now() - t0) / 100) / 10,
   };
   await saveSnapshot(snap);
-  return { ok: true, syncedAt: snap.syncedAt, company: snap.company, from, counts: { accounts: snap.accounts.length, vendors: snap.vendors.length, customers: snap.customers.length, purchases: purchases.length, bills: bills.length, credits: credits.length }, took: snap.took, notes };
+  return { ok: true, syncedAt: snap.syncedAt, company: snap.company, from, counts: { accounts: snap.accounts.length, vendors: snap.vendors.length, customers: snap.customers.length, purchases: purchases.length, bills: bills.length, credits: credits.length, transfers: transfers.length, deposits: deposits.length }, took: snap.took, notes };
 }
 
 /* ---------- categorize: change account / customer / class / billable on chosen expense lines ---------- */

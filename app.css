@@ -1683,3 +1683,5 @@ button.tag.hold{padding:2px 9px;border-radius:999px;border:1px solid var(--hold-
 .mn-leg .f3{display:grid;grid-template-columns:1fr 1fr 130px;gap:10px}
 .mn-legst{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin-top:6px}
 @media (max-width:720px){ .mn-story{grid-template-columns:1fr 1fr} .mn-leg .f3{grid-template-columns:1fr} .mn-mo{width:100%;justify-content:center;margin:0 0 8px} }
+.mn-owed{margin-bottom:16px}
+.mn-owed .card-h b{font-size:16px}

@@ -175,6 +175,10 @@ One place to find any dollar and see where it stands. Nothing on this page sends
 - **Holds:** put an owner's payouts on hold, for example during a dispute, with a reason, the properties, documents and a timeline. A held payout shows as **On hold** in Month close, is never counted as "not paid", and can't be marked sent. Releasing a hold needs a reason, who approved it, and typing RELEASE. Only people on the payments list can release one.
 - **Transfers:** record money moved between PHD's own accounts, such as the month's PHD income to PM Operating. Each leg is checked off when the money shows leaving one account and arriving in the other; Nickel transfers are checked against Nickel automatically. Transfers are never counted as income or expense.
 - **Owner payout batches** (under Transfers): when MagicDoor sends payouts as an ACH batch, record what the bank did with it. The console works out which payouts were in the batch from the amount: the set of that day's payouts that adds up to it exactly. When more than one set does, it picks the one that best fits what happened afterwards. Payouts in a blocked batch show as failed, even though MagicDoor still calls them paid.
+- **Owed to PHD / PHD owes:** owner invoices sent and not paid (with the ones past due), renovation invoices sent and not paid, what's ready to invoice, and vendor bills to pay or being paid in Nickel. Owner invoices more than 14 days late and vendor bills past due show under Needs attention.
+- **Payment history:** click a name in the ledger, or the owner's history button on a payout, to see everything paid to or received from them, and every owner payout by month.
+- **Export CSV** on Owner payouts (the month's reconciliation) and on the Ledger (what the filter shows), for the books or the accountant.
+- QuickBooks transfers (from the hourly QuickBooks sync) also confirm a transfer leg when the amount and accounts match. That's the books, from the bank feed, and the console says so.
 - **Audit trail:** every hold, release, transfer, batch, reconciliation and note, with who and when.
 
 ⌘K search also finds Nickel payments, holds and transfers by name, amount or reference.
