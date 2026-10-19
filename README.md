@@ -160,6 +160,10 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 
 ## Money (menu → Money)
 
+**Stage 4 layout.** The top row is five numbers you can click: available cash (Nickel live, banks from the books), owner funds still to pay out (with what's on hold and what's sent), PHD's operating income for the month (with how much is confirmed moved), payments awaiting settlement, and open exceptions. Below that: **Needs attention** (critical first, then things to act on; "Understood…" parks a known item with a reason and an end date, logged), **In progress** (sent payouts, transfers awaiting confirmation, Nickel payments in flight, holds, Awaiting ACH), and **Completed**. Nickel's own page (bills, deposits, payees) is under Money as **Nickel activity**.
+
+**One status language for owner distributions:** Paid · Sent · Awaiting ACH (no bank details at Nickel, or the sheet says the account isn't set up) · On hold · Failed · Cancelled · Needs review · Not paid. The distributions table groups by owner, status, channel or funding batch, sorts, searches by amount, and saves views; settled payouts fold into one line until you open them. Marking a payout sent by hand when MagicDoor or Nickel already shows it paid asks first, so it isn't counted twice.
+
 One place to find any dollar and see where it stands. Nothing on this page sends money.
 
 - **The top row** shows the balance in Nickel, what's owed to owners and not paid (holds left out), what's on hold, PHD income still to move to operating, and Nickel payments in flight.
