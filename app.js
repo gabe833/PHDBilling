@@ -5650,7 +5650,8 @@ function pmAlertRowHTML(a){
 }
 function pmWireAlerts(root, list){
   const find = k => list.find(a => a.key === k);
-  root.querySelectorAll("[data-aact]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.aact); if(a) pmAlertAct(a); });
+  root.querySelectorAll("[data-aact]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.aact); if(!a) return;
+    try{ pmAlertAct(a); }catch(er){ console.error(er); toast("That didn't open: " + er.message); } });
   root.querySelectorAll("[data-amenu]").forEach(b => b.onclick = e => { e.stopPropagation(); const m = b.nextElementSibling;
     document.querySelectorAll(".al-menu.on").forEach(x => { if(x !== m) x.classList.remove("on"); });
     if(!m.classList.toggle("on")) return;
@@ -6759,7 +6760,7 @@ function mdUnitSheet(mdPropId, given){
   if(!ls.length){ toast("Nothing left to pick here"); return; }
   const units = ls[0].units.map(pmProp).filter(Boolean);
   const body = `<p class="muted" style="margin-top:0">MagicDoor keeps these bills on ${esc(mp ? mp.name : "the property")} without saying which unit. Pick one and the bill (with its admin fee) goes on that unit's month; the sync remembers it.</p>
-    <div class="mu-list">${ls.map(l => `<div class="mu-r" data-li="${esc(l.id)}"><div><b>${esc(l.vendor || "Vendor")}</b> · <span class="num">${usd(cents(l.amount))}</span><div class="item-s">${esc(l.memo || "")} · ${esc(shortDate(l.date))} · ${esc(monthLabel(l.month))}</div></div>
+    <div class="mu-list">${ls.map(l => `<div class="mu-r" data-li="${esc(l.id)}"><div><b>${esc(l.vendor || "Vendor")}</b> · <span class="num">${usd(cents(l.amount))}</span><div class="item-s">${esc(l.memo || "")} · ${esc(l.date ? fdateS(String(l.date).slice(0, 10)) : "")} · ${esc(monthLabel(l.month))}</div></div>
       <div class="mu-btns">${units.map(u => `<button class="btn sm" data-mu="${esc(u.id)}">${esc(u.name.replace(/^.*?(#\s*\S+|Unit\s+\S+)$/i, "$1") || u.name)}</button>`).join("")}</div></div>`).join("")}</div>`;
   mdSheet(`Which unit? · ${mp ? mp.name : ""}`, body, []);
   document.querySelectorAll(".mu-r [data-mu]").forEach(b => b.onclick = () => {
