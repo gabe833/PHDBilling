@@ -158,7 +158,19 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 - **Recipients** sets who gets an owner's statements — as many addresses as needed, plus an optional Cc. The same list is on the owner's page as **Owner statements go to** (blank = their main email). Every address is on the To line once the updated `apps-script/Statements.gs` is pasted into pm@'s script and deployed as a new version; until then the first address is To and the rest are Cc'd, so everyone still gets it.
 - The menu shows how many statements haven't gone out yet for a month closed in the last 40 days.
 
-## Money (menu → Money)
+## The menu
+
+Both sides of the console use the same menu shape, with no folded sections:
+
+- **Today** and **Action center** at the top.
+- **Rent** (Property mgmt): Month close, Rent overview, Properties, Security deposits, MagicDoor.
+- **Projects** (Projects side): All properties, Reconcile, Back-charges, Inventory, Business, then the property you're in.
+- **Money**: Cash & payouts (the Money page), Bills, Owner invoices, Owner statements, PHD income, Nickel.
+- **People**: Owners, Vendors, Receipt inbox, Team.
+
+Alert rules are on the Action center page; Settings & connections stay at the bottom.
+
+## Money (menu → Money → Cash & payouts)
 
 **Stage 4 layout.** The top row is five numbers you can click: available cash (Nickel live, banks from the books), owner funds still to pay out (with what's on hold and what's sent), PHD's operating income for the month (with how much is confirmed moved), payments awaiting settlement, and open exceptions. Below that: **Needs attention** (critical first, then things to act on; "Understood…" parks a known item with a reason and an end date, logged), **In progress** (sent payouts, transfers awaiting confirmation, Nickel payments in flight, holds, Awaiting ACH), and **Completed**. Nickel's own page (bills, deposits, payees) is under Money as **Nickel activity**.
 

@@ -28,30 +28,30 @@ function render(){
     scope:    [p.name, "Scope of work", "Budgets track themselves against the ledger"],
     invoices: [p.name, "Invoices", `Each one packed to ${usd0(cents(p.invoiceTarget))} and never over`],
     owner:    [p.name, "Owner", "The person this property bills"],
-    owners:   ["", "Owners", "Everyone you bill, across every property"],
-    inbox:    ["", "Receipt inbox", "Receipts read for you — nothing is added until you approve it"],
-    team:     ["", "Team", "Who has access, and who changed what"],
-    pmMonth:  ["Property management", "Month close", ""],
-    pmHome:   ["Property management", "Overview", ""],
-    pmAlerts: ["Property management", "Action center", ""],
-    pmProperty:["Property management", "Property", ""],
+    owners:   ["People", "Owners", "Everyone you bill, across every property"],
+    inbox:    ["People", "Receipt inbox", "Receipts read for you — nothing is added until you approve it"],
+    team:     ["People", "Team", "Who has access, and who changed what"],
+    pmMonth:  ["Rent", "Month close", ""],
+    pmHome:   ["Rent", "Rent overview", ""],
+    pmAlerts: ["Property management", "Action center", "Everything that needs a person, most urgent first"],
+    pmProperty:["Rent · Properties", "Property", ""],
     pmSettings:["Property management", "Alert rules", "When rent counts as late, payouts as due, leases as ending"],
-    pmMd:     ["Property management", "MagicDoor", ""],
-    pmProps:  ["Property management", "Properties", "Every rental PHD manages — rent, fee rule and owner"],
-    pmDeposits:["Property management", "Security deposits", "What PHD is holding, for whom"],
-    pmIncome: ["Property management", "Income", "PHD's management income, month by month"],
-    pmBills:  ["Property management", "Bills", ""],
-    pmInvoices:["Property management", "Owner invoices", ""],
-    pmStatements:["Property management", "Owner statements", ""],
-    pmVendors:["Property management", "Vendors", ""],
-    pmPaySetup:["Shared", "Payments", ""],
-    payments: ["Shared", "Payments", ""],
+    pmMd:     ["Rent", "MagicDoor", ""],
+    pmProps:  ["Rent", "Properties", "Every rental PHD manages — rent, fee rule and owner"],
+    pmDeposits:["Rent", "Security deposits", "What PHD is holding, for whom"],
+    pmIncome: ["Money", "PHD income", "PHD's management income, month by month"],
+    pmBills:  ["Money", "Bills", ""],
+    pmInvoices:["Money", "Owner invoices", ""],
+    pmStatements:["Money", "Owner statements", ""],
+    pmVendors:["People", "Vendors", ""],
+    pmPaySetup:["Money", "Nickel setup", ""],
+    payments: ["Money", "Nickel", ""],
     today:    ["", "Today", ""],
     charges:  ["Projects", "Back-charges", ""],
     inventory:["Projects", "Inventory", ""],
     business: ["Projects", "Business", ""],
     connections:["Shared", "Settings & connections", "Every service the console uses, whether it's working, and where to set it up"],
-    money:    ["Shared", "Money", ""],
+    money:    ["Money", "Overview", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
@@ -5792,7 +5792,7 @@ function pgPmAlerts(){
   const f = S.ui.pmAlF || "all";
   const types = [["all","All"],["late","Rent late"],["short","Rent short"],["payout","Payouts"],["owes","Owner owes"],["lease","Leases"],["deposit","Deposits"],["vacant","Vacancy"],["start","Month-end"],["mismatch","Payout check"],["setup","Setup"],["inbox","Receipts"]];
   const typeOf = a => (a.type === "start" || a.type === "close") ? "start" : a.type;
-  actions([["Settings", () => go("pmSettings"), "ghost"]]);
+  actions([["Alert rules", () => go("pmSettings"), "ghost"]]);
   $("#pgSub").textContent = all.length ? `${all.filter(a => a.level === "urgent").length} urgent · ${all.filter(a => a.level === "warn").length} need action · ${all.filter(a => a.level === "info").length} heads-up — also emailed to the team each morning` : "Nothing needs attention right now";
   const v = $("#view");
   const bar = elm("div","sc-bar");
@@ -11616,7 +11616,7 @@ function nkWhereFrom(entityId, r){
   return null;
 }
 function pgPayments(){
-  $("#pgCrumb").textContent = "Shared"; $("#pgTitle").textContent = "Payments";
+  $("#pgCrumb").textContent = "Money"; $("#pgTitle").textContent = "Nickel";
   const tab = S.ui.payTab === "setup" ? "setup" : "money";
   $("#pgSub").textContent = tab === "setup" ? "Nickel pays vendors and collects from owners · Nickel keeps QuickBooks up to date" : "Everything moving through Nickel, with a receipt for each payment";
   const v = $("#view");
@@ -11988,53 +11988,62 @@ function renderModeSwitch(){
   if(pm && PM_VIEWS.has(S.ui.view)) S.ui.pmLastView = S.ui.view;
   if(!pm && !PM_VIEWS.has(S.ui.view) && !SHARED_VIEWS.has(S.ui.view)) S.ui.pjLastView = S.ui.view;
 }
+/* The menu, both sides: one shape everywhere.
+   Today and the Action center at the top, then three groups that follow how the work runs:
+   Rent (what tenants pay) → Money (what goes out and comes in) → People. No folds. */
+function navMk(n, cur){
+  return (k, lbl, ic, badge, fn, extra) => {
+    const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`);
+    b.setAttribute("aria-current", cur ? cur(k) : S.ui.view === k);
+    b.onclick = fn || (() => go(k)); if(extra) extra(b); n.appendChild(b); return b;
+  };
+}
+const navBadge = (t, kind, title) => t === "" || t == null || t === 0 ? null : `<i class="badge${kind === "alert" ? " alert" : ""}"${kind === "gold" ? ' style="color:var(--gold)"' : kind === "goldfill" ? ' style="background:var(--gold);color:#fff"' : ""}${title ? ` title="${esc(title)}"` : ""}>${t}</i>`;
+function navMoney(n, mk){
+  n.appendChild(elm("div","nav-head","Money"));
+  const fb = typeof finNavBadge === "function" ? finNavBadge() : null;
+  mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1");
+  if(S.ui.mode === "pm"){
+    const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
+    mk("pmBills", "Bills", "receipt", navBadge(nOpen));
+    mk("pmInvoices", "Owner invoices", "file", navBadge(nInv));
+    let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
+      if(!mt.closed || String(mt.closedBy || "").startsWith("Imported") || !mt.closedAt || Date.now() - Date.parse(mt.closedAt) > 40 * 864e5) nSt = 0; }catch(e){}
+    mk("pmStatements", "Owner statements", "mail", navBadge(nSt, null, "Not sent yet"));
+    mk("pmIncome", "PHD income", "chart");
+  }
+  if(typeof payOnline !== "function" || payOnline() || S.ui.mode === "pm") mk("payments", "Nickel", "sync", typeof payNavBadge === "function" ? payNavBadge() : null);
+}
+function navPeople(n, mk){
+  n.appendChild(elm("div","nav-gap"));
+  n.appendChild(elm("div","nav-head","People"));
+  mk("owners", "Owners", "user", navBadge((S.owners || []).filter(ownerLabel).length), () => { S.ui.ownerId = null; go("owners"); });
+  if(S.ui.mode === "pm") mk("pmVendors", "Vendors", "user");
+  const nIn = inboxCount();
+  mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (typeof inboxConn === "function" && !inboxConn() ? navBadge("set up", "gold") : null), () => { go("inbox"); inboxRefresh(); });
+  if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
+}
 function renderNavPM(){
   const n = $("#nav"); n.innerHTML = "";
-  const mk = (k, lbl, ic, badge, fn) => {
-    const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`);
-    b.setAttribute("aria-current", S.ui.view === k);
-    b.onclick = fn || (() => go(k)); n.appendChild(b);
-  };
+  const V = S.ui.view, cur = k => V === k || (k === "pmProps" && V === "pmProperty") || (k === "payments" && V === "pmPaySetup");
+  const mk = navMk(n, cur);
   const P2 = pmState(), m = pmCurrentMonth(), al = P2.properties.length ? pmAlerts() : [];
   const urgent = al.filter(a => a.level === "urgent").length, act = al.filter(a => a.level !== "info").length;
   mk("today", "Today", "bolt");
-  n.appendChild(elm("div","nav-head","Property management"));
-  const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
-  mk("pmBills", "Bills", "receipt", nOpen ? `<i class="badge">${nOpen}</i>` : null);
-  mk("pmInvoices", "Owner invoices", "file", nInv ? `<i class="badge">${nInv}</i>` : null);
-  { // statements still to go out for the month being sent
-    let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
-      // only for a month closed here recently — not history imported from the workbook
-      if(!mt.closed || String(mt.closedBy || "").startsWith("Imported") || !mt.closedAt || Date.now() - Date.parse(mt.closedAt) > 40 * 864e5) nSt = 0; }catch(e){}
-    mk("pmStatements", "Owner statements", "mail", nSt ? `<i class="badge" title="Not sent yet">${nSt}</i>` : null); }
-  mk("pmVendors", "Vendors", "user");
-  // rent, MagicDoor and reporting: one tap away, folded unless you're in it
-  const rrOpen = S.ui.pmRR === true || PM_RR.has(S.ui.view);
-  const rr = elm("button","nav-fold", `${icon("grid")}<span>Rent &amp; reporting</span><i class="badge${act ? " alert" : ""}"${act && !urgent ? ' style="background:var(--gold)"' : ""}>${act || ""}</i><b class="nav-chev">${rrOpen ? "▾" : "▸"}</b>`);
-  rr.onclick = () => { S.ui.pmRR = !rrOpen; persistUi(); renderNavPM(); };
-  n.appendChild(rr);
-  if(rrOpen){
-    const sub = elm("div","nav-sub"); n.appendChild(sub);
-    const mk2 = (k, lbl, ic, badge) => { const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`); b.setAttribute("aria-current", S.ui.view === k); b.onclick = () => go(k); sub.appendChild(b); };
-    mk2("pmHome", "Overview", "home");
-    mk2("pmAlerts", "Action center", "bolt", act ? `<i class="badge alert"${urgent ? "" : ' style="background:var(--gold)"'}>${act}</i>` : al.length ? `<i class="badge">${al.length}</i>` : null);
-    mk2("pmMonth", "Month close", "check", `<i class="badge">${monthShort(m)}</i>`);
-    mk2("pmProps", "Properties", "building", `<i class="badge">${pmLiveProps().length}</i>`);
-    mk2("pmDeposits", "Deposits", "receipt");
-    mk2("pmIncome", "Income", "grid");
-    if(mdReady() || (typeof Cloud !== "undefined" && Cloud.ready)){
-      const xm = mdx(), nUn = xm ? xm.unmatchedProps.length : 0;
-      mk2("pmMd", "MagicDoor", "sync", mdReady() ? (nUn ? `<i class="badge" title="Not linked">${nUn}</i>` : `<i class="badge">${mdAgo(S.md.syncedAt).replace(" ago", "")}</i>`) : null);
-    }
-    mk2("pmSettings", "Alert rules", "gear");
+  mk("pmAlerts", "Action center", "check", act ? `<i class="badge alert"${urgent ? "" : ' style="background:var(--gold)"'}>${act}</i>` : null);
+  n.appendChild(elm("div","nav-gap"));
+  n.appendChild(elm("div","nav-head","Rent"));
+  mk("pmMonth", "Month close", "list", `<i class="badge">${monthShort(m)}</i>`);
+  mk("pmHome", "Rent overview", "home");
+  mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
+  mk("pmDeposits", "Security deposits", "receipt");
+  if(mdReady() || (typeof Cloud !== "undefined" && Cloud.ready)){
+    const xm = mdx(), nUn = xm ? xm.unmatchedProps.length : 0;
+    mk("pmMd", "MagicDoor", "sync", mdReady() ? (nUn ? navBadge(nUn, null, "Not linked") : `<i class="badge">${mdAgo(S.md.syncedAt).replace(" ago", "")}</i>`) : null);
   }
   n.appendChild(elm("div","nav-gap"));
-  n.appendChild(elm("div","nav-head","Shared"));
-  mk("owners", "Owners", "user", `<i class="badge">${(S.owners||[]).filter(ownerLabel).length}</i>`, () => { S.ui.ownerId = null; go("owners"); });
-  const nIn = inboxCount();
-  mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : null, () => { go("inbox"); inboxRefresh(); });
-  mk("payments", "Payments", "card", payNavBadge());
-  if(Cloud.ready) mk("team", "Team", "user", `<i class="badge">${Cloud.online.length ? Cloud.online.length + 1 + " on" : ""}</i>`);
+  navMoney(n, mk);
+  navPeople(n, mk);
 }
 /* "N" in property management jumps to the next unpaid rent box */
 function pmQuick(){ if(S.ui.view === "pmMonth") return pmQuickRent(); billUploadSheet(); }
@@ -13048,17 +13057,13 @@ renderNav = function(){
   }
   if(sw) sw.remove();
   const n = $("#nav"); n.innerHTML = "";
-  const mk = (k, lbl, ic, badge, fn) => {
-    const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge != null ? badge : ""}`);
-    b.setAttribute("aria-current", S.ui.view === k);
-    b.onclick = fn || (() => go(k)); n.appendChild(b); return b;
-  };
+  const mk = navMk(n);
   const head = t => n.appendChild(elm("div", "nav-head", esc(t)));
   const gold = (t, title) => `<i class="badge" style="color:var(--gold)"${title ? ` title="${esc(title)}"` : ""}>${t}</i>`;
   const pr = portfolioRoll();
 
   mk("today", "Today", "bolt");
-
+  n.appendChild(elm("div", "nav-gap"));
   head("Projects");
   mk("portfolio", "All properties", "grid", pr.issues ? `<i class="badge alert">${pr.issues}</i>` : `<i class="badge">${pr.props}</i>`);
   const qbN = typeof qbCounts === "function" ? qbCounts() : null;
@@ -13085,12 +13090,8 @@ renderNav = function(){
   }
 
   n.appendChild(elm("div", "nav-gap"));
-  head("Shared");
-  mk("owners", "Owners", "user", `<i class="badge">${(S.owners || []).filter(ownerLabel).length}</i>`, () => { S.ui.ownerId = null; go("owners"); });
-  { const nIn = inboxCount();
-    mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (inboxConn() ? null : gold("set up")), () => { go("inbox"); inboxRefresh(); }); }
-  if(typeof payOnline === "function" && payOnline()) mk("payments", "Payments", "card", payNavBadge());
-  if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
+  navMoney(n, mk);
+  navPeople(n, mk);
 };
 // the switcher: always the property you're in; the menu opens beside it
 (function(){
@@ -13170,7 +13171,8 @@ function polWrapped(){
 /* ---------- breadcrumb on every page ---------- */
 function polCrumb(){
   const c = $("#pgCrumb"); if(!c || c.textContent.trim()) return;
-  c.textContent = SHARED_VIEWS.has(S.ui.view) && S.ui.view !== "today" ? "Shared" : S.ui.mode === "pm" ? "Property management" : "Projects";
+  const g = {money:"Money", payments:"Money", owners:"People", inbox:"People", team:"People", connections:"Settings"}[S.ui.view];
+  c.textContent = g || (S.ui.view === "today" ? "" : S.ui.mode === "pm" ? "Property management" : "Projects");
 }
 
 /* ---------- month close: hide columns with nothing in them ---------- */
@@ -13782,7 +13784,7 @@ function finAckSheet(x){
    THE MONEY PAGE
    ==================================================================== */
 function pgMoney(){
-  $("#pgCrumb").textContent = "Shared"; $("#pgTitle").textContent = "Money";
+  $("#pgCrumb").textContent = S.ui.mode === "pm" ? "Property management" : "Projects"; $("#pgTitle").textContent = "Money";
   const at = finLedgerAt(), ago = t => { if(!t) return "—"; const mn = Math.round((Date.now() - Date.parse(t)) / 60000); return mn < 2 ? "just now" : mn < 60 ? mn + " min ago" : mn < 1440 ? Math.round(mn / 60) + " h ago" : fdateS(String(t).slice(0, 10)); };
   $("#pgSub").innerHTML = `<span class="mn-src"><i class="${at && Date.now() - Date.parse(at) < 2 * 3600e3 ? "ok" : "old"}"></i>Nickel ${esc(ago(at))}</span><span class="mn-src"><i class="${S.md && Date.now() - Date.parse(S.md.syncedAt) < 2 * 3600e3 ? "ok" : "old"}"></i>MagicDoor ${esc(ago(S.md && S.md.syncedAt))}</span><span class="mn-src"><i class="${S.qbo && Date.now() - Date.parse(S.qbo.syncedAt) < 2 * 3600e3 ? "ok" : "old"}"></i>QuickBooks ${esc(ago(S.qbo && S.qbo.syncedAt))}</span>`;
   const repM = () => S.ui.mnMonth && /^\d{4}-\d{2}$/.test(S.ui.mnMonth) ? S.ui.mnMonth : pmCurrentMonth();
@@ -14267,6 +14269,10 @@ if(typeof cmdItems === "function"){
       .forEach(t => extra.push({sec:"Money — transfers", ic:"arrow", main:t.title, sub:`${fdateS(t.date)} · ${FIN_ST[finTransferState(t)][0]}`, amt:usd(finTransferC(t)), run:() => { go("money"); setTimeout(() => finTransferSheet(t.id), 30); }}));
     return /\d/.test(qq) ? extra.concat(out) : out.concat(extra);
   };
+}
+function finNavBadge(){
+  try{ const ex = finExceptions().filter(x => !x.ack), u = ex.filter(x => x.tier === "critical").length, w = ex.filter(x => x.tier === "action").length;
+    return u ? `<i class="badge alert" title="Critical">${u}</i>` : w ? `<i class="badge" style="color:var(--gold)" title="To act on">${w}</i>` : null; }catch(e){ return null; }
 }
 /* menu: Money, right under Today, in both halves of the console */
 if(typeof renderNav === "function"){
