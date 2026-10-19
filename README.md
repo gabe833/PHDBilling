@@ -178,6 +178,9 @@ One place to find any dollar and see where it stands. Nothing on this page sends
 - **Owed to PHD / PHD owes:** owner invoices sent and not paid (with the ones past due), renovation invoices sent and not paid, what's ready to invoice, and vendor bills to pay or being paid in Nickel. Owner invoices more than 14 days late and vendor bills past due show under Needs attention.
 - **Payment history:** click a name in the ledger, or the owner's history button on a payout, to see everything paid to or received from them, and every owner payout by month.
 - **Export CSV** on Owner payouts (the month's reconciliation) and on the Ledger (what the filter shows), for the books or the accountant.
+- **Group payouts:** when one or more Nickel owner payments cover several properties together without per-property numbers (like OWN-OCT26-RAD-SUSAN / -STEPHEN / -JOINT), the console links them through the owners' names. It accepts the group only when the payments add up exactly to what those properties are owed.
+- **Owner payout not matched:** a Nickel owner payment for the month that no property's payout accounts for is flagged, so a second payment can't go unnoticed.
+- **Month report** (top of the page) prints a one-page money report for the month: owner payouts (paid, processing, on hold, not paid, with every open one listed), PHD income and where it was moved, Nickel cash in and out by type, transfers between accounts, balances, holds and open items. **Report CSV** gives the same numbers as a spreadsheet.
 - QuickBooks transfers (from the hourly QuickBooks sync) also confirm a transfer leg when the amount and accounts match. That's the books, from the bank feed, and the console says so.
 - **Audit trail:** every hold, release, transfer, batch, reconciliation and note, with who and when.
 
