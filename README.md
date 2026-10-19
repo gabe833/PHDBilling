@@ -164,6 +164,8 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 
 **One status language for owner distributions:** Paid · Sent · Awaiting ACH (no bank details at Nickel, or the sheet says the account isn't set up) · On hold · Failed · Cancelled · Needs review · Not paid. The distributions table groups by owner, status, channel or funding batch, sorts, searches by amount, and saves views; settled payouts fold into one line until you open them. Marking a payout sent by hand when MagicDoor or Nickel already shows it paid asks first, so it isn't counted twice.
 
+**Same words everywhere.** Month close's Paid out column, the property cards and Today use these statuses too. Today's "Payouts to send" counts only payouts that can actually go out (held and Awaiting ACH ones are listed beside it, not in it), and Today opens with **Money needs you** when there's anything critical or to act on.
+
 One place to find any dollar and see where it stands. Nothing on this page sends money.
 
 - **The top row** shows the balance in Nickel, what's owed to owners and not paid (holds left out), what's on hold, PHD income still to move to operating, and Nickel payments in flight.

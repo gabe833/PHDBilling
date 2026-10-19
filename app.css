@@ -1687,7 +1687,7 @@ button.tag.hold{padding:2px 9px;border-radius:999px;border:1px solid var(--hold-
 .mn-owed .card-h b{font-size:16px}
 
 /* ===== Stage 4: one status language, the money board ===== */
-.st{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border-radius:11px;font-size:12px;font-weight:560;line-height:1;white-space:nowrap;border:1px solid var(--line);background:var(--surface,#fff);color:var(--ink-2,var(--muted))}
+.st{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border-radius:6px;font-family:inherit;cursor:default;font-size:12px;font-weight:560;line-height:1;white-space:nowrap;border:1px solid var(--line);background:var(--surface,#fff);color:var(--ink-2,var(--muted))}
 .st > i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 .st small{font-weight:450;opacity:.75}
 .st-green{color:var(--green);background:var(--green-soft);border-color:var(--green-line)}
@@ -1752,8 +1752,10 @@ button.tag.hold{padding:2px 9px;border-radius:999px;border:1px solid var(--hold-
 .mn-hist li::before{content:"";position:absolute;left:-20px;top:9px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--surface,#fff)}
 .mn-hist li.pend::before{background:var(--line)}
 .mn-hist b{display:block;font-weight:540;font-size:13px} .mn-hist span{font-size:12px;color:var(--muted)}
-@media (max-width:1100px){.mn-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.mn-board{grid-template-columns:1fr}}
-@media (max-width:640px){.mn-kpis{grid-template-columns:1fr 1fr}.mn-kpi b{font-size:18px}.mn-tools{margin-left:0}.mn-tools input[type=text]{width:100%}
+@media (max-width:1100px){.mn-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.mn-board{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:640px){.mn-kpis{grid-template-columns:1fr 1fr}.mn-kpi:last-child{grid-column:span 2}.mn-kpi b{font-size:18px}.mn-tools{margin-left:0}.mn-tools input[type=text]{width:100%}
   .mn-ex-r{grid-template-columns:12px minmax(0,1fr)}.mn-ex-b{grid-column:2;justify-content:flex-start}.mn-dist th:nth-child(3),.mn-dist td:nth-child(3),.mn-dist th:nth-child(4),.mn-dist td:nth-child(4){display:none}}
 @media (prefers-reduced-motion:reduce){.mn-kpi,.mn-prog-r{transition:none}}
 .mn-fold{cursor:pointer}.mn-fold:hover td{background:var(--line-2)}
+button.st{cursor:pointer}
+@media (max-width:640px){.pf-hero > :last-child:nth-child(odd){grid-column:span 2}}
