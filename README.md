@@ -158,6 +158,16 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 - **Recipients** sets who gets an owner's statements — as many addresses as needed, plus an optional Cc. The same list is on the owner's page as **Owner statements go to** (blank = their main email). Every address is on the To line once the updated `apps-script/Statements.gs` is pasted into pm@'s script and deployed as a new version; until then the first address is To and the rest are Cc'd, so everyone still gets it.
 - The menu shows how many statements haven't gone out yet for a month closed in the last 40 days.
 
+### 7b. Import a month from the workbook (Month close → Import from workbook)
+
+When the office's **TOTAL MONTHLY PM INCOME REPORTING** sheet is final for a month, import it so the console shows exactly the same numbers:
+
+1. Open the month in Month close and press **Import from workbook** (it may be under **More**).
+2. Choose the .xlsx file. The tab for the month is picked for you; each line on the sheet is matched to a property by address.
+3. Check any line marked "need a property", then press **Import**.
+
+Every matched row takes the sheet's rent, repairs, admin fee, PM and leasing fees, other income, owner payment, and PHD's charges (applications, late fees, reimbursements, filters) exactly as recorded. The sheet's "paid in what channel" note is kept on the row. Rows are locked so the MagicDoor sync doesn't change them; open a row and press **Unlock to edit** to change one by hand. The file is read in your browser and isn't uploaded anywhere.
+
 ### 7b. Project invoice emails (sent from billing@)
 On a project invoice, **Email owner** writes the email the way the office sends it ("Hi Ken, … Here is the project invoice link for 3108 Terry Dr: 3108TERRY-002"). The invoice number links to the pay link. You see it and can edit it in the console, with a live preview, then press **Send from billing@** or **Save as Gmail draft**. Sent emails sit in billing@'s Sent folder with the label **Console/Project Invoices**, and the invoice shows when and to whom it went. Tick "Use this subject and message for future invoice emails" to change the standard wording.
 

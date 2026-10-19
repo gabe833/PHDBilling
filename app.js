@@ -4533,6 +4533,7 @@ function pgPmMonth(){
     { const nd = stmtCandidates(m).filter(x => !x.why && !x.done).length; acts.push([nd ? `Email statements (${nd})` : "Email statements", () => pmStatementMailSheet(m)]); }
     if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
     if(!closed && !mdReady()) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
+    if(!closed) acts.push(["Import from workbook", () => wbImportSheet(m)]);
     const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0).map(x => x.prop.id);
     if(!closed && unpaid.length) acts.push([`Mark payouts sent (${unpaid.length})`, () => pmMarkPaidSheet(m, unpaid)]);
     acts.push(closed ? ["Reopen month", () => pmCloseMonth(m, false)] : ["Close month", () => pmCloseMonth(m, true), "primary"]);
@@ -4777,7 +4778,7 @@ function pmRowSheet(m, pid, focus){
       <div class="sheet-h"><div><h3>${esc(prop.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${monthLabel(m)} · ${feeRuleText(prop.feeRule)} PM fee · ${prop.adminRate ?? 10}% admin fee on repairs</div></div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
-        ${ro ? `<div class="pm-banner">${row.locked ? "Imported from the workbook — numbers are shown exactly as recorded." : "This month is closed."} Reopen the month to edit.</div>` : ""}
+        ${ro ? `<div class="pm-banner">${row.locked ? `Imported from the workbook — numbers are shown exactly as recorded.${row.wbStatus ? " Sheet: " + esc(row.wbStatus) + "." : ""}${row.wbNotes ? " " + esc(row.wbNotes) + "." : ""}${!closed ? ` <button class="btn sm" id="rwUnlock" style="margin-left:6px">Unlock to edit</button>` : " Reopen the month to edit."}` : "This month is closed. Reopen the month to edit."}</div>` : ""}
         ${c.flags.length ? `<div class="pm-flags">${c.flags.map(x => `<div class="${x.level}">${esc(x.text)}</div>`).join("")}</div>` : ""}
         <div class="f2">${num("rentDue","Rent due")}${num("rentReceived","Rent received")}</div>
         <div class="f2">${num("leasingFee","Leasing fee","Taken from the owner")}${num("otherIncome","Other owner income","Paid to the owner, e.g. utility credit")}</div>
@@ -4838,6 +4839,8 @@ function pmRowSheet(m, pid, focus){
   const wire = () => {
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#pmStmt").onclick = () => { pmCommitRow(m, pid, row, ro); printDoc(pmStatementHTML(m, [pid])); };
+    const ul = $("#rwUnlock");
+    if(ul) ul.onclick = () => { snapshot(); const live = pmState().rows[pmKey(m, pid)]; if(live) delete live.locked; commit(); closeSheet(); pmRowSheet(m, pid); };
     if(ro) return;
     const poD = $("#poD"), poM = $("#poM"), so = $("#shortOk");
     if(poD) poD.onchange = poM.onchange = () => { row.paidOut = poD.value ? {date:poD.value, method:poM.value, by:(typeof Cloud !== "undefined" && Cloud.email) || ""} : undefined; if(!poD.value) delete row.paidOut; };
@@ -5392,6 +5395,179 @@ function pmStatementHTML(m, ids, groupsList){
   return tidyBreaks(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)} — ${monthLabel(m)}</title>
     <style>${docCSS(`${from} · ${title} · ${monthLabel(m)}`, false, 1)} section.pgb{break-before:page;page-break-before:always}</style></head><body>
     ${groups.map((g, i) => page(g, i === 0)).join("")}</body></html>`);
+}
+
+/* =====================================================================
+   WORKBOOK IMPORT — a month of "TOTAL MONTHLY PM INCOME REPORTING" (.xlsx)
+   The office's sheet is the record of what each owner was paid. Importing a
+   month writes the sheet's numbers onto that month's rows exactly as recorded
+   (rent, repairs, admin, PM and leasing fees, other income, owner payment,
+   PHD's charges) and locks them, so the MagicDoor sync leaves them alone.
+   Itemised repairs, payout records and notes stay on the row as detail.
+   The .xlsx is read here in the browser: no upload, no outside library.
+   ===================================================================== */
+
+/* ---------- a small .xlsx reader (zip + XML), enough for values ---------- */
+async function wbInflate(bytes, method){
+  if(method === 0) return bytes;
+  if(method !== 8 || typeof DecompressionStream === "undefined") throw new Error("This browser can't open .xlsx files — use Chrome, Edge or Safari 16.4+");
+  const ds = new DecompressionStream("deflate-raw");
+  const out = new Response(new Blob([bytes]).stream().pipeThrough(ds));
+  return new Uint8Array(await out.arrayBuffer());
+}
+async function wbUnzip(buf){
+  const u8 = new Uint8Array(buf), dv = new DataView(buf), files = {};
+  let eocd = -1;
+  for(let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) if(dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  if(eocd < 0) throw new Error("That file isn't an .xlsx workbook");
+  const n = dv.getUint16(eocd + 10, true); let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  for(let k = 0; k < n; k++){
+    if(dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl));
+    const lnl = dv.getUint16(off + 26, true), lxl = dv.getUint16(off + 28, true), start = off + 30 + lnl + lxl;
+    files[name] = {method, data:u8.subarray(start, start + csize)};
+    p += 46 + nl + xl + cl;
+  }
+  return {async text(name){ const f = files[name]; if(!f) return null; return dec.decode(await wbInflate(f.data, f.method)); }, has:name => !!files[name]};
+}
+const wbXml = s => new DOMParser().parseFromString(s, "application/xml");
+const wbKids = (el, tag) => Array.from(el.getElementsByTagName(tag));
+function wbColIdx(ref){ let c = 0; for(const ch of String(ref).replace(/\d+/g, "")) c = c * 26 + (ch.charCodeAt(0) - 64); return c - 1; }
+async function wbRead(buf){
+  const z = await wbUnzip(buf);
+  const wb = wbXml(await z.text("xl/workbook.xml") || "");
+  const rels = wbXml(await z.text("xl/_rels/workbook.xml.rels") || "<r/>");
+  const target = {}; wbKids(rels, "Relationship").forEach(r => target[r.getAttribute("Id")] = r.getAttribute("Target"));
+  const ssDoc = await z.text("xl/sharedStrings.xml");
+  const strings = ssDoc ? wbKids(wbXml(ssDoc), "si").map(si => wbKids(si, "t").map(t => t.textContent).join("")) : [];
+  const sheets = wbKids(wb, "sheet").map(s => {
+    const rid = s.getAttribute("r:id") || s.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+    let t = target[rid] || ""; t = t.startsWith("/") ? t.slice(1) : "xl/" + t.replace(/^\.\//, "");
+    return {name:s.getAttribute("name"), path:t};
+  });
+  return {sheets:sheets.map(s => s.name), async rows(name){
+    const s = sheets.find(x => x.name === name); if(!s) return [];
+    const doc = wbXml(await z.text(s.path) || "<x/>"), out = [];
+    wbKids(doc, "row").forEach(r => {
+      const ri = Number(r.getAttribute("r")) - 1, row = [];
+      wbKids(r, "c").forEach(c => {
+        const t = c.getAttribute("t"), v = (c.getElementsByTagName("v")[0] || {}).textContent;
+        let val = null;
+        if(t === "s") val = strings[Number(v)] ?? "";
+        else if(t === "inlineStr") val = wbKids(c, "t").map(x => x.textContent).join("");
+        else if(t === "str" || t === "e") val = v ?? "";
+        else if(t === "b") val = v === "1";
+        else if(v != null && v !== "") val = Number(v);
+        row[wbColIdx(c.getAttribute("r"))] = val;
+      });
+      out[ri] = row;
+    });
+    return out.map(r => r || []);
+  }};
+}
+
+/* ---------- the monthly sheet → rows ---------- */
+const WB_MONTHS = ["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"];
+function wbSheetMonth(name){
+  const s = String(name || "").toUpperCase().replace(/\s+/g, ""), y = (s.match(/(20\d\d)/) || [])[1];
+  const i = WB_MONTHS.findIndex(m => s.startsWith(m)); return y && i >= 0 ? `${y}-${String(i + 1).padStart(2, "0")}` : null;
+}
+const WB_COLS = [
+  ["rentDue", /^monthly\s*rent/i], ["rentReceived", /^rent\s*payment/i], ["repairs", /^repairs$/i], ["adminFee", /^admin\s*fee/i],
+  ["pmFee", /^pm\s*fee/i], ["leasingFee", /^leasing\s*fee/i], ["otherIncome", /other.*income/i], ["ownerPayout", /owners?'?\s*payment/i],
+  ["applications", /^applications?/i], ["lateFee", /^late\s*fee/i], ["reimbursement", /reimburse|refund/i], ["filters", /^filters?/i]];
+const WB_MONEY = ["rentDue","rentReceived","repairs","adminFee","pmFee","leasingFee","otherIncome","ownerPayout","applications","lateFee","reimbursement","filters"];
+function wbParseMonth(rows){
+  const hi = rows.findIndex(r => r.some(v => /^properties$/i.test(String(v || "").trim()))); if(hi < 0) return {error:"No PROPERTIES header on this sheet"};
+  const head = rows[hi], propCol = head.findIndex(v => /^properties$/i.test(String(v || "").trim())), col = {};
+  head.forEach((h, i) => { const t = String(h || "").replace(/\s+/g, " ").trim(); const f = WB_COLS.find(([, re]) => re.test(t)); if(f && col[f[0]] == null) col[f[0]] = i; });
+  const out = [];
+  for(let i = hi + 1; i < rows.length; i++){
+    const r = rows[i], addr = String(r[propCol] || "").replace(/\s+/g, " ").trim();
+    if(/^totals?:?$/i.test(addr)) break;
+    if(!addr || !/^\d/.test(addr)) continue;                               // group headings (Lee Judy, RESIDENTIAL …)
+    const x = {addr, status:String(r[0] || "").trim(), notes:[], v:{}};
+    const due = r[col.rentDue];
+    if(typeof due === "string" && /vacant|marketing|vacancy/i.test(due)) x.vacant = due.trim();
+    WB_MONEY.forEach(k => { const v = r[col[k]]; if(col[k] == null || v == null || v === "") return;
+      if(typeof v === "number") x.v[k] = Math.round(v * 100) / 100;
+      else if(typeof v === "string" && v.trim() && !(k === "rentDue" && x.vacant)){ const n = Number(v.replace(/[$,\s]/g, "")); if(v.trim() && !isNaN(n) && /\d/.test(v)) x.v[k] = Math.round(n * 100) / 100; else x.notes.push(`${k === "applications" ? "Applications" : k === "reimbursement" ? "Reimbursement" : k}: ${v.trim()}`); } });
+    out.push(x);
+  }
+  return {rows:out};
+}
+
+/* ---------- apply one month ---------- */
+function wbApply(m, list, lock){
+  const P2 = pmState(); let n = 0;
+  list.forEach(x => {
+    if(!x.propId || x.propId === "__skip") return;
+    if(x.vacant && !Object.keys(x.v).length && !P2.rows[pmKey(m, x.propId)]) return;      // vacant, nothing to record
+    const r = pmEnsureRow(m, x.propId);
+    // the sheet's numbers are the record: a blank cell is zero, not "work it out"
+    WB_MONEY.forEach(k => { r[k] = x.v[k] != null ? x.v[k] : (["repairs","adminFee","pmFee","ownerPayout"].includes(k) ? 0 : null); });
+    if(x.vacant){ r.status = x.vacant; if(!x.v.rentDue) r.rentDue = null; if(!x.v.rentReceived) r.rentReceived = null; }
+    r.adjustments = (r.adjustments || []).filter(a => !a.md);                            // the sheet replaces MagicDoor's figures
+    r.wbStatus = x.status || null; r.wbNotes = x.notes.length ? x.notes.join(" · ") : null;
+    r.source = "workbook"; r.wbAt = new Date().toISOString();
+    if(lock) r.locked = true;
+    pmTouch(r); n++;
+  });
+  return n;
+}
+
+function wbImportSheet(m){
+  const sh = $("#sheet");
+  let book = null, list = [];
+  sh.innerHTML = `<div class="sheet-h"><h3>Import from the workbook</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <p class="muted" style="margin-top:0">Choose your <b>TOTAL MONTHLY PM INCOME REPORTING</b> workbook (.xlsx). The month's tab is read here in your browser; each property's numbers are written to ${esc(monthLabel(m))} exactly as the sheet has them.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn" id="wbFile">Choose .xlsx file</button><input type="file" id="wbPick" accept=".xlsx" style="display:none"><span class="muted" id="wbName"></span></div>
+      <div id="wbBody"></div>
+    </div>
+    <div class="sheet-f"><label class="switchbox" style="margin-right:auto"><input type="checkbox" id="wbLock" checked> Lock the imported rows (the MagicDoor sync won't change them)</label><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="wbGo" disabled>Import</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#wbFile").onclick = () => $("#wbPick").click();
+  $("#wbPick").onchange = async e => {
+    const f = e.target.files[0]; if(!f) return;
+    $("#wbName").textContent = f.name;
+    try{ book = await wbRead(await f.arrayBuffer()); }catch(err){ $("#wbBody").innerHTML = `<p class="pm-banner">${esc(err.message || String(err))}</p>`; return; }
+    const tab = book.sheets.find(s => wbSheetMonth(s) === m);
+    $("#wbBody").innerHTML = `<hr class="sep"><label class="fld"><span>Tab</span><select id="wbTab">${book.sheets.map(s => `<option ${s === tab ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></label><div id="wbList"></div>`;
+    $("#wbTab").onchange = load; load();
+  };
+  const load = async () => {
+    const res = wbParseMonth(await book.rows($("#wbTab").value));
+    if(res.error){ $("#wbList").innerHTML = `<p class="pm-banner">${esc(res.error)}</p>`; return; }
+    list = res.rows.map(x => { const p = pmMatchProperty(x.addr); return Object.assign(x, {propId:p ? p.id : (x.vacant && !Object.keys(x.v).length ? "__skip" : "")}); });
+    draw();
+  };
+  const draw = () => {
+    const props = pmState().properties.filter(p => !p.deleted).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+    const P2 = pmState(), miss = list.filter(x => !x.propId).length;
+    const onSheet = new Set(list.map(x => x.propId));
+    const notOn = pmMonthRows(m).filter(({row, prop}) => !onSheet.has(prop.id) && !row.detailOnly);
+    $("#wbList").innerHTML = `<div class="label" style="margin:12px 0 8px">${list.length} properties on the sheet${miss ? ` · <span style="color:var(--gold)">${miss} need a property</span>` : " · all matched"}</div>
+      <div class="md-list">${list.map((x, j) => { const r = x.propId && x.propId !== "__skip" ? P2.rows[pmKey(m, x.propId)] : null, p = r ? pmProp(x.propId) : null;
+        const was = r && p ? PMCore.calc(r, p).payoutC : null, now = x.vacant && x.v.ownerPayout == null ? 0 : cents(x.v.ownerPayout || 0);
+        return `<div class="md-r${x.propId ? "" : " miss"}"><div><b>${esc(x.addr)}</b><div class="item-s">${x.vacant ? esc(x.vacant) : `Owner payment ${usd(now)}`}${was != null && was !== now ? ` · console now ${usd(was)}` : ""}${x.status ? " · " + esc(x.status) : ""}</div></div>
+          <select data-wp="${j}"><option value="">Choose property…</option>${props.map(p => `<option value="${p.id}" ${p.id === x.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}<option value="__skip" ${x.propId === "__skip" ? "selected" : ""}>Leave out</option></select></div>`; }).join("")}</div>
+      ${notOn.length ? `<p class="help" style="margin-top:12px">In ${esc(monthLabel(m))} here but not on the sheet (left as they are): ${notOn.map(x => esc(x.prop.name)).join(", ")}.</p>` : ""}`;
+    $("#wbList").querySelectorAll("[data-wp]").forEach(s => s.onchange = () => { list[+s.dataset.wp].propId = s.value; draw(); });
+    const go = $("#wbGo"), ok = list.filter(x => x.propId && x.propId !== "__skip").length;
+    go.disabled = !ok || !!miss; go.textContent = miss ? "Match every property first" : `Import ${ok} properties`;
+  };
+  $("#wbGo").onclick = () => {
+    snapshot();
+    const n = wbApply(m, list, $("#wbLock").checked);
+    // remember the sheet's spelling so next month matches by itself
+    list.forEach(x => { if(!x.propId || x.propId === "__skip") return; const p = pmProp(x.propId); if(p && (pmMatchProperty(x.addr) || {}).id !== p.id){ p.aliases = [...new Set([...(p.aliases || []), x.addr])]; } });
+    closeSheet(); commit(); toast(`${monthLabel(m)}: ${n} properties now match the workbook`, true);
+  };
+  openPanel();
 }
 
 /* =====================================================================
