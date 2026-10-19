@@ -4454,20 +4454,24 @@ function pmLiveStatus(m, p){
 function pmMonthRows(m){
   const P2 = pmState();
   return Object.values(P2.rows).filter(r => r.month === m && !r.deleted)
-    .map(r => ({row:r, prop:pmProp(r.propertyId)})).filter(x => x.prop && !x.prop.skipClose)
+    .map(r => ({row:r, prop:pmProp(r.propertyId)})).filter(x => x.prop && (!x.prop.skipClose || x.row.source === "workbook"))   // the sheet's lines always count
     .sort((a, b) => a.prop.name.localeCompare(b.prop.name, undefined, {numeric:true}));
 }
 function pmMonthRoll(m){
   const t = {dueC:0, recv:0, repairsC:0, adminC:0, pmFeeC:0, leasingC:0, otherC:0, payoutC:0, extrasC:0, phdC:0, flags:0, rows:0, short:0};
   const extras = {}; PM_EXTRA.forEach(([k]) => extras[k] = 0);
+  const raw = {repairsC:0, adminC:0}, rawHit = {repairsC:false, adminC:false};
   pmMonthRows(m).forEach(({row, prop}) => {
     if(row.detailOnly) return;
     const c = pmCalc(row, prop); t.rows++;
+    // the workbook adds unrounded amounts (a 10% fee of $202.86 is $20.286) and rounds the total: so do we
+    [["repairsC","repairs"],["adminC","adminFee"]].forEach(([k, f]) => { const w = row.wbRaw && row.wbRaw[f]; if(w != null && cents(w) === c[k]){ raw[k] += Number(w) * 100; rawHit[k] = true; } else raw[k] += c[k]; });
     ["dueC","recv","repairsC","adminC","pmFeeC","leasingC","otherC","payoutC","extrasC","phdC"].forEach(k => t[k] += c[k]);
     PM_EXTRA.forEach(([k]) => extras[k] += nz(row[k]));
     if(c.flags.some(f => f.level === "warn")) t.flags++;
     if(c.dueC > 0 && c.recv < c.dueC) t.short += c.dueC - c.recv;
   });
+  ["repairsC","adminC"].forEach(k => { if(rawHit[k]){ const d = Math.round(raw[k]) - t[k]; t[k] += d; if(k === "adminC") t.phdC += d; } });
   const meta = pmState().meta[m] || {};
   t.deductC = (meta.deductions || []).reduce((a, d) => a + cents(d.amount), 0);   // stored negative
   t.netC = t.phdC + t.deductC;
@@ -5493,16 +5497,31 @@ function wbParseMonth(rows){
     const due = r[col.rentDue];
     if(typeof due === "string" && /vacant|marketing|vacancy/i.test(due)) x.vacant = due.trim();
     WB_MONEY.forEach(k => { const v = r[col[k]]; if(col[k] == null || v == null || v === "") return;
-      if(typeof v === "number") x.v[k] = Math.round(v * 100) / 100;
+      if(typeof v === "number"){ x.v[k] = Math.round(v * 100) / 100; if(Math.abs(v * 100 - Math.round(v * 100)) > 1e-6) (x.raw = x.raw || {})[k] = v; }
       else if(typeof v === "string" && v.trim() && !(k === "rentDue" && x.vacant)){ const n = Number(v.replace(/[$,\s]/g, "")); if(v.trim() && !isNaN(n) && /\d/.test(v)) x.v[k] = Math.round(n * 100) / 100; else x.notes.push(`${k === "applications" ? "Applications" : k === "reimbursement" ? "Reimbursement" : k}: ${v.trim()}`); } });
     out.push(x);
   }
-  return {rows:out};
+  // the "Deductions/ Losses" box under the totals: label, amount, notes
+  const deductions = [];
+  const di = rows.findIndex((r, i) => i > hi && r.some(v => /^deductions\s*\/?\s*losses$/i.test(String(v || "").trim())) && r.some(v => /^amount$/i.test(String(v || "").trim())));
+  if(di >= 0){
+    const h = rows[di], lc = h.findIndex(v => /^deductions/i.test(String(v || "").trim())), ac = h.findIndex(v => /^amount$/i.test(String(v || "").trim())), nc = h.findIndex(v => /^notes?$/i.test(String(v || "").trim()));
+    for(let i = di + 1; i < rows.length; i++){
+      const r = rows[i], label = String(r[lc] || "").trim(), a = r[ac];
+      if(/^totals?/i.test(label)) break;
+      if(label && typeof a === "number" && a) deductions.push({label, amount:-Math.abs(Math.round(a * 100) / 100), note:nc >= 0 ? String(r[nc] || "").trim() : ""});
+    }
+  }
+  return {rows:out, deductions};
 }
 
 /* ---------- apply one month ---------- */
-function wbApply(m, list, lock){
+function wbApply(m, list, lock, deductions){
   const P2 = pmState(); let n = 0;
+  if(deductions){
+    const mm = P2.meta[m] = Object.assign({month:m, deductions:[], withdrawals:[]}, P2.meta[m] || {});
+    mm.deductions = (mm.deductions || []).filter(d => !d.wb).concat(deductions.map(d => Object.assign({wb:true}, d)));
+  }
   list.forEach(x => {
     if(!x.propId || x.propId === "__skip") return;
     if(x.vacant && !Object.keys(x.v).length && !P2.rows[pmKey(m, x.propId)]) return;      // vacant, nothing to record
@@ -5511,6 +5530,7 @@ function wbApply(m, list, lock){
     WB_MONEY.forEach(k => { r[k] = x.v[k] != null ? x.v[k] : (["repairs","adminFee","pmFee","ownerPayout"].includes(k) ? 0 : null); });
     if(x.vacant){ r.status = x.vacant; if(!x.v.rentDue) r.rentDue = null; if(!x.v.rentReceived) r.rentReceived = null; }
     r.adjustments = (r.adjustments || []).filter(a => !a.md);                            // the sheet replaces MagicDoor's figures
+    r.wbRaw = x.raw || null;
     r.wbStatus = x.status || null; r.wbNotes = x.notes.length ? x.notes.join(" · ") : null;
     r.source = "workbook"; r.wbAt = new Date().toISOString();
     if(lock) r.locked = true;
@@ -5521,7 +5541,7 @@ function wbApply(m, list, lock){
 
 function wbImportSheet(m){
   const sh = $("#sheet");
-  let book = null, list = [];
+  let book = null, list = [], ded = [];
   sh.innerHTML = `<div class="sheet-h"><h3>Import from the workbook</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <p class="muted" style="margin-top:0">Choose your <b>TOTAL MONTHLY PM INCOME REPORTING</b> workbook (.xlsx). The month's tab is read here in your browser; each property's numbers are written to ${esc(monthLabel(m))} exactly as the sheet has them.</p>
@@ -5542,6 +5562,7 @@ function wbImportSheet(m){
   const load = async () => {
     const res = wbParseMonth(await book.rows($("#wbTab").value));
     if(res.error){ $("#wbList").innerHTML = `<p class="pm-banner">${esc(res.error)}</p>`; return; }
+    ded = res.deductions || [];
     list = res.rows.map(x => { const p = pmMatchProperty(x.addr); return Object.assign(x, {propId:p ? p.id : (x.vacant && !Object.keys(x.v).length ? "__skip" : "")}); });
     draw();
   };
@@ -5555,6 +5576,7 @@ function wbImportSheet(m){
         const was = r && p ? PMCore.calc(r, p).payoutC : null, now = x.vacant && x.v.ownerPayout == null ? 0 : cents(x.v.ownerPayout || 0);
         return `<div class="md-r${x.propId ? "" : " miss"}"><div><b>${esc(x.addr)}</b><div class="item-s">${x.vacant ? esc(x.vacant) : `Owner payment ${usd(now)}`}${was != null && was !== now ? ` · console now ${usd(was)}` : ""}${x.status ? " · " + esc(x.status) : ""}</div></div>
           <select data-wp="${j}"><option value="">Choose property…</option>${props.map(p => `<option value="${p.id}" ${p.id === x.propId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}<option value="__skip" ${x.propId === "__skip" ? "selected" : ""}>Leave out</option></select></div>`; }).join("")}</div>
+      ${ded.length ? `<p class="help" style="margin-top:12px">Deductions / losses on the sheet: ${ded.map(d => esc(d.label) + " " + usd(-cents(d.amount))).join(", ")} — they replace any imported before.</p>` : ""}
       ${notOn.length ? `<p class="help" style="margin-top:12px">In ${esc(monthLabel(m))} here but not on the sheet (left as they are): ${notOn.map(x => esc(x.prop.name)).join(", ")}.</p>` : ""}`;
     $("#wbList").querySelectorAll("[data-wp]").forEach(s => s.onchange = () => { list[+s.dataset.wp].propId = s.value; draw(); });
     const go = $("#wbGo"), ok = list.filter(x => x.propId && x.propId !== "__skip").length;
@@ -5562,7 +5584,7 @@ function wbImportSheet(m){
   };
   $("#wbGo").onclick = () => {
     snapshot();
-    const n = wbApply(m, list, $("#wbLock").checked);
+    const n = wbApply(m, list, $("#wbLock").checked, ded);
     // remember the sheet's spelling so next month matches by itself
     list.forEach(x => { if(!x.propId || x.propId === "__skip") return; const p = pmProp(x.propId); if(p && (pmMatchProperty(x.addr) || {}).id !== p.id){ p.aliases = [...new Set([...(p.aliases || []), x.addr])]; } });
     closeSheet(); commit(); toast(`${monthLabel(m)}: ${n} properties now match the workbook`, true);
