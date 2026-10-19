@@ -14592,9 +14592,9 @@ function startApp(){
 ICON_PATHS.ask = '<path d="M2.5 4a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7l-3 2.5V11a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M6.6 5.4a1.5 1.5 0 1 1 1.9 1.4c-.3.1-.5.4-.5.7v.3M8 9.1v.1"/>';
 const ASK = {log:[], busy:false};
 const ASK_EXAMPLES = ["Which properties had repairs over $500 this month?", "Which payouts haven't been sent for last month?", "What needs action today?"];
-// the answer is plain text: keep line breaks, make "- " lines a list and **x** bold
+// the answer is plain text: keep line breaks, make "- " lines a list, **x** bold and *x* italic
 function askFmt(t){
-  const lines = esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").split("\n");
+  const lines = esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, "$1<i>$2</i>").split("\n");
   let html = "", list = false;
   lines.forEach(l => {
     const m = l.match(/^\s*(?:[-•*]|\d+\.)\s+(.*)$/);
