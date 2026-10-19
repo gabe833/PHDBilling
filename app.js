@@ -4612,7 +4612,8 @@ function pgPmMonth(){
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
       <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled || row.paidOut.pending ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.pending ? "Pending in Nickel since " + esc(row.paidOut.date) + " — not delivered yet" : row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled || row.paidOut.pending ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
-          : (typeof finHoldFor === "function" && finHoldFor(prop.id, m)) ? `<button class="tag hold" data-hold="${esc(finHoldFor(prop.id, m).id)}" title="${esc(finHoldFor(prop.id, m).title)} — payouts held on purpose">On hold</button>`
+          : (typeof finHoldFor === "function" && finHoldFor(prop.id, m)) ? `<button class="st st-hold" data-hold="${esc(finHoldFor(prop.id, m).id)}" title="${esc(finHoldFor(prop.id, m).title)} — payouts held on purpose"><i></i>On hold</button>`
+          : (typeof finCloseCell === "function" && finCloseCell(m, row, prop, c, locked)) ? finCloseCell(m, row, prop, c, locked)
           : locked ? `<span class="muted">—</span>` : c.recv > 0 && c.payoutC > 0 ? `<button class="btn sm" data-pay="${prop.id}">Mark sent</button>` : `<span class="muted">—</span>`}</td>
       <td class="act">${warn.length ? `<span class="pm-dot warn" title="${esc(warn.map(x => x.text).join("\n"))}"></span>` : info.length ? `<span class="pm-dot" title="${esc(info.map(x => x.text).join("\n"))}"></span>` : ""}<span class="sc-go">›</span></td>`;
     tr.onclick = e => { if(e.target.closest("input,button")) return; pmRowSheet(m, prop.id); };
@@ -5747,7 +5748,7 @@ function pgPmHome(){
       const r = pmRow(monthOn, p.id), c = r && !r.detailOnly ? pmCalc(r, p) : null, s1 = PM_STAT[st[p.id]] || PM_STAT.none;
       const al = alertBy[p.id] || [], own = ownerLabel(ownerById(p.ownerId));
       const left = p.leaseEnd ? PMCore.dayNum(p.leaseEnd) - PMCore.dayNum(today) : null;
-      const po = r && (r.paidOut || r.locked) ? `<span class="tag green">Paid out</span>` : c && c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout ${usd0(c.payoutC)}</span>` : "";
+      const po = typeof finCloseCell === "function" && r && !r.detailOnly && finCloseCell(monthOn, r, p, c, true, true) ? finCloseCell(monthOn, r, p, c, true, true) : r && (r.paidOut || r.locked) ? `<span class="tag green">Paid out</span>` : c && c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout ${usd0(c.payoutC)}</span>` : "";
       const card = elm("button","card pm-card st-" + st[p.id]);
       card.innerHTML = `<div class="pmc-h"><b>${esc(p.name)}</b>${al.length ? `<span class="pmc-al ${al.some(a => a.level === "urgent") ? "u" : al.some(a => a.level === "warn") ? "w" : ""}" title="${esc(al.map(a => a.title).join("\n"))}">${al.length}</span>` : ""}</div>
         <div class="pmc-s">${esc(own || "No owner on file")}${p.tenants ? " · " + esc(p.tenants) : ""}</div>
@@ -11875,11 +11876,13 @@ function todayPm(v){
   // rent and payouts for this month
   const props = pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
   const rowsM = pmMonthRows(m).filter(x => !x.row.detailOnly), monthOn = rowsM.length ? m : (pmMonths().slice(-1)[0] || m);
-  let dueC = 0, recvC = 0; const late = [], payouts = [];
+  let dueC = 0, recvC = 0; const late = [], payouts = [], held = [], ach = [];
   props.forEach(p => { const r = pmRow(monthOn, p.id); if(!r || r.detailOnly) return; const c = pmCalc(r, p);
     dueC += c.dueC; recvC += Math.min(c.recv, c.dueC || c.recv);
     if(pmLiveStatus(monthOn, p) === "late"){ const L = monthOn === thisMonth() && !c.recv ? pmMdLease(p) : null; late.push({p, c, owed:L && L.balance > 0 ? cents(L.balance) : c.dueC - c.recv}); }
-    if(c.recv > 0 && c.payoutC > 0 && !r.paidOut && !r.locked) payouts.push({p, c}); });
+    if(c.recv > 0 && c.payoutC > 0 && !r.paidOut && !p.skipClose && (!r.locked || typeof finReconRow === "function")){
+      const k = typeof finReconRow === "function" ? (() => { try{ return finDist(finReconRow(monthOn, r, p)); }catch(e){ return "due"; } })() : "due";
+      if(k === "hold") held.push({p, c}); else if(k === "ach") ach.push({p, c}); else if(k !== "paid" && k !== "sent" && k !== "none" && !(r.locked && k === "due" && /paid|sent/i.test(r.wbStatus || ""))) payouts.push({p, c}); } });
   const pct = dueC ? Math.round(recvC / dueC * 100) : 0;
   // bills
   const bills = billList(), open = bills.filter(b => b.status === "open"), paying = bills.filter(b => b.status === "paying");
@@ -11893,10 +11896,15 @@ function todayPm(v){
   tdHero(v, [
     {label:`Rent · ${monthLabel(monthOn).split(" ")[0]}`, v:`${pct}%`, meter:pct, note:`${usd(recvC)} of ${usd(dueC)}${late.length ? ` · ${late.length} late` : ""}`, fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)},
     {label:"Bills to pay", v:usd(open.reduce((a, b) => a + cents(b.amount), 0)), style:lateB.length ? "color:var(--red)" : "", note:open.length ? `${tdPlural(open.length, "bill")}${dueSoon.length ? `, ${dueSoon.length} due this week` : ""}` : "Nothing waiting", fn:toPm("pmBills", () => S.ui.billF = "open")},
-    {label:"Payouts to send", v:String(payouts.length), style:payouts.length ? "color:var(--gold)" : "", note:payouts.length ? usd(payouts.reduce((a, x) => a + x.c.payoutC, 0)) : "None waiting", fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)},
+    {label:"Payouts to send", v:String(payouts.length), style:payouts.length ? "color:var(--gold)" : "", note:(payouts.length ? usd(payouts.reduce((a, x) => a + x.c.payoutC, 0)) : "None waiting") + (ach.length ? ` · ${ach.length} awaiting ACH` : "") + (held.length ? ` · ${held.length} on hold` : ""), fn:toPm("pmMonth", () => S.ui.pmMonth = monthOn)},
     {label:"Owed by owners", v:usd(unpaid.reduce((a, x) => a + invTotals(x).dueC, 0)), cls:"a", note:unpaid.length ? `${unpaid.length} unpaid${overdue.length ? `, ${overdue.length} overdue` : ""}` : toInv.length ? `${tdPlural(toInv.length, "bill")} to invoice` : "All paid", fn:toPm("pmInvoices")}
   ]);
   const [left, right] = tdCols(v);
+  // money problems first: the same critical and to-act-on list as the Money page, nothing it has marked understood
+  if(typeof finExceptions === "function"){ try{
+    const ex = finExceptions().filter(x => !x.ack && x.tier !== "notice");
+    if(ex.length) tdSection(left, "Money needs you", ex.map(x => ({t:esc(x.title), s:esc(x.detail), cls:x.tier === "critical" ? "late" : "", btn:x.actLabel || "Review", primary:x.tier === "critical", fn:x.act})), "", ["Money", () => go("money")]);
+  }catch(e){ /* Today still works without it */ } }
 
   // MagicDoor bills at a rental that's also a project: a person says where each one belongs
   const srt = typeof mdSortList === "function" ? mdSortList() : [];
@@ -13855,6 +13863,18 @@ function pgMoney(){
   bar.querySelectorAll("[data-mt]").forEach(b => b.onclick = () => { S.ui.mnTab = b.dataset.mt; persistUi(); render(); });
   v.appendChild(bar);
   ({payouts:finPayoutsTab, ledger:finLedgerTab, holds:finHoldsTab, transfers:finTransfersTab, audit:finAuditTab})[tab](v);
+}
+
+/* the month-close "Paid out" cell, in Money's words — null means: let month close draw its usual button */
+function finCloseCell(m, row, prop, c, locked, small){
+  try{
+    const r = finReconRow(m, row, prop), k = finDist(r);
+    if(small) return k === "none" ? null : finDistTag(r);
+    if(row.paidOut) return null;
+    if(k === "ach") return `<span class="st st-gold" title="${esc(DIST.ach.d + (row.wbStatus ? " · sheet: " + row.wbStatus : ""))}"><i></i>Awaiting ACH</span>${!locked ? ` <button class="btn sm ghost" data-pay="${esc(prop.id)}" title="Paid another way (check, wire)">Mark sent</button>` : ""}`;
+    if(k === "paid" || k === "sent" || k === "failed" || k === "review" || k === "cancelled") return finDistTag(r);
+    return null;
+  }catch(e){ return null; }
 }
 
 /* ---- owner distributions: filter, group, sort, save the view ---- */
