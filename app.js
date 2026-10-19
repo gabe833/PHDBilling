@@ -51,12 +51,13 @@ function render(){
     inventory:["Projects", "Inventory", ""],
     business: ["Projects", "Business", ""],
     connections:["Shared", "Settings & connections", "Every service the console uses, whether it's working, and where to set it up"],
+    money:    ["Shared", "Money", ""],
     settings: [p.name, "Property settings", "Units, fee, and cap for this property"]
   }[S.ui.view] || [p.name, "Overview", ""];
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -65,7 +66,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team","payments","today","connections"].includes(view)) S.ui.mode = "projects";
+  else if(!["owners","inbox","team","payments","today","connections","money"].includes(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -4538,7 +4539,7 @@ function pgPmMonth(){
     if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
     if(!closed && !mdReady()) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
     if(!closed) acts.push(["Import from workbook", () => wbImportSheet(m)]);
-    const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0).map(x => x.prop.id);
+    const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))).map(x => x.prop.id);
     if(!closed && unpaid.length) acts.push([`Mark payouts sent (${unpaid.length})`, () => pmMarkPaidSheet(m, unpaid)]);
     acts.push(closed ? ["Reopen month", () => pmCloseMonth(m, false)] : ["Close month", () => pmCloseMonth(m, true), "primary"]);
   } else acts.push([`Start ${monthLabel(m)}`, () => pmStartMonth(m), "primary"]);
@@ -4572,7 +4573,7 @@ function pgPmMonth(){
   const counts = {all:rows.filter(x => !x.row.detailOnly).length, attn:0, short:0, repairs:0, payout:0};
   rows.forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop);
     if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueC > 0 && c.recv < c.dueC) counts.short++; if(c.repairsC) counts.repairs++;
-    if(!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0) counts.payout++; });
+    if(!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))) counts.payout++; });
   bar.innerHTML = `<div class="sc-seg">${[["all","All"],["attn","Needs a look"],["short","Unpaid / short"],["payout","Payout to send"],["repairs","Has repairs"]]
       .map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${counts[k]}</span></button>`).join("")}</div>
     <div class="sc-q"><input type="text" id="pmQ" placeholder="Find a property…" value="${esc(S.ui.pmQ || "")}"></div>`;
@@ -4593,7 +4594,7 @@ function pgPmMonth(){
     if(f === "all") return true;
     const c = pmCalc(row, prop);
     return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueC > 0 && c.recv < c.dueC) : f === "repairs" ? c.repairsC > 0
-      : f === "payout" ? (!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0) : true;
+      : f === "payout" ? (!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))) : true;
   });
   vis.forEach(({row, prop}) => {
     const c = pmCalc(row, prop), locked = row.locked || closed;
@@ -4611,6 +4612,7 @@ function pgPmMonth(){
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
       <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled || row.paidOut.pending ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.pending ? "Pending in Nickel since " + esc(row.paidOut.date) + " — not delivered yet" : row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled || row.paidOut.pending ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
+          : (typeof finHoldFor === "function" && finHoldFor(prop.id, m)) ? `<button class="tag hold" data-hold="${esc(finHoldFor(prop.id, m).id)}" title="${esc(finHoldFor(prop.id, m).title)} — payouts held on purpose">On hold</button>`
           : locked ? `<span class="muted">—</span>` : c.recv > 0 && c.payoutC > 0 ? `<button class="btn sm" data-pay="${prop.id}">Mark sent</button>` : `<span class="muted">—</span>`}</td>
       <td class="act">${warn.length ? `<span class="pm-dot warn" title="${esc(warn.map(x => x.text).join("\n"))}"></span>` : info.length ? `<span class="pm-dot" title="${esc(info.map(x => x.text).join("\n"))}"></span>` : ""}<span class="sc-go">›</span></td>`;
     tr.onclick = e => { if(e.target.closest("input,button")) return; pmRowSheet(m, prop.id); };
@@ -4647,6 +4649,7 @@ function pgPmMonth(){
   });
   t.querySelectorAll("[data-rep]").forEach(b => b.onclick = e => { e.stopPropagation(); pmRowSheet(m, b.dataset.rep, "repairs"); });
   t.querySelectorAll("[data-pay]").forEach(b => b.onclick = e => { e.stopPropagation(); pmMarkPaidSheet(m, [b.dataset.pay]); });
+  t.querySelectorAll("[data-hold]").forEach(b => b.onclick = e => { e.stopPropagation(); finHoldSheet(b.dataset.hold); });
   t.querySelectorAll("[data-unpay]").forEach(b => b.onclick = e => { e.stopPropagation();
     if(!confirm("Undo the payout record for this property?")) return; snapshot(); const r = pmRow(m, b.dataset.unpay); delete r.paidOut; pmTouch(r); commit(); });
 
@@ -11959,7 +11962,7 @@ function todayPm(v){
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
-const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections"]);
+const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","money"]);
 const PM_VIEWS = new Set(["pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
@@ -12085,7 +12088,7 @@ const Cloud = {
 };
 
 /* ---------- state <-> documents ---------- */
-const SERVER_DOCS = new Set(["shared/magicdoor", "shared/nickel", "shared/qbomap", "shared/qbo"]);
+const SERVER_DOCS = new Set(["shared/magicdoor", "shared/nickel", "shared/qbomap", "shared/qbo", "shared/ledger"]);
 function cloudDocs(){
   const out = new Map();
   S.properties.forEach(p => out.set("pj_property/" + p.id, p));
@@ -12098,6 +12101,7 @@ function cloudDocs(){
   if(S.pmSettings) out.set("shared/pmsettings", S.pmSettings);
   if(S.pmAlerts) out.set("shared/alerts", S.pmAlerts);
   if(S.mdLinks) out.set("shared/mdlinks", S.mdLinks);
+  if(S.fin) out.set("shared/finance", S.fin);
   if(S.pm){
     (S.pm.properties || []).forEach(p => out.set("pm_property/" + p.id, p));
     Object.entries(S.pm.rows || {}).forEach(([k, r]) => out.set("pm_row/" + k, r));
@@ -12129,6 +12133,8 @@ function cloudApply(kind, id, data, deleted){
   else if(kind === "shared" && id === "alerts"){ S.pmAlerts = deleted ? {} : data; }
   else if(kind === "shared" && id === "magicdoor"){ S.md = deleted ? null : data; if(typeof mdAfterSnapshot === "function" && Cloud.ready) mdAfterSnapshot(); }
   else if(kind === "shared" && id === "mdlinks"){ S.mdLinks = deleted ? null : data; }
+  else if(kind === "shared" && id === "finance"){ S.fin = deleted ? null : data; }
+  else if(kind === "shared" && id === "ledger"){ S.ledger = deleted ? null : data; }     // written only by the payments function
   else if(kind === "pm_property"){
     const L = pm().properties, i = L.findIndex(p => p.id === id);
     if(deleted){ if(i >= 0) L.splice(i, 1); } else if(i >= 0) L[i] = data; else L.push(data);
@@ -12146,7 +12152,7 @@ function cloudLabel(kind, id, data){
   if(kind === "pm_deposit"){ const p = pmProp(id); return `deposits for ${p ? p.name : "a property"}`; }
   if(kind === "pm_bill"){ const p = data && pmProp(data.propertyId); return `a bill${data && data.vendor ? " from " + data.vendor : ""}${p ? " · " + p.name : ""}`; }
   if(kind === "pm_invoice") return `owner invoice ${(data && data.no) || ""}`.trim();
-  if(kind === "shared") return {main:"owners", inbox:"inbox settings", pmsettings:"alert rules", alerts:"alerts (snoozed/dismissed)", magicdoor:"MagicDoor data", mdlinks:"MagicDoor links and updates", vendors:"vendors", accounting:"QuickBooks settings", qbo:"QuickBooks data", stmtmail:"statement mailbox", billmail:"billing@ email settings", nickel:"Nickel updates"}[id] || id;
+  if(kind === "shared") return {main:"owners", inbox:"inbox settings", pmsettings:"alert rules", alerts:"alerts (snoozed/dismissed)", magicdoor:"MagicDoor data", mdlinks:"MagicDoor links and updates", vendors:"vendors", accounting:"QuickBooks settings", qbo:"QuickBooks data", stmtmail:"statement mailbox", billmail:"billing@ email settings", nickel:"Nickel updates", finance:"holds, transfers and reconciliation", ledger:"Nickel payment ledger"}[id] || id;
   return kind;
 }
 
@@ -13318,6 +13324,758 @@ function polMdWarn(){
   const b = elm("div", "pm-banner md-key-warn");
   b.innerHTML = `<b>Rent and fees here are estimates.</b> MagicDoor isn't letting the sync read owner statements (its API key can't read accounting reports), so rent paid early, MagicDoor's exact fees and unpaid bills are missing. Fix: in MagicDoor make an API key that can read accounting/reports, and put it in Supabase → Edge Functions → Secrets as MAGICDOOR_API_KEY.`;
   v.insertBefore(b, v.firstChild);
+}
+
+/* =====================================================================
+   MONEY — one place to find any dollar, see where it stands, and what's next.
+   · Ledger: every Nickel payment of the last 120 days (shared/ledger, copied
+     hourly by the payments function — Nickel's own amounts and statuses,
+     never changed here), MagicDoor owner payouts, and the console's records.
+   · Owner payouts: for each property and month, what's owed against every
+     attempt to pay it (MagicDoor, Nickel), so a failed payout and the one that
+     replaced it read as one story, and a real double payment stands out.
+   · Holds: a payout held on purpose (a dispute) is never "unpaid" — it has a
+     reason, a timeline, documents, and a deliberate release.
+   · Transfers: money moved between PHD's own accounts, with both sides
+     checked off, never counted as income or expense.
+   · Exceptions: what needs a person today.
+   Nothing here moves money. Facts from Nickel/MagicDoor are shown as such;
+   anything the console infers is labelled as inferred.
+   ===================================================================== */
+
+/* ---------- state (shared/finance) ---------- */
+function finState(){
+  if(!S.fin) S.fin = {holds:[], transfers:[], log:[], notes:{}};
+  ["holds","transfers","log","batches"].forEach(k => { if(!Array.isArray(S.fin[k])) S.fin[k] = []; });
+  if(!S.fin.notes || typeof S.fin.notes !== "object") S.fin.notes = {};
+  return S.fin;
+}
+const finWho = () => (typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || "You";
+const finNow = () => new Date().toISOString();
+function finLog(what, ref){ const F = finState(); F.log.unshift({at:finNow(), by:finWho(), what, ref:ref || null}); if(F.log.length > 1000) F.log.length = 1000; }
+const finId = () => Math.random().toString(36).slice(2, 10);
+const finAlnum = s => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/* ---------- statuses: one vocabulary for every system ---------- */
+function finStatus(s){
+  const x = String(s || "").toUpperCase();
+  if(!x) return "unknown";
+  if(/FAIL|DECLIN|REJECT|ERROR/.test(x)) return "failed";
+  if(/RETURN|REVERS|CHARGEBACK(?!_WON)/.test(x)) return "returned";
+  if(/CANCEL|VOID|DELETED/.test(x)) return "cancelled";
+  if(/HOLD/.test(x)) return "held";
+  if(/PART/.test(x)) return "partial";
+  if(/PEND|PROCESS|INITIAT|SCHEDUL|SUBMIT|AWAIT|QUEUE|TRANSIT|APPROV/.test(x)) return "processing";
+  if(/COMPLET|SUCCE|PAID|SETTL|DEPOSIT|SENT|CLEAR|DONE|WON/.test(x)) return "completed";
+  return "unknown";
+}
+const FIN_ST = {completed:["Completed","green"], processing:["Processing","acc"], partial:["Partly paid","gold"], failed:["Failed","red"], returned:["Returned","red"],
+  cancelled:["Cancelled","grey"], held:["On hold","hold"], planned:["Planned","grey"], unknown:["Unknown","grey"]};
+const finTag = (st, label) => { const [l, c] = FIN_ST[st] || [st, "grey"]; return `<span class="tag ${c}">${esc(label || l)}</span>`; };
+const finBad = st => st === "failed" || st === "returned" || st === "cancelled";
+const finDay = s => String(s || "").slice(0, 10);
+
+/* ---------- the ledger ---------- */
+function finLedger(){ return ((S.ledger && S.ledger.items) || []).map(r => r._st ? r : Object.assign(r, {_st:finStatus(r.status), _in:typeof nkMoneyIn === "function" ? nkMoneyIn(r) : /RECEIVABLE|DEPOSIT|INTEREST/.test(r.source)})); }
+const finLedgerAt = () => S.ledger && S.ledger.at;
+const FIN_SRC = {RECEIVABLE:"Payment received", PAYABLE:"Bill payment", REFUND:"Refund", RETURN:"Returned payment", DEPOSIT:"Deposit", WITHDRAWAL:"Transfer out", FEE:"Nickel fee", INTEREST:"Interest", CHARGEBACK:"Chargeback"};
+const finSrc = r => r.owner ? "Owner payout" : FIN_SRC[r.source] || String(r.source || "").toLowerCase();
+
+/* which console property an owner-payout number names: OWN-2026-10-342KING-A → 342 King St #A */
+const FIN_STREET = /\b(N|S|E|W|NE|NW|SE|SW|NORTH|SOUTH|EAST|WEST|ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|BLVD|BOULEVARD|LN|LANE|CT|COURT|CIR|CIRCLE|WAY|PL|PLACE|PKWY|HWY|UNIT|APT|SUITE)\b\.?/gi;
+const finForms = t => { const x = String(t || "").split(",")[0]; return [finAlnum(x), finAlnum(x.replace(/\b(N|S|E|W|NE|NW|SE|SW|North|South|East|West)\b\.?/gi, " ")), finAlnum(x.replace(FIN_STREET, " "))]; };
+const FIN_OWN = {props:null, n:0, map:new Map()};
+function finOwnRef(ref){
+  const P = pmState().properties;
+  if(FIN_OWN.props !== P || FIN_OWN.n !== P.length){ FIN_OWN.props = P; FIN_OWN.n = P.length; FIN_OWN.map = new Map(); }
+  const k = String(ref || "").toUpperCase();
+  if(!FIN_OWN.map.has(k)) FIN_OWN.map.set(k, finOwnRef0(k));
+  return FIN_OWN.map.get(k);
+}
+function finOwnRef0(ref){
+  const m = String(ref || "").toUpperCase().match(/^OWN-(\d{4})-(\d{2})-(.+)$/); if(!m) return null;
+  const key = finAlnum(m[3]), props = pmState().properties.filter(p => !p.deleted);
+  let hits = props.filter(p => key && [...finForms(p.name), ...finForms(p.address)].some(f => f && f.startsWith(key)));
+  return {month:`${m[1]}-${m[2]}`, props:hits};
+}
+/* every payout record the console holds, by Nickel reference */
+function finRefIndex(){
+  const out = new Map();
+  Object.values(pmState().rows).forEach(r => { const po = r.paidOut; if(!po || r.deleted) return;
+    [po.ref, ...((po.group || {}).refs || [])].filter(Boolean).forEach(ref => { const k = String(ref).toUpperCase(); (out.get(k) || out.set(k, []).get(k)).push(r); }); });
+  return out;
+}
+/* what a ledger line is about: the property month (owner payouts), the bill or invoice (nkWhereFrom), or nothing */
+function finAbout(r, refIx){
+  if(r.owner || /^OWN-/i.test(r.ref || "")){
+    const rows = (refIx || finRefIndex()).get(String(r.ref || "").toUpperCase()) || [];
+    if(rows.length) return {kind:"payout", rows:rows.map(x => ({m:x.month, pid:x.propertyId})), label:rows.map(x => (pmProp(x.propertyId) || {}).name).filter(Boolean).join(", ") + (rows[0] ? " · " + monthLabel(rows[0].month) : "")};
+    const o = finOwnRef(r.ref); if(o && o.props.length === 1) return {kind:"payout", rows:[{m:o.month, pid:o.props[0].id}], label:`${o.props[0].name} · ${monthLabel(o.month)}`, inferred:true};
+  }
+  if(typeof nkWhereFrom === "function" && r.entityId){ try{ const f = nkWhereFrom(r.entityId, r); if(f) return {kind:"link", label:f.label || f.text || "", open:f.open}; }catch(e){} }
+  return null;
+}
+
+/* ---------- holds ---------- */
+function finHolds(all){ return finState().holds.filter(h => all || h.status === "active"); }
+function finHoldFor(pid, m){ return finHolds().find(h => (h.propIds || []).includes(pid) && (!h.from || !m || m >= h.from)) || null; }
+/* what a hold is holding: each property-month since it started that's owed and not paid */
+function finHeld(h){
+  const out = [];
+  Object.values(pmState().rows).forEach(r => {
+    if(r.deleted || r.detailOnly || !(h.propIds || []).includes(r.propertyId) || (h.from && r.month < h.from)) return;
+    const p = pmProp(r.propertyId); if(!p) return;
+    const c = pmCalc(r, p); if(c.payoutC <= 0) return;
+    const rc = finReconRow(r.month, r, p);
+    if(rc.paidC >= c.payoutC - 1 && rc.result !== "hold") return;
+    out.push({m:r.month, p, owedC:c.payoutC});
+  });
+  return out.sort((a, b) => a.m.localeCompare(b.m) || a.p.name.localeCompare(b.p.name));
+}
+const finHeldC = h => finHeld(h).reduce((a, x) => a + x.owedC, 0);
+
+/* ---------- payout funding batches ----------
+   MagicDoor pays owners in ACH batches funded from the trust account. MagicDoor marks each payout "paid" when it sends
+   the batch — even if the bank (or Nickel's debit protection) then refuses the withdrawal. A batch records what really
+   happened to that money, and the payouts in it inherit it. Which payouts were in a batch is worked out from the amount:
+   the set of that day's MagicDoor payouts that adds up to it exactly. */
+/* every set of payouts adding up to the amount (meet in the middle; a day has ~40 at most), best first by score */
+function finSubset(items, targetC, score){
+  const a = items.slice(0, 40), h = Math.floor(a.length / 2), L = a.slice(0, h), R = a.slice(h);
+  const sums = arr => { const out = new Map(); for(let m = 0; m < (1 << arr.length); m++){ let s = 0; for(let i = 0; i < arr.length; i++) if(m & (1 << i)) s += arr[i].c; const l = out.get(s); if(l){ if(l.length < 50) l.push(m); } else out.set(s, [m]); } return out; };
+  const SL = sums(L), SR = sums(R), found = [];
+  for(const [s, ms] of SL){ const rs = SR.get(targetC - s); if(!rs) continue;
+    for(const m of ms) for(const r of rs){ found.push([...L.filter((_, i) => m & (1 << i)), ...R.filter((_, i) => r & (1 << i))]); if(found.length >= 400) break; } if(found.length >= 400) break; }
+  if(!found.length) return null;
+  if(score) found.sort((x, y) => score(y) - score(x));
+  return found[0];
+}
+/* was this MagicDoor property's month paid again through Nickel? (a payout in a blocked batch usually was) */
+function finNickelPaidMd(mdPid, date){
+  if(typeof mdx !== "function" || !mdReady()) return false;
+  const x = mdx(), m = PMCore.mdPayoutMonth ? PMCore.mdPayoutMonth(date) : String(date).slice(0, 7);
+  return Object.entries(x.byProp).some(([pid, b]) => b.property && b.property.id === mdPid && [m, String(date).slice(0, 7)].some(mm => { const r = pmRow(mm, pid); return r && r.paidOut && (r.paidOut.by === "Nickel" || r.paidOut.method === "Nickel"); }));
+}
+function finMdDayLines(date){
+  const out = [];
+  ((S.md && S.md.distributions) || []).forEach(d => { if(d.date !== date) return; (d.lines || []).forEach((li, k) => out.push({key:d.id + "#" + k, distId:d.id, pid:li.propertyId, c:cents(li.amount), status:d.status})); });
+  return out;
+}
+const FIN_BL = new Map();
+function finBatchLines(b){
+  if(Array.isArray(b.lines) && b.lines.length) return b.lines;
+  const k = `${b.id}|${b.date}|${b.amountC}|${b.status}|${S.md && S.md.syncedAt}`;
+  if(!FIN_BL.has(k)) FIN_BL.set(k, finBatchLines0(b));
+  return FIN_BL.get(k);
+}
+function finBatchLines0(b){
+  const pool = finMdDayLines(b.date).filter(x => !/fail/.test(x.status || "")), others = finState().batches.filter(x => x !== b && x.date === b.date).flatMap(x => Array.isArray(x.lines) ? x.lines : []);
+  const bad = b.status === "blocked" || b.status === "failed" || b.status === "returned";
+  const score = set => set.reduce((a, x) => a + (finNickelPaidMd(x.pid, b.date) ? 1 : -1), 0) * (bad ? 1 : -1);
+  const hit = finSubset(pool.filter(x => !others.includes(x.key)), b.amountC, score);
+  return hit ? hit.map(x => x.key) : [];
+}
+function finBatchFor(distId, date){
+  for(const b of finState().batches){ if(b.date !== date) continue; if(finBatchLines(b).some(k => k.split("#")[0] === distId)) return b; }
+  return null;
+}
+
+/* ---------- owner payouts: owed vs every attempt ---------- */
+function finMdOf(pid){
+  if(typeof mdReady !== "function" || !mdReady()) return null;
+  const x = mdx(), m = x && x.byProp[pid];
+  if(!m || !m.property) return null;
+  return {id:m.property.id, shared:(x.linkedPerMdProp[m.property.id] || 0) > 1};
+}
+function finReconRow(m, row, prop, ctx){
+  ctx = ctx || {};
+  const c = pmCalc(row, prop), owedC = c.payoutC, po = row.paidOut || null;
+  const attempts = [];
+  // MagicDoor owner distributions for this property and month (all of them, including failed)
+  const md = finMdOf(prop.id);
+  if(md && !md.shared) (PMCore.mdDistributions(S.md, md.id, m, true) || []).forEach(d => {
+    const b = finBatchFor(d.id, d.date);
+    let st = d.dead ? "failed" : d.pending ? "processing" : finStatus(d.status), raw = d.status || "", batch = null;
+    if(b){ batch = b; if(b.status === "blocked" || b.status === "failed" || b.status === "returned"){ st = "failed"; raw = `marked paid in MagicDoor, but its ${usd(b.amountC)} ACH batch was ${b.status}`; } else if(b.status === "completed" && st === "completed") raw = `paid · in the ${usd(b.amountC)} ACH batch, confirmed`; }
+    attempts.push({sys:"MagicDoor", date:d.date, amountC:cents(d.amount), st, raw, id:d.id, batch});
+  });
+  // Nickel payments matched by the payout's bill number (exact), or by the OWN-month-property number
+  const refs = new Set([po && po.ref, ...((po && po.group && po.group.refs) || [])].filter(Boolean).map(x => String(x).toUpperCase()));
+  const L = ctx.ledger || finLedger(), seen = new Set();
+  L.forEach(r => {
+    if(r.source !== "PAYABLE") return;
+    const ref = String(r.ref || "").toUpperCase();
+    let hit = refs.has(ref);
+    if(!hit && /^OWN-/.test(ref)){ const o = finOwnRef(ref); hit = !!(o && o.month === m && o.props.length === 1 && o.props[0].id === prop.id); }
+    if(!hit || seen.has(r.id)) return; seen.add(r.id);
+    const group = po && po.group && ((po.group.refs || []).length > 1 || (po.group.props || []).length > 1) && refs.has(ref);
+    attempts.push({sys:"Nickel", date:finDay(r.at), amountC:group ? null : Math.abs(r.amountC), st:r._st, raw:r.status, id:r.id, ref:r.ref, link:r.link, group:group ? po.group : null});
+  });
+  // the console's own record when nothing above backs it (Nickel bill not in the ledger yet, or marked by a person)
+  if(po && !attempts.some(a => a.sys === "Nickel" && a.st !== "failed") && !(po.by === "MagicDoor" && attempts.some(a => a.sys === "MagicDoor"))){
+    attempts.push({sys:po.by === "Nickel" || po.method === "Nickel" ? "Nickel" : po.by === "MagicDoor" ? "MagicDoor" : po.method || "Recorded", date:po.date, amountC:po.amount != null && !po.group ? cents(po.amount) : null,
+      st:po.pending || po.scheduled ? "processing" : "completed", inferred:true, by:po.by, ref:po.ref, group:po.group || null});
+  }
+  // the office's workbook is the record for months imported from it
+  if(row.source === "workbook" && !attempts.some(a => a.st === "completed" || a.st === "processing")){
+    const ws = String(row.wbStatus || ""), closed = !!((pmState().meta[m] || {}).closed);
+    if(/sent|success/i.test(ws)) attempts.push({sys:"Workbook", date:"", amountC:owedC, st:"completed", inferred:true, raw:ws});
+    else if(!ws && (closed || row.locked) && owedC > 0) attempts.push({sys:"Workbook", date:"", amountC:owedC, st:"completed", inferred:true, raw:"recorded as paid"});
+  }
+  // a group payout's share for this property is what the console recorded
+  attempts.forEach(a => { if(a.amountC == null) a.amountC = po && po.amount != null ? cents(po.amount) : owedC; });
+  const done = attempts.filter(a => a.st === "completed"), proc = attempts.filter(a => a.st === "processing" || a.st === "partial"), bad = attempts.filter(a => finBad(a.st));
+  const paidC = done.reduce((a, x) => a + x.amountC, 0);
+  const hold = finHoldFor(prop.id, m);
+  let result, note = "";
+  const sysDone = new Set(done.filter(a => !a.inferred).map(a => a.sys));
+  if(hold && done.some(a => !hold.openedAt || a.date >= finDay(hold.openedAt))){ result = "paidOnHold"; note = `Paid while "${hold.title}" is on hold`; }
+  else if(hold){ result = "hold"; note = hold.title; }
+  else if(sysDone.has("MagicDoor") && sysDone.has("Nickel") && paidC > owedC + 100){ result = "double"; const mdA = done.find(a => a.sys === "MagicDoor");
+    note = mdA && mdA.batch ? "Completed in MagicDoor (its ACH batch went through) and in Nickel — check it wasn't paid twice" : "MagicDoor and Nickel both say paid. If MagicDoor's ACH batch was blocked, record the batch (Transfers → batches); otherwise check it wasn't paid twice"; }
+  else if(owedC <= 0 && paidC <= 0 && !proc.length) result = "none";
+  else if(done.length){
+    result = Math.abs(paidC - owedC) > 100 && owedC > 0 ? "amount" : "paid";
+    if(result === "amount") note = `Paid ${usd(paidC)} · owed ${usd(owedC)}`;
+    else if(bad.length) note = `${done[0].sys} payout replaced the ${[...new Set(bad.map(b => b.sys))].join(" and ")} one${bad.length > 1 && new Set(bad.map(b => b.sys)).size === 1 ? "s" : ""} that ${bad[0].st === "cancelled" ? "was cancelled" : "failed"}`;
+    if(done.every(a => a.inferred)) note = (note ? note + " · " : "") + (done[0].by && /@/.test(done[0].by) ? `marked paid by ${done[0].by}` : "recorded here — no Nickel or MagicDoor record yet");
+  }
+  else if(proc.length){ result = "processing"; note = `${proc[0].sys} since ${fdateS(proc[0].date)}${bad.length ? ` · replaces a ${bad[0].sys} payout that failed` : ""}`; }
+  else if(owedC > 0){ result = bad.length ? "failed" : "unpaid"; note = bad.length ? `${bad[0].sys} payout ${bad[0].st} ${fdateS(bad[0].date)} — not reissued` : (row.wbStatus ? `Sheet: ${row.wbStatus}` : ""); }
+  else result = "none";
+  return {m, row, prop, owner:ownerById(prop.ownerId), owedC, paidC, attempts, hold, result, note};
+}
+const FIN_RES = {paid:["Paid","green"], processing:["Processing","acc"], hold:["On hold","hold"], paidOnHold:["Paid while on hold","red"], double:["Check: paid twice?","red"],
+  amount:["Amount differs","gold"], failed:["Failed — not reissued","red"], unpaid:["Not paid","gold"], none:["Nothing owed","grey"]};
+const finResTag = r => { const [l, c] = FIN_RES[r] || [r, "grey"]; return `<span class="tag ${c}">${l}</span>`; };
+function finRecon(m){
+  const ledger = finLedger(), out = [];
+  pmMonthRows(m).forEach(({row, prop}) => { if(row.detailOnly) return; const r = finReconRow(m, row, prop, {ledger}); if(r.result !== "none" || r.attempts.length) out.push(r); });
+  return out;
+}
+
+/* ---------- transfers between PHD's own accounts ---------- */
+function finAccounts(){
+  const names = new Set();
+  ((S.qbo && S.qbo.accounts) || []).forEach(a => { if(/bank/i.test(a.type || "") && a.name && !/^cash$/i.test(a.name)) names.add(a.name); });
+  ((S.ledger && S.ledger.balances) || []).forEach(b => names.add(`Nickel – ${b.name}${b.last4 ? " (" + b.last4 + ")" : ""}`));
+  finState().transfers.forEach(t => (t.legs || []).forEach(l => { if(l.from) names.add(l.from); if(l.to) names.add(l.to); }));
+  return [...names].sort();
+}
+/* evidence for a leg: a Nickel transfer out (or in) of the same amount within ten days */
+function finLegEvidence(l, t){
+  const at = l.date || t.date, n = Date.parse(at || 0);
+  const near = r => Math.abs(Date.parse(r.at) - n) < 10 * 864e5 && Math.abs(Math.abs(r.amountC) - l.amountC) <= 1;
+  const L = finLedger();
+  const used = new Set(finState().transfers.flatMap(x => (x.legs || []).map(y => y !== l && y.ledgerId).filter(Boolean)));
+  const out = /nickel/i.test(l.from || "") ? L.find(r => !used.has(r.id) && (l.ledgerId ? r.id === l.ledgerId : r.source === "WITHDRAWAL" && near(r))) : null;
+  const inn = /nickel/i.test(l.to || "") ? L.find(r => !used.has(r.id) && r.source === "DEPOSIT" && near(r)) : null;
+  return {out, inn};
+}
+function finLegState(l, t){
+  if(l.status === "failed") return "failed";
+  const ev = finLegEvidence(l, t);
+  const debit = l.debitOk || !!(ev.out && ev.out._st === "completed"), credit = l.creditOk || !!(ev.inn && ev.inn._st === "completed");
+  if(debit && credit) return "completed";
+  if(ev.out && ev.out._st === "failed") return "failed";
+  if(debit || credit || l.status === "sent" || (ev.out && ev.out._st === "processing")) return "processing";
+  return "planned";
+}
+function finTransferState(t){
+  const st = (t.legs || []).map(l => finLegState(l, t));
+  if(!st.length) return "planned";
+  if(st.every(s => s === "completed")) return "completed";
+  if(st.some(s => s === "failed")) return "failed";
+  if(st.some(s => s !== "planned")) return "processing";
+  return "planned";
+}
+const finTransferC = t => (t.legs || []).reduce((a, l) => a + (l.amountC || 0), 0);
+function finMovedFor(m, confirmedOnly){ return finState().transfers.filter(t => t.period === m && t.kind === "phdIncome" && (confirmedOnly ? finTransferState(t) === "completed" : finTransferState(t) !== "failed")).reduce((a, t) => a + finTransferC(t), 0); }
+
+/* ---------- exceptions: what needs a person ---------- */
+function finExceptions(){
+  const out = [], add = (level, key, title, detail, act, actLabel) => out.push({level, key, title, detail, act, actLabel});
+  const cur = pmCurrentMonth(), months = [...new Set([monthAdd(cur, -1), cur])].filter(m => pmMonthRows(m).length);
+  const unpaidBy = new Map();
+  months.forEach(m => finRecon(m).forEach(r => {
+    const open = () => finPayoutSheet(r.m, r.prop.id), nm = `${r.prop.name} · ${monthLabel(r.m)}`;
+    if(r.result === "paidOnHold") add("urgent", "poh|" + nm, `Paid while on hold · ${nm}`, `${usd(r.paidC)} went out although "${r.hold.title}" is holding this owner's payouts.`, open, "Review");
+    else if(r.result === "double") add("urgent", "dbl|" + nm, `Possibly paid twice · ${nm}`, `Completed in MagicDoor and in Nickel: ${usd(r.paidC)} against ${usd(r.owedC)} owed. Check before anything else is sent.`, open, "Review");
+    else if(r.result === "failed") add("warn", "fail|" + nm, `Owner payout failed · ${nm}`, `${r.note}. ${usd(r.owedC)} still owed to ${ownerLabel(r.owner) || "the owner"}.`, open, "Review");
+    else if(r.result === "amount") add("warn", "amt|" + nm, `Payout amount differs · ${nm}`, r.note, open, "Review");
+    else if(r.result === "processing"){ const a = r.attempts.find(x => x.st === "processing"); if(a && a.date && Date.now() - Date.parse(a.date) > 5 * 864e5) add("warn", "slow|" + nm, `Payout still processing · ${nm}`, `${a.sys} since ${fdateS(a.date)} — more than 5 days.`, open, "Review"); }
+    else if(r.result === "unpaid" && (m < cur || new Date().getDate() > 15)){ const k = m + "|" + (r.prop.ownerId || r.prop.id); (unpaidBy.get(k) || unpaidBy.set(k, []).get(k)).push(r); }
+  }));
+  unpaidBy.forEach(rs => {
+    const r = rs[0], tot = rs.reduce((a, x) => a + x.owedC, 0), who = ownerLabel(r.owner) || "the owner";
+    if(rs.length === 1) add("warn", "unpaid|" + r.prop.name + r.m, `Owner not paid · ${r.prop.name} · ${monthLabel(r.m)}`, `${usd(r.owedC)} owed to ${who}${r.note ? " · " + r.note : ""}. Pay it, or put it on hold with a reason.`, () => finPayoutSheet(r.m, r.prop.id), "Review");
+    else add("warn", "unpaid|" + who + r.m, `${who} not paid · ${rs.length} properties · ${monthLabel(r.m)}`, `${usd(tot)} owed (${rs.map(x => x.prop.name).join(", ")})${[...new Set(rs.map(x => x.note).filter(Boolean))].length === 1 ? " · " + r.note : ""}. Pay it, or put it on hold with a reason.`, () => { S.ui.mnTab = "payouts"; S.ui.mnMonth = r.m; S.ui.mnPf = "unpaid"; go("money"); }, "See them");
+  });
+  // Nickel payments that failed or came back, not tied to an owner payout above
+  const ix = finRefIndex(), since = Date.now() - 30 * 864e5;
+  finLedger().filter(r => (r._st === "failed" || r._st === "returned") && Date.parse(r.at) > since && !r.owner).forEach(r =>
+    add("warn", "nkf|" + r.id, `${finSrc(r)} ${r._st} · ${r.who || "—"}`, `${usd(Math.abs(r.amountC))}${r.ref ? " · " + r.ref : ""} on ${fdateS(finDay(r.at))}.`, () => finTxnSheet(r.id), "Open"));
+  // transfers that haven't shown up on both sides
+  finState().transfers.forEach(t => { const st = finTransferState(t), age = (Date.now() - Date.parse(t.date || t.createdAt || 0)) / 864e5;
+    if(st === "failed") add("urgent", "tf|" + t.id, `Transfer failed · ${t.title}`, `${usd(finTransferC(t))}. Check the accounts.`, () => finTransferSheet(t.id), "Open");
+    else if(st !== "completed" && age > 3) add("warn", "tw|" + t.id, `Transfer not confirmed · ${t.title}`, `${usd(finTransferC(t))} · ${(t.legs || []).filter(l => finLegState(l, t) !== "completed").map(l => `${l.from} → ${l.to}`).join(", ")} not confirmed on both sides yet.`, () => finTransferSheet(t.id), "Confirm"); });
+  // PHD income from the last closed month that hasn't been moved
+  const last = new Date().getDate() >= 20 || pmMonthRows(cur).some(x => x.row.source === "workbook") ? cur : null;
+  if(last){ const R = pmMonthRoll(last), left = R.netC - finMovedFor(last); if(left > 100) add("info", "inc|" + last, `PHD income to move · ${monthLabel(last)}`, `${usd(left)} of ${usd(R.netC)} hasn't been recorded as moved to PM Operating.`, () => finTransferSheet(null, {period:last}), "Record transfer"); }
+  const rank = {urgent:0, warn:1, info:2};
+  return out.sort((a, b) => rank[a.level] - rank[b.level]);
+}
+
+/* ====================================================================
+   THE MONEY PAGE
+   ==================================================================== */
+function pgMoney(){
+  $("#pgCrumb").textContent = "Shared"; $("#pgTitle").textContent = "Money";
+  const at = finLedgerAt();
+  $("#pgSub").textContent = at ? `Nickel ledger as of ${new Date(at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})} · MagicDoor ${typeof mdAgo === "function" && S.md ? mdAgo(S.md.syncedAt) : "—"}` : "Every payment, payout, hold and transfer in one place";
+  const acts = [["New hold", () => finHoldSheet(null)], ["New transfer", () => finTransferSheet(null)]];
+  if(typeof payOnline === "function" && payOnline()) acts.unshift(["Refresh from Nickel", async () => { try{ toast("Reading Nickel…"); await payCall("nk.ledger", {}, {noSave:true}); toast("Ledger updated"); }catch(e){ toast(e.message); } }, "ghost"]);
+  actions(acts);
+  const v = $("#view");
+  const cur = pmCurrentMonth(), prev = monthAdd(cur, -1);
+  const recCur = finRecon(cur), recPrev = pmMonthRows(prev).length ? finRecon(prev) : [];
+  const owedC = [...recPrev, ...recCur].filter(r => r.result === "unpaid" || r.result === "failed").reduce((a, r) => a + r.owedC, 0);
+  const procL = finLedger().filter(r => r._st === "processing"), procC = procL.reduce((a, r) => a + Math.abs(r.amountC), 0);
+  const holdC = finHolds().reduce((a, h) => a + finHeldC(h), 0);
+  const bal = (S.ledger && S.ledger.balances) || [], balC = bal.reduce((a, b) => a + (b.balanceC || 0), 0);
+  // PHD takes its income when owners are paid, mid-month for that month
+  const incM = cur, R = pmMonthRoll(incM), toMove = Math.max(0, R.netC - finMovedFor(incM));
+  const hero = elm("div", "card pf-hero mn-hero");
+  hero.innerHTML = `
+    <div class="pf-cell"><div class="label">In Nickel now</div><div class="pf-v">${bal.length ? usd(balC) : "—"}</div><div class="pf-note">${bal.length ? bal.map(b => `${esc(b.name)} ${usd(b.balanceC)}`).join(" · ") : "Refresh from Nickel to see balances"}</div></div>
+    <div class="pf-cell"><div class="label">Owed to owners</div><div class="pf-v${owedC ? " a" : ""}">${usd(owedC)}</div><div class="pf-note">${monthLabel(prev)}–${monthShort(cur)}, not paid and not on hold</div></div>
+    <div class="pf-cell"><div class="label">On hold</div><div class="pf-v">${usd(holdC)}</div><div class="pf-note">${finHolds().length ? finHolds().map(h => esc(h.title)).join(" · ") : "No holds"}</div></div>
+    <div class="pf-cell"><div class="label">PHD income to move</div><div class="pf-v">${usd(toMove)}</div><div class="pf-note">${monthLabel(incM)} · ${usd(R.netC)} earned · ${usd(R.netC - toMove)} recorded as moved, ${usd(finMovedFor(incM, true))} confirmed in both accounts</div></div>
+    <div class="pf-cell"><div class="label">In flight</div><div class="pf-v">${usd(procC)}</div><div class="pf-note">${procL.length} Nickel payment${procL.length === 1 ? "" : "s"} processing</div></div>`;
+  v.appendChild(hero);
+
+  // what needs a person
+  const ex = finExceptions();
+  const exc = elm("div", "card mn-ex");
+  exc.innerHTML = `<div class="card-h"><h3>Needs attention</h3><span class="muted" style="margin-left:auto;font-size:12.5px">${ex.length ? `${ex.length} item${ex.length === 1 ? "" : "s"}` : "Nothing right now"}</span></div>
+    ${ex.length ? `<div class="al-list">${ex.slice(0, S.ui.mnExAll ? 200 : 8).map((x, i) => `<div class="al-r al-${x.level}"><span class="al-dot"></span><div class="al-txt"><b>${esc(x.title)}</b><span>${esc(x.detail)}</span></div><div class="al-btns"><button class="btn sm" data-ex="${i}">${esc(x.actLabel || "Open")}</button></div></div>`).join("")}</div>
+      ${ex.length > 8 && !S.ui.mnExAll ? `<div style="padding:10px 16px"><button class="linkish" id="mnExAll">Show all ${ex.length}</button></div>` : ""}` : `<div class="empty" style="padding:22px"><p class="muted" style="margin:0">Every payout is paid, processing, or held on purpose. Transfers are confirmed.</p></div>`}`;
+  exc.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => ex[+b.dataset.ex].act());
+  const ea = exc.querySelector("#mnExAll"); if(ea) ea.onclick = () => { S.ui.mnExAll = true; render(); };
+  v.appendChild(exc);
+
+  // tabs
+  const tab = S.ui.mnTab || "payouts";
+  const bar = elm("div", "sc-bar");
+  const T = [["payouts","Owner payouts"],["ledger","Ledger"],["holds",`Holds${finHolds().length ? " · " + finHolds().length : ""}`],["transfers","Transfers"],["audit","Audit trail"]];
+  bar.innerHTML = `<div class="sc-seg">${T.map(([k, l]) => `<button data-mt="${k}" class="${tab === k ? "on" : ""}">${l}</button>`).join("")}</div>`;
+  bar.querySelectorAll("[data-mt]").forEach(b => b.onclick = () => { S.ui.mnTab = b.dataset.mt; persistUi(); render(); });
+  v.appendChild(bar);
+  ({payouts:finPayoutsTab, ledger:finLedgerTab, holds:finHoldsTab, transfers:finTransfersTab, audit:finAuditTab})[tab](v);
+}
+
+/* ---- owner payouts tab ---- */
+function finPayoutsTab(v){
+  const m = S.ui.mnMonth && /^\d{4}-\d{2}$/.test(S.ui.mnMonth) ? S.ui.mnMonth : pmCurrentMonth();
+  const all = finRecon(m), f = S.ui.mnPf || "all";
+  const F = [["all","All"],["look","Needs a look"],["unpaid","Not paid"],["processing","Processing"],["hold","On hold"],["paid","Paid"]];
+  const isLook = r => ["paidOnHold","double","failed","amount"].includes(r.result);
+  const pick = r => f === "all" || (f === "look" ? isLook(r) : f === "paid" ? r.result === "paid" : f === "unpaid" ? r.result === "unpaid" || r.result === "failed" : r.result === f);
+  const n = k => all.filter(r => k === "all" || (k === "look" ? isLook(r) : k === "paid" ? r.result === "paid" : k === "unpaid" ? r.result === "unpaid" || r.result === "failed" : r.result === k)).length;
+  const sum = k => all.filter(r => k(r)).reduce((a, r) => a + r.owedC, 0);
+  const head = elm("div", "sc-bar");
+  head.innerHTML = `<div class="mn-mo"><button class="btn sm ghost" id="mnPrev">‹</button><b>${monthLabel(m)}</b><button class="btn sm ghost" id="mnNext">›</button></div>
+    <div class="sc-seg">${F.map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n(k)}</span></button>`).join("")}</div>`;
+  head.querySelector("#mnPrev").onclick = () => { S.ui.mnMonth = monthAdd(m, -1); render(); };
+  head.querySelector("#mnNext").onclick = () => { S.ui.mnMonth = monthAdd(m, 1); render(); };
+  head.querySelectorAll("[data-pf]").forEach(b => b.onclick = () => { S.ui.mnPf = b.dataset.pf; render(); });
+  v.appendChild(head);
+  const card = elm("div", "card");
+  const list = all.filter(pick);
+  card.innerHTML = `<div class="mn-sum"><span>Owed <b class="num">${usd(sum(() => true))}</b></span><span>Paid <b class="num">${usd(all.reduce((a, r) => a + Math.min(r.paidC, r.owedC), 0))}</b></span><span>Processing <b class="num">${usd(sum(r => r.result === "processing"))}</b></span><span>On hold <b class="num">${usd(sum(r => r.result === "hold"))}</b></span><span>Not paid <b class="num">${usd(sum(r => r.result === "unpaid" || r.result === "failed"))}</b></span></div>
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Property</th><th class="r">Owed</th><th>MagicDoor</th><th>Nickel</th><th>Result</th></tr></thead><tbody>
+    ${list.map((r, i) => { const cell = sys => { const a = r.attempts.filter(x => x.sys === sys || (sys === "Nickel" && !["MagicDoor","Nickel"].includes(x.sys))); return a.length ? a.map(x => `${finTag(x.st, x.inferred ? (x.st === "completed" ? "Recorded" : "Recorded · pending") : null)} <span class="muted num">${usd(x.amountC)}${x.date ? " · " + esc(fdateS(x.date)) : ""}</span>`).join("<br>") : `<span class="muted">—</span>`; };
+      return `<tr data-r="${i}" style="cursor:pointer"><td><div class="item-t">${esc(r.prop.name)}</div><div class="item-s">${esc(ownerLabel(r.owner) || "No owner")}</div></td><td class="r num">${usd(r.owedC)}</td><td>${cell("MagicDoor")}</td><td>${cell("Nickel")}</td><td>${finResTag(r.result)}${r.note ? `<div class="item-s">${esc(r.note)}</div>` : ""}</td></tr>`; }).join("")}</tbody></table></div>`
+    : `<div class="empty"><p class="muted">Nothing in this view for ${monthLabel(m)}.</p></div>`}`;
+  card.querySelectorAll("[data-r]").forEach(tr => tr.onclick = () => finPayoutSheet(m, list[+tr.dataset.r].prop.id));
+  v.appendChild(card);
+}
+
+/* one property-month: the whole story of its payout */
+function finPayoutSheet(m, pid){
+  const row = pmRow(m, pid), prop = pmProp(pid); if(!row || !prop) return;
+  const r = finReconRow(m, row, prop), sh = $("#sheet");
+  const hist = Object.values(pmState().rows).filter(x => x.propertyId === pid && !x.deleted && !x.detailOnly).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 8)
+    .map(x => finReconRow(x.month, x, prop));
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${esc(prop.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(ownerLabel(r.owner) || "No owner")} · owner payout · ${monthLabel(m)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${r.hold ? `<div class="pm-banner mn-hold">On hold: <b>${esc(r.hold.title)}</b>${r.hold.reason ? " — " + esc(r.hold.reason) : ""}. Don't pay this owner until the hold is released. <button class="linkish" id="fpHold">Open the hold</button></div>` : ""}
+      <div class="mn-story"><div><span class="label">Owed</span><b class="num">${usd(r.owedC)}</b></div><div><span class="label">Paid</span><b class="num">${usd(r.paidC)}</b></div><div><span class="label">Result</span>${finResTag(r.result)}</div></div>
+      ${r.note ? `<p class="help">${esc(r.note)}</p>` : ""}
+      <div class="label" style="margin:14px 0 6px">Every attempt</div>
+      ${r.attempts.length ? `<div class="mn-tl">${r.attempts.slice().sort((a, b) => String(a.date).localeCompare(String(b.date))).map(a => `<div class="mn-tl-i ${a.st}"><i></i><div><b>${esc(a.sys)}</b> ${finTag(a.st)} <span class="num">${usd(a.amountC)}</span><div class="item-s">${esc(a.date ? fdateS(a.date) : "")}${a.ref ? " · " + esc(a.ref) : ""}${a.raw ? " · " + esc(a.sys) + " says “" + esc(String(a.raw).toLowerCase()) + "”" : ""}${a.inferred ? " · from the console's record, not confirmed by " + esc(a.sys) : ""}${a.group ? ` · one of ${(a.group.refs || []).length} payments covering ${esc((a.group.props || []).join(", "))}` : ""}${a.link ? ` · <a href="${esc(a.link)}" target="_blank" rel="noopener">open in Nickel</a>` : ""}</div></div></div>`).join("")}</div>` : `<p class="muted">No payout attempt found in MagicDoor or Nickel.</p>`}
+      <div class="label" style="margin:16px 0 6px">Recent months</div>
+      <table class="pm-sum">${hist.map(h => `<tr><td>${monthLabel(h.m)}</td><td class="r num">${usd(h.owedC)}</td><td class="r">${finResTag(h.result)}</td></tr>`).join("")}</table>
+    </div>
+    <div class="sheet-f"><button class="btn" id="fpRow">Open the month row</button><span style="flex:1"></span>${r.hold ? "" : `<button class="btn" id="fpNewHold">Put on hold…</button>`}</div>`;
+  $("#shClose").onclick = closeSheet;
+  $("#fpRow").onclick = () => { closeSheet(); S.ui.mode = "pm"; S.ui.pmMonth = m; go("pmMonth"); setTimeout(() => pmRowSheet(m, pid), 40); };
+  const nh = $("#fpNewHold"); if(nh) nh.onclick = () => finHoldSheet(null, {ownerId:prop.ownerId, propIds:[pid], from:m});
+  const oh = $("#fpHold"); if(oh) oh.onclick = () => finHoldSheet(r.hold.id);
+  openPanel();
+}
+
+/* ---- ledger tab: search everything ---- */
+function finSearch(q){
+  const qq = String(q || "").trim().toLowerCase(); if(!qq) return finLedger();
+  const num = qq.replace(/[$,\s]/g, ""), isNum = /^\d+(\.\d{1,2})?$/.test(num), c = isNum ? Math.round(Number(num) * 100) : null;
+  const ix = finRefIndex();
+  return finLedger().filter(r => {
+    if(c != null && (Math.abs(r.amountC) === c || (num.indexOf(".") < 0 && Math.floor(Math.abs(r.amountC) / 100) === Number(num)))) return true;
+    const ab = finAbout(r, ix);
+    return `${r.who} ${r.ref} ${r.desc} ${r.account} ${finSrc(r)} ${ab ? ab.label : ""}`.toLowerCase().includes(qq);
+  });
+}
+function finLedgerTab(v){
+  const q = S.ui.mnQ || "", f = S.ui.mnLf || "all";
+  const bar = elm("div", "sc-bar");
+  const F = [["all","All"],["in","Money in"],["out","Money out"],["owner","Owner payouts"],["processing","Processing"],["problem","Failed / returned"]];
+  bar.innerHTML = `<div class="sc-seg">${F.map(([k, l]) => `<button data-lf="${k}" class="${f === k ? "on" : ""}">${l}</button>`).join("")}</div>
+    <div class="sc-q"><input type="text" id="mnQ" placeholder="Name, address, amount, invoice or reference…" value="${esc(q)}"></div>`;
+  bar.querySelectorAll("[data-lf]").forEach(b => b.onclick = () => { S.ui.mnLf = b.dataset.lf; render(); });
+  const qi = bar.querySelector("#mnQ");
+  qi.oninput = () => { S.ui.mnQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#mnQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 180); };
+  v.appendChild(bar);
+  const card = elm("div", "card");
+  if(!S.ledger){ card.innerHTML = `<div class="empty"><b>No ledger yet</b><p>The payments function copies Nickel's payments here every hour. Press <b>Refresh from Nickel</b> to read it now.</p></div>`; v.appendChild(card); return; }
+  const ix = finRefIndex();
+  const rows = finSearch(q).filter(r => f === "all" || (f === "in" ? r._in : f === "out" ? !r._in : f === "owner" ? r.owner : f === "processing" ? r._st === "processing" : finBad(r._st)));
+  const inC = rows.filter(r => r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0), outC = rows.filter(r => !r._in && r._st === "completed").reduce((a, r) => a + Math.abs(r.amountC), 0);
+  const shown = rows.slice(0, S.ui.mnMore ? 2000 : 150);
+  card.innerHTML = `<div class="mn-sum"><span>${rows.length} payment${rows.length === 1 ? "" : "s"}</span><span>In <b class="num" style="color:var(--green)">${usd(inC)}</b></span><span>Out <b class="num">${usd(outC)}</b></span><span class="muted">Completed only · transfers between PHD's accounts are shown but aren't income or expense</span></div>
+    <div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Date</th><th>Who</th><th>What it's for</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
+    ${shown.map((r, i) => { const ab = finAbout(r, ix), note = finState().notes[r.id];
+      return `<tr data-l="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(finDay(r.at)))}</td><td><div class="item-t">${esc(r.who || "—")}</div><div class="item-s">${esc(finSrc(r))}${r.account ? " · " + esc(r.account) : ""}</div></td>
+        <td><div class="item-t">${esc(ab ? ab.label : r.ref || "")}${ab && ab.inferred ? ` <span class="muted" title="Matched by the payout number">· by number</span>` : ""}</div><div class="item-s">${esc(r.ref && ab ? r.ref : (r.desc || "").slice(0, 80))}${note && note.reconciled ? ` · <span style="color:var(--green)">reconciled</span>` : ""}</div></td>
+        <td>${finTag(r._st)}</td><td class="r num" style="color:${r._in ? "var(--green)" : "inherit"}">${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))}</td></tr>`; }).join("")}</tbody></table></div>
+    ${rows.length > shown.length ? `<div style="padding:12px 16px"><button class="btn sm" id="mnMore">Show all ${rows.length}</button></div>` : ""}`;
+  card.querySelectorAll("[data-l]").forEach(tr => tr.onclick = () => finTxnSheet(shown[+tr.dataset.l].id));
+  const mo = card.querySelector("#mnMore"); if(mo) mo.onclick = () => { S.ui.mnMore = true; render(); };
+  v.appendChild(card);
+}
+/* one payment: everything known about it */
+function finTxnSheet(id){
+  const r = finLedger().find(x => x.id === id); if(!r) return toast("That payment isn't in the ledger any more");
+  const ab = finAbout(r), note = finState().notes[id] || {}, sh = $("#sheet");
+  const rc = ab && ab.kind === "payout" ? ab.rows.map(x => { const row = pmRow(x.m, x.pid), p = pmProp(x.pid); return row && p ? finReconRow(x.m, row, p) : null; }).filter(Boolean) : [];
+  const same = finLedger().filter(x => x.id !== id && Math.abs(x.amountC) === Math.abs(r.amountC) && finAlnum(x.who) === finAlnum(r.who) && Math.abs(Date.parse(x.at) - Date.parse(r.at)) < 45 * 864e5);
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${r._in ? "+" : "−"}${usd(Math.abs(r.amountC))} · ${esc(r.who || finSrc(r))}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(finSrc(r))} · ${esc(new Date(r.at).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"}))}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div class="mn-story"><div><span class="label">Status</span>${finTag(r._st)}<div class="item-s">Nickel says “${esc(String(r.status || "").toLowerCase())}”</div></div><div><span class="label">Account</span><b>${esc(r.account || "—")}</b></div><div><span class="label">Reference</span><b>${esc(r.ref || "—")}</b></div></div>
+      ${r.desc ? `<p class="help">${esc(r.desc)}</p>` : ""}
+      ${ab ? `<div class="label" style="margin:14px 0 6px">What it's for</div><p style="margin:0">${esc(ab.label)}${ab.inferred ? ` <span class="muted">· matched by the payout number, not confirmed</span>` : ""} ${ab.open ? `<button class="linkish" id="ftOpen">open</button>` : ""}</p>` : `<p class="muted">Not linked to anything in the console.</p>`}
+      ${rc.map(x => `<div class="mn-card"><div style="display:flex;gap:8px;align-items:center"><b>${esc(x.prop.name)} · ${monthLabel(x.m)}</b><span style="margin-left:auto">${finResTag(x.result)}</span></div><div class="item-s">Owed ${usd(x.owedC)} · paid ${usd(x.paidC)}${x.note ? " · " + esc(x.note) : ""}</div><button class="linkish" data-fp="${esc(x.m + "|" + x.prop.id)}">See every attempt</button></div>`).join("")}
+      ${same.length ? `<div class="label" style="margin:14px 0 6px">Same amount, same name, within 45 days</div>${same.map(x => `<div class="md-r" style="grid-template-columns:1fr auto auto;cursor:pointer" data-sm="${esc(x.id)}"><span>${esc(fdateS(finDay(x.at)))} · ${esc(x.ref || finSrc(x))}</span>${finTag(x._st)}<b class="num">${usd(Math.abs(x.amountC))}</b></div>`).join("")}<p class="help">Not automatically a duplicate: a replacement for a failed payment, or a regular monthly amount, looks the same. Check the statuses.</p>` : ""}
+      <label class="fld" style="margin-top:14px"><span>Note</span><textarea id="ftNote" rows="2" placeholder="Why it's here, who confirmed it…">${esc(note.text || "")}</textarea></label>
+      <label class="switchbox"><input type="checkbox" id="ftRec" ${note.reconciled ? "checked" : ""}> Reconciled — matched to the bank and the books</label>
+      ${note.by ? `<p class="help">Last changed by ${esc(note.by)} · ${esc(fdateS(finDay(note.at)))}</p>` : ""}
+    </div>
+    <div class="sheet-f">${r.link ? `<a class="btn" href="${esc(r.link)}" target="_blank" rel="noopener">Open in Nickel</a>` : ""}<span style="flex:1"></span><button class="btn primary" id="ftSave">Save</button></div>`;
+  $("#shClose").onclick = closeSheet;
+  const op = $("#ftOpen"); if(op) op.onclick = () => { closeSheet(); ab.open(); };
+  sh.querySelectorAll("[data-fp]").forEach(b => b.onclick = () => { const [m, pid] = b.dataset.fp.split("|"); finPayoutSheet(m, pid); });
+  sh.querySelectorAll("[data-sm]").forEach(b => b.onclick = () => finTxnSheet(b.dataset.sm));
+  $("#ftSave").onclick = () => { snapshot(); const text = $("#ftNote").value.trim(), rec = $("#ftRec").checked;
+    finState().notes[id] = {text, reconciled:rec, by:finWho(), at:finNow()};
+    if(rec !== !!note.reconciled) finLog(`${rec ? "Reconciled" : "Un-reconciled"} ${usd(Math.abs(r.amountC))} · ${r.who || ""}`, {ledger:id});
+    else if(text !== (note.text || "")) finLog(`Note on ${usd(Math.abs(r.amountC))} · ${r.who || ""}`, {ledger:id});
+    commit(); closeSheet(); toast("Saved"); };
+  openPanel();
+}
+
+/* ---- holds ---- */
+function finHoldsTab(v){
+  const list = finHolds(true).slice().sort((a, b) => (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1) || String(b.openedAt).localeCompare(String(a.openedAt)));
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>No holds</b><p>Put an owner's payouts on hold when there's a dispute or a reason not to pay yet. A held payout is never shown as "not paid".</p><button class="btn primary" id="mnNh">New hold</button></div>`)); $("#mnNh").onclick = () => finHoldSheet(null); return; }
+  list.forEach(h => {
+    const held = h.status === "active" ? finHeld(h) : [], tot = held.reduce((a, x) => a + x.owedC, 0), o = ownerById(h.ownerId);
+    const c = elm("div", "card mn-holdcard" + (h.status === "active" ? " on" : ""));
+    c.innerHTML = `<div class="card-h"><h3>${esc(h.title)}</h3><span style="margin-left:auto">${h.status === "active" ? `<span class="tag hold">On hold</span>` : `<span class="tag grey">Released ${esc(fdateS(finDay((h.release || {}).at)))}</span>`}</span></div>
+      <div class="card-b"><div class="mn-story"><div><span class="label">Owner</span><b>${esc(ownerLabel(o) || "—")}</b></div><div><span class="label">Holding</span><b class="num">${usd(tot)}</b></div><div><span class="label">Since</span><b>${esc(fdateS(finDay(h.openedAt)))}</b><div class="item-s">by ${esc(h.openedBy || "")}</div></div></div>
+      ${h.reason ? `<p style="margin:10px 0 0">${esc(h.reason)}</p>` : ""}
+      ${held.length ? `<table class="pm-sum" style="margin-top:10px">${held.map(x => `<tr><td>${esc(x.p.name)} · ${monthLabel(x.m)}</td><td class="r num">${usd(x.owedC)}</td></tr>`).join("")}<tr class="rule"><td>Total held</td><td class="r num">${usd(tot)}</td></tr></table>` : ""}
+      <div style="margin-top:10px"><button class="btn sm" data-h="${esc(h.id)}">Open</button></div></div>`;
+    c.querySelector("[data-h]").onclick = () => finHoldSheet(h.id);
+    v.appendChild(c);
+  });
+}
+/* a hold: create, follow, release */
+function finHoldSheet(id, seed){
+  const F = finState(), sh = $("#sheet");
+  let h = id ? F.holds.find(x => x.id === id) : null;
+  const isNew = !h;
+  if(isNew) h = Object.assign({id:finId(), title:"", reason:"", kind:"dispute", ownerId:"", propIds:[], from:pmCurrentMonth(), status:"active", notes:[], docs:[], invoices:""}, seed || {});
+  const owners = (S.owners || []).filter(ownerLabel).sort((a, b) => ownerLabel(a).localeCompare(ownerLabel(b)));
+  const draw = () => {
+    const props = pmState().properties.filter(p => !p.deleted && (!h.ownerId || p.ownerId === h.ownerId || h.propIds.includes(p.id))).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+    const held = !isNew && h.status === "active" ? finHeld(h) : [], tot = held.reduce((a, x) => a + x.owedC, 0);
+    const invs = typeof invList === "function" && h.ownerId ? invList().filter(x => x.ownerId === h.ownerId && x.status !== "void" && invTotals(x).dueC > 0) : [];
+    const ro = h.status !== "active";
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "New payout hold" : esc(h.title)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${isNew ? "Stops this owner's payouts from being treated as due" : h.status === "active" ? `On hold since ${esc(fdateS(finDay(h.openedAt)))} · ${esc(h.openedBy || "")}` : `Released ${esc(fdateS(finDay((h.release || {}).at)))} by ${esc((h.release || {}).by || "")}`}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${!isNew && h.status === "active" ? `<div class="mn-story"><div><span class="label">Holding</span><b class="num">${usd(tot)}</b></div><div><span class="label">Properties</span><b>${h.propIds.length}</b></div><div><span class="label">Open invoices</span><b class="num">${usd(invs.reduce((a, x) => a + invTotals(x).dueC, 0))}</b></div></div>` : ""}
+        <label class="fld"><span>Title</span><input type="text" id="hT" value="${esc(h.title)}" placeholder="e.g. Murphy — renovation cost dispute" ${ro ? "disabled" : ""}></label>
+        <div class="f2"><label class="fld"><span>Owner</span><select id="hO" ${ro || !isNew ? "disabled" : ""}><option value="">Choose…</option>${owners.map(o => `<option value="${esc(o.id)}" ${o.id === h.ownerId ? "selected" : ""}>${esc(ownerLabel(o))}</option>`).join("")}</select></label>
+          <label class="fld"><span>Holds payouts from</span><input type="month" id="hF" value="${esc(h.from || "")}" ${ro ? "disabled" : ""}></label></div>
+        <div class="label" style="margin:6px 0">Properties held</div>
+        <div class="mn-chk">${props.map(p => `<label class="switchbox"><input type="checkbox" data-hp="${esc(p.id)}" ${h.propIds.includes(p.id) ? "checked" : ""} ${ro ? "disabled" : ""}> ${esc(p.name)}</label>`).join("") || `<span class="muted">Choose the owner first</span>`}</div>
+        <label class="fld" style="margin-top:10px"><span>Reason</span><textarea id="hR" rows="2" placeholder="What's disputed and what has to happen before payouts resume" ${ro ? "disabled" : ""}>${esc(h.reason)}</textarea></label>
+        <label class="fld"><span>Disputed invoices or amounts</span><input type="text" id="hI" value="${esc(h.invoices || "")}" placeholder="e.g. 120 Smith renovation invoices #4–#6" ${ro ? "disabled" : ""}></label>
+        ${held.length ? `<div class="label" style="margin:12px 0 6px">Being held</div><table class="pm-sum">${held.map(x => `<tr><td>${esc(x.p.name)} · ${monthLabel(x.m)}</td><td class="r num">${usd(x.owedC)}</td></tr>`).join("")}<tr class="rule"><td>Total</td><td class="r num">${usd(tot)}</td></tr></table>` : ""}
+        ${invs.length ? `<div class="label" style="margin:12px 0 6px">Open owner invoices</div><table class="pm-sum">${invs.map(x => `<tr><td>${esc(x.no || x.number || "Invoice")} · ${esc(fdateS(x.date || x.due))}</td><td class="r num">${usd(invTotals(x).dueC)}</td></tr>`).join("")}</table>` : ""}
+        ${!isNew ? `<div class="label" style="margin:14px 0 6px">Documents</div>
+          ${(h.docs || []).map((d, i) => `<div class="md-r" style="grid-template-columns:1fr auto"><a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">${esc(d.label || d.url)}</a><span class="muted" style="font-size:12px">${esc(d.by || "")} · ${esc(fdateS(finDay(d.at)))}</span></div>`).join("") || `<p class="muted" style="margin:0 0 6px">None yet</p>`}
+          ${ro ? "" : `<div class="pm-add"><input type="text" id="hDl" placeholder="What it is"><input type="url" id="hDu" placeholder="Link (Drive, email…)"><button class="btn sm" id="hDgo">Add</button></div>`}
+          <div class="label" style="margin:14px 0 6px">Timeline</div>
+          <div class="mn-tl">${[{at:h.openedAt, by:h.openedBy, text:"Hold opened"}, ...(h.notes || []), ...(h.release ? [{at:h.release.at, by:h.release.by, text:"Released" + (h.release.note ? " — " + h.release.note : "")}] : [])].sort((a, b) => String(a.at).localeCompare(String(b.at))).map(n => `<div class="mn-tl-i"><i></i><div>${esc(n.text)}<div class="item-s">${esc(n.by || "")} · ${esc(n.at ? new Date(n.at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "")}</div></div></div>`).join("")}</div>
+          ${ro ? "" : `<div class="pm-add"><input type="text" id="hN" placeholder="Add an update — a call, an email, an agreement…"><button class="btn sm" id="hNgo">Add</button></div>`}` : ""}
+      </div>
+      <div class="sheet-f">${!isNew && h.status === "active" ? `<button class="btn" id="hRel">Release hold…</button>` : ""}<span style="flex:1"></span><button class="btn" id="shCancel">Close</button>${ro ? "" : `<button class="btn primary" id="hSave">${isNew ? "Put on hold" : "Save"}</button>`}</div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const keep = () => { if(ro) return; h.title = $("#hT").value.trim(); h.reason = $("#hR").value.trim(); h.invoices = $("#hI").value.trim(); h.from = $("#hF").value || h.from;
+      h.propIds = [...sh.querySelectorAll("[data-hp]")].filter(x => x.checked).map(x => x.dataset.hp); };
+    const oSel = $("#hO"); if(oSel) oSel.onchange = () => { keep(); h.ownerId = oSel.value; h.propIds = pmState().properties.filter(p => !p.deleted && p.ownerId === h.ownerId && p.status !== "inactive").map(p => p.id); draw(); };
+    const save = $("#hSave");
+    if(save) save.onclick = () => {
+      keep();
+      if(!h.ownerId || !h.propIds.length) return toast("Choose the owner and at least one property");
+      if(!h.title) h.title = `${ownerLabel(ownerById(h.ownerId))} — payouts on hold`;
+      snapshot();
+      if(isNew){ h.openedAt = finNow(); h.openedBy = finWho(); F.holds.push(h); finLog(`Hold opened: ${h.title} (${h.propIds.map(id => (pmProp(id) || {}).name).join(", ")})`, {hold:h.id}); }
+      else finLog(`Hold updated: ${h.title}`, {hold:h.id});
+      commit(); toast(isNew ? "Payouts on hold" : "Saved");
+      if(isNew) closeSheet(); else draw();
+    };
+    const dg = $("#hDgo"); if(dg) dg.onclick = () => { const url = $("#hDu").value.trim(); if(!/^https?:\/\//i.test(url)) return toast("Paste a link that starts with https://");
+      keep(); snapshot(); h.docs = h.docs || []; h.docs.push({label:$("#hDl").value.trim() || "Document", url, by:finWho(), at:finNow()}); finLog(`Document added to hold: ${h.title}`, {hold:h.id}); commit(); draw(); };
+    const ng = $("#hNgo"); if(ng) ng.onclick = () => { const t = $("#hN").value.trim(); if(!t) return; keep(); snapshot(); h.notes = h.notes || []; h.notes.push({at:finNow(), by:finWho(), text:t}); finLog(`Hold update: ${h.title}`, {hold:h.id}); commit(); draw(); };
+    const rel = $("#hRel"); if(rel) rel.onclick = () => finReleaseSheet(h);
+  };
+  draw(); openPanel();
+}
+/* releasing a hold is deliberate: who, why, typed confirmation; only people allowed to send payments can do it */
+function finReleaseSheet(h){
+  const payers = ((typeof PAY !== "undefined" && PAY.status && PAY.status.nickel && PAY.status.nickel.payers) || []).map(x => String(x).toLowerCase());
+  const me = String(finWho()).toLowerCase(), allowed = !payers.length || payers.includes(me);
+  const tot = finHeldC(h), sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><h3>Release hold · ${esc(h.title)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <p>Releasing makes <b class="num">${usd(tot)}</b> due to ${esc(ownerLabel(ownerById(h.ownerId)) || "the owner")} again. It doesn't send anything — payouts still go out the usual way, by a person.</p>
+      ${allowed ? "" : `<div class="pm-banner">Only people on the payments list can release a hold (${esc(payers.join(", "))}).</div>`}
+      <label class="fld"><span>Why it's released</span><textarea id="rlN" rows="2" placeholder="e.g. Settled — owner agreed to pay invoices #4–#6 from the October payout"></textarea></label>
+      <label class="fld"><span>Approved by</span><input type="text" id="rlA" placeholder="Who signed off (Broker-in-Charge, owner…)"></label>
+      <label class="fld"><span>Type RELEASE to confirm</span><input type="text" id="rlC" autocomplete="off"></label>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="rlGo" ${allowed ? "" : "disabled"}>Release</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = () => finHoldSheet(h.id);
+  $("#rlGo").onclick = () => {
+    const note = $("#rlN").value.trim(), by = $("#rlA").value.trim();
+    if($("#rlC").value.trim().toUpperCase() !== "RELEASE") return toast("Type RELEASE to confirm");
+    if(!note || !by) return toast("Say why, and who approved it");
+    snapshot(); h.status = "released"; h.release = {at:finNow(), by:finWho(), approvedBy:by, note, heldC:tot};
+    finLog(`Hold released: ${h.title} · ${usd(tot)} due again · approved by ${by}`, {hold:h.id}); commit(); toast("Hold released"); finHoldSheet(h.id);
+  };
+}
+
+/* ---- transfers ---- */
+function finTransfersTab(v){
+  const list = finState().transfers.slice().sort((a, b) => String(b.date || b.createdAt).localeCompare(String(a.date || a.createdAt)));
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>No transfers recorded</b><p>Record money moved between PHD's own accounts — PHD income to PM Operating, funding a payout batch — and see both sides confirmed.</p><button class="btn primary" id="mnNt">New transfer</button></div>`)); $("#mnNt").onclick = () => finTransferSheet(null); finBatchesCard(v); return; }
+  const card = elm("div", "card");
+  card.innerHTML = `<div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Date</th><th>Transfer</th><th>From → to</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
+    ${list.map((t, i) => `<tr data-t="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(t.date))}</td><td><div class="item-t">${esc(t.title)}</div><div class="item-s">${esc(t.purpose || "")}${t.period ? " · " + monthLabel(t.period) : ""}</div></td>
+      <td>${(t.legs || []).map(l => `<div class="item-s">${esc(l.from)} → ${esc(l.to)} · <span class="num">${usd(l.amountC)}</span> ${finTag(finLegState(l, t))}</div>`).join("")}</td><td>${finTag(finTransferState(t))}</td><td class="r num">${usd(finTransferC(t))}</td></tr>`).join("")}</tbody></table></div>
+    <p class="help" style="padding:0 16px 14px">Transfers move PHD's own money between its accounts. They're never counted as income or as an expense.</p>`;
+  card.querySelectorAll("[data-t]").forEach(tr => tr.onclick = () => finTransferSheet(list[+tr.dataset.t].id));
+  v.appendChild(card);
+  finBatchesCard(v);
+}
+function finTransferSheet(id, seed){
+  const F = finState(), sh = $("#sheet");
+  let t = id ? F.transfers.find(x => x.id === id) : null; const isNew = !t;
+  if(isNew){
+    const per = (seed && seed.period) || monthAdd(pmCurrentMonth(), -1), R = pmMonthRoll(per), left = Math.max(0, R.netC - finMovedFor(per));
+    t = Object.assign({id:finId(), title:`${monthLabel(per)} PHD income → PM Operating`, kind:"phdIncome", period:per, purpose:"PHD's management income for the month", date:todayISO(), legs:[{id:finId(), from:"", to:"", amountC:left, status:"planned"}]}, seed || {});
+  }
+  const accts = finAccounts();
+  const opts = sel => `<option value="">Choose…</option>${accts.map(a => `<option ${a === sel ? "selected" : ""}>${esc(a)}</option>`).join("")}<option value="__other">Other…</option>`;
+  const draw = () => {
+    const totC = finTransferC(t), R = t.period ? pmMonthRoll(t.period) : null;
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "New transfer" : esc(t.title)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Money moved between PHD's own accounts — not income, not an expense</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <label class="fld"><span>What it is</span><input type="text" id="tT" value="${esc(t.title)}"></label>
+        <div class="f2"><label class="fld"><span>Date</span><input type="date" id="tD" value="${esc(t.date || "")}"></label>
+          <label class="fld"><span>For the month</span><input type="month" id="tP" value="${esc(t.period || "")}"></label></div>
+        <div class="f2"><label class="fld"><span>Kind</span><select id="tK"><option value="phdIncome" ${t.kind === "phdIncome" ? "selected" : ""}>PHD income to operating</option><option value="funding" ${t.kind === "funding" ? "selected" : ""}>Funding owner payouts</option><option value="other" ${t.kind === "other" ? "selected" : ""}>Other</option></select></label>
+          <label class="fld"><span>Purpose</span><input type="text" id="tU" value="${esc(t.purpose || "")}"></label></div>
+        ${R && t.kind === "phdIncome" ? `<p class="help">${monthLabel(t.period)} net PHD income is <b class="num">${usd(R.netC)}</b>; this transfer is <b class="num">${usd(totC)}</b>${totC !== R.netC ? ` — <b>${usd(Math.abs(R.netC - totC))} ${totC < R.netC ? "less" : "more"}</b>` : " — the whole amount"}.</p>` : ""}
+        <div class="label" style="margin:10px 0 6px">Legs</div>
+        ${(t.legs || []).map((l, i) => { const ev = finLegEvidence(l, t), st = finLegState(l, t);
+          return `<div class="mn-leg"><div class="f3"><label class="fld"><span>From</span><select data-lf="${i}">${opts(l.from)}</select>${l.from && !accts.includes(l.from) ? `<input type="text" data-lft="${i}" value="${esc(l.from)}">` : ""}</label>
+            <label class="fld"><span>To</span><select data-lt="${i}">${opts(l.to)}</select>${l.to && !accts.includes(l.to) ? `<input type="text" data-ltt="${i}" value="${esc(l.to)}">` : ""}</label>
+            <label class="fld"><span>Amount</span><input type="number" step="0.01" data-la="${i}" value="${l.amountC ? (l.amountC / 100).toFixed(2) : ""}"></label></div>
+            <div class="mn-legst">${finTag(st)}
+              <label class="switchbox"><input type="checkbox" data-ld="${i}" ${l.debitOk || (ev.out && ev.out._st === "completed") ? "checked" : ""} ${ev.out && ev.out._st === "completed" ? "disabled" : ""}> Left ${esc(l.from || "the source")}${ev.out ? ` <span class="muted">· Nickel ${esc(String(ev.out.status).toLowerCase())} ${esc(fdateS(finDay(ev.out.at)))}</span>` : ""}</label>
+              <label class="switchbox"><input type="checkbox" data-lc="${i}" ${l.creditOk || (ev.inn && ev.inn._st === "completed") ? "checked" : ""} ${ev.inn && ev.inn._st === "completed" ? "disabled" : ""}> Arrived in ${esc(l.to || "the destination")}${ev.inn ? ` <span class="muted">· Nickel ${esc(String(ev.inn.status).toLowerCase())}</span>` : ""}</label>
+              ${(t.legs || []).length > 1 ? `<button class="linkish" data-lx="${i}">remove</button>` : ""}</div>
+            ${(l.debitOk || l.creditOk) && l.okBy ? `<p class="help" style="margin:4px 0 0">Checked by ${esc(l.okBy)}${l.okAt ? " · " + esc(fdateS(finDay(l.okAt))) : ""}</p>` : ""}</div>`; }).join("")}
+        <button class="btn sm" id="tAdd">Add a leg</button>
+        <p class="help">A leg is confirmed when the money shows leaving one account and arriving in the other. Nickel transfers are checked against Nickel's records automatically; tick the bank side once you see it on the statement.</p>
+      </div>
+      <div class="sheet-f">${isNew ? "" : `<button class="btn" id="tDel">Delete</button>`}<span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn primary" id="tSave">${isNew ? "Record transfer" : "Save"}</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const keep = () => {
+      t.title = $("#tT").value.trim(); t.date = $("#tD").value; t.period = $("#tP").value; t.kind = $("#tK").value; t.purpose = $("#tU").value.trim();
+      (t.legs || []).forEach((l, i) => {
+        const fs = sh.querySelector(`[data-lf="${i}"]`).value, ts = sh.querySelector(`[data-lt="${i}"]`).value;
+        const ft = sh.querySelector(`[data-lft="${i}"]`), tt = sh.querySelector(`[data-ltt="${i}"]`);
+        l.from = fs === "__other" ? (ft ? ft.value.trim() : prompt("Account name") || "") : fs || (ft ? ft.value.trim() : "");
+        l.to = ts === "__other" ? (tt ? tt.value.trim() : prompt("Account name") || "") : ts || (tt ? tt.value.trim() : "");
+        l.amountC = Math.round(Number(sh.querySelector(`[data-la="${i}"]`).value || 0) * 100);
+        const d = sh.querySelector(`[data-ld="${i}"]`), c = sh.querySelector(`[data-lc="${i}"]`);
+        if(!d.disabled && d.checked !== !!l.debitOk){ l.debitOk = d.checked; l.okBy = finWho(); l.okAt = finNow(); }
+        if(!c.disabled && c.checked !== !!l.creditOk){ l.creditOk = c.checked; l.okBy = finWho(); l.okAt = finNow(); }
+      });
+    };
+    sh.querySelectorAll("[data-lf],[data-lt]").forEach(s => s.onchange = () => { if(s.value === "__other"){ keep(); draw(); } });
+    $("#tAdd").onclick = () => { keep(); t.legs.push({id:finId(), from:"", to:"", amountC:0, status:"planned"}); draw(); };
+    sh.querySelectorAll("[data-lx]").forEach(b => b.onclick = () => { keep(); t.legs.splice(+b.dataset.lx, 1); draw(); });
+    const del = $("#tDel"); if(del) del.onclick = () => { if(!confirm("Delete this transfer record? The money itself isn't affected.")) return; snapshot(); F.transfers = F.transfers.filter(x => x !== t); finLog(`Transfer record deleted: ${t.title} · ${usd(finTransferC(t))}`, {transfer:t.id}); commit(); closeSheet(); };
+    $("#tSave").onclick = () => {
+      keep();
+      if(!t.legs.length || t.legs.some(l => !l.from || !l.to || !(l.amountC > 0))) return toast("Each leg needs a from account, a to account and an amount");
+      if(t.legs.some(l => l.from === l.to)) return toast("A leg can't go from an account to itself");
+      snapshot();
+      if(isNew){ t.createdAt = finNow(); t.createdBy = finWho(); F.transfers.push(t); finLog(`Transfer recorded: ${t.title} · ${usd(finTransferC(t))}`, {transfer:t.id}); }
+      else finLog(`Transfer updated: ${t.title} · ${finTransferState(t)}`, {transfer:t.id});
+      commit(); toast(isNew ? "Transfer recorded" : "Saved"); closeSheet();
+    };
+  };
+  draw(); openPanel();
+}
+
+/* ---- audit trail ---- */
+function finAuditTab(v){
+  const L = finState().log;
+  const md = ((S.mdLinks && S.mdLinks.log) || []).slice(0, 30).map(x => ({at:x.at, by:x.by, what:`MagicDoor sync: ${(x.lines || []).length} change${(x.lines || []).length === 1 ? "" : "s"}${x.lines && x.lines[0] ? " — " + x.lines[0].prop + ": " + x.lines[0].what : ""}`}));
+  const all = [...L, ...md].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 300);
+  v.appendChild(elm("div", "card", all.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${all.map(x => `<tr><td class="nw muted">${esc(new Date(x.at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}</td><td class="nw">${esc(x.by || "")}</td><td>${esc(x.what)}</td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty"><p class="muted">Holds, transfers, reconciliations and notes are recorded here as they happen.</p></div>`));
+}
+
+/* ====================================================================
+   WIRING INTO THE REST OF THE CONSOLE
+   ==================================================================== */
+/* Month close: a held payout isn't "to send" — and can't be marked sent without releasing the hold */
+if(typeof pmMarkPaidSheet === "function"){
+  const finMark0 = pmMarkPaidSheet;
+  pmMarkPaidSheet = function(m, pids){
+    const held = pids.filter(pid => finHoldFor(pid, m));
+    if(held.length){
+      const names = held.map(pid => (pmProp(pid) || {}).name).join(", ");
+      const rest = pids.filter(pid => !held.includes(pid));
+      toast(`${names} ${held.length === 1 ? "is" : "are"} on hold — release the hold before paying`);
+      finLog(`Blocked marking a held payout sent: ${names} · ${monthLabel(m)}`);
+      if(!rest.length) return;
+      pids = rest;
+    }
+    return finMark0.call(this, m, pids);
+  };
+}
+/* ⌘K: payments, holds and transfers by name, amount or reference */
+if(typeof cmdItems === "function"){
+  const finCmd0 = cmdItems;
+  cmdItems = function(q){
+    const out = finCmd0.apply(this, arguments), qq = String(q || "").trim();
+    if(!qq || qq.length < 2) { out.unshift({sec:"Go to", ic:"card", main:"Money", sub:"payouts, ledger, holds, transfers", amt:"", run:() => go("money")}); return out; }
+    const extra = [], ix = finRefIndex(), low = qq.toLowerCase();
+    finSearch(qq).slice(0, 8).forEach(r => { const ab = finAbout(r, ix);
+      extra.push({sec:"Money — Nickel", ic:"card", main:`${r.who || finSrc(r)}${r.ref ? " · " + r.ref : ""}`, sub:`${finSrc(r)} · ${FIN_ST[r._st] ? FIN_ST[r._st][0] : r._st} · ${fdateS(finDay(r.at))}${ab ? " · " + ab.label : ""}`, amt:(r._in ? "+" : "−") + usd(Math.abs(r.amountC)), run:() => { go("money"); setTimeout(() => finTxnSheet(r.id), 30); }}); });
+    finHolds(true).filter(h => `${h.title} ${h.reason} ${ownerLabel(ownerById(h.ownerId))} ${(h.propIds || []).map(id => (pmProp(id) || {}).name).join(" ")}`.toLowerCase().includes(low))
+      .forEach(h => extra.push({sec:"Money — holds", ic:"user", main:h.title, sub:h.status === "active" ? "On hold · " + usd(finHeldC(h)) : "Released", amt:"", run:() => { go("money"); setTimeout(() => finHoldSheet(h.id), 30); }}));
+    finState().transfers.filter(t => `${t.title} ${t.purpose} ${(t.legs || []).map(l => l.from + " " + l.to + " " + (l.amountC / 100).toFixed(2)).join(" ")}`.toLowerCase().includes(low.replace(/[$,]/g, "")))
+      .forEach(t => extra.push({sec:"Money — transfers", ic:"arrow", main:t.title, sub:`${fdateS(t.date)} · ${FIN_ST[finTransferState(t)][0]}`, amt:usd(finTransferC(t)), run:() => { go("money"); setTimeout(() => finTransferSheet(t.id), 30); }}));
+    return /\d/.test(qq) ? extra.concat(out) : out.concat(extra);
+  };
+}
+/* menu: Money, right under Today, in both halves of the console */
+if(typeof renderNav === "function"){
+  const finNav0 = renderNav;
+  renderNav = function(){
+    const r = finNav0.apply(this, arguments);
+    try{
+      const n = $("#nav"), today = n && [...n.children].find(b => b.tagName === "BUTTON" && /Today/.test(b.textContent));
+      if(n && !n.querySelector("[data-fin]")){
+        const ex = finExceptions(), urgent = ex.filter(x => x.level === "urgent").length, warn = ex.filter(x => x.level === "warn").length;
+        const b = elm("button", null, `${icon("card")}<span>Money</span>${urgent ? `<i class="badge alert">${urgent}</i>` : warn ? `<i class="badge" style="color:var(--gold)">${warn}</i>` : ""}`);
+        b.dataset.fin = "1"; b.setAttribute("aria-current", S.ui.view === "money"); b.onclick = () => go("money");
+        if(today && today.nextSibling) n.insertBefore(b, today.nextSibling); else n.prepend(b);
+      }
+    }catch(e){ /* the menu still works without it */ }
+    return r;
+  };
+}
+HELP.money = {t:"Money", b:`
+  <p>Every payment, owner payout, hold and transfer in one place.</p>
+  <p><b>Owner payouts</b> lines up what each property's owner is owed for a month with every attempt to pay it — MagicDoor and Nickel — so a payout that failed and the one that replaced it read as one story, and a real double payment stands out.</p>
+  <p><b>Ledger</b> is every Nickel payment of the last 120 days, refreshed hourly. Search by name, address, amount, invoice or reference.</p>
+  <p><b>Holds</b> stop an owner's payouts on purpose (a dispute). A held payout is never shown as "not paid", can't be marked sent, and is released only with a reason and a typed confirmation.</p>
+  <p><b>Transfers</b> record money moved between PHD's own accounts, with both sides checked off. They're never counted as income or expense.</p>
+  <p class="hp-tip">Nothing on this page sends money.</p>`};
+
+/* ---- funding batches (inside the Transfers tab) ---- */
+function finBatchesCard(v){
+  const B = finState().batches.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const c = elm("div", "card"); c.style.marginTop = "16px";
+  c.innerHTML = `<div class="card-h"><h3>Owner payout batches</h3><button class="btn sm" id="mnNb" style="margin-left:auto">Record a batch</button></div>
+    ${B.length ? `<div class="tbl-wrap"><table class="tbl mn-tbl"><thead><tr><th>Date</th><th>Batch</th><th>Payouts in it</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
+      ${B.map((b, i) => { const ls = finBatchLines(b), sum = ls.reduce((a, k) => a + (finMdDayLines(b.date).find(x => x.key === k) || {c:0}).c, 0);
+        return `<tr data-b="${i}" style="cursor:pointer"><td class="nw muted">${esc(fdateS(b.date))}</td><td><div class="item-t">${esc(b.sys || "MagicDoor")} ACH batch</div><div class="item-s">${esc(b.note || "")}</div></td>
+        <td>${ls.length ? `${ls.length} payouts${sum !== b.amountC ? ` <span class="tag gold">adds to ${usd(sum)}</span>` : ""}` : `<span class="tag gold">No exact match</span>`}</td><td>${finTag(b.status === "blocked" ? "failed" : finStatus(b.status), b.status === "blocked" ? "Blocked" : null)}</td><td class="r num">${usd(b.amountC)}</td></tr>`; }).join("")}</tbody></table></div>`
+      : `<div class="empty" style="padding:18px"><p class="muted" style="margin:0">When MagicDoor sends owner payouts as an ACH batch, record what the bank did with it. Payouts in a blocked batch show as failed even though MagicDoor calls them paid.</p></div>`}`;
+  c.querySelector("#mnNb").onclick = () => finBatchSheet(null);
+  c.querySelectorAll("[data-b]").forEach(tr => tr.onclick = () => finBatchSheet(B[+tr.dataset.b].id));
+  v.appendChild(c);
+}
+function finBatchSheet(id){
+  const F = finState(), sh = $("#sheet");
+  let b = id ? F.batches.find(x => x.id === id) : null; const isNew = !b;
+  if(isNew) b = {id:finId(), sys:"MagicDoor", date:"", amountC:0, status:"blocked", note:""};
+  const draw = () => {
+    const ls = b.date && b.amountC ? finBatchLines(Object.assign({}, b, {lines:null})) : [], day = b.date ? finMdDayLines(b.date) : [];
+    const name = pid => { const x = (S.md && S.md.properties || []).find(p => p.id === pid); return x ? x.name : pid; };
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "Record a payout batch" : `${esc(b.sys)} ACH batch · ${esc(fdateS(b.date))}`}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">What the bank did with a batch of owner payouts</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <div class="f3" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+          <label class="fld"><span>Payout date in MagicDoor</span><input type="date" id="bD" value="${esc(b.date)}"></label>
+          <label class="fld"><span>Batch amount</span><input type="number" step="0.01" id="bA" value="${b.amountC ? (b.amountC / 100).toFixed(2) : ""}"></label>
+          <label class="fld"><span>What happened</span><select id="bS">${[["blocked","Blocked / refused"],["returned","Returned"],["processing","Processing"],["completed","Went through"]].map(([k, l]) => `<option value="${k}" ${b.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+        <label class="fld"><span>Note</span><input type="text" id="bN" value="${esc(b.note || "")}" placeholder="e.g. Nickel debit protection refused the withdrawal"></label>
+        ${b.date ? `<div class="label" style="margin:12px 0 6px">${day.length} MagicDoor payout${day.length === 1 ? "" : "s"} that day</div>
+          ${ls.length ? `<p class="help" style="margin-top:0">${ls.length} of them add up to exactly ${usd(b.amountC)}:</p><table class="pm-sum">${ls.map(k => { const x = day.find(y => y.key === k) || {}; return `<tr><td>${esc(name(x.pid))}</td><td class="r num">${usd(x.c || 0)}</td></tr>`; }).join("")}</table>`
+            : b.amountC ? `<p class="pm-banner">No set of that day's payouts adds up to exactly ${usd(b.amountC)}. Check the date and amount.</p>` : ""}` : ""}
+      </div>
+      <div class="sheet-f">${isNew ? "" : `<button class="btn" id="bDel">Delete</button>`}<span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn primary" id="bSave">Save</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const keep = () => { b.date = $("#bD").value; b.amountC = Math.round(Number($("#bA").value || 0) * 100); b.status = $("#bS").value; b.note = $("#bN").value.trim(); };
+    ["#bD","#bA"].forEach(s => $(s).onchange = () => { keep(); draw(); });
+    const del = $("#bDel"); if(del) del.onclick = () => { snapshot(); F.batches = F.batches.filter(x => x !== b); finLog(`Payout batch deleted: ${fdateS(b.date)} ${usd(b.amountC)}`); commit(); closeSheet(); };
+    $("#bSave").onclick = () => { keep(); if(!b.date || !b.amountC) return toast("Add the date and the amount");
+      const lines = finBatchLines(Object.assign({}, b, {lines:null})); if(!lines.length) return toast("No set of that day's payouts adds up to that amount");
+      snapshot(); b.lines = lines; b.by = finWho(); b.at = finNow(); if(isNew) F.batches.push(b);
+      finLog(`Payout batch ${isNew ? "recorded" : "updated"}: ${fdateS(b.date)} ${usd(b.amountC)} · ${b.status} · ${lines.length} payouts`); commit(); toast("Saved"); closeSheet(); };
+  };
+  draw(); openPanel();
 }
 
 /* ===================== BOOT ===================== */

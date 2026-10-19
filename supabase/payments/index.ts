@@ -1094,8 +1094,30 @@ async function refresh(only?: Obj) {
   if (!only) { try { changed += await linkBills(bud, map); } catch (_) { /* next hour */ } }
   if (!only || only.kind === "projects") { try { changed += await linkAllProjects(); } catch (_) { /* next hour */ } }
   if (!only || only.kind === "expenses") { try { changed += await projExpenses(only ? { left: 30 } : bud); } catch (_) { /* next hour */ } }
+  if (!only || only.kind === "ledger") { try { await ledgerSync(); } catch (_) { /* next hour */ } }
   if (!only) await saveMap((m) => { m.lastRefresh = new Date().toISOString(); });
   return { changed, more: bud.left <= 0 };
+}
+
+/* ====================================================================
+   THE MONEY LEDGER: every Nickel payment of the last 120 days, kept as shared/ledger so the console can search,
+   link and reconcile them (cancelled payout ↔ its replacement, transfers, holds). Read-only copy of Nickel's own
+   records: amounts and statuses exactly as Nickel reports them, never changed here. Account numbers: last 4 only.
+   ==================================================================== */
+async function ledgerSync() {
+  const from = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
+  let balances: Obj[] = [];
+  try { balances = items(await read("list_nickel_banking_accounts")).map((a) => ({ id: S(a.id), name: S(a.nickname) || "Nickel account", last4: S(a.accountNumberLast4), balanceC: cIn(a.balance), holdsC: cIn(a.pendingCardHolds) })); } catch { /* not on Nickel Banking */ }
+  const raw = await readAll("search_payment_activities", { startDate: from, endDate: today() }, 25);
+  const seen = new Set<string>();
+  const list = raw.filter((r) => { const k = S(r.id); if (!k || seen.has(k)) return false; seen.add(k); return true; }).map((r) => {
+    const ref = S(r.billNumber || r.invoiceLabel);
+    return { id: S(r.id), entityId: S(r.entityId), source: S(r.source), status: S(r.status).toUpperCase(), at: S(r.createdAt), amountC: Number(r.amountInCents) || 0,
+      who: S(r.counterpartyName).slice(0, 120), ref: ref.slice(0, 60), desc: S(r.description).slice(0, 220), account: S(r.nickelBalanceAccount && r.nickelBalanceAccount.nickname).slice(0, 60),
+      owner: S(r.source) === "PAYABLE" && /^OWN-/i.test(ref), link: S(r.dashboardUrl) };
+  }).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 3000);
+  await updateDoc("shared", "ledger", (d) => { d.at = new Date().toISOString(); d.from = from; d.balances = balances; d.items = list; }, true);
+  return list.length;
 }
 
 /* ====================================================================
@@ -1200,6 +1222,7 @@ async function handle(req: Request): Promise<Response> {
         return json({ ok: true });
       }
       case "nickel.refresh": return done(await refresh());
+      case "nk.ledger": return json({ items: await ledgerSync() });
       case "nk.sync": return done(await refresh({ kind: S(body.kind), id: S(body.id), key: S(body.key) || undefined }));
       case "nk.linkProject": return done(await linkProject(body));
       case "nk.activity": return json(await activity(body));

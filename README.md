@@ -158,6 +158,27 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 - **Recipients** sets who gets an owner's statements — as many addresses as needed, plus an optional Cc. The same list is on the owner's page as **Owner statements go to** (blank = their main email). Every address is on the To line once the updated `apps-script/Statements.gs` is pasted into pm@'s script and deployed as a new version; until then the first address is To and the rest are Cc'd, so everyone still gets it.
 - The menu shows how many statements haven't gone out yet for a month closed in the last 40 days.
 
+## Money (menu → Money)
+
+One place to find any dollar and see where it stands. Nothing on this page sends money.
+
+- **The top row** shows the balance in Nickel, what's owed to owners and not paid (holds left out), what's on hold, PHD income still to move to operating, and Nickel payments in flight.
+- **Needs attention** lists what needs a person:
+  - payouts that failed and weren't reissued
+  - possible double payments
+  - money paid to an owner who's on hold
+  - owners not paid by mid-month
+  - transfers not confirmed on both sides
+  - failed or returned Nickel payments
+- **Owner payouts:** each property's month, with what's owed set against every attempt to pay it in MagicDoor and in Nickel. A payout that failed in MagicDoor and was reissued in Nickel reads as one story: "Nickel payout replaced the MagicDoor one that failed". Click a row to see every attempt in order.
+- **Ledger:** every Nickel payment of the last 120 days. The payments function copies it hourly, with amounts and statuses exactly as Nickel reports them. Search by name, address, amount, invoice or reference. Click a payment to see what it's for, any other payment of the same amount to the same name, a note, and a **Reconciled** tick.
+- **Holds:** put an owner's payouts on hold, for example during a dispute, with a reason, the properties, documents and a timeline. A held payout shows as **On hold** in Month close, is never counted as "not paid", and can't be marked sent. Releasing a hold needs a reason, who approved it, and typing RELEASE. Only people on the payments list can release one.
+- **Transfers:** record money moved between PHD's own accounts, such as the month's PHD income to PM Operating. Each leg is checked off when the money shows leaving one account and arriving in the other; Nickel transfers are checked against Nickel automatically. Transfers are never counted as income or expense.
+- **Owner payout batches** (under Transfers): when MagicDoor sends payouts as an ACH batch, record what the bank did with it. The console works out which payouts were in the batch from the amount: the set of that day's payouts that adds up to it exactly. When more than one set does, it picks the one that best fits what happened afterwards. Payouts in a blocked batch show as failed, even though MagicDoor still calls them paid.
+- **Audit trail:** every hold, release, transfer, batch, reconciliation and note, with who and when.
+
+⌘K search also finds Nickel payments, holds and transfers by name, amount or reference.
+
 ### 7b. Import a month from the workbook (Month close → Import from workbook)
 
 When the office's **TOTAL MONTHLY PM INCOME REPORTING** sheet is final for a month, import it so the console shows exactly the same numbers:

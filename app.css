@@ -125,7 +125,7 @@ kbd{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:4px;b
 .btn.sm{padding:4px 10px;font-size:12.5px;border-radius:var(--r-xs)}
 .btn:disabled{opacity:.42;cursor:not-allowed;box-shadow:none}
 .btn kbd{margin-left:2px;background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);color:inherit}
-input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],select,textarea{background:var(--panel);
+input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],input[type=month],select,textarea{background:var(--panel);
   border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;width:100%;transition:border-color .12s,box-shadow .12s;color:var(--ink)}
 input::placeholder,textarea::placeholder{color:var(--faint)}
 input:hover,select:hover,textarea:hover{border-color:var(--line-3)}
@@ -1654,3 +1654,32 @@ label .hq{vertical-align:-4px}
 .mu-list{display:flex;flex-direction:column;gap:8px}
 .mu-r{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
 .mu-btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+
+/* ===== Money: holds, payouts, ledger, transfers ===== */
+:root{ --hold:#5B3F8C; --hold-soft:#EFE9F8; --hold-line:#D6C8EC; }
+.tag.hold{background:var(--hold-soft);border-color:var(--hold-line);color:var(--hold);font:inherit;font-size:12px;cursor:pointer}
+button.tag.hold{padding:2px 9px;border-radius:999px;border:1px solid var(--hold-line)}
+.pm-banner.mn-hold{background:var(--hold-soft);border-color:var(--hold-line);color:var(--hold)}
+.mn-hero .pf-cell .pf-note{white-space:normal;line-height:1.35}
+.mn-ex{margin:16px 0}
+.mn-mo{display:flex;align-items:center;gap:6px;margin-right:10px}
+.mn-mo b{min-width:120px;text-align:center;font-weight:600}
+.mn-sum{display:flex;flex-wrap:wrap;gap:6px 20px;padding:12px 16px;border-bottom:1px solid var(--line-2);font-size:13px;color:var(--muted)}
+.mn-sum b{color:var(--ink,inherit);margin-left:4px}
+.mn-tbl td{vertical-align:top}
+.mn-tbl .tag{margin-right:4px}
+.mn-story{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
+.mn-story .label{display:block;margin-bottom:4px}
+.mn-story b{font-size:15px}
+.mn-tl{display:flex;flex-direction:column;gap:0;margin:4px 0 8px;border-left:2px solid var(--line);padding-left:14px}
+.mn-tl-i{position:relative;padding:6px 0}
+.mn-tl-i > i{position:absolute;left:-20px;top:11px;width:10px;height:10px;border-radius:50%;background:var(--line-3);border:2px solid var(--panel,#fff)}
+.mn-tl-i.completed > i{background:var(--green)} .mn-tl-i.processing > i{background:var(--accent)} .mn-tl-i.failed > i,.mn-tl-i.returned > i{background:var(--red)} .mn-tl-i.cancelled > i{background:var(--muted)}
+.mn-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
+.mn-chk{display:flex;flex-wrap:wrap;gap:6px 16px}
+.mn-holdcard.on{border-color:var(--hold-line)}
+.mn-holdcard{margin-bottom:12px}
+.mn-leg{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.mn-leg .f3{display:grid;grid-template-columns:1fr 1fr 130px;gap:10px}
+.mn-legst{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin-top:6px}
+@media (max-width:720px){ .mn-story{grid-template-columns:1fr 1fr} .mn-leg .f3{grid-template-columns:1fr} .mn-mo{width:100%;justify-content:center;margin:0 0 8px} }
