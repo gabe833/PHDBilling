@@ -154,6 +154,8 @@ function rowText(o: Obj, p: Obj, r: Obj, full: boolean): string {
   PMCore.EXTRA.forEach((k: string) => { if (has(r[k]) && cents(r[k])) parts.push(`${k} (PHD keeps) ${$(r[k])}`); });
   let s = `${monthLabel(r.month)} [${closed(o, r.month) ? "closed" : "open"}; ${STATUS[st] || st}]: ${parts.join(", ")} → owner payout ${usd(c.payoutC)}`;
   if (c.recordedC != null && c.recordedC !== c.calcC) s += ` (formula gives ${usd(c.calcC)})`;
+  const onHold = ((o.shared.finance || {}).holds || []).find((h: Obj) => h.status === "active" && (h.propIds || []).includes(p.id));
+  if (!r.paidOut && onHold) s += `; payout ON HOLD (${cut(onHold.title, 60)})`;
   s += r.paidOut ? `; payout sent ${S(r.paidOut.date)} by ${S(r.paidOut.method || "?")} ${has(r.paidOut.amount) ? $(r.paidOut.amount) : ""}`.trimEnd() : "; payout not marked sent";
   if (has(r.mdNet)) s += `; MagicDoor owner statement says ${$(r.mdNet)}`;
   if (c.flags.length) s += `; flags: ${c.flags.map((f: Obj) => f.text).join(" | ")}`;
@@ -200,7 +202,9 @@ function propText(o: Obj, p: Obj, months: string[]): string {
 
 // one line per property for the month: answers "which…", "how many…", "total…". The lists people ask for most are
 // worked out here and put first, complete and counted, so the model copies them instead of scanning 70+ rows.
+const heldIds = (o: Obj) => new Set(((o.shared.finance || {}).holds || []).filter((h: Obj) => h.status === "active").flatMap((h: Obj) => h.propIds || []));
 function tableText(o: Obj, m: string): string {
+  const held = heldIds(o);
   const all = o.pm.properties.filter((p: Obj) => p.status !== "inactive").map((p: Obj) => {
     const r = rowOf(o, m, p.id); if (!r || r.detailOnly) return { p, r: null, c: null, st: "" };
     r._lateAfter = o.settings.lateAfterDay;
@@ -209,19 +213,20 @@ function tableText(o: Obj, m: string): string {
   const rows = all.filter((x) => x.r) as Obj[];
   const sum = (f: (x: Obj) => number) => usd(rows.reduce((a, x) => a + f(x), 0));
   const list = (title: string, xs: Obj[], f: (x: Obj) => string) => `${title}: ${xs.length}${xs.length ? "\n" + xs.map((x) => "- " + x.p.name + " — " + f(x)).join("\n") : ""}`;
-  const owed = rows.filter((x) => !x.r.paidOut && x.c.payoutC > 0), owes = rows.filter((x) => x.c.payoutC < 0);
+  const owed = rows.filter((x) => !x.r.paidOut && x.c.payoutC > 0 && !held.has(x.p.id)), onHold = rows.filter((x) => !x.r.paidOut && x.c.payoutC > 0 && held.has(x.p.id)), owes = rows.filter((x) => x.c.payoutC < 0);
   const nothing = rows.filter((x) => !x.r.paidOut && x.c.payoutC === 0);
   const late = rows.filter((x) => x.st === "late" || x.st === "partial");
   const summary = [`# ${monthLabel(m)} summary (complete lists, worked out from every row)`,
     `rows: ${rows.length}; rent due ${sum((x) => x.c.dueC)}, received ${sum((x) => x.c.recv)}, repairs ${sum((x) => x.c.repairsC)}, PHD fees ${sum((x) => x.c.pmFeeC + x.c.adminC + x.c.leasingC)}, owner payouts ${sum((x) => x.c.payoutC)}`,
     list("Payouts owed and not marked sent", owed, (x) => usd(x.c.payoutC)) + (owed.length ? `\n  total ${usd(owed.reduce((a, x) => a + x.c.payoutC, 0))}` : ""),
+    list("On hold on purpose (a documented payout hold — not missing)", onHold, (x) => usd(x.c.payoutC)),
     list("Owner owes PHD (payout below zero)", owes, (x) => usd(-x.c.payoutC)),
     `Nothing to send ($0 payout, not counted above): ${nothing.length ? nothing.map((x) => x.p.name).join(", ") : "none"}`,
     list("Rent late or short", late, (x) => `${STATUS[x.st]}: due ${usd(x.c.dueC)}, received ${usd(x.c.recv)}`),
   ].join("\n");
   const lines = all.map((x: Obj) => !x.r ? `${x.p.name} | ${ownerOf(o, x.p.ownerId)} | ${x.p.status} | no row`
     : [x.p.name, ownerOf(o, x.p.ownerId), STATUS[x.st], usd(x.c.dueC), usd(x.c.recv), usd(x.c.repairsC), usd(x.c.pmFeeC + x.c.adminC + x.c.leasingC), usd(x.c.payoutC),
-       x.r.paidOut ? "sent " + S(x.r.paidOut.date) : x.c.payoutC > 0 ? "not sent" : x.c.payoutC < 0 ? "owner owes" : "nothing to send"].join(" | "));
+       x.r.paidOut ? "sent " + S(x.r.paidOut.date) : x.c.payoutC > 0 && held.has(x.p.id) ? "on hold" : x.c.payoutC > 0 ? "not sent" : x.c.payoutC < 0 ? "owner owes" : "nothing to send"].join(" | "));
   return `${summary}\n\n# Every property, ${monthLabel(m)} [${closed(o, m) ? "closed" : "open"}]\nproperty | owner | rent status | rent due | received | repairs | PHD fees | owner payout | payout\n${lines.join("\n")}`;
 }
 
@@ -255,7 +260,7 @@ function holdsText(o: Obj, ownerIds: string[], propIds: string[], all: boolean):
 
 function alertsText(o: Obj): string {
   let list: Obj[] = [];
-  try { list = PMCore.alerts({ pm: o.pm, owners: o.owners, settings: o.settings, today: o.today, state: o.shared.alerts || {}, md: o.md, mdLinks: o.links }); } catch (_) { return ""; }
+  try { list = PMCore.alerts({ pm: o.pm, owners: o.owners, settings: o.settings, today: o.today, state: o.shared.alerts || {}, md: o.md, mdLinks: o.links, billUnit: (o.shared.mdlinks && o.shared.mdlinks.billUnit) || {} }); } catch (_) { return ""; }
   if (!list.length) return "# Action center\nNothing needs action.";
   return `# Action center (${list.length} open, most urgent first)\n` + list.slice(0, 25).map((a) => `[${a.level}] ${a.title}${a.detail ? " — " + cut(a.detail, 140) : ""}`).join("\n");
 }
