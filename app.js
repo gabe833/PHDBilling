@@ -11327,6 +11327,7 @@ function snapSheet(){
     const c = sh.querySelector("#snConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
     const see = sh.querySelector("#snSee"); if(see) see.onclick = () => { closeSheet(); S.ui.ibSide = pm ? "pm" : "projects"; go("inbox"); };
     ["#snCam", "#snFile"].forEach(id => { const inp = sh.querySelector(id); inp.onchange = () => { snapAdd([...inp.files]); inp.value = ""; }; });
+    sh.querySelectorAll("[data-dup]").forEach(b => b.onclick = () => { const f = SNAP.files[+b.dataset.i]; if(f) receiptDupeAct(f, b.dataset.dup); });
   };
   SNAP.redraw = draw;
   draw(); openPanel();
@@ -11335,8 +11336,31 @@ function snapRow(f){
   const it = f.item || {};
   if(f.state === "working" || f.state === "queued") return `<div class="bu-r"><span class="bu-spin" aria-hidden="true"></span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${f.state === "queued" ? "Waiting…" : "Sending and reading…"}</span></div></div>`;
   if(f.state === "done") return `<div class="bu-r ok"><span class="bu-ic">✓</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${it.total ? " · " + usd(cents(it.total)) : ""}</b><span>${esc(it.property_name || "Property to pick when you approve")}</span></div></div>`;
-  if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>This exact file was sent before — it's already in the inbox or approved.</span></div></div>`;
+  if(f.state === "dupe") return receiptDupeRow(f, SNAP.files.indexOf(f));
   return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${esc(f.msg || "Couldn't send it")}</span></div></div>`;
+}
+/* the same file was sent before: say where that copy is now, and offer the step that brings it back into view */
+function receiptDupeRow(f, i){
+  const it = f.item, when = it && it.received_at ? fdateS(String(it.received_at).slice(0, 10)) : "", what = it ? `${esc(it.vendor || f.name)}${it.total ? " · " + usd(cents(it.total)) : ""}` : esc(f.name);
+  const st = it ? String(it.status || "") : "";
+  const msg = !it ? "This exact file was sent before, but its record wasn't found — use “Choose a file” after renaming it, or check the receipt inbox"
+    : st === "pending" || st === "error" ? `Already waiting in the receipt inbox${when ? " since " + when : ""}${it.side ? " · " + (it.side === "pm" ? "Property management" : "Projects") : ""}`
+    : st === "approved" ? `Already approved${it.property_name ? " to " + esc(it.property_name) : ""}${when ? " (sent " + when + ")" : ""} — it's on that property, not in the inbox`
+    : st === "rejected" ? `Sent ${when || "before"} and dismissed, so it's hidden from the inbox`
+    : "This exact file was sent before";
+  const btn = !it ? "" : st === "pending" || st === "error" ? `<button class="btn sm" data-dup="open" data-i="${i}">Show it</button>`
+    : st === "rejected" ? `<button class="btn sm" data-dup="restore" data-i="${i}">Bring it back</button>`
+    : st === "approved" ? `<button class="btn sm ghost" data-dup="restore" data-i="${i}" title="Puts it back in the inbox to add again — only if it really wasn't added">Review again</button>` : "";
+  return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><b>${what}</b><span>${msg}</span></div>${btn}</div>`;
+}
+async function receiptDupeAct(f, a){
+  const it = f.item; if(!it) return;
+  if(a === "restore"){
+    try{ toast("Putting it back in the inbox…"); await inboxPost({action:"retry", id:it.id}); }catch(e){ return toast(receiptErr(e)); }
+    f.state = "done"; f.item = Object.assign({}, it, {status:"pending"});
+  }
+  if(!INBOX.items.some(x => x.id === it.id)) INBOX.items.unshift(Object.assign({}, it, {status:it.status === "error" ? "error" : "pending"}));
+  closeSheet(); S.ui.ibSide = "all"; go("inbox"); inboxRefresh();
 }
 // a file headed for the receipt inbox: its type, a usable name, and why it can't go (if it can't)
 function receiptFile(file, i, n){
@@ -11424,6 +11448,7 @@ function dropSheet(){
     const see = sh.querySelector("#dpSee"); if(see) see.onclick = () => { close(); const last = added[added.length - 1]; if(last) S.ui.flash = last.txn; go("txns", p.id); };
     const c = sh.querySelector("#dpConn"); if(c) c.onclick = () => { closeSheet(); go("inbox"); };
     const pick = sh.querySelector("#dpPick"); if(pick) pick.onchange = () => { dropAdd(p, [...pick.files]); pick.value = ""; };
+    sh.querySelectorAll("[data-ddup]").forEach(b => b.onclick = () => { const f = DROP.files[+b.dataset.i]; if(f){ INBOX.onDone = null; receiptDupeAct(f, b.dataset.ddup); } });
     sh.querySelectorAll("[data-dp]").forEach(b => b.onclick = () => { const f = DROP.files[Number(b.dataset.dp)]; if(f && f.txn){ closeSheet(); INBOX.onDone = null; go("txns", p.id); openSheet(f.txn); } });
   };
   // the inbox card approves or dismisses; mark it here
@@ -11438,7 +11463,7 @@ function dropRow(f, i){
   if(f.state === "added") return `<div class="bu-r ok"><span class="bu-ic">✓</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${amt}</b><span>Added${it.description ? " — " + esc(it.description) : ""}</span></div><button class="btn sm ghost" data-dp="${i}">Open</button></div>`;
   if(f.state === "review") return `<div class="bu-r warn"><span class="bu-ic">…</span><div class="bu-t"><b>${esc(it.vendor || f.name)}${amt}</b><span>${esc(f.msg)} — finish it below</span></div></div>`;
   if(f.state === "dismissed") return `<div class="bu-r"><span class="bu-ic">–</span><div class="bu-t"><div class="bu-n">${esc(it.vendor || f.name)}</div><span>Dismissed</span></div></div>`;
-  if(f.state === "dupe") return `<div class="bu-r warn"><span class="bu-ic">!</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>This exact file was sent before — it's in the receipt inbox or already added</span></div></div>`;
+  if(f.state === "dupe") return receiptDupeRow(f, i).replace(/data-dup=/g, "data-ddup=");
   return `<div class="bu-r err"><span class="bu-ic">✕</span><div class="bu-t"><div class="bu-n">${esc(f.name)}</div><span>${esc(f.msg || "Couldn't read it")}</span></div></div>`;
 }
 async function dropPump(){
@@ -11450,7 +11475,7 @@ async function dropPump(){
       f.state = "working"; redraw();
       try{
         const r = await receiptUpload(f, "paid", "projects");
-        if(r.duplicate || !r.item){ f.state = "dupe"; redraw(); continue; }
+        if(r.duplicate || !r.item){ f.state = "dupe"; f.item = r.item || null; redraw(); continue; }
         const it = f.item = r.item, p = S.properties.find(x => x.id === f.prop);
         if(!p){ f.state = "error"; f.msg = "That property is gone"; redraw(); continue; }
         const d = INBOX.draft[it.id] = inboxDraft(it, p.id);
@@ -14584,100 +14609,3 @@ function startApp(){
   try{ await AutoFile.init(); }catch(e){}
   startApp();
 })();
-
-/* =====================================================================
-   ASK — plain-English questions about the books (Supabase function "ask", Groq)
-   Read-only: the function answers from saved records and can't change anything.
-   ===================================================================== */
-ICON_PATHS.ask = '<path d="M2.5 4a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7l-3 2.5V11a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M6.6 5.4a1.5 1.5 0 1 1 1.9 1.4c-.3.1-.5.4-.5.7v.3M8 9.1v.1"/>';
-const ASK = {log:[], busy:false};
-const ASK_EXAMPLES = ["Which properties had repairs over $500 this month?", "Which payouts haven't been sent for last month?", "What needs action today?"];
-// the answer is plain text: keep line breaks, make "- " lines a list, **x** bold and *x* italic
-function askFmt(t){
-  const lines = esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, "$1<i>$2</i>").split("\n");
-  let html = "", list = false;
-  lines.forEach(l => {
-    const m = l.match(/^\s*(?:[-•*]|\d+\.)\s+(.*)$/);
-    if(m){ if(!list){ html += "<ul>"; list = true; } html += `<li>${m[1]}</li>`; return; }
-    if(list){ html += "</ul>"; list = false; }
-    html += l.trim() ? `<p>${l}</p>` : "";
-  });
-  return html + (list ? "</ul>" : "");
-}
-function askSheet(question){
-  const sh = $("#sheet");
-  sh.innerHTML = `<div class="sheet-h"><div><h3>Ask</h3><div class="muted" style="font-size:12.5px;margin-top:3px">About rent, repairs, payouts, holds, Nickel and MagicDoor</div></div>
-      ${ASK.log.length ? `<button class="btn ghost sm" id="askClear" style="margin-left:auto">New chat</button>` : ""}<button class="btn ghost sm" id="shClose" ${ASK.log.length ? "" : `style="margin-left:auto"`}>✕</button></div>
-    <div class="sheet-b ask-log" id="askLog"></div>
-    <div class="sheet-f ask-f"><textarea id="askIn" rows="2" placeholder="Why is 2014 Alton behind?  What did we pay an owner in September?" maxlength="600"></textarea><button class="btn primary" id="askGo">Ask</button></div>`;
-  $("#shClose").onclick = closeSheet;
-  const clr = $("#askClear"); if(clr) clr.onclick = () => { ASK.log = []; askSheet(); };
-  const inp = $("#askIn");
-  $("#askGo").onclick = () => askSend(inp.value);
-  inp.onkeydown = e => { if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); askSend(inp.value); } };
-  askDraw(); openPanel();
-  if(question) askSend(question); else setTimeout(() => inp.focus(), 30);
-}
-function askDraw(){
-  const box = $("#askLog"); if(!box) return;
-  if(!ASK.log.length){
-    box.innerHTML = `<p class="help" style="margin-top:0">Ask about any managed property, owner, vendor or month. It reads the console's saved records and the MagicDoor copy (as fresh as the last sync). It can't change, send or pay anything.</p>
-      <div class="label" style="margin:14px 0 6px">Try</div>${ASK_EXAMPLES.map((q, i) => `<button class="ask-ex" data-ex="${i}">${esc(q)}</button>`).join("")}
-      <p class="help">Answers come from an AI model and can be wrong. Check the numbers on the property page before acting on them.</p>`;
-    box.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => askSend(ASK_EXAMPLES[+b.dataset.ex]));
-    return;
-  }
-  box.innerHTML = ASK.log.map(x => `<div class="ask-q">${esc(x.q)}</div>` + (x.a == null ? `<div class="ask-a muted">Looking through the books…</div>`
-    : x.err ? `<div class="ask-a ask-err">${esc(x.a)}</div>`
-    : `<div class="ask-a">${askFmt(x.a)}<div class="ask-src">From: ${esc((x.used || []).join(" · ") || "nothing matched")}${x.syncedAt ? ` · MagicDoor synced ${esc(new Date(x.syncedAt).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}` : ""}</div></div>`)).join("");
-  box.scrollTop = box.scrollHeight;
-}
-async function askSend(q){
-  q = String(q || "").trim();
-  if(!q || ASK.busy) return;
-  if(typeof Cloud === "undefined" || !Cloud.ready) return toast("Ask works in the hosted console (sign in first).");
-  const inp = $("#askIn"); if(inp) inp.value = "";
-  const history = ASK.log.filter(x => x.a && !x.err).slice(-3).map(x => ({q:x.q, a:x.a}));
-  const entry = {q, a:null}; ASK.log.push(entry); ASK.busy = true; askDraw();
-  const go = $("#askGo"); if(go) go.disabled = true;
-  try{
-    clearTimeout(Cloud.timer); await Cloud.flush();      // the function reads what's saved, so save first
-    const {data, error} = await Cloud.sb.functions.invoke("ask", {body:{question:q, history}});
-    if(error){
-      if(error.name === "FunctionsFetchError" || /Failed to send a request/i.test(error.message || "")) throw new Error("Couldn't reach the Ask function. If it was just added, it still needs deploying in Supabase.");
-      let msg = error.message; try{ const b = await error.context.json(); if(b && b.error) msg = b.error; }catch(e){}
-      throw new Error(msg);
-    }
-    if(!data || data.error) throw new Error((data && data.error) || "No answer came back");
-    Object.assign(entry, {a:data.answer, used:data.used, syncedAt:data.syncedAt});
-  }catch(e){ Object.assign(entry, {a:e.message || String(e), err:true}); }
-  ASK.busy = false;
-  if($("#askLog")){ askDraw(); const g = $("#askGo"); if(g) g.disabled = false; const i = $("#askIn"); if(i) i.focus(); }
-}
-/* ⌘K: "Ask a question", and anything typed as a question can be asked straight from the palette */
-if(typeof cmdItems === "function"){
-  const askCmd0 = cmdItems;
-  cmdItems = function(q){
-    const out = askCmd0.apply(this, arguments), qq = String(q || "").trim();
-    if(!qq) out.push({sec:"Actions", ic:"ask", main:"Ask a question", sub:"about rent, repairs, payouts and MagicDoor", amt:"", run:() => askSheet()});
-    else if(/\?$/.test(qq) || /^(why|what|which|who|how|when|where|is|are|did|does|do|has|have|can|show|list)\b/i.test(qq) && qq.split(/\s+/).length >= 3)
-      out.unshift({sec:"Ask", ic:"ask", main:qq, sub:"answer from the books", amt:"", run:() => askSheet(qq)});
-    else if("ask a question".includes(qq.toLowerCase())) out.push({sec:"Actions", ic:"ask", main:"Ask a question", sub:"", amt:"", run:() => askSheet()});
-    return out;
-  };
-}
-/* a button beside Search, hosted console only */
-if(typeof startApp === "function"){
-  const askStart0 = startApp;
-  startApp = function(){
-    const r = askStart0.apply(this, arguments);
-    try{
-      const t = $("#cmdTrigger");
-      if(t && !$("#askBtn") && typeof Cloud !== "undefined" && Cloud.ready){
-        const b = elm("button", "btn", `${icon("ask")}<span>Ask</span>`); b.id = "askBtn"; b.title = "Ask a question about the books";
-        b.onclick = () => askSheet(); t.after(b);
-      }
-    }catch(e){ /* the console works without it */ }
-    return r;
-  };
-}
