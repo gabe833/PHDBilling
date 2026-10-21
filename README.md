@@ -163,12 +163,27 @@ The key is kept with the office's shared settings. If it's ever exposed, run **r
 Both sides of the console use the same menu shape, with no folded sections:
 
 - **Today** and **Action center** at the top.
-- **Rent** (Property mgmt): Month close, Rent overview, Properties, Security deposits, MagicDoor.
+- **Rent** (Property mgmt): Month close, Reconcile, Rent overview, Properties, Security deposits, MagicDoor.
 - **Projects** (Projects side): All properties, Reconcile, Back-charges, Inventory, Business, then the property you're in.
 - **Money**: Cash & payouts (the Money page), Bills, Owner invoices, Owner statements, PHD income, Nickel.
 - **People**: Owners, Vendors, Receipt inbox, Team.
 
 Alert rules are on the Action center page; Settings & connections stay at the bottom.
+
+## Reconcile (menu → Rent → Reconcile)
+
+One month, every rental, checked four ways in a row, so you can tell after owner payouts that the amounts match:
+
+1. **Rent in**: rent received against rent due. A short or missing rent is a discrepancy once the month is over; until then it's "Waiting".
+2. **MagicDoor**: the console's owner payout against MagicDoor's owner statement for the month.
+3. **Owner payout**: a recorded payout against rent less fees and repairs.
+4. **Paid out**: what was actually paid against what's owed, using the same MagicDoor, Nickel and batch matching as the Money page. Unpaid counts as a discrepancy after the payout due date (month end plus the payout days on Alert rules).
+
+Each property is a card showing those four steps. Cards that don't match come first, with the dollar difference. The top of the page shows how many properties match, where the money went (owners, repairs and vendors, PHD fees), how much has been paid to owners, and how much PHD income has been recorded as moved.
+
+- Click a card to see how its payout adds up and every payment to the owner. Step through properties with **‹ ›** or the arrow keys. **Review discrepancies** opens the first one.
+- **Mark explained** (with a note) when a difference is right. The note is saved with the month. If any of the numbers behind it change later, the discrepancy comes back, marked "changed since explained".
+- **Export CSV** gives the month's reconciliation as a spreadsheet.
 
 ## Money (menu → Money → Cash & payouts)
 
