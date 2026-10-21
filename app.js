@@ -32,6 +32,7 @@ function render(){
     inbox:    ["People", "Receipt inbox", "Receipts read for you — nothing is added until you approve it"],
     team:     ["People", "Team", "Who has access, and who changed what"],
     pmMonth:  ["Rent", "Month close", ""],
+    pmRecon:  ["Rent", "Reconcile", ""],
     pmHome:   ["Rent", "Rent overview", ""],
     pmAlerts: ["Property management", "Action center", "Everything that needs a person, most urgent first"],
     pmProperty:["Rent · Properties", "Property", ""],
@@ -57,7 +58,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -3444,7 +3445,7 @@ function cmdItems(q){
   const p = P(), out = [];
   const push = (sec, ic, main, sub, amt, run) => out.push({sec, ic, main, sub, amt, run});
   const pages = S.ui.mode === "pm"
-    ? [["pmMonth","Month close","check"],["pmProps","Properties","building"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
+    ? [["pmMonth","Month close","check"],["pmRecon","Reconcile rent & payouts","recon"],["pmProps","Properties","building"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
     : [["overview","Overview","home"],["txns","Transactions","list"],["invoices","Invoices","file"],
        ["owner","Owner","user"],["scope","Scope of work","clip"],["settings","Settings","gear"]];
   const acts = [
@@ -12010,8 +12011,8 @@ function todayPm(v){
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
 const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","money"]);
-const PM_VIEWS = new Set(["pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
-const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
+const PM_VIEWS = new Set(["pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
+const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
   S.ui.mode = mode;
   go(mode === "pm" ? (S.ui.pmLastView && PM_VIEWS.has(S.ui.pmLastView) ? S.ui.pmLastView : "pmBills") : (S.ui.pjLastView || "portfolio"));
@@ -12073,6 +12074,7 @@ function renderNavPM(){
   n.appendChild(elm("div","nav-gap"));
   n.appendChild(elm("div","nav-head","Rent"));
   mk("pmMonth", "Month close", "list", `<i class="badge">${monthShort(m)}</i>`);
+  { const rm = rcMonth(), nIs = rcIssueCount(rm); mk("pmRecon", "Reconcile", "recon", nIs ? navBadge(nIs, "alert", `${nIs} don't match · ${monthLabel(rm)}`) : null); }
   mk("pmHome", "Rent overview", "home");
   mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
   mk("pmDeposits", "Security deposits", "receipt");
@@ -12959,6 +12961,8 @@ const HELP = {
   pmMonth:{t:"Month close", b:`<p>One row per rental for the month. Owner payout = rent − repairs − fees.</p>
     <ol><li>Enter rent in <b>Received</b> as it arrives (MagicDoor fills paid rent in for you).</li><li>Repairs come from <b>Bills</b> — open a row to add or check them.</li>
       <li>Send <b>Owner statements</b>, then mark payouts sent.</li><li><b>Close month</b> when everything adds up. A closed month can't be edited by accident.</li></ol>`},
+  pmRecon:{t:"Reconcile", b:`<p>Every rental for one month, checked four ways in a row: <b>rent in</b> against rent due, the console's payout against <b>MagicDoor's owner statement</b>, a <b>recorded payout</b> against rent less fees and repairs, and what was <b>actually paid</b> (MagicDoor and Nickel) against what's owed.</p>
+    <ul><li>Cards that don't match come first. Click one to see how its payout adds up and every payment to the owner.</li><li><b>Review discrepancies</b> walks through them one by one (← → keys).</li><li><b>Mark explained</b> with a note when a difference is right. If the numbers change later, it comes back.</li></ul>`},
   pmProps:{t:"Properties", b:`<p>Every rental PHD manages: rent, fee rule and owner. Click one to open its page. Filter by leased, marketing, vacant or no longer managed.</p>`},
   pmProperty:{t:"Rental property", b:`<p>One rental: this month's numbers, lease and owner details, and its history month by month.</p>
     <ul><li><b>Record rent & bills</b> opens this month's row.</li><li><b>Statement</b> makes the owner statement; <b>Email statement</b> puts a draft in pm@'s Gmail.</li><li>Use ‹ › (or the [ ] keys) to step through properties.</li></ul>`},
@@ -13258,7 +13262,8 @@ go = function(view){
   const before = S.ui.view + "|" + S.activeId + "|" + (S.ui.pmPropId || "") + "|" + (S.ui.ownerId || "");
   const r = polGo0.apply(this, arguments);
   const after = S.ui.view + "|" + S.activeId + "|" + (S.ui.pmPropId || "") + "|" + (S.ui.ownerId || "");
-  if(before !== after){ const v = $("#view"); if(v){ v.classList.remove("v-enter"); void v.offsetWidth; v.classList.add("v-enter"); clearTimeout(v._ve); v._ve = setTimeout(() => v.classList.remove("v-enter"), 260); } }
+  if(before !== after) [$("#view"), document.querySelector(".hd-title")].forEach(v => { if(!v) return;
+    v.classList.remove("v-enter"); void v.offsetWidth; v.classList.add("v-enter"); clearTimeout(v._ve); v._ve = setTimeout(() => v.classList.remove("v-enter"), 950); });
   return r;
 };
 
@@ -14705,4 +14710,293 @@ if(typeof startApp === "function"){
     }catch(e){ /* the console works without it */ }
     return r;
   };
+}
+
+/* =====================================================================
+   RECONCILE — one month, every rental, checked four ways in a row:
+   rent in → MagicDoor's owner statement → the owner payout → what was
+   actually paid. Anything that doesn't line up is a discrepancy. A person
+   can mark one explained with a note; the note stays until the numbers
+   behind it change, then the discrepancy comes back.
+   ===================================================================== */
+ICON_PATHS.recon = '<path d="M2.5 5h8.5M8.5 2.5L11 5 8.5 7.5"/><path d="M13.5 11H5M7.5 8.5L5 11l2.5 2.5"/>';
+const RC_STEPS = [["rent","Rent in"],["md","MagicDoor"],["payout","Owner payout"],["paid","Paid out"]];
+const RC_ST = {issue:{l:"Doesn't match", c:"red"}, waiting:{l:"Waiting", c:"gold"}, reviewed:{l:"Explained", c:"acc"}, matched:{l:"Matches", c:"green"}};
+const RC_ICON = {ok:'<path d="M4.6 8.3l2.2 2.2 4.6-4.8"/>', bad:'<path d="M8 4.4v4.4M8 11.4v.2"/>', wait:'<path d="M8 4.8V8l2 1.4"/>', info:'<path d="M8 7.2v4.2M8 4.6v.2"/>', na:'<path d="M5.4 8h5.2"/>'};
+const rcIc = s => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${RC_ICON[s] || RC_ICON.na}</svg>`;
+
+function rcMonth(){
+  const m = S.ui.rcMonth;
+  if(m && /^\d{4}-\d{2}$/.test(m)) return m;
+  return pmLastPaidMonth() || pmCurrentMonth();
+}
+function rcReviews(m, write){
+  const mt = pmState().meta[m];
+  if(!write) return (mt && mt.recon) || {};
+  const mm = pmState().meta[m] = Object.assign({month:m, deductions:[], withdrawals:[]}, mt || {});
+  mm.recon = mm.recon || {}; return mm.recon;
+}
+/* when an owner payout is due: the month's last day plus the payout days on Alert rules */
+const rcPayDue = m => PMCore.isoOf(PMCore.dayNum(PMCore.endOfMonth(m)) + (Number(pmSettings().payoutDays) || 0));
+
+/* one property, one month: the four checks */
+function rcRow(m, row, prop, ledger){
+  const c = pmCalc(row, prop), today = todayISO(), over = m < today.slice(0, 7), st = {};
+  // 1 · rent in, against rent due
+  if(c.dueC <= 0 && !c.recv) st.rent = {s:"na", a:null, t:"No rent due this month"};
+  else if(c.recv >= c.dueC) st.rent = {s:"ok", a:c.recv, t:c.dueC > 0 && c.recv > c.dueC + 100 ? `Received ${usd(c.recv)} — ${usd(c.recv - c.dueC)} more than the ${usd(c.dueC)} due` : `Received ${usd(c.recv)}${c.dueC > 0 ? " — rent paid in full" : ""}`};
+  else if(c.recv > 0) st.rent = {s:"bad", a:c.recv, d:c.dueC - c.recv, t:`Received ${usd(c.recv)} — ${usd(c.dueC - c.recv)} short of the ${usd(c.dueC)} due`};
+  else st.rent = over || row.locked ? {s:"bad", a:0, d:c.dueC, t:`No rent recorded — ${usd(c.dueC)} was due`} : {s:"wait", a:0, t:`${usd(c.dueC)} due — not in yet`};
+  // 2 · MagicDoor's owner statement, against the console's own payout
+  if(!has(row.mdNet)) st.md = {s:"na", a:null, t:"No MagicDoor owner statement for this month"};
+  else {
+    const mdC = cents(row.mdNet), d = c.calcC - mdC;
+    st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)} — the same`}
+      : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
+  }
+  // 3 · the owner payout: a recorded figure has to agree with rent less fees and repairs
+  if(c.recordedC != null && Math.abs(c.recordedC - c.calcC) > 1) st.payout = {s:"bad", a:c.recordedC, d:Math.abs(c.recordedC - c.calcC), t:`Recorded payout ${usd(c.recordedC)}; rent less fees and repairs gives ${usd(c.calcC)}`};
+  else if(c.payoutC < 0) st.payout = {s:"info", a:c.payoutC, t:`Owner owes ${usd(-c.payoutC)} — ${row.ownerBilled ? "billed to the owner" : "carries into next month"}`};
+  else if(!c.payoutC && !c.recv) st.payout = {s:"na", a:0, t:"Nothing to pay out"};
+  else st.payout = {s:"ok", a:c.payoutC, t:`${usd(c.payoutC)} — rent less fees and repairs`};
+  // 4 · what was actually paid: MagicDoor distributions, Nickel and the console's own record (the Money page's matcher)
+  let fr = null; try{ fr = finReconRow(m, row, prop, {ledger}); }catch(e){ fr = null; }
+  if(!fr || fr.result === "none") st.paid = {s:"na", a:null, t:"Nothing owed to the owner"};
+  else {
+    const r = fr.result, pc = fr.paidC, due = rcPayDue(m), ch = finChannel(fr);
+    st.paid = r === "paid" ? {s:"ok", a:pc, t:`Paid ${usd(pc)}${ch ? " · " + ch : ""}${fr.note ? " — " + fr.note : ""}`}
+      : r === "amount" ? {s:"bad", a:pc, d:Math.abs(pc - fr.owedC), t:`Paid ${usd(pc)} but ${usd(fr.owedC)} is owed (${usd(Math.abs(pc - fr.owedC))} ${pc > fr.owedC ? "over" : "short"})`}
+      : r === "double" ? {s:"bad", a:pc, d:Math.max(0, pc - fr.owedC), t:fr.note}
+      : r === "paidOnHold" ? {s:"bad", a:pc, d:0, t:fr.note}
+      : r === "failed" ? {s:"bad", a:0, d:fr.owedC, t:fr.note || "The payout failed and wasn't reissued"}
+      : r === "processing" ? {s:"wait", a:null, t:`On its way${fr.note ? " — " + fr.note : ""}`}
+      : r === "hold" ? {s:"wait", a:0, t:`On hold${fr.note ? " — " + fr.note : ""}`}
+      : today > due ? {s:"bad", a:0, d:fr.owedC, t:`${usd(fr.owedC)} owed — not paid (due ${fdateS(due)})`}
+      : {s:"wait", a:0, t:`${usd(fr.owedC)} to pay by ${fdateS(due)}`};
+  }
+  const bad = RC_STEPS.filter(([k]) => st[k].s === "bad").map(([k]) => k);
+  const varC = bad.reduce((a, k) => a + (st[k].d || 0), 0);
+  // the numbers a review was made against: change any of them and the discrepancy comes back
+  const sig = [c.dueC, c.recv, c.calcC, has(row.mdNet) ? cents(row.mdNet) : "", c.recordedC == null ? "" : c.recordedC, fr ? fr.paidC : "", fr ? fr.result : ""].join("|");
+  const rv = rcReviews(m)[prop.id] || null, reviewed = !!(rv && rv.sig === sig);
+  const state = bad.length ? (reviewed ? "reviewed" : "issue") : RC_STEPS.some(([k]) => st[k].s === "wait") ? "waiting" : "matched";
+  return {m, row, prop, owner:ownerById(prop.ownerId), c, fr, steps:st, bad, varC, sig, review:rv, stale:!!(rv && !reviewed && bad.length), state};
+}
+function rcData(m){
+  return finMemo("rc", m, () => { const ledger = finLedger(); return pmMonthRows(m).filter(x => !x.row.detailOnly).map(({row, prop}) => rcRow(m, row, prop, ledger)); });
+}
+function rcRoll(list){
+  const t = {n:list.length, issue:0, waiting:0, reviewed:0, matched:0, varC:0, by:{rent:0, md:0, payout:0, paid:0},
+             recv:0, otherIn:0, owe:0, owners:0, repairs:0, phd:0, adjOut:0, unexpl:0, owedC:0, paidC:0};
+  list.forEach(r => {
+    t[r.state]++;
+    if(r.state === "issue"){ t.varC += r.varC; r.bad.forEach(k => t.by[k]++); }
+    const c = r.c;
+    t.recv += c.recv; t.otherIn += c.otherC + Math.max(0, c.adjC); t.adjOut += Math.max(0, -c.adjC);
+    t.repairs += c.repairsC; t.phd += c.pmFeeC + c.adminC + c.leasingC;
+    if(c.payoutC >= 0) t.owners += c.payoutC; else t.owe += -c.payoutC;
+    t.unexpl += c.payoutC - c.calcC;      // a recorded payout that isn't rent less fees and repairs
+    if(r.fr && r.fr.owedC > 0){ t.owedC += r.fr.owedC; t.paidC += Math.min(r.fr.paidC, r.fr.owedC); }
+  });
+  return t;
+}
+const rcIssueCount = m => { try{ return rcData(m).filter(r => r.state === "issue").length; }catch(e){ return 0; } };
+
+/* the list as filtered on screen (the detail panel steps through the same list) */
+function rcVisible(m){
+  const f = S.ui.rcF || "all", q = String(S.ui.rcQ || "").trim().toLowerCase();
+  const numQ = q.replace(/[$,\s]/g, ""), qC = /^\d+(\.\d{1,2})?$/.test(numQ) ? Math.round(Number(numQ) * 100) : null;
+  const rank = {issue:0, waiting:1, reviewed:2, matched:3};
+  return rcData(m)
+    .filter(r => f === "all" || r.state === f)
+    .filter(r => !q || (qC != null ? [r.c.recv, r.c.dueC, r.c.payoutC, r.fr && r.fr.paidC].includes(qC) || RC_STEPS.some(([k]) => r.steps[k].a === qC)
+      : `${r.prop.name} ${r.prop.address || ""} ${ownerLabel(r.owner)}`.toLowerCase().includes(q)))
+    .sort((a, b) => rank[a.state] - rank[b.state] || b.varC - a.varC || a.prop.name.localeCompare(b.prop.name, undefined, {numeric:true}));
+}
+/* filter changes glide: cards keep their identity and move to their new places */
+function rcSmooth(fn){
+  const calm = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if(document.startViewTransition && !calm){ try{ document.startViewTransition(fn); return; }catch(e){} }
+  fn();
+}
+
+function pgPmRecon(){
+  const P2 = pmState();
+  if(!P2.properties.length) return pmEmpty();
+  const m = rcMonth(), ms = pmMonths(), all = rcData(m), T = rcRoll(all), f = S.ui.rcF || "all";
+  $("#pgCrumb").textContent = "Rent";
+  $("#pgTitle").textContent = "Reconcile";
+  $("#pgSub").textContent = `${monthLabel(m)} · rent in, owner payouts out — every rental checked four ways`;
+  actions([["Export CSV", () => rcExport(m), "ghost"]]);
+  const v = $("#view");
+  const pickMonth = mm => { S.ui.rcMonth = mm; persistUi(); rcSmooth(render); };
+
+  // month stepper
+  const top = elm("div", "rc-top");
+  const opts = [...new Set(ms.concat([m]))].sort().reverse();
+  const i = opts.indexOf(m);
+  top.innerHTML = `<div class="rc-mo" role="group" aria-label="Month">
+      <button class="rc-mo-b" id="rcPrev" aria-label="Previous month" ${i >= opts.length - 1 ? "disabled" : ""}>‹</button>
+      <select id="rcMo" aria-label="Month">${opts.map(x => `<option value="${x}" ${x === m ? "selected" : ""}>${monthLabel(x)}${(P2.meta[x] || {}).closed ? " · closed" : ""}</option>`).join("")}</select>
+      <button class="rc-mo-b" id="rcNext" aria-label="Next month" ${i <= 0 ? "disabled" : ""}>›</button></div>
+    <span class="rc-top-note">${(P2.meta[m] || {}).closed ? `Closed${(P2.meta[m] || {}).closedAt ? " " + fdateS(String(P2.meta[m].closedAt).slice(0, 10)) : ""}` : "Open month"} · owner payouts due ${fdateS(rcPayDue(m))}</span>`;
+  top.querySelector("#rcPrev").onclick = () => opts[i + 1] && pickMonth(opts[i + 1]);
+  top.querySelector("#rcNext").onclick = () => opts[i - 1] && pickMonth(opts[i - 1]);
+  top.querySelector("#rcMo").onchange = e => pickMonth(e.target.value);
+  v.appendChild(top);
+
+  if(!all.length){
+    const e = elm("div", "card");
+    e.innerHTML = `<div class="empty"><b>Nothing to reconcile in ${monthLabel(m)}</b>${ms.includes(m) ? "Every row this month is a detail line." : "This month hasn't been started yet."}
+      <div style="margin-top:14px"><button class="btn" id="rcGoMonth">Open Month close</button></div></div>`;
+    e.querySelector("#rcGoMonth").onclick = () => { S.ui.pmMonth = m; go("pmMonth"); };
+    v.appendChild(e); return;
+  }
+
+  // the three summary cards
+  const hero = elm("div", "rc-hero");
+  const done = T.matched + T.reviewed, pct = T.n ? done / T.n : 0, R = 34, C = 2 * Math.PI * R;
+  const seg = (k, l) => `<button class="rc-leg" data-rcf="${k}"><i class="d-${RC_ST[k].c}"></i><span>${l}</span><b class="num">${T[k]}</b></button>`;
+  const outC = T.owners + T.repairs + T.phd + T.adjOut, inC = T.recv + T.otherIn + T.owe, base = Math.max(outC, inC, 1);
+  const bar = [["own", T.owners, "Owners"], ["rep", T.repairs, "Repairs & vendors"], ["phd", T.phd, "PHD fees"], ["adj", T.adjOut, "Adjustments"]].filter(x => x[1] > 0);
+  const unexpl = Math.abs(T.unexpl) > 1;
+  const R2 = pmMonthRoll(m), moved = typeof finMovedFor === "function" ? finMovedFor(m) : 0, left = R2.netC - moved;
+  const paidPct = T.owedC ? Math.min(1, T.paidC / T.owedC) : 1;
+  const byL = {rent:"Rent short or missing", md:"Differs from MagicDoor", payout:"Recorded payout differs", paid:"Paid out wrong or late"};
+  hero.innerHTML = `
+    <div class="card rc-h rc-score">
+      <div class="rc-ring"><svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="${R}" class="rc-ring-bg"/><circle cx="40" cy="40" r="${R}" class="rc-ring-fg ${T.issue ? "warn" : ""}" stroke-dasharray="0 ${C}" data-dash="${(pct * C).toFixed(1)} ${C}"/></svg>
+        <span><b class="num">${done}</b><small>of ${T.n}</small></span></div>
+      <div class="rc-legs"><div class="rc-h-t">${T.issue ? `${T.issue} propert${T.issue === 1 ? "y doesn't" : "ies don't"} match` : T.waiting ? "No discrepancies so far" : "Everything matches"}</div>
+        ${seg("issue", "Doesn't match")}${seg("waiting", "Waiting")}${seg("reviewed", "Explained")}${seg("matched", "Matches")}</div>
+    </div>
+    <div class="card rc-h rc-flow">
+      <div class="rc-h-t">Where the money went</div>
+      <div class="rc-flow-n"><span class="num">${usd(inC)}</span><small>rent${T.otherIn ? " &amp; other income" : ""} in${T.owe ? ` · incl. ${usd(T.owe)} owners owe` : ""}</small></div>
+      <div class="rc-bar" role="img" aria-label="Rent split between owners, repairs, PHD fees and adjustments">${bar.map(([k, a, l]) => `<i class="b-${k}" style="--w:${(a / base * 100).toFixed(2)}%" title="${esc(l)} ${usd(a)}"></i>`).join("")}${unexpl ? `<i class="b-bad" style="--w:${(Math.abs(T.unexpl) / base * 100).toFixed(2)}%" title="Not explained ${usd(Math.abs(T.unexpl))}"></i>` : ""}</div>
+      <div class="rc-flow-l">${bar.map(([k, a, l]) => `<span><i class="b-${k}"></i>${l} <b class="num">${usd(a)}</b></span>`).join("")}</div>
+      <div class="rc-flow-ok ${unexpl ? "bad" : ""}">${unexpl ? `${rcIc("bad")}${usd(Math.abs(T.unexpl))} of recorded payouts isn't rent less fees and repairs` : `${rcIc("ok")}Every dollar accounted for`}</div>
+    </div>
+    <div class="card rc-h rc-var">
+      <div class="rc-h-t">Differences</div>
+      <div class="rc-var-n num ${T.varC ? "bad" : "ok"}">${T.issue ? usd(T.varC) : "None"}</div>
+      <div class="rc-var-l">${Object.entries(byL).filter(([k]) => T.by[k]).map(([k, l]) => `<span>${l}<b class="num">${T.by[k]}</b></span>`).join("") || `<span class="muted">${T.waiting ? `${T.waiting} still waiting on rent or a payout` : "Nothing to look into"}</span>`}</div>
+      <div class="rc-mini"><div><span>Paid to owners</span><b class="num">${usd(T.paidC)} <small>of ${usd(T.owedC)}</small></b></div><div class="rc-mini-bar"><i style="--w:${(paidPct * 100).toFixed(1)}%"></i></div></div>
+      <div class="rc-mini"><div><span>PHD income moved</span><b class="num">${usd(Math.max(0, moved))} <small>of ${usd(R2.netC)}</small></b></div><div class="rc-mini-bar phd"><i style="--w:${(R2.netC > 0 ? Math.min(1, moved / R2.netC) * 100 : 100).toFixed(1)}%"></i></div>${left > 100 ? `<small class="rc-mini-n">${usd(left)} not recorded as moved to operating</small>` : ""}</div>
+    </div>`;
+  hero.querySelectorAll("[data-rcf]").forEach(b => b.onclick = () => { S.ui.rcF = S.ui.rcF === b.dataset.rcf ? "all" : b.dataset.rcf; persistUi(); rcSmooth(render); });
+  v.appendChild(hero);
+  requestAnimationFrame(() => requestAnimationFrame(() => { const fg = hero.querySelector(".rc-ring-fg"); if(fg) fg.setAttribute("stroke-dasharray", fg.dataset.dash); hero.classList.add("rc-go"); }));
+
+  // filters
+  const F = [["all", "All", T.n], ["issue", "Doesn't match", T.issue], ["waiting", "Waiting", T.waiting], ["reviewed", "Explained", T.reviewed], ["matched", "Matches", T.matched]];
+  const bar2 = elm("div", "sc-bar rc-bar2");
+  bar2.innerHTML = `<div class="sc-seg">${F.map(([k, l, n]) => `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
+    <input type="search" class="rc-q" id="rcQ" placeholder="Property, owner or amount…" value="${esc(S.ui.rcQ || "")}" aria-label="Find a property">
+    ${T.issue ? `<button class="btn sm primary rc-next" id="rcFirst">Review discrepancies ${icon("arrow")}</button>` : ""}`;
+  bar2.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { if(f === b.dataset.f) return; S.ui.rcF = b.dataset.f; persistUi(); rcSmooth(render); });
+  const q = bar2.querySelector("#rcQ");
+  q.oninput = () => { S.ui.rcQ = q.value; clearTimeout(q._t); q._t = setTimeout(() => { render(); const x = $("#rcQ"); if(x){ x.focus(); x.setSelectionRange(x.value.length, x.value.length); } }, 160); };
+  const first = bar2.querySelector("#rcFirst");
+  if(first) first.onclick = () => { if(f !== "all" && f !== "issue"){ S.ui.rcF = "issue"; persistUi(); render(); } const r = rcVisible(m).find(x => x.state === "issue"); if(r) rcSheet(m, r.prop.id); };
+  v.appendChild(bar2);
+
+  // the cards
+  const list = rcVisible(m), grid = elm("div", "rc-grid");
+  if(!list.length) grid.innerHTML = `<div class="card rc-none"><div class="empty"><b>${f === "issue" ? "No discrepancies" : "Nothing here"}</b>${S.ui.rcQ ? "Nothing matches that search." : f === "issue" ? `Every rental in ${monthLabel(m)} lines up, or has been explained.` : "No rentals in this group."}</div></div>`;
+  grid.innerHTML += list.map((r, k) => rcCardHTML(r, k)).join("");
+  grid.querySelectorAll("[data-rc]").forEach(b => b.onclick = () => rcSheet(m, b.dataset.rc));
+  v.appendChild(grid);
+}
+
+function rcCardHTML(r, k){
+  const S2 = RC_ST[r.state], c = r.c;
+  const first = r.bad.length ? r.steps[r.bad[0]] : RC_STEPS.map(([x]) => r.steps[x]).find(x => x.s === "wait");
+  const foot = r.state === "reviewed" ? `<span class="rc-why acc">${rcIc("ok")}<span>Explained${r.review.by ? " by " + esc(String(r.review.by).split("@")[0]) : ""}${r.review.note ? ": " + esc(r.review.note) : ""}</span></span>`
+    : r.state === "issue" ? `<span class="rc-why bad">${rcIc("bad")}<span>${esc(first.t)}${r.bad.length > 1 ? ` <em>+${r.bad.length - 1} more</em>` : ""}</span></span>`
+    : r.state === "waiting" ? `<span class="rc-why wait">${rcIc("wait")}<span>${esc(first.t)}</span></span>`
+    : `<span class="rc-why ok">${rcIc("ok")}<span>${esc(r.steps.paid.s === "ok" ? r.steps.paid.t.split(" — ")[0] : "Lines up")}</span></span>`;
+  const amt = a => a == null ? "—" : usd0(a);
+  return `<button class="rc-card is-${r.state}" data-rc="${esc(r.prop.id)}" style="--i:${Math.min(k, 14)};view-transition-name:rc-${esc(String(r.prop.id).replace(/[^A-Za-z0-9_-]/g, ""))}">
+    <div class="rc-c-h"><div class="rc-c-t"><b>${esc(r.prop.name)}</b><span>${esc(ownerLabel(r.owner) || "No owner")} · ${esc(feeRuleText(r.prop.feeRule))}</span></div>
+      <span class="st st-${S2.c}"><i></i>${S2.l}${r.state === "issue" && r.varC ? ` · ${usd0(r.varC)}` : ""}</span></div>
+    <div class="rc-pipe">${RC_STEPS.map(([x, l]) => { const s = r.steps[x]; return `<div class="rc-n s-${s.s}" title="${esc(l + ": " + s.t)}"><i>${rcIc(s.s)}</i><span>${l}</span><b class="num">${amt(s.a)}</b></div>`; }).join("")}</div>
+    <div class="rc-c-f">${foot}${r.stale ? `<span class="rc-stale" title="Explained earlier, but the numbers have changed since">changed since explained</span>` : ""}</div>
+  </button>`;
+}
+
+/* ---------- one property's month, in full ---------- */
+function rcSheet(m, pid, dir){
+  const list = rcVisible(m), all = rcData(m);
+  const r = all.find(x => x.prop.id === pid); if(!r) return;
+  const at = list.findIndex(x => x.prop.id === pid), prev = at > 0 ? list[at - 1] : null, next = at >= 0 && at < list.length - 1 ? list[at + 1] : null;
+  const c = r.c, S2 = RC_ST[r.state], sh = $("#sheet");
+  const line = (l, a, cls, sub) => a ? `<div class="rc-w ${cls || ""}"><span>${l}${sub ? `<small>${sub}</small>` : ""}</span><b class="num">${usd(a)}</b></div>` : "";
+  const items = (r.row.repairItems || []).length;
+  const att = r.fr ? r.fr.attempts : [];
+  const stName = s => ({completed:"paid", processing:"in progress", partial:"in progress"})[s] || s;
+  sh.innerHTML = `<div class="sheet-h"><div style="min-width:0"><h3>${esc(r.prop.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(ownerLabel(r.owner) || "No owner")} · ${monthLabel(m)}${list.length > 1 && at >= 0 ? ` · ${at + 1} of ${list.length}` : ""}</div></div>
+      <span class="st st-${S2.c}" style="margin-left:auto"><i></i>${S2.l}</span><button class="btn ghost sm" id="shClose" aria-label="Close">✕</button></div>
+    <div class="sheet-b rc-sb ${dir ? "rc-swap-" + dir : ""}">
+      <div class="rc-steps">${RC_STEPS.map(([k, l], j) => { const s = r.steps[k];
+        return `<div class="rc-step s-${s.s}" style="--j:${j}"><i>${rcIc(s.s)}</i><div><div class="rc-step-h"><b>${l}</b><span class="num">${s.a == null ? "—" : usd(s.a)}</span></div><p>${esc(s.t)}</p></div></div>`; }).join("")}</div>
+
+      <div class="rc-sec">How the payout adds up</div>
+      <div class="rc-wf">
+        ${line("Rent received", c.recv, "", c.dueC ? `of ${usd(c.dueC)} due` : "")}
+        ${line("Other owner income", c.otherC)}
+        ${c.adjC ? `<div class="rc-w ${c.adjC < 0 ? "neg" : ""}"><span>Adjustments<small>${esc((r.row.adjustments || []).map(x => x.note).filter(Boolean).join(" · ").slice(0, 90))}</small></span><b class="num">${c.adjC < 0 ? "−" : "+"}${usd(Math.abs(c.adjC))}</b></div>` : ""}
+        ${c.repairsC ? `<div class="rc-w neg"><span>Repairs<small>${items ? `${items} item${items === 1 ? "" : "s"}` : "entered as a total"}</small></span><b class="num">−${usd(c.repairsC)}</b></div>` : ""}
+        ${c.adminC ? `<div class="rc-w neg"><span>Admin fee on repairs</span><b class="num">−${usd(c.adminC)}</b></div>` : ""}
+        ${c.pmFeeC ? `<div class="rc-w neg"><span>PM fee<small>${esc(feeRuleText(r.prop.feeRule))}</small></span><b class="num">−${usd(c.pmFeeC)}</b></div>` : ""}
+        ${c.leasingC ? `<div class="rc-w neg"><span>Leasing fee</span><b class="num">−${usd(c.leasingC)}</b></div>` : ""}
+        <div class="rc-w tot"><span>Owner payout</span><b class="num">${usd(c.calcC)}</b></div>
+        ${has(r.row.mdNet) ? `<div class="rc-w cmp ${r.steps.md.s === "bad" ? "off" : "on"}"><span>MagicDoor's owner statement</span><b class="num">${usd(cents(r.row.mdNet))}</b></div>` : ""}
+        ${c.recordedC != null ? `<div class="rc-w cmp ${r.steps.payout.s === "bad" ? "off" : "on"}"><span>Recorded payout</span><b class="num">${usd(c.recordedC)}</b></div>` : ""}
+        ${r.fr && r.fr.result !== "none" ? `<div class="rc-w cmp ${r.steps.paid.s === "bad" ? "off" : r.steps.paid.s === "ok" ? "on" : ""}"><span>Actually paid</span><b class="num">${usd(r.fr.paidC)}</b></div>` : ""}
+      </div>
+
+      ${att.length ? `<div class="rc-sec">Payments to the owner</div><div class="rc-att">${att.map(a => `<div class="rc-a"><span class="rc-a-s ${a.st}">${esc(a.sys)}</span><span class="rc-a-t">${a.date ? esc(fdateS(String(a.date).slice(0, 10))) : "—"} · ${esc(stName(a.st))}${a.inferred ? " · recorded" : ""}${a.ref ? ` · <span class="muted">${esc(a.ref)}</span>` : ""}</span><b class="num">${usd(a.amountC || 0)}</b></div>`).join("")}</div>` : ""}
+
+      ${r.bad.length ? `<div class="rc-sec">${r.state === "reviewed" ? "Explained" : "Explain this difference"}</div>
+        <div class="rc-rev">${r.state === "reviewed" ? `<p><b>${esc(r.review.by || "Someone")}</b> · ${esc(fdateS(String(r.review.at || "").slice(0, 10)))}</p><p>${esc(r.review.note || "No note")}</p><button class="btn sm" id="rcUnrev">Reopen</button>`
+          : `${r.stale ? `<p class="rc-stale-p">Explained before by ${esc(r.review.by || "someone")} (“${esc(r.review.note || "")}”), but the numbers have changed since.</p>` : ""}
+            <textarea id="rcNote" rows="2" placeholder="Why it's right — e.g. tenant paid the rest on Nov 2, or MagicDoor holds a reserve" maxlength="300"></textarea>
+            <button class="btn sm primary" id="rcRev">Mark explained</button>`}</div>` : ""}
+    </div>
+    <div class="sheet-f">
+      <button class="btn sm ghost" id="rcPrevP" ${prev ? "" : "disabled"} aria-label="Previous property">‹</button><button class="btn sm ghost" id="rcNextP" ${next ? "" : "disabled"} aria-label="Next property">›</button>
+      <span style="flex:1"></span>
+      <button class="btn sm" id="rcPay">Payout details</button><button class="btn sm primary" id="rcRow">Open in Month close</button></div>`;
+  $("#shClose").onclick = closeSheet;
+  const nav = (x, d) => { if(x) rcSheet(m, x.prop.id, d); };
+  $("#rcPrevP").onclick = () => nav(prev, "back"); $("#rcNextP").onclick = () => nav(next, "fwd");
+  $("#rcPay").onclick = () => finPayoutSheet(m, pid);
+  $("#rcRow").onclick = () => { closeSheet(); S.ui.pmMonth = m; go("pmMonth"); pmRowSheet(m, pid); };
+  const rv = $("#rcRev");
+  if(rv) rv.onclick = () => { const note = $("#rcNote").value.trim(); if(!note) { $("#rcNote").focus(); return toast("Add a short note saying why it's right"); }
+    rcSetReview(m, pid, {sig:r.sig, note}); toast(`${r.prop.name} marked explained`, true);
+    const after = rcVisible(m), nx = after.find(x => x.state === "issue" && x.prop.id !== pid);   // straight on to the next one
+    if(nx) rcSheet(m, nx.prop.id, "fwd"); else rcSheet(m, pid); };
+  const ur = $("#rcUnrev"); if(ur) ur.onclick = () => { rcSetReview(m, pid, null); rcSheet(m, pid); };
+  sh.onkeydown = e => { if(/textarea|input|select/i.test(e.target.tagName)) return;
+    if(e.key === "ArrowRight" || e.key === "j"){ e.preventDefault(); nav(next, "fwd"); } else if(e.key === "ArrowLeft" || e.key === "k"){ e.preventDefault(); nav(prev, "back"); } else if(e.key === "Escape") closeSheet(); };
+  openPanel();
+  // focus the panel so the arrow keys step through properties straight away
+  if(!sh.contains(document.activeElement)){ sh.setAttribute("tabindex", "-1"); setTimeout(() => sh.focus({preventScroll:true}), 30); }
+}
+function rcSetReview(m, pid, rv){
+  snapshot();
+  const R = rcReviews(m, true);
+  if(rv) R[pid] = {sig:rv.sig, note:rv.note, by:(typeof Cloud !== "undefined" && Cloud.email) || "", at:new Date().toISOString()};
+  else delete R[pid];
+  commit();
+}
+function rcExport(m){
+  const rows = rcData(m);
+  finCsv(`PHD rent reconciliation ${monthLabel(m)}.csv`, [["Property","Owner","Status","Rent due","Rent received","Owner payout (rent less fees and repairs)","MagicDoor owner statement","Recorded payout","Paid to owner","Payout status","Difference","What differs","Explained"],
+    ...rows.map(r => [r.prop.address || r.prop.name, ownerLabel(r.owner), RC_ST[r.state].l, (r.c.dueC / 100).toFixed(2), (r.c.recv / 100).toFixed(2), (r.c.calcC / 100).toFixed(2),
+      has(r.row.mdNet) ? Number(r.row.mdNet).toFixed(2) : "", r.c.recordedC != null ? (r.c.recordedC / 100).toFixed(2) : "", r.fr ? (r.fr.paidC / 100).toFixed(2) : "", r.fr ? (FIN_RES[r.fr.result] || [r.fr.result])[0] : "",
+      (r.varC / 100).toFixed(2), r.bad.map(k => r.steps[k].t).join(" | "), r.state === "reviewed" ? `${r.review.note || ""} (${r.review.by || ""})` : ""])]);
+  toast(`Exported ${monthLabel(m)}`);
 }
