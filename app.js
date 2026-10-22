@@ -9934,7 +9934,7 @@ function qbMatch(){
     if(!sug && p){ sug = labor ? lab : mat; why = `Mentions ${p.name}`; }
     uncats.push({k, qt, l, p, labor, bigLab, why, want:sug ? {account:sug} : {}, sure:!!rule && !!sug && !!p, uncat:true});
   }));
-  const v = {res, missing, fixes, uncats, unitBy};
+  const v = {res, missing, fixes, uncats, unitBy, free:freeU};
   _qbCache = {sig, v};
   return v;
 }
@@ -10006,11 +10006,18 @@ function qbChip(p, t){
   if(r.state === "none" || r.state === "gone") return `<span class="mark qb no" title="${esc(r.why)}">Not in QB</span>`;
   return "";
 }
+const QBP = {showUsed:false};
 function qbPickSheet(p, t){
   const m = qbMatch(); if(!m) return;
+  if(QBP.tid !== t.id){ QBP.tid = t.id; QBP.showUsed = false; }      // a new expense starts with linked records hidden
   const c = cents(t.amount), d = qbDay(t.date);
   const every = [], near = [];
-  m.unitBy.forEach(u => { if(u.line && u.qt.lines.length < 2) return; const dd = d != null && u.d != null ? Math.abs(u.d - d) : 999; const vh = qbVendorHit(t.vendor, u.qt);
+  // QuickBooks records already linked to another console expense stay out of the list (this expense's own stay in)
+  const r0 = qbResult(p, t), mine = new Set([...(t.qb ? (t.qb.ids || [qbKey(t.qb.type, t.qb.id, t.qb.line)]) : []), ...((r0 && r0.units) || []).map(x => x.k)]);
+  const isMine = u => mine.has(u.k) || (u.parent && mine.has(u.parent)) || (!u.parent && u.qt.lines.some(l => mine.has(qbKey(u.qt.type, u.qt.id, l.id))));
+  let hidden = 0;
+  m.unitBy.forEach(u => { if(u.line && u.qt.lines.length < 2) return;
+    if(m.free && !m.free(u) && !isMine(u) && !QBP.showUsed){ hidden++; return; } const dd = d != null && u.d != null ? Math.abs(u.d - d) : 999; const vh = qbVendorHit(t.vendor, u.qt);
     const s = (u.c === c ? 100 : Math.abs(u.c) > Math.abs(c) && Math.sign(u.c) === Math.sign(c) ? 30 : 0) + (vh ? 40 : 0) - Math.min(dd, 60);
     const x = {u, s, dd, vh, q:(Math.abs(u.c / 100).toFixed(2) + " " + Math.abs(u.c / 100).toLocaleString("en-US", {minimumFractionDigits:2}) + " " + qbRecLabel(u.qt) + " " + u.qt.lines.map(l => l.desc || "").join(" ") + " " + u.qt.memo).toLowerCase()};
     every.push(x); if((s > 0 || vh) && dd <= 60) near.push(x); });
@@ -10022,7 +10029,7 @@ function qbPickSheet(p, t){
   sh.innerHTML = `<div class="sheet-h"><div><h3>Find in QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)} · ${esc(t.vendor || "")} · ${usd(Math.abs(c))}${c < 0 ? " credit" : ""} · ${qbFmtDate(t.date)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b"><p class="help" style="margin-top:0">Closest QuickBooks records first. Tick the one this expense is — or several, when the store charged the card in pieces or a refund is already taken out of it. Credits count as minus. The search looks through every QuickBooks expense, any date or card.</p>
       <input type="search" id="qbpQ" class="inv-q" style="margin:0 0 8px;width:100%;box-sizing:border-box" placeholder="Search an amount, vendor, card or memo">
-      <div class="qb-pick" id="qbpL"></div></div>
+      <div class="qb-pick" id="qbpL"></div><p class="help" id="qbpHid" style="margin:8px 0 0"></p></div>
     <div class="sheet-f"><button class="btn ghost" id="qbSkip">Not a QuickBooks expense</button><span class="qbp-sum" id="qbpSum"></span><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="qbOk">Link</button></div>`;
   openPanel(); $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
   const byK = new Map(every.map(x => [x.u.k, x]));
@@ -10034,6 +10041,8 @@ function qbPickSheet(p, t){
     let list;
     if(q){ const qs = q.split(/\s+/); list = every.filter(x => { const h = x.q.replace(/,/g, ""); return qs.every(w => h.includes(w)); }).sort((a, b) => a.dd - b.dd).slice(0, 60); }
     else list = near.slice(0, 40);
+    const hn = $("#qbpHid"); if(hn) hn.innerHTML = hidden || QBP.showUsed ? `<button class="linkish" id="qbpHidB">${QBP.showUsed ? "Hide records already linked to other expenses" : `${hidden} QuickBooks record${hidden === 1 ? "" : "s"} already linked to other expenses ${hidden === 1 ? "is" : "are"} hidden · show`}</button>` : "";
+    const hb = $("#qbpHidB"); if(hb) hb.onclick = () => { QBP.showUsed = !QBP.showUsed; qbPickSheet(p, t); };
     const tk = [...ticked].map(k => byK.get(k)).filter(Boolean).filter(x => !list.includes(x));      // what's ticked stays in view
     $("#qbpL").innerHTML = tk.concat(list).map(rowH).join("") || `<p class="muted">${q ? "Nothing in QuickBooks matches that." : "Nothing in QuickBooks within two months of this date — search for it."}</p>`;
     $("#qbpL").querySelectorAll("[name=qbp]").forEach(x => x.onchange = () => { if(x.checked) ticked.add(x.value); else ticked.delete(x.value); sum(); });
