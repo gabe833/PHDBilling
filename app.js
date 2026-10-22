@@ -14547,6 +14547,140 @@ function finMonthReportCsv(m){
   finCsv(`PHD money report ${monthLabel(m)}.csv`, rows); finLog(`Exported the money report · ${monthLabel(m)}`);
 }
 
+/* =====================================================================
+   ACTION ITEM THREADS — every Action center item has its own conversation.
+   Click an item (or its 💬) and a side panel opens with that item, its
+   button, and the team's messages about it — nothing from any other item.
+   Stored one document per item: docs kind "shared", id "thread:<hash>",
+   data {key, title, detail, created, msgs:[{id, by, name, at, text}]}.
+   Messages are appended with a read-then-update on the document's version
+   (retried), so two people posting at once never lose a message.
+   ===================================================================== */
+ICON_PATHS.chat = '<path d="M2.5 3.5h11v7.5H7.2L4.5 13.4V11h-2z"/><path d="M5.2 6.4h5.6M5.2 8.4h3.6"/>';
+const THR = {open:null, alert:null, busy:false};
+function thrAll(){ S.threads = S.threads && typeof S.threads === "object" ? S.threads : {}; return S.threads; }
+function thrId(key){ let h = 0x811c9dc5; const s = String(key); for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return "thread:" + h.toString(36) + "-" + s.length.toString(36); }
+function thrOf(key){ return thrAll()[key] || null; }
+function thrCount(key){ const t = thrOf(key); return t ? (t.msgs || []).length : 0; }
+function thrUnread(key){ const n = thrCount(key), seen = ((S.ui.thrSeen || {})[key]) || 0; return Math.max(0, n - seen); }
+function thrSeen(key){ S.ui.thrSeen = S.ui.thrSeen || {}; S.ui.thrSeen[key] = thrCount(key); try{ persistUi(); }catch(e){} }
+
+/* ---- saving: the threads ride along with the other shared documents, but a message is written on its own ---- */
+if(typeof cloudDocs === "function"){
+  const thrDocs0 = cloudDocs;
+  cloudDocs = function(){ const out = thrDocs0.apply(this, arguments); Object.values(thrAll()).forEach(t => { if(t && t.key) out.set("shared/" + thrId(t.key), t); }); return out; };
+}
+if(typeof cloudApply === "function"){
+  const thrApply0 = cloudApply;
+  cloudApply = function(kind, id, data, deleted){
+    if(kind === "shared" && String(id).startsWith("thread:")){
+      const k = data && data.key; if(!k) return;
+      if(deleted) delete thrAll()[k]; else thrAll()[k] = data;
+      return;
+    }
+    return thrApply0.apply(this, arguments);
+  };
+}
+// someone else posted: show it right away in the open panel, and say who in a toast otherwise
+if(typeof Cloud !== "undefined" && Cloud.onRemote){
+  const thrRemote0 = Cloud.onRemote;
+  Cloud.onRemote = function(row){
+    if(row && row.kind === "shared" && String(row.id).startsWith("thread:")){
+      const key = "shared/" + row.id, s = Cloud.synced.get(key);
+      if(s && row.version <= s.version) return;
+      if(!row.data) return;
+      Cloud.synced.set(key, {json:JSON.stringify(row.data), version:row.version, deleted:row.deleted});
+      const before = thrCount(row.data.key);
+      cloudApply("shared", row.id, row.data, row.deleted);
+      const last = (row.data.msgs || [])[(row.data.msgs || []).length - 1];
+      if(THR.open === row.data.key && thrDrawn()){ thrDraw(); thrSeen(row.data.key); }
+      else if(last && thrCount(row.data.key) > before && last.by !== Cloud.email) toast(`${last.name || cloudWho(last.by)} on “${String(row.data.title || "an action item").slice(0, 60)}”: ${String(last.text).slice(0, 80)}`);
+      Cloud.remoteDirty = true;
+      return;
+    }
+    return thrRemote0.apply(this, arguments);
+  };
+}
+async function thrPost(a, text){
+  text = String(text || "").trim().slice(0, 4000); if(!text) return;
+  const key = a.key, id = thrId(key);
+  const msg = {id:uid(), by:(typeof Cloud !== "undefined" && Cloud.email) || "", name:(typeof Cloud !== "undefined" && Cloud.name) || "You", at:new Date().toISOString(), text};
+  const base = cur => Object.assign({key, created:msg.at}, cur || {}, {title:a.title, detail:a.detail || "", msgs:[...((cur && cur.msgs) || []), msg]});
+  if(typeof Cloud === "undefined" || !Cloud.ready){ thrAll()[key] = base(thrOf(key)); commit(); return; }   // working off a file: saved with everything else
+  for(let i = 0; i < 4; i++){
+    const {data:cur, error:e0} = await Cloud.sb.from("docs").select("data,version,deleted").eq("kind", "shared").eq("id", id).maybeSingle();
+    if(e0) throw e0;
+    const next = base(cur && !cur.deleted ? cur.data : null);
+    if(!cur){
+      const {data, error} = await Cloud.sb.from("docs").insert({kind:"shared", id, data:next}).select("version").single();
+      if(error){ if(error.code === "23505") continue; throw error; }
+      Cloud.synced.set("shared/" + id, {json:JSON.stringify(next), version:data.version, deleted:false}); thrAll()[key] = next; return;
+    }
+    const {data, error} = await Cloud.sb.from("docs").update({data:next, deleted:false}).eq("kind", "shared").eq("id", id).eq("version", cur.version).select("version");
+    if(error) throw error;
+    if(data.length){ Cloud.synced.set("shared/" + id, {json:JSON.stringify(next), version:data[0].version, deleted:false}); thrAll()[key] = next; return; }
+  }
+  throw new Error("Couldn't post — someone else was posting at the same moment. Try again.");
+}
+
+/* ---- the panel: one action item and its conversation ---- */
+const thrDrawn = () => $("#sheet").classList.contains("on") && !!$("#thrLog");
+function thrWhen(iso){
+  const d = new Date(iso), now = new Date(), same = d.toDateString() === now.toDateString();
+  return same ? d.toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"}) : d.toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"});
+}
+function thrText(t){ return esc(t).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, "<br>"); }
+function thrSheet(a){
+  THR.open = a.key; THR.alert = a;
+  const sh = $("#sheet"), lv = (typeof PM_LEVEL !== "undefined" && PM_LEVEL[a.level]) || {label:"", cls:"grey"};
+  const actL = (typeof PM_ACT_LABEL !== "undefined" && PM_ACT_LABEL[a.action]) || (a.action ? "Open" : "");
+  sh.innerHTML = `<div class="sheet-h"><div style="min-width:0"><div class="thr-lv"><span class="tag ${lv.cls}">${esc(lv.label)}</span></div><h3 class="thr-t">${esc(a.title)}</h3>${a.detail ? `<div class="muted thr-d">${esc(a.detail)}</div>` : ""}</div><button class="btn ghost sm" id="shClose" style="margin-left:auto;align-self:flex-start">✕</button></div>
+    ${actL ? `<div class="thr-act"><button class="btn sm primary" id="thrAct">${esc(actL)}</button><span class="muted">Discuss it below — only this item's conversation is here.</span></div>` : ""}
+    <div class="sheet-b thr-log" id="thrLog"></div>
+    <div class="sheet-f thr-f"><textarea id="thrIn" rows="2" placeholder="Write to the team about this item…  (Enter to send, Shift+Enter for a new line)" maxlength="4000"></textarea><button class="btn primary" id="thrGo">Post</button></div>`;
+  $("#shClose").onclick = () => { THR.open = null; closeSheet(); render(); };
+  const ab = $("#thrAct"); if(ab) ab.onclick = () => { THR.open = null; closeSheet(); try{ pmAlertAct(a); }catch(e){ toast("That didn't open: " + e.message); } };
+  const inp = $("#thrIn"), send = async () => {
+    const v = inp.value; if(!v.trim() || THR.busy) return;
+    THR.busy = true; $("#thrGo").disabled = true;
+    try{ await thrPost(a, v); inp.value = ""; thrSeen(a.key); thrDraw(); }
+    catch(e){ toast(e.message || String(e)); }
+    THR.busy = false; const g = $("#thrGo"); if(g) g.disabled = false; inp.focus();
+  };
+  $("#thrGo").onclick = send;
+  inp.onkeydown = e => { if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(); } };
+  thrDraw(); thrSeen(a.key); openPanel(); setTimeout(() => inp.focus(), 40);
+}
+function thrDraw(){
+  const box = $("#thrLog"); if(!box || !THR.open) return;
+  const t = thrOf(THR.open), msgs = (t && t.msgs) || [];
+  box.innerHTML = msgs.length ? msgs.map(m => { const me = typeof Cloud !== "undefined" && m.by && m.by === Cloud.email;
+      return `<div class="thr-m${me ? " me" : ""}"><div class="thr-h"><b>${esc(me ? "You" : (m.name || (typeof cloudWho === "function" ? cloudWho(m.by) : m.by) || "Someone"))}</b><span>${esc(thrWhen(m.at))}</span></div><div class="thr-x">${thrText(m.text)}</div></div>`; }).join("")
+    : `<div class="thr-empty"><b>No messages yet</b><span>Start the conversation about this item — everyone on the team sees it here.</span></div>`;
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---- the rows: a 💬 count on every item, and a click on the item opens its thread ---- */
+if(typeof pmAlertRowHTML === "function"){
+  const thrRow0 = pmAlertRowHTML;
+  pmAlertRowHTML = function(a){
+    const html = thrRow0.apply(this, arguments), n = thrCount(a.key), u = thrUnread(a.key);
+    const chip = `<button class="btn sm ghost thr-chip${u ? " new" : ""}" data-achat="${esc(a.key)}" title="${n ? `${n} message${n === 1 ? "" : "s"}${u ? ` · ${u} new` : ""}` : "Discuss with the team"}">${icon("chat")}${n ? `<span>${n}</span>` : ""}</button>`;
+    return html.replace('<div class="al-btns">', '<div class="al-btns">' + chip);
+  };
+}
+if(typeof pmWireAlerts === "function"){
+  const thrWire0 = pmWireAlerts;
+  pmWireAlerts = function(root, list){
+    const r = thrWire0.apply(this, arguments);
+    const find = k => list.find(a => a.key === k);
+    root.querySelectorAll("[data-achat]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.achat); if(a) thrSheet(a); });
+    root.querySelectorAll(".al-r .al-txt").forEach(t => { t.style.cursor = "pointer"; t.title = "Open this item's conversation";
+      t.onclick = e => { e.stopPropagation(); const a = find(t.closest(".al-r").dataset.ak); if(a) thrSheet(a); }; });
+    return r;
+  };
+}
+
 /* ===================== BOOT ===================== */
 function chip(){
   if(typeof Cloud !== "undefined" && Cloud.ready) return cloudChip();

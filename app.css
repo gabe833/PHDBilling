@@ -1954,6 +1954,23 @@ button.st{cursor:pointer}
   .rc-top{gap:8px}
 }
 
+/* ===== Action item threads ===== */
+.thr-chip{display:inline-flex;align-items:center;gap:4px;color:var(--muted)}
+.thr-chip span{font-size:12px;font-variant-numeric:tabular-nums}
+.thr-chip.new{color:var(--accent-hover)} .thr-chip.new::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent);margin-left:1px}
+.thr-lv{margin-bottom:6px}
+.thr-t{margin:0;line-height:1.3}
+.thr-d{font-size:12.5px;margin-top:4px;line-height:1.4}
+.thr-act{display:flex;align-items:center;gap:10px;padding:10px 22px;border-bottom:1px solid var(--line-2);font-size:12.5px}
+.thr-log{display:flex;flex-direction:column;gap:10px}
+.thr-m{align-self:flex-start;max-width:88%;background:var(--panel-2,var(--sunken));border:1px solid var(--line-2);border-radius:12px 12px 12px 3px;padding:8px 12px}
+.thr-m.me{align-self:flex-end;background:var(--accent-soft);border-color:var(--accent-line);border-radius:12px 12px 3px 12px}
+.thr-h{display:flex;gap:8px;align-items:baseline;font-size:12px;margin-bottom:2px} .thr-h span{color:var(--muted)}
+.thr-x{line-height:1.45;word-wrap:break-word} .thr-x a{color:var(--accent-hover)}
+.thr-empty{margin:auto;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:4px;padding:30px 10px} .thr-empty b{color:var(--ink,inherit)}
+.thr-f textarea{flex:1;resize:none;font:inherit;padding:8px 10px;border:1px solid var(--line-3,var(--line));border-radius:var(--r-sm,8px);background:var(--panel);color:inherit}
+
+
 /* =====================================================================
    ONE LOOK EVERYWHERE — the Reconcile page's style applied to the parts
    every page is built from: KPI tiles as separate cards, calmer tables

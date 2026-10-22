@@ -185,6 +185,10 @@ Each property is a card showing those four steps. Cards that don't match come fi
 - **Mark explained** (with a note) when a difference is right. The note is saved with the month. If any of the numbers behind it change later, the discrepancy comes back, marked "changed since explained".
 - **Export CSV** gives the month's reconciliation as a spreadsheet.
 
+## Action center conversations
+
+Every Action center item has its own conversation. Click the item's text (or its speech-bubble button) to open a side panel with just that item: its details, its action button, and the team's messages about it. Messages show who wrote them and when; others on the team see new messages appear live, and the bubble shows a count (with a dot when there's something you haven't read). Each conversation is saved as its own shared record (`shared/thread:…`), so two people posting at once never overwrite each other.
+
 ## Money (menu → Money → Cash & payouts)
 
 **Stage 4 layout.** The top row is five numbers you can click: available cash (Nickel live, banks from the books), owner funds still to pay out (with what's on hold and what's sent), PHD's operating income for the month (with how much is confirmed moved), payments awaiting settlement, and open exceptions. Below that: **Needs attention** (critical first, then things to act on; "Understood…" parks a known item with a reason and an end date, logged), **In progress** (sent payouts, transfers awaiting confirmation, Nickel payments in flight, holds, Awaiting ACH), and **Completed**. Nickel's own page (bills, deposits, payees) is under Money as **Nickel activity**.
