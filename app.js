@@ -1160,12 +1160,10 @@ function pgInvoices(){
     v.appendChild(seg);
   }
   const b = COMP.roll.byUnit[u.id] || {};
-  const head = elm("div","card"); head.style.marginBottom = "16px";
-  head.innerHTML = `<div class="card-b" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:18px">
-    ${[["Invoices",b.invoices||0],["Expenses",usd(b.expenseC||0)],[`${p.feePct}% fee`,usd(b.feeC||0)],
-       ["Total charges",usd(b.chargesC||0)],["Collected",usd(b.paidC||0)],["Balance",usd((b.chargesC||0)-(b.paidC||0))]]
-      .map(([l,val]) => `<div><div class="label">${l}</div><div class="num" style="font-size:16px;font-weight:500;margin-top:3px">${val}</div></div>`).join("")}
-  </div>`;
+  const head = elm("div","card pf-hero pf-compact");
+  head.innerHTML = [["Invoices",b.invoices||0],["Expenses",usd(b.expenseC||0)],[`${p.feePct}% fee`,usd(b.feeC||0)],
+       ["Total charges",usd(b.chargesC||0)],["Collected",usd(b.paidC||0),(b.paidC||0) > 0 ? "g" : ""],["Balance",usd((b.chargesC||0)-(b.paidC||0))]]
+      .map(([l,val,cls]) => `<div class="pf-cell"><div class="label">${l}</div><div class="pf-v ${cls||""}">${val}</div></div>`).join("");
   v.appendChild(head);
   const invs = COMP.units[u.id] || [];
   if(!invs.length){ v.appendChild(elm("div","card",`<div class="empty"><b>Nothing to bill for ${esc(u.name)}</b>Assign billable transactions to this unit and invoices build themselves.</div>`)); return; }
@@ -1800,7 +1798,10 @@ function openTagPop(anchor, txnId){
 }
 
 /* ===================== TRANSACTION EDITOR ===================== */
-function openPanel(){ const sh=$("#sheet"); sh.classList.add("on"); $("#scrim").classList.add("on"); sh.setAttribute("aria-hidden","false"); }
+function openPanel(){ const sh=$("#sheet");
+  // contents settle in only when the panel slides open, not each time an open panel redraws
+  if(!sh.classList.contains("on")){ sh.classList.remove("sh-enter"); void sh.offsetWidth; sh.classList.add("sh-enter"); clearTimeout(sh._se); sh._se = setTimeout(() => sh.classList.remove("sh-enter"), 700); }
+  sh.classList.add("on"); $("#scrim").classList.add("on"); sh.setAttribute("aria-hidden","false"); }
 function closeSheet(){ $("#sheet").onkeydown = null; $("#sheet").classList.remove("on"); $("#scrim").classList.remove("on"); $("#sheet").setAttribute("aria-hidden","true"); }
 
 function openSheet(id, preset){
@@ -13273,6 +13274,7 @@ go = function(view){
   const after = S.ui.view + "|" + S.activeId + "|" + (S.ui.pmPropId || "") + "|" + (S.ui.ownerId || "");
   if(before !== after) [$("#view"), document.querySelector(".hd-title")].forEach(v => { if(!v) return;
     v.classList.remove("v-enter"); void v.offsetWidth; v.classList.add("v-enter"); clearTimeout(v._ve); v._ve = setTimeout(() => v.classList.remove("v-enter"), 950); });
+  if(before !== after) uiCountUp($("#view"));
   return r;
 };
 
@@ -15008,4 +15010,21 @@ function rcExport(m){
       has(r.row.mdNet) ? Number(r.row.mdNet).toFixed(2) : "", r.c.recordedC != null ? (r.c.recordedC / 100).toFixed(2) : "", r.fr ? (r.fr.paidC / 100).toFixed(2) : "", r.fr ? (FIN_RES[r.fr.result] || [r.fr.result])[0] : "",
       (r.varC / 100).toFixed(2), r.bad.map(k => r.steps[k].t).join(" | "), r.state === "reviewed" ? `${r.review.note || ""} (${r.review.by || ""})` : ""])]);
   toast(`Exported ${monthLabel(m)}`);
+}
+
+/* ---------- headline numbers count up when a page opens ----------
+   Only the number's own text changes while it runs; it ends on exactly the text the page wrote. */
+function uiCountUp(root){
+  if(!root || (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
+  const els = root.querySelectorAll(".pf-hero .pf-v, .mn-kpi b, .hero-fig, .stat-v, .rc-ring b, .rc-flow-n > span, .rc-var-n");
+  els.forEach(el => {
+    const tn = [...el.childNodes].find(n => n.nodeType === 3 && /\d/.test(n.nodeValue)); if(!tn) return;
+    const orig = tn.nodeValue, m = orig.match(/^(\s*[^\d−-]*?)([−-]?)(\d[\d,]*)(\.\d+)?(.*)$/s); if(!m) return;
+    const target = Number((m[3] + (m[4] || "")).replace(/,/g, "")); if(!isFinite(target) || target === 0) return;
+    const dec = m[4] ? m[4].length - 1 : 0, commas = m[3].includes(","), t0 = performance.now(), dur = 650;
+    const fmt = x => { let t = x.toFixed(dec); if(commas){ const [i, f] = t.split("."); t = i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (f != null ? "." + f : ""); } return m[1] + m[2] + t + m[5]; };
+    const step = now => { if(!tn.isConnected) return; const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      tn.nodeValue = k < 1 ? fmt(target * e) : orig; if(k < 1) requestAnimationFrame(step); };
+    tn.nodeValue = fmt(0); requestAnimationFrame(step);
+  });
 }

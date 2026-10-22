@@ -1953,3 +1953,126 @@ button.st{cursor:pointer}
   .rc-next{margin-left:0;width:100%;justify-content:center}
   .rc-top{gap:8px}
 }
+
+/* =====================================================================
+   ONE LOOK EVERYWHERE — the Reconcile page's style applied to the parts
+   every page is built from: KPI tiles as separate cards, calmer tables
+   with an accent edge on hover, lifting cards and rows, section labels,
+   and motion when a page or panel opens. Later rules win, so this layer
+   sits last.
+   ===================================================================== */
+:root{--r:14px;--lift:0 8px 22px -10px rgba(26,35,34,.22),0 1px 2px rgba(26,35,34,.04)}
+
+/* ---------- KPI strips → separate tiles ---------- */
+.pf-hero,.card.pf-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;background:transparent;border:0;box-shadow:none;overflow:visible;border-radius:0;margin-bottom:16px}
+.pf-hero > .pf-cell{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;position:relative;min-width:0;
+  transition:border-color .15s,box-shadow .2s var(--ease),transform .2s var(--ease)}
+.pf-hero > .pf-cell .label{font-size:12px;font-weight:550;color:var(--muted)}
+.pf-hero > .pf-cell[data-goto],.pf-hero > button.pf-cell,.td-hero > .pf-cell,.pf-hero > .pf-cell[style*="cursor:pointer"]{cursor:pointer}
+.pf-hero > .pf-cell[data-goto]:hover,.pf-hero > button.pf-cell:hover,.td-hero > .pf-cell:hover,.pf-hero > .pf-cell[style*="cursor:pointer"]:hover{background:var(--panel);border-color:var(--line-3);box-shadow:var(--lift);transform:translateY(-1px)}
+.pf-hero .pf-v{font-size:24px;font-weight:550;letter-spacing:-.02em}
+.pf-hero .pf-v.g{color:var(--green)} .pf-hero .pf-v.a{color:var(--gold)}
+/* a coloured edge says what kind of number it is */
+.pf-hero > .pf-cell::before{content:"";position:absolute;left:-1px;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;background:transparent;transition:background .2s}
+.pf-hero > .pf-cell:has(.pf-v.g)::before{background:var(--green)}
+.pf-hero > .pf-cell:has(.pf-v.a)::before,.pf-hero > .pf-cell:has(.pf-v[style*="--gold"])::before{background:var(--gold)}
+.pf-hero > .pf-cell:has(.pf-v[style*="--red"])::before,.pf-hero > .pf-cell:has(.pf-v.r)::before{background:var(--red)}
+.mn-kpis{gap:12px;background:transparent;border:0;border-radius:0;overflow:visible}
+.mn-kpi{border:1px solid var(--line);border-radius:var(--r);transition:border-color .15s,box-shadow .2s var(--ease),transform .2s var(--ease)}
+.mn-kpi:hover{background:var(--surface,#fff);border-color:var(--line-3);box-shadow:var(--lift);transform:translateY(-1px)}
+.mn-kpi b{font-weight:550;letter-spacing:-.02em}
+
+.pf-hero.pf-compact > .pf-cell{padding:13px 16px}
+.pf-hero.pf-compact .pf-v{font-size:18px;margin-top:4px}
+/* the project overview: the big number on its own card, four tiles beside it */
+.card.hero{background:transparent;border:0;box-shadow:none;overflow:visible;gap:12px;margin-bottom:16px}
+.card.hero > .hero-l{background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.card.hero > .hero-r{border-left:0;background:transparent;gap:12px}
+.card.hero .stat{border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;transition:border-color .15s,box-shadow .2s var(--ease),transform .2s var(--ease)}
+.card.hero .stat:hover{border-color:var(--line-3);box-shadow:var(--lift);transform:translateY(-1px)}
+@media (max-width:900px){ .card.hero{grid-template-columns:1fr} }
+
+/* ---------- cards ---------- */
+.card{border-radius:var(--r);border-color:var(--line)}
+.card-h{padding:14px 18px}
+.card-h h3{font-size:14px;font-weight:600}
+/* whole-card buttons lift the same way the Reconcile cards do */
+.pm-card,.ow-card{border:1px solid var(--line);transition:border-color .15s,box-shadow .2s var(--ease),transform .2s var(--ease)}
+.pm-card:hover,.ow-card:hover{border-color:var(--line-3);box-shadow:var(--lift);transform:translateY(-1px)}
+.pm-card:active,.ow-card:active,.rc-card:active{transform:translateY(0) scale(.995)}
+.pm-card::before{width:3px}
+
+/* ---------- tables: lighter headers, an accent edge on the row you point at ---------- */
+.card > .tbl-wrap,.card > table.tbl{border-radius:0 0 var(--r) var(--r)}
+table.tbl th{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--panel-2);padding-top:9px;padding-bottom:9px;border-bottom:1px solid var(--line-2)}
+table.tbl td{border-bottom-color:var(--line-2)}
+table.tbl tbody tr td{transition:background .14s}
+table.tbl tbody tr:hover td{background:#F4F8F7}
+table.tbl tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--accent-2)}
+table.tbl tfoot td,table.tbl tr.tot td{background:var(--panel-2);font-weight:600}
+.pm-tbl tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--accent-2)}
+
+/* ---------- list rows (alerts, progress, payouts) ---------- */
+.al-r,.rc-row,.mn-prog-r,.inv-head{transition:background .14s}
+.al-r:hover{background:#F7FAF9}
+.al-r:hover::after{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--accent-2)}
+
+/* ---------- section labels, the same small caps as the Reconcile panel ---------- */
+.sectl{font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.sheet-b > .label,.sheet-b .sec-h{font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+
+/* ---------- inputs: one focus ring ---------- */
+.fld input:focus,.fld select:focus,.fld textarea:focus,input.sc-q:focus,.sc-q input:focus,.pm-in:focus,.mn-tools input:focus{border-color:var(--accent-2);box-shadow:0 0 0 3px var(--accent-soft);outline:none}
+input[type="text"],input[type="search"],input[type="number"],input[type="date"],input[type="email"],select,textarea{transition:border-color .14s,box-shadow .14s}
+
+/* ---------- buttons press in ---------- */
+.btn{transition:background .12s,border-color .12s,box-shadow .12s,transform .1s var(--ease)}
+.btn:active:not(:disabled){transform:scale(.97)}
+.sc-seg button.on{box-shadow:0 1px 2px rgba(26,35,34,.08),0 0 0 1px rgba(26,35,34,.04)}
+
+/* ---------- status tags: a dot, like the Reconcile pills ---------- */
+.tag{border-radius:6px}
+.tag.green::before,.tag.gold::before,.tag.red::before,.tag.acc::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.tag.gold::before{background:var(--gold)}
+
+/* ---------- empty states ---------- */
+.empty{padding:44px 24px}
+.empty b{font-size:17px;letter-spacing:-.01em}
+
+/* ---------- motion: when a page opens ---------- */
+@media (prefers-reduced-motion:no-preference){
+  /* KPI tiles, cards in grids and the first rows of tables come in one after another */
+  #view.v-enter .pf-hero > *,#view.v-enter .mn-kpis > *,#view.v-enter .hero-r > *{animation:uiRise .42s var(--ease) both}
+  #view.v-enter .pf-hero > :nth-child(2),#view.v-enter .mn-kpis > :nth-child(2){animation-delay:.04s}
+  #view.v-enter .pf-hero > :nth-child(3),#view.v-enter .mn-kpis > :nth-child(3){animation-delay:.08s}
+  #view.v-enter .pf-hero > :nth-child(4),#view.v-enter .mn-kpis > :nth-child(4){animation-delay:.12s}
+  #view.v-enter .pf-hero > :nth-child(n+5),#view.v-enter .mn-kpis > :nth-child(n+5){animation-delay:.16s}
+  #view.v-enter .pm-cards > *,#view.v-enter .ow-cards > *{animation:uiRise .42s var(--ease) both;animation-delay:.12s}
+  #view.v-enter .pm-cards > :nth-child(2),#view.v-enter .ow-cards > :nth-child(2){animation-delay:.15s}
+  #view.v-enter .pm-cards > :nth-child(3),#view.v-enter .ow-cards > :nth-child(3){animation-delay:.18s}
+  #view.v-enter .pm-cards > :nth-child(4),#view.v-enter .ow-cards > :nth-child(4){animation-delay:.21s}
+  #view.v-enter .pm-cards > :nth-child(5),#view.v-enter .ow-cards > :nth-child(5){animation-delay:.24s}
+  #view.v-enter .pm-cards > :nth-child(6),#view.v-enter .ow-cards > :nth-child(6){animation-delay:.27s}
+  #view.v-enter .pm-cards > :nth-child(n+7),#view.v-enter .ow-cards > :nth-child(n+7){animation-delay:.3s}
+  #view.v-enter table.tbl tbody tr,#view.v-enter .al-r,#view.v-enter .mn-prog-r{animation:uiFade .36s var(--ease) both;animation-delay:.14s}
+  #view.v-enter table.tbl tbody tr:nth-child(2),#view.v-enter .al-r:nth-child(2),#view.v-enter .mn-prog-r:nth-child(2){animation-delay:.17s}
+  #view.v-enter table.tbl tbody tr:nth-child(3),#view.v-enter .al-r:nth-child(3),#view.v-enter .mn-prog-r:nth-child(3){animation-delay:.2s}
+  #view.v-enter table.tbl tbody tr:nth-child(4),#view.v-enter .al-r:nth-child(4),#view.v-enter .mn-prog-r:nth-child(4){animation-delay:.23s}
+  #view.v-enter table.tbl tbody tr:nth-child(5),#view.v-enter .al-r:nth-child(5),#view.v-enter .mn-prog-r:nth-child(5){animation-delay:.26s}
+  #view.v-enter table.tbl tbody tr:nth-child(6),#view.v-enter .al-r:nth-child(6),#view.v-enter .mn-prog-r:nth-child(6){animation-delay:.29s}
+  #view.v-enter table.tbl tbody tr:nth-child(n+7),#view.v-enter .al-r:nth-child(n+7),#view.v-enter .mn-prog-r:nth-child(n+7){animation-delay:.32s}
+  /* bars and charts grow into place */
+  #view.v-enter .wbar i,#view.v-enter .fill i,#view.v-enter .hero-bar i,#view.v-enter .pm-meter i{animation:uiGrowX .7s var(--ease) both;animation-delay:.18s;transform-origin:left center}
+  #view.v-enter .pm-bar i{animation:uiGrowY .6s var(--ease) both;animation-delay:.18s;transform-origin:center bottom}
+  #view.v-enter .pm-bar:nth-child(2) i{animation-delay:.22s} #view.v-enter .pm-bar:nth-child(3) i{animation-delay:.26s}
+  #view.v-enter .pm-bar:nth-child(4) i{animation-delay:.3s} #view.v-enter .pm-bar:nth-child(n+5) i{animation-delay:.34s}
+  /* a panel's contents settle in as it slides open */
+  .sheet.sh-enter .sheet-b > *{animation:uiRise .36s var(--ease) both;animation-delay:.08s}
+  .sheet.sh-enter .sheet-b > :nth-child(2){animation-delay:.12s}
+  .sheet.sh-enter .sheet-b > :nth-child(3){animation-delay:.16s}
+  .sheet.sh-enter .sheet-b > :nth-child(n+4){animation-delay:.2s}
+  @keyframes uiRise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @keyframes uiFade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  @keyframes uiGrowX{from{transform:scaleX(0)}to{transform:none}}
+  @keyframes uiGrowY{from{transform:scaleY(0)}to{transform:none}}
+}
