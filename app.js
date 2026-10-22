@@ -2896,7 +2896,7 @@ function ownerCardHTML(o, props, opt){
       <dt>Billing address</dt><dd>${addr.length ? addr.map(esc).join("<br>") : `<span class="muted">—</span>`}</dd>
       <dt>Pays by</dt><dd>${o.method ? esc(o.method) : `<span class="muted">—</span>`}</dd>
       <dt>Terms</dt><dd>${o.terms ? esc(o.terms) : `<span class="muted">—</span>`}</dd>
-      ${o.cc ? `<dt>Also send to</dt><dd>${esc(o.cc)}</dd>` : ""}
+      ${o.cc ? `<dt>CC on invoices</dt><dd>${esc(o.cc)}</dd>` : ""}
       ${o.stmtTo ? `<dt>Owner statements to</dt><dd>${esc(String(o.stmtTo).split(/[,;\s]+/).filter(Boolean).join(", "))}</dd>` : ""}
       ${op.extraKV || ""}
     </dl>
@@ -2912,7 +2912,7 @@ function ownerFormHTML(o, footNote){
       <div class="sectl">Who we bill</div>
       <div class="f2">${f("name","Contact name","Jane Doe")}${f("company","Company or entity","Doe Holdings LLC")}</div>
       <div class="f2">${f("email","Email","owner@example.com","email")}${f("phone","Phone","(843) 555-0123","tel")}</div>
-      ${f("cc","Also send invoices to","accountant@example.com")}
+      ${f("cc","CC on invoice emails","accountant@example.com, partner@example.com")}
       ${(typeof ownerPmProps === "function" && o.id && ownerPmProps(o).length) || (S.ui && S.ui.mode === "pm") ? `<label class="fld"><span>Owner statements go to</span><input type="text" data-own="stmtTo" value="${esc(o.stmtTo)}" placeholder="${esc(o.email || "owner@example.com")}, second@example.com" autocomplete="off">
         <span class="help">Everyone here gets the monthly owner statement. Separate addresses with commas. Leave blank to use the email above.</span></label>` : ""}
       <div class="sectl" style="margin-top:6px">Billing address</div>
@@ -8815,7 +8815,9 @@ const bmText = (body, f) => bmFill(body, f).replace(/\{link\}/g, f.url ? `${f.nu
 
 function pjEmailSheet(p, unit, inv){
   const sh = $("#sheet"), o = ownerRec(p), f = bmFields(p, unit, inv), reg = inv.reg || {}, c = bmConn(), tpl = Object.assign({}, BM_DEFAULT, (S.billMail || {}).template || {});
-  const to = o ? [o.email].filter(Boolean).join(", ") : "", cc = o ? String(o.cc || "").split(/[,;\s]+/).filter(e => /@/.test(e)).join(", ") : "";
+  const splitE = v => String(v || "").split(/[,;\s]+/).map(e => e.trim().toLowerCase()).filter(e => /@/.test(e));
+  const officeCc = splitE((S.billMail || {}).alwaysCc);
+  const to = o ? [o.email].filter(Boolean).join(", ") : "", cc = [...new Set([...splitE(o && o.cc), ...officeCc])].filter(e => e !== String(o && o.email || "").toLowerCase()).join(", ");
   const sig = c && c.signature, prior = reg.email;
   sh.innerHTML = `<div class="sheet-h"><div><h3>Email invoice ${esc(f.no)} to the owner</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(f.unit)} · ${usd(inv.totalC)} · from ${esc((c && c.mailbox) || "billing@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
@@ -8833,6 +8835,7 @@ function pjEmailSheet(p, unit, inv){
       <div class="bm-prev" id="bmPrev"></div>
       <label class="ps-chk"><input type="checkbox" id="bmPdf"> Attach the invoice PDF</label>
       <label class="ps-chk"><input type="checkbox" id="bmTpl"> Use this subject and message for future invoice emails</label>
+      <label class="fld" style="margin-top:10px"><span>Always CC on every invoice email <span class="muted" style="font-weight:400">· for the whole office, on top of each owner's own CC</span></span><input type="text" id="bmAlwaysCc" value="${esc((S.billMail || {}).alwaysCc || "")}" placeholder="e.g. gabe@phdproperties.realestate"></label>
       ${c ? `<p class="help">Sent from ${esc(c.mailbox || "billing@")} as “${esc(c.fromName || "PHD Billing")}”${sig ? ", with billing@'s Gmail signature" : ". No Gmail signature was found — add the Gmail API service in the script to include it"}. <a href="#" id="bmDisc">Change connection</a></p>` : ""}
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn" id="bmDraft" ${c ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="bmSend" ${c ? "" : "disabled"}>Send from billing@</button></div>`;
@@ -8842,6 +8845,10 @@ function pjEmailSheet(p, unit, inv){
   const draw = () => { prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc((c && c.fromName) || "PHD Billing")} &lt;${esc((c && c.mailbox) || "billing@phdproperties.realestate")}&gt; · to ${esc($("#bmTo").value)}</div><div class="bm-body">${bmHTML(body.value, f)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
     prev.querySelectorAll("a").forEach(a => { a.target = "_blank"; a.rel = "noopener"; }); };
   [body, sub, $("#bmTo")].forEach(x => x.oninput = draw); draw();
+  // changing the office CC updates this email's Cc straight away (anything typed into Cc by hand stays)
+  { const ac = $("#bmAlwaysCc"), ccI = $("#bmCc"); let was = officeCc;
+    ac.oninput = () => { const now = splitE(ac.value), cur = splitE(ccI.value).filter(e => !was.includes(e) || splitE(o && o.cc).includes(e));
+      ccI.value = [...new Set([...cur, ...now])].join(", "); was = now; }; }
   const cn = $("#bmConn"); if(cn) cn.onclick = async () => {
     const url = $("#bmUrl").value.trim(), token = $("#bmTok").value.trim(), msg = $("#bmMsg");
     if(!/^https:\/\/script\.google\.com\/macros\//.test(url)) return msg.textContent = "Paste the web app URL (it starts with https://script.google.com/macros/)";
@@ -8860,12 +8867,13 @@ function pjEmailSheet(p, unit, inv){
     const btn = send ? $("#bmSend") : $("#bmDraft"); btn.disabled = true; btn.textContent = send ? "Sending…" : "Saving…";
     try{
       if($("#bmTpl").checked) bmSave({template:{subject:bmUnfill(sub.value, f), body:bmUnfill(body.value, f)}});
+      { const ac = splitE($("#bmAlwaysCc").value).join(", "); if(ac !== ((S.billMail || {}).alwaysCc || "")) bmSave({alwaysCc:ac}); }
       // a fresh signature each time (picks up changes made in Gmail)
       const req = {action:send ? "send" : "draft", to:to.join(","), cc:ccs.join(","), subject:sub.value, html:bmHTML(body.value, f), text:bmText(body.value, f)};
       if($("#bmPdf").checked){ req.pdfHtml = invoiceDocHTML(p, unit, inv); req.fileName = `${f.number} - ${p.name}${f.unit}`; }
       const r = await bmCall(req);
       snapshot(); const g = P().register[pjKey(unit, inv)] = P().register[pjKey(unit, inv)] || {};
-      g.email = {sent:!!r.sent, drafted:!!r.drafted, to:to.join(", "), subject:sub.value, at:r.at || new Date().toISOString(), by:billWho(), threadId:r.threadId || "", from:r.from || ""};
+      g.email = {sent:!!r.sent, drafted:!!r.drafted, to:to.join(", "), cc:ccs.join(", "), subject:sub.value, at:r.at || new Date().toISOString(), by:billWho(), threadId:r.threadId || "", from:r.from || ""};
       if(r.sent && !g.dateSent) g.dateSent = todayISO();
       commit(); closeSheet();
       toast(r.sent ? `Emailed to ${to.join(", ")} from ${r.from || "billing@"}` : `Draft saved in ${r.from || "billing@"}'s Gmail`); render();
