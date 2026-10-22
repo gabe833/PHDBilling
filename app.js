@@ -2288,8 +2288,9 @@ function invoiceDocHTML(p, unit, inv){
   const reg = inv.reg || {};
   const issued = reg.dateSent || new Date().toISOString().slice(0,10);
   const multi = p.units.length > 1;
+  const dueOn = typeof pjDueDate === "function" ? pjDueDate(p, inv) : "", days = typeof pjTermsDays === "function" ? pjTermsDays(p) : 15;
   const status = reg.paid ? "Paid" + (reg.datePaid ? " " + docShort(reg.datePaid) : "")
-               : reg.dateSent ? "Due on receipt" : "Draft — not yet issued";
+               : reg.dateSent ? (dueOn && dueOn > String(reg.dateSent).slice(0, 10) ? `Due ${docLong(dueOn)}${days && !reg.due ? ` · Net ${days}` : ""}` : "Due on receipt") : "Draft — not yet issued";
   const rowList = inv.lines.map(l => {
     const parts = C.txn[l.txnId].parts.filter(x => x.unitId === unit.id);
     const pi = parts.findIndex(x => x.no === inv.no);
@@ -2923,7 +2924,7 @@ function ownerFormHTML(o, footNote){
         <label class="fld"><span>Pays by</span><select data-own="method">
           ${["","ACH / bank transfer","Check","Nickel","QuickBooks payment link","Zelle","Card","Other"].map(m => `<option ${o.method===m?"selected":""} value="${esc(m)}">${m || "Not set"}</option>`).join("")}
         </select></label>
-        ${f("terms","Terms","Due on receipt")}
+        ${f("terms","Terms","Net 15 (default for project invoices)")}
       </div>
       <label class="fld"><span>Notes</span><textarea data-own="notes" rows="3" placeholder="Preferences, who approves invoices, anything worth remembering">${esc(o.notes)}</textarea></label>
       <p class="help" style="margin:0">${footNote || ""}</p>
@@ -8453,6 +8454,21 @@ let NKL_LOADING = false;
    invoice Paid in full. Every change is confirmed in the Nickel window.
    ===================================================================== */
 const pjKey = (unit, inv) => unit.id + "|" + inv.no;
+/* project invoices are Net 15 unless the owner's Terms say otherwise ("Net 30", "Due on receipt", "10 days") */
+function pjTermsDays(p){
+  const t = String(((typeof ownerRec === "function" && ownerRec(p)) || {}).terms || "").trim();
+  if(!t) return 15;
+  if(/receipt|upon|immediate/i.test(t)) return 0;
+  const m = t.match(/net\s*(\d{1,3})/i) || t.match(/(\d{1,3})\s*days?/i);
+  return m ? +m[1] : 15;
+}
+// when an issued project invoice is due: the date chosen in Nickel if there is one, otherwise issued + the terms
+function pjDueDate(p, inv){
+  const reg = inv.reg || {};
+  if(reg.due) return reg.due;
+  if(!reg.dateSent) return "";
+  return PMCore.isoOf(PMCore.dayNum(String(reg.dateSent).slice(0, 10)) + pjTermsDays(p));
+}
 // 3282HARTWELL-006 · 120SMITH-B-001 (street words dropped; unit only when the property has several)
 const PJ_STREET = /\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|blvd|boulevard|ct|court|way|pl|place|cir|circle|hwy|highway|pkwy|parkway|ter|terrace|trl|trail)\b\.?/gi;
 function pjInvNumber(p, unit, inv){
@@ -8591,7 +8607,7 @@ document.addEventListener("click", e => {
 async function pjCreateSheet(p, unit, inv){
   await pjLoadLists();
   const o = ownerRec(p), sh = $("#sheet"), why = pjQbWhy(p, inv), linked = !!nkOwner(p.ownerId).id;
-  const due = PMCore.isoOf(PMCore.dayNum(todayISO()) + 15);
+  const due = PMCore.isoOf(PMCore.dayNum(todayISO()) + pjTermsDays(p));
   sh.innerHTML = `<div class="sheet-h"><div><h3>Invoice ${inv.no} → QuickBooks</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}${esc(pjUnitLabel(p, unit))} · ${usd(inv.totalC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       ${!o ? `<div class="pm-banner">This property has no owner. Set one on the Owner page first.</div>` : !o.email ? `<div class="pm-banner">${esc(ownerLabel(o))} has no email. Add it on the Owner page first.</div>` : ""}
@@ -8625,8 +8641,10 @@ async function pjCreateSheet(p, unit, inv){
     try{
       await payCall("nk.match", {}, {raw:true}).catch(() => {});
       if(!(cust && cust.id) && !nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
+      const dueSet = /^\d{4}-\d{2}-\d{2}$/.test($("#pjDue").value) ? $("#pjDue").value : "";
       const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)}, `${p.name}${pjUnitLabel(p, unit)} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
       if(!r.ok && !r.already){ go2.disabled = false; if(r.error && !r.declined && !r.approvalUrl) toast(r.error); return; }
+      { const pp = S.properties.find(x => x.id === p.id); if(pp && dueSet){ snapshot(); pp.register = pp.register || {}; const g = pp.register[pjKey(unit, inv)] = pp.register[pjKey(unit, inv)] || {}; g.due = dueSet; commit(); } }
       closeSheet(); render();
       if(r.url){ try{ await navigator.clipboard.writeText(r.url); toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""} · pay link copied`); }catch(e){ toast(`Invoice ${inv.no} created${r.qb ? " in QuickBooks" : ""}`); } }
       else toast(`Invoice ${inv.no} created`);
