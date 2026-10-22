@@ -2076,3 +2076,138 @@ input[type="text"],input[type="search"],input[type="number"],input[type="date"],
   @keyframes uiGrowX{from{transform:scaleX(0)}to{transform:none}}
   @keyframes uiGrowY{from{transform:scaleY(0)}to{transform:none}}
 }
+
+/* =====================================================================
+   POLISH — softer and neater, after the example dashboards:
+   a lightly tinted canvas with white cards floating on soft shadows
+   (no hard outlines), rounder buttons of one height, borderless status
+   pills, pill tabs and search boxes, a tidier menu and panel.
+   Last in the file, so it decides.
+   ===================================================================== */
+:root{
+  --canvas:#EEF2F0; --panel-2:#F7F9F8; --line:#E3E8E5; --line-2:#EDF1EE;
+  --r:16px; --r-sm:10px; --r-xs:8px;
+  --float:0 1px 2px rgba(23,38,34,.04),0 6px 20px -10px rgba(23,38,34,.12);
+  --float-up:0 2px 4px rgba(23,38,34,.04),0 16px 32px -14px rgba(23,38,34,.22);
+  --lift:var(--float-up);
+}
+body:not(.mode-pm){--canvas:#EDF0F5;--panel-2:#F7F8FB;--line:#E1E6EE;--line-2:#ECEFF4}
+body{background:var(--canvas)}
+
+/* ---------- surfaces float instead of being outlined ---------- */
+.card,.pf-hero > .pf-cell,.mn-kpi,.rc-card,.pm-card,.ow-card,.card.hero > .hero-l,.card.hero .stat{border:1px solid rgba(23,38,34,.045);box-shadow:var(--float)}
+.pf-hero,.card.pf-hero,.mn-kpis,.card.hero{box-shadow:none;border:0}
+.rc-card:hover,.pm-card:hover,.ow-card:hover,.pf-hero > .pf-cell[data-goto]:hover,.td-hero > .pf-cell:hover,.mn-kpi:hover,.card.hero .stat:hover{border-color:rgba(23,38,34,.06);box-shadow:var(--float-up)}
+.card-h{border-bottom-color:var(--line-2);padding:15px 20px}
+.card-h h3{font-size:14.5px;letter-spacing:-.012em}
+.card-b{padding:18px 20px}
+.pf-hero > .pf-cell{padding:18px 20px}
+.pf-hero .pf-v{font-size:26px;font-weight:600;letter-spacing:-.025em}
+.pf-hero > .pf-cell .label,.mn-kpi .label,.rc-h-t{font-size:12.5px;font-weight:500;color:var(--muted)}
+.pf-hero > .pf-cell::before{top:18px;bottom:18px;width:3px;left:0;border-radius:0 3px 3px 0}
+
+/* ---------- the page header: no rule, the title a touch bigger ---------- */
+.topbar{background:color-mix(in srgb,var(--canvas) 86%,transparent);backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid transparent;padding:16px 28px 14px}
+.topbar.scrolled{border-bottom-color:var(--line);box-shadow:0 8px 20px -18px rgba(23,38,34,.4)}
+.page-title{font-size:23px;font-weight:650;letter-spacing:-.028em}
+#pgCrumb{font-size:12px;color:var(--muted);font-weight:500}
+.nav-back{width:36px;height:36px;border-radius:50%;border:0;box-shadow:var(--float);background:var(--panel)}
+.nav-back:hover{background:var(--panel);box-shadow:var(--float-up)}
+.hd-div{background:var(--line)}
+
+/* ---------- buttons: one height, rounder, a richer main button ---------- */
+.btn{height:36px;padding:0 15px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-weight:550;font-size:13px;letter-spacing:-.005em;
+  box-shadow:0 1px 2px rgba(23,38,34,.05);justify-content:center;gap:7px}
+.btn:hover{background:var(--panel);border-color:color-mix(in srgb,var(--accent) 22%,var(--line));box-shadow:0 1px 2px rgba(23,38,34,.05),0 4px 12px -6px rgba(23,38,34,.18);color:var(--ink)}
+.btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 88%,#fff),var(--accent));border-color:transparent;color:#fff;
+  box-shadow:0 1px 2px rgba(0,0,0,.08),0 4px 10px -6px color-mix(in srgb,var(--accent) 60%,transparent),inset 0 1px 0 rgba(255,255,255,.14)}
+.btn.primary:hover{background:linear-gradient(180deg,var(--accent),var(--accent-hover));border-color:transparent;color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.1),0 8px 16px -8px color-mix(in srgb,var(--accent) 65%,transparent),inset 0 1px 0 rgba(255,255,255,.14)}
+.btn.ghost{background:transparent;border-color:transparent;box-shadow:none;color:var(--ink-2)}
+.btn.ghost:hover{background:color-mix(in srgb,var(--accent) 8%,transparent);border-color:transparent;box-shadow:none;color:var(--accent-hover)}
+.btn.danger{color:var(--red);border-color:var(--red-line);background:var(--panel)}
+.btn.danger:hover{background:var(--red-soft);border-color:var(--red-line);color:var(--red)}
+.btn.ghost.danger{background:transparent;border-color:transparent}
+.btn.sm{height:30px;padding:0 11px;font-size:12.5px;border-radius:8px}
+.btn.sm.ghost{padding:0 9px}
+.btn:disabled,.btn:disabled:hover{opacity:.45;box-shadow:none;transform:none;background:var(--panel);border-color:var(--line);color:var(--muted)}
+.btn.primary:disabled{background:var(--accent);color:#fff}
+.btn kbd{background:rgba(255,255,255,.16);border:0;border-radius:5px;padding:1px 5px;font-size:10.5px}
+.btn:not(.primary) kbd{background:var(--sunken);color:var(--muted)}
+.btn .ic{width:15px;height:15px}
+/* buttons that wrap their text (several lines) keep their natural height */
+.btn.mi,.more-menu .btn,.opt .btn,.btn.block,.btn[style*="height"]{height:auto}
+.more-menu .btn.mi{min-height:34px;justify-content:flex-start;border-radius:8px}
+/* small square arrow buttons become round */
+.btn.sm.ghost[aria-label*="revious"],.btn.sm.ghost[aria-label*="ext"],.rc-mo-b{width:30px;padding:0;border-radius:50%}
+.cmd-trigger{height:36px;border-radius:999px;padding:0 10px 0 14px;background:var(--panel);border:1px solid var(--line);box-shadow:0 1px 2px rgba(23,38,34,.05)}
+.cmd-trigger:hover{box-shadow:0 4px 12px -6px rgba(23,38,34,.18)}
+.cmd-trigger kbd{border:0;background:var(--sunken);border-radius:6px}
+.linkish{text-decoration:none;font-weight:550}
+.linkish:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* ---------- inputs: soft, rounded, search boxes are pills ---------- */
+input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],input[type=month],select,textarea{border-radius:10px;border-color:var(--line);background:var(--panel)}
+input[type=text],input[type=number],input[type=date],input[type=email],input[type=tel],input[type=password],input[type=url],input[type=search],input[type=month],select{min-height:36px}
+input:hover,select:hover,textarea:hover{border-color:color-mix(in srgb,var(--accent) 18%,var(--line))}
+.sc-q input,.rc-bar2 .rc-q,.mn-tools input[type=text],input[type=search],input[placeholder^="Find"],input[placeholder^="Search"]{border-radius:999px;padding-left:16px;padding-right:16px}
+.pm-in{border-radius:9px}
+
+/* ---------- tabs and filters: pills ---------- */
+.sc-seg,.seg-ctl{background:color-mix(in srgb,var(--ink) 5.5%,transparent);border-radius:999px;padding:4px;gap:2px}
+.sc-seg button,.seg-ctl button{border-radius:999px;padding:6px 14px;font-weight:550;color:var(--muted)}
+.sc-seg button.on,.seg-ctl button[aria-pressed="true"]{background:var(--panel);color:var(--ink);box-shadow:0 1px 2px rgba(23,38,34,.08),0 2px 8px -4px rgba(23,38,34,.16)}
+.sc-seg button span{background:color-mix(in srgb,var(--ink) 6%,transparent);color:var(--muted);border-radius:999px;padding:1px 6px;margin-left:5px;font-size:10.5px;font-weight:600}
+.sc-seg button.on span{background:var(--accent-soft);color:var(--accent-hover)}
+
+/* ---------- status pills: soft fill, no outline ---------- */
+.tag,.st{border:0;border-radius:999px;font-weight:550}
+.tag{padding:3px 10px;font-size:11.5px}
+.st{height:24px;padding:0 10px 0 9px}
+.tag.grey,.st-grey{background:color-mix(in srgb,var(--ink) 6%,transparent)}
+
+/* ---------- tables: no grid, room to breathe ---------- */
+table.tbl th{background:transparent;border-bottom:1px solid var(--line-2);padding-top:12px;padding-bottom:10px;color:var(--faint);font-size:10.8px}
+table.tbl td{padding-top:13px;padding-bottom:13px}
+table.tbl tbody tr:hover td{background:color-mix(in srgb,var(--accent) 4%,var(--panel))}
+table.tbl tfoot td,table.tbl tr.tot td{background:var(--panel-2)}
+
+/* ---------- the menu ---------- */
+.nav{gap:2px}
+.nav > *{flex-shrink:0}   /* the menu scrolls; its labels and buttons never squash */
+.nav button{border-radius:10px;padding:8px 11px}
+.nav button[aria-current="true"]{background:rgba(255,255,255,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
+.nav button[aria-current="true"]::before{left:-12px;top:9px;bottom:9px;width:3px}
+.nav .badge{min-width:20px;height:18px;line-height:18px;text-align:center;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.07)}
+.nav .badge.alert{background:#D2574A;color:#fff}
+.nav-head{font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:600;padding:14px 11px 6px}
+.mode-sw{border-radius:999px!important;padding:4px!important}
+.mode-sw button{border-radius:999px!important}
+.brand .mk{border-radius:10px}
+
+/* ---------- panels, menus, toasts ---------- */
+.sheet{border-radius:20px;box-shadow:0 30px 70px -20px rgba(23,38,34,.35),0 2px 6px rgba(23,38,34,.06)}
+.sheet-h{border-bottom:1px solid var(--line-2);padding:20px 24px 16px}
+.sheet-b{padding:20px 24px}
+.sheet-f{background:var(--panel);border-top:1px solid var(--line-2);padding:14px 24px}
+.scrim{background:rgba(18,28,26,.32);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
+.more-menu,.menu{border-radius:14px;border-color:var(--line);box-shadow:0 18px 40px -16px rgba(23,38,34,.3)}
+.toast{border-radius:999px;padding:11px 20px;box-shadow:0 14px 30px -12px rgba(0,0,0,.4)}
+.cmdk-box{border-radius:18px}
+
+/* ---------- small things ---------- */
+.empty{padding:48px 24px}
+.pm-banner{border-radius:12px;background:color-mix(in srgb,var(--accent) 6%,var(--panel));color:var(--ink-2)}
+.sectl::after{background:var(--line-2)}
+hr.sep{border-top-color:var(--line-2)}
+
+@media (max-width:900px){ .topbar{padding:12px 16px} .page-title{font-size:20px} }
+.btn.ghost:disabled,.btn.ghost:disabled:hover{background:transparent;border-color:transparent}
+.rc-mo{border:1px solid rgba(23,38,34,.045);box-shadow:var(--float);border-radius:999px;padding:4px}
+/* phones: the title gets its own line and the page's buttons wrap underneath it
+   (the title column used to be squeezed to a sliver beside the buttons) */
+@media (max-width:900px){
+  .topbar .hd-title{flex:1 1 100%;min-width:0}
+  .topbar .hd-right{flex:1 1 100%;flex-wrap:wrap;gap:8px}
+  .topbar .hd-right .grow{flex-wrap:wrap;gap:8px}
+  .topbar .page-sub{white-space:normal}
+}
