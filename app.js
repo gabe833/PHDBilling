@@ -15188,3 +15188,78 @@ function uiCountUp(root){
     tn.nodeValue = fmt(0); requestAnimationFrame(step);
   });
 }
+
+/* =====================================================================
+   ATTACH A RECEIPT TO A TRANSACTION THAT'S ALREADY HERE
+   Drop a PDF or photo on a transaction's row (or use "Attach receipt" in
+   its editor). It's renamed the console's one way —
+     2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85.pdf
+   — saved in the project's Drive folder (or PHD Receipts/<Property> when
+   the project has none set), never twice, and the transaction's receipt
+   name and link point at it. Nothing is read or added as a new expense.
+   ===================================================================== */
+async function txAttach(p, t, file){
+  if(typeof inboxConn !== "function" || !inboxConn()){ toast("Connect the Receipt inbox first — it's what saves to Drive"); return null; }
+  const mime0 = String(file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : String(file.type || "").toLowerCase();
+  if(!BU_TYPES[mime0]){ toast(/hei[cf]/i.test(mime0 + file.name) ? "This photo is HEIC — export it as JPG first" : "Attach a PDF, JPG or PNG"); return null; }
+  if(t.link && !confirm(`${t.vendor || "This transaction"} already has a receipt (${t.receipt || "linked"}). Replace it with ${file.name}?`)) return null;
+  const sm = await shrinkPhoto(file, mime0);
+  if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024){ toast(sm.mime === "application/pdf" ? "PDF is over 25 MB" : "Photo is over 5 MB even after shrinking — try a PDF"); return null; }
+  const f = dfOf(p), name = dfName(p, t, dfExt(sm.name || file.name, sm.mime));
+  toast(`Saving to ${f ? (f.name || "the project folder") : "PHD Receipts / " + p.name}…`);
+  let r;
+  try{ r = await inboxPost({action:"folderAdd", folderId:f ? f.id : "", propertyName:p.name, items:[{txnId:t.id, data:await buBase64(sm.file), mime:sm.mime, name}]}); }
+  catch(e){ toast(receiptErr(e)); return null; }
+  const res = (r.results || [])[0] || {}, got = res.file || res.duplicateOf;
+  if(!got){
+    toast(/no file to copy/i.test(res.error || "") ? "Update the inbox script first: paste the new apps-script/Code.gs into billing@'s script, then Deploy → Manage deployments → Edit → New version." : (res.error || "Couldn't save it to Drive"));
+    return null;
+  }
+  const live = S.properties.find(x => x.id === p.id), tt = live && live.transactions.find(x => x.id === t.id);
+  if(tt){ snapshot(); tt.receipt = got.name; tt.link = got.url; commit(); }
+  toast(res.duplicateOf ? `That file was already in the folder — linked to ${got.name}` : `Saved as ${got.name}`, true);
+  return got;
+}
+// in the transaction editor: an "Attach receipt" button under the receipt link
+if(typeof openSheet === "function"){
+  const txAt0 = openSheet;
+  openSheet = function(id, preset){
+    const r = txAt0.apply(this, arguments);
+    try{
+      const p = P(), t = id && p && p.transactions.find(x => x.id === id), row = $("#e_linkrow");
+      if(t && row && !$("#e_attach")){
+        const f = dfOf(p), box = elm("div", "tx-att");
+        box.innerHTML = `<label class="btn sm" id="e_attach">${icon("file")} Attach receipt<input type="file" accept="application/pdf,image/jpeg,image/png,.pdf" hidden></label>
+          <span class="help">Renamed and saved in ${f ? esc(f.name || "the project's Drive folder") : "PHD Receipts / " + esc(p.name)}. You can also drop a file on the transaction's row.</span>`;
+        row.closest("label").after(box);
+        const inp = box.querySelector("input");
+        inp.onchange = async () => { const file = inp.files[0]; inp.value = ""; if(!file) return;
+          const lb = $("#e_attach"); lb.classList.add("dis");
+          const got = await txAttach(p, t, file);
+          if(got && $("#e_link")){ $("#e_receipt").value = got.name; $("#e_link").value = got.url; $("#e_link").dispatchEvent(new Event("input")); }
+          if($("#e_attach")) $("#e_attach").classList.remove("dis"); };
+      }
+    }catch(e){ /* the editor works without it */ }
+    return r;
+  };
+}
+// drop a file straight onto a transaction's row
+(function(){
+  const rowAt = e => { if(S.ui.view !== "txns" || S.ui.mode === "pm") return null;
+    const el = document.elementsFromPoint(e.clientX, e.clientY).find(x => x.matches && x.matches("tr[data-id]")); return el || null; };
+  const hasFiles = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  let hot = null;
+  const mark = tr => { if(hot && hot !== tr) hot.classList.remove("tx-drop"); hot = tr; if(tr) tr.classList.add("tx-drop"); };
+  // runs before the page-wide drop (which adds a new transaction) and takes over only when the file lands on a row
+  window.addEventListener("dragover", e => { if(!hasFiles(e)) return; const tr = rowAt(e); mark(tr);
+    const box = document.querySelector("#dropOv .drop-box");
+    if(box){ const p = P(), t = tr && p.transactions.find(x => x.id === tr.dataset.id);
+      box.innerHTML = t ? `${icon("file")}<b>Attach to ${esc(t.vendor || "this transaction")} · ${usd(cents(t.amount))}</b><span>Renamed and saved in the project's Drive folder — nothing new is added</span>`
+        : `${icon("receipt")}<b>Drop to add to ${esc(p.name)}</b><span>PDF, JPG or PNG · read for you and added as a transaction — or drop on a row to attach it there</span>`; } }, true);
+  window.addEventListener("dragleave", e => { if(!e.relatedTarget) mark(null); }, true);
+  window.addEventListener("drop", e => { mark(null); if(!hasFiles(e)) return; const tr = rowAt(e); if(!tr) return;
+    const p = P(), t = p.transactions.find(x => x.id === tr.dataset.id); if(!t) return;
+    e.preventDefault(); e.stopImmediatePropagation(); const o = $("#dropOv"); if(o) o.classList.remove("on");
+    const files = [...e.dataTransfer.files]; if(files.length > 1) toast("One file per transaction — attaching the first");
+    txAttach(p, t, files[0]).then(got => { if(got) render(); }); }, true);
+})();

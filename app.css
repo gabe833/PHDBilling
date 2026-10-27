@@ -2228,3 +2228,7 @@ hr.sep{border-top-color:var(--line-2)}
   .topbar .hd-right .grow{flex-wrap:wrap;gap:8px}
   .topbar .page-sub{white-space:normal}
 }
+.tx-att{display:flex;align-items:center;gap:10px;margin:-4px 0 12px;flex-wrap:wrap}
+.tx-att .help{margin:0}
+.tx-att .btn.dis{opacity:.5;pointer-events:none}
+tr.tx-drop td{background:var(--accent-soft)!important;box-shadow:inset 0 1px 0 var(--accent-line),inset 0 -1px 0 var(--accent-line)}

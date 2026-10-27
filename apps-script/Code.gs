@@ -592,7 +592,8 @@ function doPost(e){
     }
     if(b.action === 'folderAdd'){
       // put a COPY of each transaction's receipt in the property's folder (the original stays where it is), never twice
-      const root = DriveApp.getFolderById(String(b.folderId)), out = [];
+      // no project folder set: PHD Receipts/<Property>, the same place approved receipts go
+      const root = b.folderId ? DriveApp.getFolderById(String(b.folderId)) : folderByName_(rootFolder_(), safeName_(String(b.propertyName || CFG.UNFILED_FOLDER))), out = [];
       (Array.isArray(b.items) ? b.items : []).slice(0, 10).forEach(x => {
         const res = {txnId:String(x.txnId || '')};
         try{
@@ -606,6 +607,12 @@ function doPost(e){
             const ct = String(resp.getHeaders()['Content-Type'] || resp.getHeaders()['content-type'] || '').toLowerCase();
             if(resp.getResponseCode() !== 200 || !/pdf|image\//.test(ct)) throw new Error('the link did not return a PDF (' + resp.getResponseCode() + ')');
             blob = resp.getBlob();
+          } else if(x.data){
+            // a file attached in the console to an existing transaction
+            const mime = String(x.mime || 'application/pdf').toLowerCase();
+            if(!MIME_OK[mime]) throw new Error('attach a PDF, JPG or PNG');
+            blob = Utilities.newBlob(Utilities.base64Decode(String(x.data)), mime, String(x.name || 'Receipt.pdf'));
+            if(!blob.getBytes().length) throw new Error('the file was empty');
           } else throw new Error('no file to copy');
           if(blob.getBytes().length > CFG.MAX_PDF_BYTES) throw new Error('file is over 25 MB');
           const dup = sameBlobIn_(root, blob);

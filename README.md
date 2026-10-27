@@ -465,3 +465,7 @@ Setup:
 - **See who changed what:** Team page, under Recent activity.
 - **Update the app:** replace `index.html`, `app.js`, `engine.js` and `app.css` in the repo (or run `npx vercel deploy --prod` again). Keep your `config.js`.
 - **Activity log:** the nightly backup trims it to the last 180 days automatically.
+
+## Attach a receipt to an existing transaction
+
+On a project's Transactions page, drop a PDF or photo onto a transaction's row — or open the transaction and press **Attach receipt**. The file is renamed the console's way (`2026-07-29 - Lowe's - Bathroom vanity (Unit B) - $3,452.85.pdf`), saved in the project's Drive folder (or `PHD Receipts/<Property>` when none is set), never twice, and the transaction's receipt name and link point at it. It isn't read or added as a new expense. Needs the inbox script from this repo (`apps-script/Code.gs`) deployed as a new version.
