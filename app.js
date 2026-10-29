@@ -6229,7 +6229,14 @@ function mdStmtWant(p, rr, mpId, mm, g){
 function mdExactMonths(p, L, curM, out, mpId, mdPid){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
     const g = L && L.months ? L.months[mm] : null, rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
-    if(!rr || rr.locked || rr.detailOnly || rr.deleted || mt.closed) return;
+    if(!rr || rr.detailOnly || rr.deleted || mt.closed) return;
+    // a locked month keeps its recorded figures, but MagicDoor's own statement total is still kept current, so the
+    // MagicDoor check compares against what MagicDoor says today, not what it said the day the month was locked
+    if(rr.locked){
+      const w = mpId && mdStmtWant(p, rr, mpId, mm, g);
+      if(w && w.mdNet != null && !(PMCore.has(rr.mdNet) && cents(rr.mdNet) === cents(w.mdNet))) out.exact.push({p, row:rr, k:"mdNet", from:rr.mdNet ?? "", to:w.mdNet, quiet:true});
+      return;
+    }
     let want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
     // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
     // month's statement) belongs to this month's owner payout
