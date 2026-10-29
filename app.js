@@ -6034,8 +6034,10 @@ function pgPmSettings(){
   const F = [["lateAfterDay","Rent is late after day","of the month"], ["payoutDays","Owner payouts due","days after month end (0 = by the last day)"],
              ["startByDay","Remind to start the month after day",""], ["closeByDay","Last month should be closed by day","of the next month"],
              ["renewalDays","Lease renewal heads-up","days before the lease ends"], ["depositDays","Deposit return deadline","days after move-out (South Carolina: 30)"],
-             ["vacancyDays","Flag a vacancy after","days"], ["inboxStaleDays","Flag receipts waiting longer than","days"]];
+             ["vacancyDays","Flag a vacancy after","days"], ["inboxStaleDays","Flag receipts waiting longer than","days"],
+             ["expenseCutoff","Expenses dated after day","go on the next month's owner statement"]];
   const c = elm("div","card");
+  if(s.expenseCutoff == null) s.expenseCutoff = pmExpenseCutoff();
   c.innerHTML = `<div class="card-h"><h3>Alert rules</h3><span class="muted" style="margin-left:auto;font-size:12px">Shared by everyone, and used by the morning email</span></div>
     <div class="card-b" style="max-width:720px">${F.map(([k, l, h]) => `<div class="pm-set"><span>${l}</span><input type="number" min="0" max="120" data-sk="${k}" value="${s[k]}"><span class="muted">${h}</span></div>`).join("")}
       <p class="help" style="margin-top:14px">The morning email goes to everyone on the Team list on weekdays between 7 and 8 AM, only on days something needs action. It's sent by the receipt-inbox Google script — see <b>setupDigest</b> in its instructions.</p>
@@ -7582,9 +7584,12 @@ function vendorSuggestions(){
 }
 
 /* ---------- the owner side of a bill: deduction lines in Month close ---------- */
-// the month a deduction lands in: the bill's month, or this month when that one is closed
+// PHD's rule: an expense dated after the 15th goes on the following month's statement (Alert rules can change the day)
+const pmExpenseCutoff = () => { const d = Number((typeof pmSettings === "function" && pmSettings() || {}).expenseCutoff); return d >= 1 && d <= 31 ? d : 15; };
+function pmExpenseMonth(date){ const d = String(date || todayISO()); return +d.slice(8, 10) > pmExpenseCutoff() ? monthAdd(d.slice(0, 7), 1) : d.slice(0, 7); }
+// the month a deduction lands in: the bill's statement month (or the month picked for it), or the next open month when that one is closed
 function billDeductMonth(b){
-  const m = (b.deduct && b.deduct.month) || String(b.date || todayISO()).slice(0, 7);
+  const m = b.deductMonth || pmExpenseMonth(b.date);
   const closed = mm => (pmState().meta[mm] || {}).closed;
   if(!closed(m)) return m;
   let x = thisMonth(); while(closed(x)) x = monthAdd(x, 1);
@@ -7609,6 +7614,15 @@ function billSyncDeduction(b){
   if(row.locked){ row.repairs = null; row.adminFee = null; }
   pmTouch(row);
   b.deduct = {month:m, pid:b.propertyId};
+}
+let PM_CUTOFF_DONE = false;
+function pmApplyExpenseCutoff(){
+  if(PM_CUTOFF_DONE || typeof pmState !== "function") return; const P2 = pmState(); if(!P2.properties.length || !P2.bills) return;
+  PM_CUTOFF_DONE = true;
+  const move = billList().filter(b => b.status !== "void" && b.recover === "deduct" && b.propertyId && b.deduct && b.deduct.month && b.deduct.month !== billDeductMonth(b) && !(P2.meta[b.deduct.month] || {}).closed);
+  if(!move.length) return;
+  snapshot(); move.forEach(billSyncDeduction); commit();
+  toast(`${move.length} bill${move.length === 1 ? "" : "s"} dated after the ${pmExpenseCutoff()}th moved to the next month's statement`);
 }
 function billSave(b, isNew){
   snapshot();
@@ -15848,4 +15862,10 @@ function ofRunPaid(r){
   const d = Object.assign({}, A[r._id], {status:"paid", paidOn:day, paidAt:now, paidBy:who, method:method.trim(), account:r.account});
   A[r._id] = d;
   commit(); closeSheet(); render(); toast("Recorded as paid");
+}
+
+/* expenses after the 15th: put bills placed under the old rule in the right month, once, when Rentals opens */
+if(typeof render === "function"){
+  const cutRender0 = render;
+  render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)) try{ pmApplyExpenseCutoff(); }catch(e){ console.error(e); } return r; };
 }
