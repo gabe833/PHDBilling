@@ -15263,3 +15263,536 @@ if(typeof openSheet === "function"){
     const files = [...e.dataTransfer.files]; if(files.length > 1) toast("One file per transaction — attaching the first");
     txAttach(p, t, files[0]).then(got => { if(got) render(); }); }, true);
 })();
+
+/* =====================================================================
+   OFFICE — the third side of the console, next to Projects and Property
+   mgmt: pay for the people who work for PHD (1099 hours, salary, work
+   invoices like lock changes and painting, commissions), MLS dues, and
+   money someone owes the firm, backed out of what they'd be paid.
+
+   Records are docs of kind "hr" — and unlike everything else they are NOT
+   shared with the whole team: an admin (staff.admin: Gabe, Peter) sees all
+   of them; anyone else sees only their own (data.email = their login) and
+   can add or change their own entries until they're approved.
+   (Database rules: office-setup.sql.)
+
+     person:<id>  {name, email, role, pay:{basis, amount, rate, period}, commissionPct, active, notes}
+     entry:<id>   {person, email, kind, date, hours, rate, amountC, desc, address, link, status, runId, paidOn, by, at, note}
+                  kind: hours | work | commission | expense | timeoff     (PHD owes the person)
+                        owed | mls                                        (the person owes PHD)
+                        deduction | payment                               (written when a pay run is paid)
+                  status: draft | submitted | confirmed | rejected | paid
+     run:<id>     {periodStart, periodEnd, payDate, account, status, lines:[{person, email, name, baseC, entries, timeoff, grossC, deductC, netC, note}], …}
+                  status: draft → submitted (to the approver) → approved → paid · or sent back (rejected)
+     settings     {approvers:[email]}   only these people can approve a pay run (the database enforces it)
+
+   Nothing here moves money: "Record as paid" notes what was paid, from which account, after it's sent.
+   ===================================================================== */
+ICON_PATHS.office = '<path d="M2.5 13.5V4.5l5.5-2 5.5 2v9"/><path d="M2.5 13.5h11M5.5 13.5v-3h5v3M5.5 6.5h1M9.5 6.5h1M5.5 8.5h1M9.5 8.5h1"/>';
+ICON_PATHS.clock = '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>';
+const OF_VIEWS = new Set(["ofMe", "ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed"]);
+const OF_ADMIN_VIEWS = new Set(["ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed"]);
+const OF_EARN = new Set(["hours", "work", "commission", "expense"]), OF_OWE = new Set(["owed", "mls"]);
+const OF_KIND = {hours:"Hours", work:"Work invoice", commission:"Commission", expense:"Reimbursement", timeoff:"Time off", owed:"Owed to PHD", mls:"MLS dues", deduction:"Taken out of pay", payment:"Paid"};
+const OF_ST = {draft:["Draft", "grey"], submitted:["Waiting for review", "gold"], confirmed:["Confirmed", "acc"], rejected:["Sent back", "red"], paid:["Paid", "green"],
+  approved:["Approved", "green"]};
+const OF_ACCOUNTS = ["PM Operating", "Real Estate"];
+const OF = {admin:null, editing:null};
+
+function ofAll(){ S.hr = S.hr && typeof S.hr === "object" ? S.hr : {}; return S.hr; }
+const ofList = pre => Object.entries(ofAll()).filter(([k, v]) => k.startsWith(pre) && v && !v.deleted).map(([k, v]) => Object.assign({_id:k, id:k.slice(k.indexOf(":") + 1)}, v));
+const ofPeople = () => ofList("person:").sort((a, b) => (b.active !== false) - (a.active !== false) || String(a.name).localeCompare(String(b.name)));
+const ofPerson = id => { const d = ofAll()["person:" + id]; return d && !d.deleted ? Object.assign({_id:"person:" + id, id}, d) : null; };
+const ofEntries = () => ofList("entry:");
+const ofRuns = () => ofList("run:").sort((a, b) => String(b.payDate || b.periodEnd || "").localeCompare(String(a.payDate || a.periodEnd || "")));
+const ofSettings = () => ofAll().settings || {approvers:["peter@phdproperties.realestate"]};
+const ofMe = () => (typeof Cloud !== "undefined" && Cloud.email) || "";
+const ofIsAdmin = () => !(typeof Cloud !== "undefined" && Cloud.ready) || OF.admin === true;      // working off a file: it's yours
+const ofCanApprove = () => ofIsAdmin() && (!(typeof Cloud !== "undefined" && Cloud.ready) || (ofSettings().approvers || []).map(x => String(x).toLowerCase()).includes(ofMe()));
+const ofMyPerson = () => ofPeople().find(p => p.email && String(p.email).toLowerCase() === ofMe()) || null;
+const ofSt = s => { const [l, c] = OF_ST[s] || [s || "—", "grey"]; return `<span class="st st-${c}"><i></i>${esc(l)}</span>`; };
+const ofWho = () => (typeof Cloud !== "undefined" && (Cloud.name || Cloud.email)) || "You";
+const ofEntryC = e => e.kind === "hours" ? Math.round((+e.hours || 0) * cents(e.rate || 0)) : (+e.amountC || 0);
+const ofPersonOf = e => ofPerson(e.person) || {name:e.name || "Someone", id:e.person};
+function ofPut(id, data){ snapshot(); ofAll()[id] = data; commit(); }
+
+/* ---- money each person is owed / owes ---- */
+function ofBalance(pid){
+  const es = ofEntries().filter(e => e.person === pid);
+  const open = es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed")).reduce((a, e) => a + ofEntryC(e), 0);
+  const owedConfirmed = es.filter(e => OF_OWE.has(e.kind) && e.status === "confirmed").reduce((a, e) => a + ofEntryC(e), 0);
+  const owedPending = es.filter(e => OF_OWE.has(e.kind) && e.status === "submitted").reduce((a, e) => a + ofEntryC(e), 0);
+  const taken = es.filter(e => e.kind === "deduction").reduce((a, e) => a + ofEntryC(e), 0);
+  const paid = es.filter(e => e.kind === "payment").reduce((a, e) => a + ofEntryC(e), 0);
+  return {open, owedC:Math.max(0, owedConfirmed - taken), owedPending, taken, paid};
+}
+
+/* ---- saving: hr records ride along with the other documents ---- */
+if(typeof cloudDocs === "function"){
+  const ofDocs0 = cloudDocs;
+  // only once the database knows about Office records (office-setup.sql) — before that, saving them would fail every save
+  cloudDocs = function(){ const out = ofDocs0.apply(this, arguments); if(!(typeof Cloud !== "undefined" && Cloud.ready) || OF.admin != null && !OF.noDb) Object.entries(ofAll()).forEach(([k, v]) => { if(v) out.set("hr/" + k, v); }); return out; };
+}
+if(typeof cloudApply === "function"){
+  const ofApply0 = cloudApply;
+  cloudApply = function(kind, id, data, deleted){
+    if(kind === "hr"){ if(deleted) delete ofAll()[id]; else ofAll()[id] = data; return; }
+    return ofApply0.apply(this, arguments);
+  };
+}
+if(typeof cloudLabel === "function"){
+  const ofLabel0 = cloudLabel;
+  cloudLabel = function(kind, id, data){ if(kind === "hr") return id.startsWith("run:") ? "a pay run" : id.startsWith("person:") ? (data && data.name) || "a person" : "a pay entry"; return ofLabel0.apply(this, arguments); };
+}
+// who's an admin (sees everyone's pay) — read once after sign-in
+async function ofLoadAdmin(){
+  if(typeof Cloud === "undefined" || !Cloud.ready || OF.admin != null) return;
+  try{ const {data, error} = await Cloud.sb.from("staff").select("admin").eq("email", Cloud.email).maybeSingle();
+    if(error){ OF.noDb = true; OF.admin = false; } else OF.admin = !!(data && data.admin); }
+  catch(e){ OF.admin = false; OF.noDb = true; }
+  if(S.ui.mode === "office") render(); else renderNav();
+}
+
+/* ---- the third side: mode switch, menu, pages ---- */
+if(typeof renderModeSwitch === "function"){
+  const ofSw0 = renderModeSwitch;
+  renderModeSwitch = function(){
+    ofSw0.apply(this, arguments);
+    if(OF_VIEWS.has(S.ui.pjLastView)) S.ui.pjLastView = "portfolio";        // the Projects side never "remembers" an Office page
+    const box = $("#modeSw"); if(!box) return;
+    const on = S.ui.mode === "office";
+    box.classList.add("three");
+    const pmB = box.querySelector('[data-mode="pm"]'); if(pmB){ pmB.textContent = "Rentals"; pmB.title = "Property management"; }
+    if(!box.querySelector('[data-mode="office"]')){
+      const b = elm("button", null, "Office"); b.dataset.mode = "office"; box.appendChild(b);
+    }
+    box.querySelectorAll("[data-mode]").forEach(b => {
+      b.setAttribute("aria-pressed", on ? b.dataset.mode === "office" : (b.dataset.mode === "pm") === (S.ui.mode === "pm") && b.dataset.mode !== "office");
+      b.onclick = () => { if(b.dataset.mode === "office"){ if(!on) go(S.ui.ofLastView && OF_VIEWS.has(S.ui.ofLastView) ? S.ui.ofLastView : "ofMe"); } else if(on || (b.dataset.mode === "pm") !== (S.ui.mode === "pm")) setMode(b.dataset.mode); };
+    });
+    document.body.classList.toggle("mode-office", on);
+    if(on) document.body.classList.remove("mode-pm");
+  };
+}
+if(typeof go === "function"){
+  const ofGo0 = go;
+  go = function(view){
+    if(OF_VIEWS.has(view)){
+      if(OF_ADMIN_VIEWS.has(view) && OF.admin === false) view = "ofMe";
+      S.ui.mode = "office"; S.ui.view = view; S.ui.ofLastView = view;
+      if(typeof navDrawer === "function") navDrawer(false);
+      persistUi(); render(); window.scrollTo(0, 0); return;
+    }
+    return ofGo0.apply(this, arguments);
+  };
+}
+if(typeof setMode === "function"){
+  const ofMode0 = setMode;
+  setMode = function(mode){ if(mode === "office") return go(S.ui.ofLastView || "ofMe"); if(S.ui.mode === "office") S.ui.mode = mode; return ofMode0.apply(this, arguments); };
+}
+if(typeof renderNav === "function"){
+  const ofNav0 = renderNav;
+  renderNav = function(){
+    if(S.ui.mode !== "office") return ofNav0.apply(this, arguments);
+    const n = $("#nav"); n.innerHTML = "";
+    const sw = document.querySelector(".switch-wrap"); if(sw) sw.style.display = "none";
+    const mk = (k, lbl, ic, badge) => { const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge || ""}`); b.setAttribute("aria-current", S.ui.view === k); b.onclick = () => go(k); n.appendChild(b); };
+    const badge = (x, alert) => x ? `<i class="badge${alert ? " alert" : ""}">${x}</i>` : "";
+    mk("today", "Today", "bolt");
+    n.appendChild(elm("div", "nav-gap"));
+    n.appendChild(elm("div", "nav-head", "Me"));
+    const mine = ofMyPerson(), myOpen = mine ? ofEntries().filter(e => e.person === mine.id && e.status === "rejected").length : 0;
+    mk("ofMe", "My pay & hours", "clock", badge(myOpen, true));
+    if(ofIsAdmin()){
+      const es = ofEntries(), waiting = es.filter(e => e.status === "submitted").length;
+      const runs = ofRuns(), toApprove = runs.filter(r => r.status === "submitted").length, toPay = runs.filter(r => r.status === "approved").length;
+      n.appendChild(elm("div", "nav-gap"));
+      n.appendChild(elm("div", "nav-head", "Pay"));
+      mk("ofRuns", "Pay runs", "card", toApprove && ofCanApprove() ? badge(toApprove, true) : badge(toApprove + toPay));
+      mk("ofWork", "Hours & work invoices", "list", badge(waiting));
+      mk("ofOwed", "Owed to PHD", "receipt", badge(es.filter(e => OF_OWE.has(e.kind) && e.status === "submitted").length));
+      n.appendChild(elm("div", "nav-gap"));
+      n.appendChild(elm("div", "nav-head", "Agents"));
+      mk("ofComm", "Commissions", "chart", badge(es.filter(e => e.kind === "commission" && e.status === "submitted").length));
+      mk("ofMls", "MLS dues", "file", badge(es.filter(e => e.kind === "mls" && e.status !== "paid" && e.status !== "rejected" && !e.paidOn).length));
+      n.appendChild(elm("div", "nav-gap"));
+      n.appendChild(elm("div", "nav-head", "Office"));
+      mk("ofPeople", "People", "user", badge(ofPeople().filter(p => p.active !== false).length));
+    }
+  };
+}
+if(typeof render === "function"){
+  const ofRender0 = render;
+  render = function(){
+    if(S.ui.mode !== "office" || !OF_VIEWS.has(S.ui.view)){ const sw = document.querySelector(".switch-wrap"); if(sw) sw.style.display = ""; document.body.classList.remove("mode-office"); return ofRender0.apply(this, arguments); }
+    ofLoadAdmin();
+    renderModeSwitch(); renderNav();
+    if(OF_ADMIN_VIEWS.has(S.ui.view) && OF.admin === false) S.ui.view = "ofMe";
+    const T = {ofMe:["Office", "My pay & hours", "What you've submitted, what's been paid, and anything you owe the firm"],
+      ofRuns:["Office · Pay", "Pay runs", "Put pay together, send it for approval, record it once it's paid"],
+      ofWork:["Office · Pay", "Hours & work invoices", "Everything people have submitted, waiting to go on a pay run"],
+      ofOwed:["Office · Pay", "Owed to PHD", "Money someone owes the firm — taken out of their pay once confirmed"],
+      ofComm:["Office · Agents", "Commissions", "Agent commissions on leases and sales"],
+      ofMls:["Office · Agents", "MLS dues", "Dues, renewals and fines per agent"],
+      ofPeople:["Office", "People", "Who PHD pays, how, and who approves"]}[S.ui.view];
+    $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
+    $("#pgActions").innerHTML = "";
+    const v = $("#view"); v.innerHTML = "";
+    if(typeof Cloud !== "undefined" && Cloud.ready && OF.admin == null) v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading…</p></div>`));
+    else if(OF.noDb) v.appendChild(elm("div", "card", `<div class="empty"><b>Office needs a one-time database update</b><p>Pay records are private (each person sees only their own; Gabe and Peter see everyone's), so the database needs its rules added first: run <code>office-setup.sql</code> in Supabase → SQL editor. Nothing is saved here until then.</p></div>`));
+    else ({ofMe:pgOfMe, ofRuns:pgOfRuns, ofWork:pgOfWork, ofOwed:pgOfOwed, ofComm:pgOfComm, ofMls:pgOfMls, ofPeople:pgOfPeople})[S.ui.view]();
+    if(typeof chip === "function") chip();
+    const mn = $("#mName"); if(mn){ mn.textContent = T[1]; const ms = $("#mSub"); if(ms) ms.textContent = "Office"; }
+  };
+}
+
+/* ---- shared pieces ---- */
+function ofEntryRow(e, opts){
+  opts = opts || {};
+  const p = ofPersonOf(e), c = ofEntryC(e), owe = OF_OWE.has(e.kind) || e.kind === "deduction";
+  const what = e.kind === "hours" ? `${+e.hours || 0} h × ${usd(cents(e.rate || 0))}${e.desc ? " · " + esc(e.desc) : ""}` : esc(e.desc || OF_KIND[e.kind] || "");
+  return `<tr data-e="${esc(e._id)}" tabindex="0">
+    <td class="nw muted">${e.date ? esc(fdateS(e.date)) : "—"}</td>
+    ${opts.noPerson ? "" : `<td><div class="item-t">${esc(p.name)}</div></td>`}
+    <td><div class="item-t">${what}</div><div class="item-s">${esc(OF_KIND[e.kind] || e.kind)}${e.address ? " · " + esc(e.address) : ""}${e.link ? ` · <a href="${esc(e.link)}" target="_blank" rel="noopener">receipt</a>` : ""}${e.note ? " · " + esc(e.note) : ""}</div></td>
+    <td class="r num"${owe ? ' style="color:var(--red)"' : ""}>${e.kind === "timeoff" ? `${+e.days || 1} day${(+e.days || 1) === 1 ? "" : "s"}` : (owe ? "−" : "") + usd(c)}</td>
+    <td>${ofSt(e.status)}${e.paidOn ? `<div class="item-s">${esc(fdateS(e.paidOn))}</div>` : ""}</td></tr>`;
+}
+function ofTable(list, opts){
+  opts = opts || {};
+  if(!list.length) return `<div class="empty"><p class="muted">${esc(opts.empty || "Nothing here yet.")}</p></div>`;
+  return `<div class="tbl-wrap"><table class="tbl of-tbl"><thead><tr><th>Date</th>${opts.noPerson ? "" : "<th>Person</th>"}<th>What</th><th class="r">Amount</th><th>Status</th></tr></thead><tbody>${list.map(e => ofEntryRow(e, opts)).join("")}</tbody></table></div>`;
+}
+function ofWireRows(root){ root.querySelectorAll("[data-e]").forEach(tr => { tr.onclick = e => { if(e.target.closest("a")) return; ofEntrySheet(tr.dataset.e); }; tr.onkeydown = e => { if(e.key === "Enter") ofEntrySheet(tr.dataset.e); }; }); }
+const ofSortE = l => l.slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.at || "").localeCompare(String(a.at || "")));
+
+/* ---- add or change an entry ---- */
+function ofEntrySheet(id, seed){
+  const cur = id ? Object.assign({}, ofAll()[id]) : null, isNew = !cur, admin = ofIsAdmin();
+  const e = cur || Object.assign({kind:"hours", date:todayISO(), status:"submitted"}, seed || {});
+  const people = admin ? ofPeople().filter(p => p.active !== false || p.id === e.person) : [ofMyPerson()].filter(Boolean);
+  if(!people.length){ toast(admin ? "Add a person first (Office → People)" : "You aren't set up in Office yet — ask Gabe or Peter to add you"); return; }
+  if(!e.person) e.person = (seed && seed.person) || people[0].id;
+  const mineLocked = !admin && !isNew && !["draft", "submitted", "rejected"].includes(cur.status);
+  const kinds = admin ? ["hours", "work", "commission", "expense", "timeoff", "owed", "mls"] : ["hours", "work", "expense", "timeoff"];
+  const sh = $("#sheet");
+  const draw = () => {
+    const p = ofPerson(e.person) || {}, k = e.kind;
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "Add" : "Edit"} · ${esc(OF_KIND[k])}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name || "")}${!isNew ? " · " + (OF_ST[e.status] || [e.status])[0] : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${mineLocked ? `<p class="pm-banner">This has been ${esc((OF_ST[e.status] || [e.status])[0].toLowerCase())} — ask Gabe or Peter if it needs changing.</p>` : ""}
+        ${e.status === "rejected" && e.reviewNote ? `<p class="pm-banner late">Sent back: ${esc(e.reviewNote)}</p>` : ""}
+        <div class="f2"><label class="fld"><span>Person</span><select id="oeP" ${admin && !mineLocked ? "" : "disabled"}>${people.map(x => `<option value="${esc(x.id)}" ${x.id === e.person ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+          <label class="fld"><span>Type</span><select id="oeK" ${mineLocked ? "disabled" : ""}>${kinds.map(x => `<option value="${x}" ${x === k ? "selected" : ""}>${OF_KIND[x]}</option>`).join("")}</select></label></div>
+        <div class="f2"><label class="fld"><span>${k === "timeoff" ? "First day off" : "Date"}</span><input type="date" id="oeD" value="${esc(e.date || "")}"></label>
+          ${k === "hours" ? `<label class="fld"><span>Hours</span><input type="number" step="0.25" min="0" id="oeH" value="${esc(e.hours || "")}"></label>`
+            : k === "timeoff" ? `<label class="fld"><span>Days</span><input type="number" step="0.5" min="0.5" id="oeDays" value="${esc(e.days || 1)}"></label>`
+            : `<label class="fld"><span>Amount</span><input type="number" step="0.01" min="0" id="oeA" value="${e.amountC ? (e.amountC / 100).toFixed(2) : ""}"></label>`}</div>
+        ${k === "hours" ? `<label class="fld"><span>Rate per hour</span><input type="number" step="0.01" min="0" id="oeR" value="${esc(e.rate != null ? e.rate : (p.pay && p.pay.rate) || "")}"></label>` : ""}
+        ${k === "commission" ? `<div class="f2"><label class="fld"><span>Deal amount (rent or price)</span><input type="number" step="0.01" min="0" id="oeBase" value="${esc(e.dealC ? (e.dealC / 100).toFixed(2) : "")}"></label><label class="fld"><span>Agent %</span><input type="number" step="0.1" min="0" id="oePct" value="${esc(e.pct != null ? e.pct : p.commissionPct || "")}"></label></div><p class="help" id="oeCalc"></p>` : ""}
+        <label class="fld"><span>${k === "timeoff" ? "Note" : k === "hours" ? "What you worked on" : "What it was"}</span><input type="text" id="oeW" value="${esc(e.desc || "")}" placeholder="${k === "work" ? "Lock change, painting, blind install…" : k === "owed" ? "Credit given to an owner, an MLS fine…" : k === "mls" ? "Annual MLS dues, a fine…" : ""}"></label>
+        ${["work", "commission", "owed", "mls", "expense"].includes(k) ? `<label class="fld"><span>Property</span><input type="text" id="oeAd" value="${esc(e.address || "")}" placeholder="342 King St"></label>` : ""}
+        ${["work", "expense", "owed", "mls", "commission"].includes(k) ? `<label class="fld"><span>Receipt or invoice link <span class="muted" style="font-weight:400">· optional</span></span><input type="url" id="oeL" value="${esc(e.link || "")}" placeholder="https://drive.google.com/…"></label>` : ""}
+        ${admin && !isNew ? `<label class="fld"><span>Office note</span><input type="text" id="oeN" value="${esc(e.note || "")}"></label>` : ""}
+        ${!isNew ? `<p class="help">Added by ${esc(e.by || "—")}${e.at ? " · " + esc(fdateS(String(e.at).slice(0, 10))) : ""}${e.reviewedBy ? ` · reviewed by ${esc(e.reviewedBy)}` : ""}${e.runId && ofAll()[e.runId] ? ` · on the ${esc(fdateS(ofAll()[e.runId].payDate || ofAll()[e.runId].periodEnd))} pay run` : ""}</p>` : ""}
+      </div>
+      <div class="sheet-f">
+        ${!isNew && !mineLocked && e.status !== "paid" ? `<button class="btn ghost" id="oeDel">Delete</button>` : ""}
+        ${admin && !isNew && e.status === "submitted" ? `<button class="btn" id="oeBack">Send back</button>` : ""}
+        <span style="flex:1"></span>
+        ${mineLocked ? `<button class="btn" id="shCancel">Close</button>` : `<button class="btn" id="shCancel">Cancel</button>
+          ${admin && (isNew || e.status === "submitted" || e.status === "rejected") ? `<button class="btn" id="oeSave2">${isNew ? "Add as waiting" : "Save"}</button><button class="btn primary" id="oeOk">${isNew ? "Add confirmed" : "Confirm"}</button>`
+            : `<button class="btn primary" id="oeSave">${isNew ? "Submit" : e.status === "rejected" ? "Resubmit" : "Save"}</button>`}`}
+      </div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const grab = () => {
+      e.person = $("#oeP").value; e.kind = $("#oeK").value; e.date = $("#oeD").value;
+      if($("#oeH")) e.hours = +$("#oeH").value || 0; if($("#oeR")) e.rate = +$("#oeR").value || 0;
+      if($("#oeDays")) e.days = +$("#oeDays").value || 1;
+      if($("#oeA")) e.amountC = cents($("#oeA").value);
+      if($("#oeBase")){ e.dealC = cents($("#oeBase").value); e.pct = +$("#oePct").value || 0; }
+      e.desc = $("#oeW").value.trim(); if($("#oeAd")) e.address = $("#oeAd").value.trim(); if($("#oeL")) e.link = $("#oeL").value.trim(); if($("#oeN")) e.note = $("#oeN").value.trim();
+      const pp = ofPerson(e.person); e.email = pp && pp.email ? String(pp.email).toLowerCase() : ""; e.name = pp ? pp.name : "";
+    };
+    const calc = () => { const c = $("#oeCalc"); if(!c) return; const d = cents($("#oeBase").value), pc = +$("#oePct").value || 0; c.textContent = d && pc ? `${pc}% of ${usd(d)} = ${usd(Math.round(d * pc / 100))}` : ""; if(d && pc){ $("#oeA").value = (Math.round(d * pc / 100) / 100).toFixed(2); } };
+    if($("#oeBase")){ $("#oeBase").oninput = $("#oePct").oninput = calc; calc(); }
+    $("#oeK").onchange = () => { grab(); draw(); };
+    $("#oeP").onchange = () => { grab(); draw(); };
+    const save = st => {
+      grab();
+      if(e.kind === "hours" ? !(e.hours > 0) : e.kind !== "timeoff" && !(e.amountC > 0)) return toast(e.kind === "hours" ? "Add the hours" : "Add the amount");
+      if(!admin && !e.email) return toast("Your profile has no email — ask Gabe or Peter to add it");
+      const rid = id || "entry:" + uid() + uid();
+      const now = new Date().toISOString();
+      const next = Object.assign({}, e, {status:st, by:e.by || ofWho(), at:e.at || now});
+      if(st === "confirmed"){ next.reviewedBy = ofWho(); next.reviewedAt = now; delete next.reviewNote; }
+      if(st === "submitted" && cur && cur.status === "rejected") delete next.reviewNote;
+      ofPut(rid, next); closeSheet(); render(); toast(st === "confirmed" ? "Confirmed" : isNew ? "Submitted for review" : "Saved");
+    };
+    const b1 = $("#oeSave"); if(b1) b1.onclick = () => save(admin && cur && cur.status === "confirmed" ? "confirmed" : "submitted");
+    const b2 = $("#oeSave2"); if(b2) b2.onclick = () => save("submitted");
+    const b3 = $("#oeOk"); if(b3) b3.onclick = () => save("confirmed");
+    const bb = $("#oeBack"); if(bb) bb.onclick = () => { const why = prompt("Why is it going back? (they'll see this)"); if(why == null) return; grab(); ofPut(id, Object.assign({}, e, {status:"rejected", reviewNote:why.trim(), reviewedBy:ofWho(), reviewedAt:new Date().toISOString()})); closeSheet(); render(); toast("Sent back"); };
+    const bd = $("#oeDel"); if(bd) bd.onclick = () => { if(!confirm("Delete this entry?")) return; ofPut(id, Object.assign({}, cur, {deleted:true})); delete ofAll()[id]; commit(); closeSheet(); render(); toast("Deleted"); };
+  };
+  draw(); openPanel();
+}
+
+/* ---- My pay & hours (everyone) ---- */
+function pgOfMe(){
+  const v = $("#view"), me = ofMyPerson();
+  if(!me){
+    v.appendChild(elm("div", "card", `<div class="empty"><b>You aren't set up in Office yet</b><p>${ofIsAdmin() ? "Add yourself under People with your login email, then your hours and pay show here." : "Ask Gabe or Peter to add you — then you can submit hours and work invoices here and see what's been paid."}</p>${ofIsAdmin() ? `<button class="btn primary" id="ofAddMe">Add me</button>` : ""}</div>`));
+    const b = $("#ofAddMe"); if(b) b.onclick = () => ofPersonSheet(null, {name:(typeof Cloud !== "undefined" && Cloud.name) || "", email:ofMe()});
+    return;
+  }
+  actions([["Time off", () => ofEntrySheet(null, {kind:"timeoff", person:me.id}), "ghost"], ["Work invoice", () => ofEntrySheet(null, {kind:"work", person:me.id})], ["Log hours", () => ofEntrySheet(null, {kind:"hours", person:me.id}), "primary"]]);
+  const es = ofEntries().filter(e => e.person === me.id), B = ofBalance(me.id);
+  const hero = elm("div", "card pf-hero of-hero");
+  const pay = me.pay || {};
+  hero.innerHTML = `<div class="pf-cell"><div class="label">Waiting to be paid</div><div class="pf-v">${usd(B.open)}</div><div class="pf-note">${es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed")).length} item(s) submitted</div></div>
+    <div class="pf-cell"><div class="label">Paid this year</div><div class="pf-v g">${usd(es.filter(e => e.kind === "payment" && String(e.date || "").slice(0, 4) === todayISO().slice(0, 4)).reduce((a, e) => a + ofEntryC(e), 0))}</div><div class="pf-note">${pay.basis === "salary" ? `${usd(cents(pay.amount || 0))} ${esc(pay.period || "bi-weekly")} base` : pay.basis === "hourly" ? `${usd(cents(pay.rate || 0))} an hour` : "per item"}</div></div>
+    <div class="pf-cell"><div class="label">Owed to PHD</div><div class="pf-v"${B.owedC ? ' style="color:var(--red)"' : ""}>${usd(B.owedC)}</div><div class="pf-note">${B.owedPending ? usd(B.owedPending) + " waiting to be confirmed" : B.taken ? usd(B.taken) + " already taken out of pay" : "Nothing owed"}</div></div>`;
+  v.appendChild(hero);
+  const back = es.filter(e => e.status === "rejected");
+  if(back.length){ const c = elm("div", "card"); c.innerHTML = `<div class="card-h"><h3>Sent back to you</h3></div>${ofTable(back, {noPerson:true})}`; ofWireRows(c); v.appendChild(c); }
+  const open = ofSortE(es.filter(e => !["paid", "rejected"].includes(e.status) && e.kind !== "payment" && e.kind !== "deduction"));
+  const c1 = elm("div", "card"); c1.innerHTML = `<div class="card-h"><h3>Submitted, not paid yet</h3></div>${ofTable(open, {noPerson:true, empty:"Nothing waiting. Log hours or add a work invoice (lock change, painting…) and it goes to Gabe and Peter for the next pay run."})}`; ofWireRows(c1); v.appendChild(c1);
+  const done = ofSortE(es.filter(e => e.status === "paid" || e.kind === "payment" || e.kind === "deduction")).slice(0, 80);
+  if(done.length){ const c2 = elm("div", "card"); c2.innerHTML = `<div class="card-h"><h3>Paid</h3></div>${ofTable(done, {noPerson:true})}`; ofWireRows(c2); v.appendChild(c2); }
+}
+
+/* ---- Hours & work invoices (admin) ---- */
+function pgOfWork(){
+  const v = $("#view"), f = S.ui.ofWf || "submitted", who = S.ui.ofWp || "";
+  actions([["Add", () => ofEntrySheet(null, {kind:"work", person:who || undefined}), "primary"]]);
+  const all = ofEntries().filter(e => OF_EARN.has(e.kind) && e.kind !== "commission" || e.kind === "timeoff");
+  const n = k => all.filter(e => (!who || e.person === who) && (k === "all" || e.status === k)).length;
+  const bar = elm("div", "sc-bar");
+  bar.innerHTML = `<div class="sc-seg">${[["submitted", "Waiting"], ["confirmed", "Confirmed"], ["rejected", "Sent back"], ["paid", "Paid"], ["all", "All"]].map(([k, l]) => `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n(k)}</span></button>`).join("")}</div>
+    <select id="ofWp"><option value="">Everyone</option>${ofPeople().map(p => `<option value="${esc(p.id)}" ${p.id === who ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>`;
+  bar.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.ui.ofWf = b.dataset.f; render(); });
+  bar.querySelector("#ofWp").onchange = e => { S.ui.ofWp = e.target.value; render(); };
+  v.appendChild(bar);
+  const list = ofSortE(all.filter(e => (!who || e.person === who) && (f === "all" || e.status === f)));
+  const c = elm("div", "card");
+  c.innerHTML = `${list.length && f === "submitted" ? `<div class="mn-sum"><span>${list.length} waiting · <b class="num">${usd(list.reduce((a, e) => a + ofEntryC(e), 0))}</b></span><span class="muted">Open one to confirm it or send it back. Confirmed or waiting, it can go on the next pay run.</span></div>` : ""}${ofTable(list, {empty:f === "submitted" ? "Nothing waiting for review." : "Nothing here."})}`;
+  ofWireRows(c); v.appendChild(c);
+}
+
+/* ---- Owed to PHD (admin) ---- */
+function pgOfOwed(){
+  const v = $("#view");
+  actions([["Add what's owed", () => ofEntrySheet(null, {kind:"owed"}), "primary"]]);
+  const people = ofPeople().map(p => ({p, B:ofBalance(p.id)})).filter(x => x.B.owedC || x.B.owedPending || x.B.taken);
+  const c0 = elm("div", "card");
+  c0.innerHTML = `<div class="card-h"><h3>Balances</h3></div>${people.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Person</th><th class="r">Confirmed, still owed</th><th class="r">Waiting to be confirmed</th><th class="r">Taken out of pay so far</th></tr></thead><tbody>
+    ${people.map(x => `<tr><td><b>${esc(x.p.name)}</b></td><td class="r num" style="color:var(--red)">${usd(x.B.owedC)}</td><td class="r num">${usd(x.B.owedPending)}</td><td class="r num">${usd(x.B.taken)}</td></tr>`).join("")}</tbody></table></div>`
+    : `<div class="empty"><p class="muted">Nobody owes the firm anything.</p></div>`}
+    <p class="help" style="padding:0 16px 12px">Confirmed amounts are taken out of that person's next pay run (you choose how much on the run). Waiting ones need confirming first — open each to confirm it.</p>`;
+  v.appendChild(c0);
+  const list = ofSortE(ofEntries().filter(e => OF_OWE.has(e.kind) || e.kind === "deduction"));
+  const c = elm("div", "card"); c.innerHTML = `<div class="card-h"><h3>Every item</h3></div>${ofTable(list, {empty:"Nothing owed."})}`; ofWireRows(c); v.appendChild(c);
+}
+
+/* ---- Commissions (admin) ---- */
+function pgOfComm(){
+  const v = $("#view");
+  actions([["Add commission", () => ofEntrySheet(null, {kind:"commission"}), "primary"]]);
+  const list = ofSortE(ofEntries().filter(e => e.kind === "commission"));
+  const yr = todayISO().slice(0, 4), byP = {};
+  list.filter(e => String(e.date || "").slice(0, 4) === yr && e.status !== "rejected").forEach(e => { byP[e.person] = (byP[e.person] || 0) + ofEntryC(e); });
+  const hero = elm("div", "card pf-hero");
+  hero.innerHTML = `<div class="pf-cell"><div class="label">Waiting to be paid</div><div class="pf-v">${usd(list.filter(e => e.status === "submitted" || e.status === "confirmed").reduce((a, e) => a + ofEntryC(e), 0))}</div></div>
+    ${Object.entries(byP).slice(0, 3).map(([pid, c]) => `<div class="pf-cell"><div class="label">${esc((ofPerson(pid) || {}).name || "")} · ${yr}</div><div class="pf-v g">${usd(c)}</div></div>`).join("")}`;
+  v.appendChild(hero);
+  const c = elm("div", "card"); c.innerHTML = ofTable(list, {empty:"No commissions yet. Add one for each lease or sale — it goes on the agent's next pay run."}); ofWireRows(c); v.appendChild(c);
+}
+
+/* ---- MLS dues (admin) ---- */
+function pgOfMls(){
+  const v = $("#view");
+  actions([["Add dues or a fine", () => ofEntrySheet(null, {kind:"mls"}), "primary"]]);
+  const list = ofSortE(ofEntries().filter(e => e.kind === "mls"));
+  const c = elm("div", "card");
+  c.innerHTML = `<p class="help" style="padding:12px 16px 0;margin:0">MLS dues and fines PHD covers for an agent. Confirmed ones count as owed to PHD and can come out of the agent's pay; mark one paid when the agent pays it back directly.</p>${ofTable(list, {empty:"No MLS dues recorded."})}`;
+  ofWireRows(c); v.appendChild(c);
+}
+
+/* ---- People (admin) ---- */
+function pgOfPeople(){
+  const v = $("#view");
+  actions([["Approvers", () => ofApproversSheet(), "ghost"], ["Add person", () => ofPersonSheet(null), "primary"]]);
+  const ps = ofPeople();
+  const c = elm("div", "card");
+  c.innerHTML = ps.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Person</th><th>Pay</th><th class="r">Waiting to be paid</th><th class="r">Owed to PHD</th><th>Sign-in</th></tr></thead><tbody>
+    ${ps.map(p => { const B = ofBalance(p.id), pay = p.pay || {};
+      return `<tr data-p="${esc(p.id)}" tabindex="0" style="cursor:pointer${p.active === false ? ";opacity:.55" : ""}"><td><div class="item-t">${esc(p.name)}</div><div class="item-s">${esc({agent:"Agent", contractor:"1099 contractor", staff:"Staff"}[p.role] || "")}${p.commissionPct ? ` · ${p.commissionPct}% commission` : ""}</div></td>
+        <td>${pay.basis === "salary" ? `${usd(cents(pay.amount || 0))} ${esc(pay.period || "bi-weekly")}` : pay.basis === "hourly" ? `${usd(cents(pay.rate || 0))} / hour` : `<span class="muted">Per item</span>`}</td>
+        <td class="r num">${usd(B.open)}</td><td class="r num"${B.owedC ? ' style="color:var(--red)"' : ""}>${usd(B.owedC)}${B.owedPending ? `<div class="item-s">+${usd(B.owedPending)} waiting</div>` : ""}</td>
+        <td>${p.email ? esc(p.email) : `<span class="muted">No login — Gabe and Peter enter for them</span>`}</td></tr>`; }).join("")}</tbody></table></div>`
+    : `<div class="empty"><b>No one yet</b><p>Add each person PHD pays: how they're paid (salary, hourly or per item), their commission %, and the email they sign in with — that's what lets them see their own pay here and nothing else.</p></div>`;
+  c.querySelectorAll("[data-p]").forEach(tr => tr.onclick = () => ofPersonSheet(tr.dataset.p));
+  v.appendChild(c);
+  v.appendChild(elm("p", "help", `Approvers: ${esc((ofSettings().approvers || []).join(", ") || "any admin")}. Only they can approve a pay run, and nobody can approve one they're paid in.`));
+}
+function ofPersonSheet(id, seed){
+  const cur = id ? ofPerson(id) : null, p = cur ? JSON.parse(JSON.stringify(cur)) : Object.assign({name:"", email:"", role:"staff", pay:{basis:"none", period:"bi-weekly"}, commissionPct:"", active:true}, seed || {});
+  p.pay = p.pay || {basis:"none"};
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><h3>${cur ? esc(cur.name) : "Add a person"}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <label class="fld"><span>Name</span><input type="text" id="opN" value="${esc(p.name)}"></label>
+      <label class="fld"><span>Sign-in email <span class="muted" style="font-weight:400">· lets them see their own pay; leave empty if they don't use the console</span></span><input type="email" id="opE" value="${esc(p.email || "")}" placeholder="name@phdproperties.realestate"></label>
+      <div class="f2"><label class="fld"><span>Role</span><select id="opR">${[["staff", "Staff"], ["contractor", "1099 contractor"], ["agent", "Agent"]].map(([k, l]) => `<option value="${k}" ${p.role === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="fld"><span>Commission %</span><input type="number" step="0.1" min="0" id="opC" value="${esc(p.commissionPct || "")}" placeholder="e.g. 5"></label></div>
+      <div class="f2"><label class="fld"><span>Paid by</span><select id="opB">${[["none", "Per item (invoices, commissions)"], ["hourly", "Hourly"], ["salary", "Set amount each pay period"]].map(([k, l]) => `<option value="${k}" ${p.pay.basis === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="fld" id="opAmtF"><span id="opAmtL"></span><input type="number" step="0.01" min="0" id="opAmt"></label></div>
+      <label class="fld" id="opPerF"><span>Pay period</span><select id="opPer">${["weekly", "bi-weekly", "twice a month", "monthly"].map(x => `<option ${p.pay.period === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label class="fld"><span>Notes</span><textarea id="opNo" rows="2">${esc(p.notes || "")}</textarea></label>
+      <label class="switchbox"><input type="checkbox" id="opA" ${p.active !== false ? "checked" : ""}> Active</label>
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="opOk">Save</button></div>`;
+  const fit = () => { const b = $("#opB").value; $("#opAmtF").style.display = b === "none" ? "none" : ""; $("#opPerF").style.display = b === "salary" ? "" : "none";
+    $("#opAmtL").textContent = b === "hourly" ? "Rate per hour" : "Amount each pay period"; $("#opAmt").value = b === "hourly" ? (p.pay.rate || "") : (p.pay.amount || ""); };
+  $("#opB").onchange = fit; fit();
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#opOk").onclick = () => {
+    const name = $("#opN").value.trim(); if(!name) return toast("Add a name");
+    const email = $("#opE").value.trim().toLowerCase(); if(email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("That email doesn't look right");
+    const b = $("#opB").value, amt = +$("#opAmt").value || 0;
+    const next = Object.assign({}, cur || {}, {type:"person", name, email, role:$("#opR").value, commissionPct:+$("#opC").value || 0, notes:$("#opNo").value.trim(), active:$("#opA").checked,
+      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}});
+    delete next._id; delete next.id;
+    const pid = id || (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "p") + "-" + uid().slice(0, 4);
+    ofPut("person:" + pid, next);
+    // their entries carry their email (that's what lets them see them)
+    if(cur && (cur.email || "") !== email){ snapshot(); ofEntries().filter(e => e.person === pid).forEach(e => { const d = ofAll()[e._id]; d.email = email; }); commit(); }
+    closeSheet(); render(); toast("Saved");
+  };
+  openPanel();
+}
+function ofApproversSheet(){
+  const sh = $("#sheet"), cur = (ofSettings().approvers || []).join(", ");
+  sh.innerHTML = `<div class="sheet-h"><h3>Who approves pay</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><label class="fld"><span>Approver emails</span><input type="text" id="oaE" value="${esc(cur)}"></label>
+      <p class="help">Only these people can approve a pay run, and the database refuses an approval from anyone else. Nobody can approve a run they're paid in — so Gabe's pay always needs Peter.</p></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="oaOk">Save</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#oaOk").onclick = () => { const L = $("#oaE").value.split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(x => /@/.test(x)); if(!L.length) return toast("Add at least one approver"); ofPut("settings", Object.assign({}, ofAll().settings || {}, {email:"", approvers:L})); closeSheet(); render(); toast("Saved"); };
+  openPanel();
+}
+
+/* ---- Pay runs (admin) ---- */
+function pgOfRuns(){
+  const v = $("#view");
+  actions([["New pay run", () => ofRunSheet(null), "primary"]]);
+  const runs = ofRuns();
+  const groups = [["submitted", "Waiting for approval"], ["approved", "Approved — record once paid"], ["draft", "Drafts"], ["rejected", "Sent back"], ["paid", "Paid"]];
+  if(!runs.length) v.appendChild(elm("div", "card", `<div class="empty"><b>No pay runs yet</b><p>A pay run puts together everyone's pay for a period: base pay, hours, work invoices and commissions that were submitted, minus anything they owe the firm. Send it to Peter to approve, then record it once it's paid.</p></div>`));
+  groups.forEach(([st, title]) => {
+    const rs = runs.filter(r => r.status === st); if(!rs.length) return;
+    const c = elm("div", "card");
+    c.innerHTML = `<div class="card-h"><h3>${title}</h3><span class="mn-cnt">${rs.length}</span></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Pay date</th><th>Period</th><th>People</th><th>From</th><th class="r">Gross</th><th class="r">Taken out</th><th class="r">Net</th><th>Status</th></tr></thead><tbody>
+      ${rs.map(r => { const L = r.lines || [], sum = k => L.reduce((a, l) => a + (+l[k] || 0), 0);
+        return `<tr data-r="${esc(r._id)}" tabindex="0" style="cursor:pointer"><td class="nw">${esc(fdateS(r.payDate || ""))}</td><td class="nw muted">${esc(fdateS(r.periodStart || ""))} – ${esc(fdateS(r.periodEnd || ""))}</td><td>${esc(L.map(l => l.name).join(", "))}</td><td>${esc(r.account || "")}</td>
+          <td class="r num">${usd(sum("grossC"))}</td><td class="r num">${sum("deductC") ? "−" + usd(sum("deductC")) : "—"}</td><td class="r num"><b>${usd(sum("netC"))}</b></td><td>${ofSt(r.status)}${r.approvedBy ? `<div class="item-s">by ${esc(r.approvedBy)}</div>` : ""}</td></tr>`; }).join("")}</tbody></table></div>`;
+    c.querySelectorAll("[data-r]").forEach(tr => tr.onclick = () => ofRunSheet(tr.dataset.r));
+    v.appendChild(c);
+  });
+}
+// a line for one person: base pay, what they submitted up to the period's end, time off in the period, and what they owe
+function ofRunLine(p, run, keep){
+  const es = ofEntries().filter(e => e.person === p.id), end = run.periodEnd || todayISO(), start = run.periodStart || "";
+  const taken = new Set(ofRuns().filter(r => r._id !== run._id && r.status !== "rejected").flatMap(r => (r.lines || []).flatMap(l => l.entries || [])));
+  const items = es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed") && !taken.has(e._id) && (!e.date || e.date <= end));
+  const off = es.filter(e => e.kind === "timeoff" && e.status !== "rejected" && e.date && e.date >= start && e.date <= end);
+  const pay = p.pay || {}, baseC = pay.basis === "salary" ? cents(pay.amount || 0) : 0;
+  const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
+  if(keep){ L.entries = keep.entries || []; L.timeoff = off.map(e => e._id); }
+  L.grossC = (+L.baseC || 0) + L.entries.reduce((a, k) => a + (ofAll()[k] ? ofEntryC(ofAll()[k]) : 0), 0);
+  const owed = ofBalance(p.id).owedC;
+  if(!keep || keep.deductC == null) L.deductC = Math.min(owed, L.grossC);
+  L.deductC = Math.max(0, Math.min(+L.deductC || 0, L.grossC));
+  L.netC = L.grossC - L.deductC;
+  L.owedC = owed;
+  return L;
+}
+function ofRunSheet(id){
+  const cur = id ? Object.assign({}, ofAll()[id], {_id:id}) : null;
+  const today = todayISO();
+  const r = cur ? JSON.parse(JSON.stringify(cur)) : {_id:"run:" + uid() + uid(), status:"draft", periodStart:PMCore.isoOf(PMCore.dayNum(today) - 13), periodEnd:today, payDate:today, account:OF_ACCOUNTS[0], lines:[]};
+  const editable = r.status === "draft" || r.status === "rejected";
+  if(!cur){ r.lines = ofPeople().filter(p => p.active !== false).map(p => ofRunLine(p, r)).filter(l => l.grossC || l.timeoff.length); }
+  const sh = $("#sheet");
+  const recalc = () => { r.lines = r.lines.map(l => { const p = ofPerson(l.person); return p ? ofRunLine(p, r, l) : l; }); };
+  const draw = () => {
+    const sum = k => r.lines.reduce((a, l) => a + (+l[k] || 0), 0), canApprove = ofCanApprove() && r.status === "submitted", mineIn = r.lines.some(l => l.email && l.email === ofMe());
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Pay run · ${esc(fdateS(r.payDate || ""))}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${ofSt(r.status)} ${r.approvedBy ? ` approved by ${esc(r.approvedBy)}` : ""}${r.status === "rejected" && r.rejectNote ? ` · sent back: ${esc(r.rejectNote)}` : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <div class="f2"><label class="fld"><span>Period from</span><input type="date" id="orS" value="${esc(r.periodStart)}" ${editable ? "" : "disabled"}></label><label class="fld"><span>to</span><input type="date" id="orE" value="${esc(r.periodEnd)}" ${editable ? "" : "disabled"}></label></div>
+        <div class="f2"><label class="fld"><span>Pay date</span><input type="date" id="orP" value="${esc(r.payDate)}" ${editable ? "" : "disabled"}></label>
+          <label class="fld"><span>Paid from</span><select id="orA" ${editable || r.status === "approved" ? "" : "disabled"}>${OF_ACCOUNTS.map(a => `<option ${a === r.account ? "selected" : ""}>${a}</option>`).join("")}</select></label></div>
+        ${r.lines.map((l, i) => { const items = (l.entries || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean), off = (l.timeoff || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean);
+          return `<div class="of-line">
+            <div class="of-line-h"><b>${esc(l.name)}</b><span class="num">${usd(l.netC)}</span>${editable ? `<button class="linkish" data-rm="${i}">remove</button>` : ""}</div>
+            <table class="pm-sum">
+              ${l.baseC ? `<tr><td>Base pay</td><td class="r num">${editable ? `<input class="of-in num" type="number" step="0.01" data-base="${i}" value="${(l.baseC / 100).toFixed(2)}">` : usd(l.baseC)}</td></tr>` : ""}
+              ${items.map(e => `<tr><td>${esc(fdateS(e.date || ""))} · ${esc(OF_KIND[e.kind])}${e.desc ? " · " + esc(e.desc) : ""}${e.address ? " · " + esc(e.address) : ""} ${e.status === "submitted" ? `<span class="st st-gold" style="height:18px"><i></i>not reviewed</span>` : ""}</td><td class="r num">${usd(ofEntryC(e))}${editable ? ` <button class="linkish" data-drop="${i}|${esc(e._id)}" title="Leave it for a later run">×</button>` : ""}</td></tr>`).join("")}
+              <tr class="rule"><td>What ${esc(l.name.split(" ")[0])} would be paid</td><td class="r num">${usd(l.grossC)}</td></tr>
+              ${l.owedC || l.deductC ? `<tr><td>Taken out toward what's owed to PHD <span class="muted">(${usd(l.owedC)} owed)</span></td><td class="r num" style="color:var(--red)">${editable ? `−<input class="of-in num" type="number" step="0.01" data-ded="${i}" value="${(l.deductC / 100).toFixed(2)}">` : "−" + usd(l.deductC)}</td></tr>` : ""}
+              <tr class="rule"><td><b>Net pay</b></td><td class="r num"><b>${usd(l.netC)}</b></td></tr>
+            </table>
+            ${off.length ? `<p class="help" style="margin:6px 0 0">Time off in this period: ${off.map(e => `${esc(fdateS(e.date))}${+e.days > 1 ? ` (${e.days} days)` : ""}${e.desc ? " — " + esc(e.desc) : ""}`).join("; ")}</p>` : ""}
+            ${l.owedC && l.owedC > l.deductC ? `<p class="help" style="margin:6px 0 0">${usd(l.owedC - l.deductC)} would still be owed after this run.</p>` : ""}
+          </div>`; }).join("") || `<p class="muted">Nobody has pay in this period. Change the dates, or add people and their hours first.</p>`}
+        ${editable ? `<div style="margin-top:8px"><select id="orAdd"><option value="">Add someone…</option>${ofPeople().filter(p => !r.lines.some(l => l.person === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></div>` : ""}
+        <div class="mn-sum" style="margin-top:12px;border:1px solid var(--line-2);border-radius:10px"><span>Gross <b class="num">${usd(sum("grossC"))}</b></span><span>Taken out <b class="num">${usd(sum("deductC"))}</b></span><span>Net to send <b class="num">${usd(sum("netC"))}</b></span><span class="muted">from ${esc(r.account)}</span></div>
+        ${r.status === "approved" ? `<p class="help">Approved. Send the payments (Nickel or the bank), then record it here — nothing is sent from the console.</p>` : ""}
+        ${r.status === "submitted" && !canApprove ? `<p class="help">Waiting for ${esc((ofSettings().approvers || []).join(", ") || "an approver")}.${mineIn ? " You're paid in this run, so someone else approves it." : ""}</p>` : ""}
+        ${r.paidAt ? `<p class="help">Recorded as paid ${esc(fdateS(String(r.paidOn || r.paidAt).slice(0, 10)))} by ${esc(r.paidBy || "")}${r.method ? " · " + esc(r.method) : ""}.</p>` : ""}
+      </div>
+      <div class="sheet-f">
+        ${editable && cur ? `<button class="btn ghost" id="orDel">Delete</button>` : ""}
+        ${canApprove ? `<button class="btn" id="orBack">Send back</button>` : ""}
+        <span style="flex:1"></span><button class="btn" id="shCancel">Close</button>
+        ${editable ? `<button class="btn" id="orSave">Keep as draft</button><button class="btn primary" id="orSend">Ask to approve</button>` : ""}
+        ${canApprove ? `<button class="btn primary" id="orOk" ${mineIn ? "disabled title=\"You're paid in this run\"" : ""}>Approve</button>` : ""}
+        ${r.status === "approved" ? `<button class="btn primary" id="orPaid">Record as paid</button>` : ""}
+      </div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    if(editable){
+      ["#orS", "#orE", "#orP"].forEach(s => $(s).onchange = () => { r.periodStart = $("#orS").value; r.periodEnd = $("#orE").value; r.payDate = $("#orP").value; if(!cur) r.lines = ofPeople().filter(p => p.active !== false).map(p => ofRunLine(p, r)).filter(l => l.grossC || l.timeoff.length); else recalc(); draw(); });
+      sh.querySelectorAll("[data-base]").forEach(x => x.onchange = () => { r.lines[+x.dataset.base].baseC = cents(x.value); recalc(); draw(); });
+      sh.querySelectorAll("[data-ded]").forEach(x => x.onchange = () => { r.lines[+x.dataset.ded].deductC = cents(x.value); recalc(); draw(); });
+      sh.querySelectorAll("[data-drop]").forEach(x => x.onclick = () => { const [i, k] = x.dataset.drop.split("|"); r.lines[+i].entries = r.lines[+i].entries.filter(y => y !== k); recalc(); draw(); });
+      sh.querySelectorAll("[data-rm]").forEach(x => x.onclick = () => { r.lines.splice(+x.dataset.rm, 1); draw(); });
+      const ad = $("#orAdd"); if(ad) ad.onchange = () => { const p = ofPerson(ad.value); if(p) r.lines.push(ofRunLine(p, r)); draw(); };
+    }
+    const acc = $("#orA"); if(acc) acc.onchange = () => { r.account = acc.value; };
+    const store = st => { const d = Object.assign({}, r, {type:"run", email:"", status:st, payees:r.lines.map(l => l.email).filter(Boolean)}); delete d._id; d.by = d.by || ofWho(); d.at = d.at || new Date().toISOString(); ofPut(r._id, d); return d; };
+    const sv = $("#orSave"); if(sv) sv.onclick = () => { store("draft"); closeSheet(); render(); toast("Saved as a draft"); };
+    const sd = $("#orSend"); if(sd) sd.onclick = () => { if(!r.lines.length) return toast("Nobody is on this run"); const d = store("submitted"); d.submittedAt = new Date().toISOString(); d.submittedBy = ofWho(); delete d.rejectNote; ofPut(r._id, d); closeSheet(); render(); toast(`Sent to ${(ofSettings().approvers || []).join(", ") || "the approver"}`); };
+    const ok = $("#orOk"); if(ok) ok.onclick = () => { if(!confirm(`Approve ${usd(sum("netC"))} of pay for ${r.lines.map(l => l.name).join(", ")}?`)) return; const d = store("approved"); d.approvedBy = ofMe() || ofWho(); d.approvedAt = new Date().toISOString(); closeSheet(); render(); toast("Approved"); };
+    const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
+    const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); delete ofAll()[r._id]; commit(); closeSheet(); render(); };
+    const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
+  };
+  draw(); openPanel();
+}
+// after the money has gone out: the items are marked paid, and each person gets a payment line (and the amount taken out of what they owe)
+function ofRunPaid(r){
+  const on = prompt(`Date the payments went out (YYYY-MM-DD) — from ${r.account}`, r.payDate || todayISO()); if(on == null) return;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(on.trim())) return toast("Use the date like 2026-10-31");
+  const method = prompt("How was it sent? (Nickel, ACH, check…)", "Nickel"); if(method == null) return;
+  snapshot();
+  const A = ofAll(), day = on.trim(), now = new Date().toISOString(), who = ofWho();
+  r.lines.forEach(l => {
+    (l.entries || []).forEach(k => { if(A[k]) A[k] = Object.assign({}, A[k], {status:"paid", paidOn:day, runId:r._id}); });
+    if(l.netC) A["entry:" + uid() + uid()] = {type:"entry", kind:"payment", person:l.person, email:l.email, name:l.name, date:day, amountC:l.netC, desc:`Pay ${fdateS(r.periodStart)} – ${fdateS(r.periodEnd)} · ${method.trim()} from ${r.account}`, status:"paid", paidOn:day, runId:r._id, by:who, at:now};
+    if(l.deductC) A["entry:" + uid() + uid()] = {type:"entry", kind:"deduction", person:l.person, email:l.email, name:l.name, date:day, amountC:l.deductC, desc:`Taken out of pay ${fdateS(r.periodStart)} – ${fdateS(r.periodEnd)} toward what's owed to PHD`, status:"paid", paidOn:day, runId:r._id, by:who, at:now};
+  });
+  const d = Object.assign({}, A[r._id], {status:"paid", paidOn:day, paidAt:now, paidBy:who, method:method.trim(), account:r.account});
+  A[r._id] = d;
+  commit(); closeSheet(); render(); toast("Recorded as paid");
+}
