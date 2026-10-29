@@ -14950,8 +14950,11 @@ function rcRow(m, row, prop, ledger){
   // 2 · MagicDoor's owner statement, against the console's own payout
   if(!has(row.mdNet)) st.md = {s:"na", a:null, t:"No MagicDoor owner statement for this month"};
   else {
-    const mdC = cents(row.mdNet), d = c.calcC - mdC;
-    st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)} — the same`}
+    // MagicDoor's statement covers the whole month: rent the console moved to next month (collected after the payout,
+    // or still owed by the tenant) is still in MagicDoor's figure, so add it back before comparing
+    const heldC = (row.adjustments || []).filter(a => a.lateRent === "out").reduce((t, a) => t - cents(a.amount), 0);
+    const mdC = cents(row.mdNet), d = c.calcC + heldC - mdC;
+    st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)} — the same once the ${usd(heldC)} collected after the payout is added back`.replace(/ once the \$0\.00 collected after the payout is added back$/, "")}
       : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
   }
   // 3 · the owner payout: a recorded figure has to agree with rent less fees and repairs
@@ -15894,22 +15897,41 @@ function pmLateRentCarry(){
       const day = r.paidOut && r.paidOut.date ? String(r.paidOut.date).slice(0, 10) : "";
       const mine = (r.adjustments || []).find(a => a[KEY] === "out");
       // the formula without our own adjustment, against what the owner was actually paid
-      const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => a[KEY] !== "out" && a[KEY] !== "catchup"), ownerPayout:null});
+      const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => a[KEY] !== "out" && a[KEY] !== "catchup" && a[KEY] !== "unpaid"), ownerPayout:null});
       const calcC = PMCore.calc(base, p, todayISO()).calcC;
       let carryC = 0;
+      // rent MagicDoor says the tenant still owes (its rent received is below the console's): not collected yet, so it
+      // can't be paid with next month — it waits until the tenant pays it
+      const mdRecvC = r.md && has(r.md.rentReceived) ? cents(r.md.rentReceived) : null;
+      let unpaidC = 0;
       if(pays && paid != null && day){
         const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
         const gap = calcC - paid;
-        if(gap > 100 && afterC >= gap - 100) carryC = gap;          // the short part is covered by payments made that day or later
+        if(gap > 100){
+          const owed = mdRecvC != null && has(r.rentReceived) ? Math.max(0, cents(r.rentReceived) - mdRecvC) : 0;
+          const late = gap - Math.min(owed, gap);
+          if(late > 0 && afterC >= late - 100){ carryC = late; unpaidC = gap - late; }   // covered by payments made that day or later
+        }
+      }
+      const mineU = (r.adjustments || []).find(a => a[KEY] === "unpaid");
+      const wantU = unpaidC ? {amount:-unpaidC / 100, note:`Rent the tenant still owes per MagicDoor — goes to the owner once it's paid`, [KEY]:"unpaid", auto:true} : null;
+      if(!(mineU && wantU && cents(mineU.amount) === -unpaidC) && (mineU || wantU)){
+        r.adjustments = (r.adjustments || []).filter(a => a[KEY] !== "unpaid"); if(wantU) r.adjustments.push(wantU);
+        pmTouch(r); changed++;
       }
       // the other way round: the owner was paid MORE than the formula because MagicDoor paid out an earlier month's
       // rent balance the tenant caught up on this month (MagicDoor shows it as other owner income on this month's statement)
       const mdOtherC = r.md && has(r.md.otherIncome) ? cents(r.md.otherIncome) : 0;
-      const catchC = (paid != null && !has(r.otherIncome) && mdOtherC > 0 && paid - calcC > 100 && Math.abs(paid - (calcC + mdOtherC)) <= 2) ? mdOtherC : 0;
-      const mineC = (r.adjustments || []).find(a => a[KEY] === "catchup");
+      // or MagicDoor counted more rent than the console has (a fee the tenant paid that MagicDoor passed to the owner)
+      const mdExtraC = r.md && has(r.md.rentReceived) && has(r.rentReceived) ? cents(r.md.rentReceived) - cents(r.rentReceived) : 0;
+      const fits = x => x > 0 && paid != null && paid - calcC > 100 && Math.abs(paid - (calcC + x)) <= 2;
       const prevM = monthAdd(m, -1);
-      const wantC = catchC ? {amount:catchC / 100, note:`${monthLabel(prevM)} rent balance collected in ${monthLabel(m)} — MagicDoor paid it to the owner with this payout`, [KEY]:"catchup", auto:true} : null;
-      if(!(mineC && wantC && cents(mineC.amount) === catchC) && (mineC || wantC)){
+      let catchC = 0, catchNote = "";
+      if(!has(r.otherIncome) && fits(mdOtherC)){ catchC = mdOtherC; catchNote = `${monthLabel(prevM)} rent balance collected in ${monthLabel(m)} — MagicDoor paid it to the owner with this payout`; }
+      else if(fits(mdExtraC)){ catchC = mdExtraC; catchNote = `MagicDoor counted ${usd(mdExtraC)} more rent than the console (${usd(cents(r.md.rentReceived))}) and paid it to the owner — check it wasn't PHD's fee`; }
+      const mineC = (r.adjustments || []).find(a => a[KEY] === "catchup");
+      const wantC = catchC ? {amount:catchC / 100, note:catchNote, [KEY]:"catchup", auto:true} : null;
+      if(!(mineC && wantC && cents(mineC.amount) === catchC && mineC.note === wantC.note) && (mineC || wantC)){
         r.adjustments = (r.adjustments || []).filter(a => a[KEY] !== "catchup"); if(wantC) r.adjustments.push(wantC);
         pmTouch(r); changed++;
       }
