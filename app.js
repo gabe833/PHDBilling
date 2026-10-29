@@ -15894,13 +15894,24 @@ function pmLateRentCarry(){
       const day = r.paidOut && r.paidOut.date ? String(r.paidOut.date).slice(0, 10) : "";
       const mine = (r.adjustments || []).find(a => a[KEY] === "out");
       // the formula without our own adjustment, against what the owner was actually paid
-      const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => !a[KEY]), ownerPayout:null});
+      const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => a[KEY] !== "out" && a[KEY] !== "catchup"), ownerPayout:null});
       const calcC = PMCore.calc(base, p, todayISO()).calcC;
       let carryC = 0;
       if(pays && paid != null && day){
         const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
         const gap = calcC - paid;
         if(gap > 100 && afterC >= gap - 100) carryC = gap;          // the short part is covered by payments made that day or later
+      }
+      // the other way round: the owner was paid MORE than the formula because MagicDoor paid out an earlier month's
+      // rent balance the tenant caught up on this month (MagicDoor shows it as other owner income on this month's statement)
+      const mdOtherC = r.md && has(r.md.otherIncome) ? cents(r.md.otherIncome) : 0;
+      const catchC = (paid != null && !has(r.otherIncome) && mdOtherC > 0 && paid - calcC > 100 && Math.abs(paid - (calcC + mdOtherC)) <= 2) ? mdOtherC : 0;
+      const mineC = (r.adjustments || []).find(a => a[KEY] === "catchup");
+      const prevM = monthAdd(m, -1);
+      const wantC = catchC ? {amount:catchC / 100, note:`${monthLabel(prevM)} rent balance collected in ${monthLabel(m)} — MagicDoor paid it to the owner with this payout`, [KEY]:"catchup", auto:true} : null;
+      if(!(mineC && wantC && cents(mineC.amount) === catchC) && (mineC || wantC)){
+        r.adjustments = (r.adjustments || []).filter(a => a[KEY] !== "catchup"); if(wantC) r.adjustments.push(wantC);
+        pmTouch(r); changed++;
       }
       const next = monthAdd(m, 1), nk = next + "|" + p.id, nr = P2.rows[nk];
       const want = carryC ? {amount:-carryC / 100, note:`Rent collected on or after the ${fdateS(day)} payout — paid with ${monthLabel(next)}`, [KEY]:"out", auto:true} : null;
@@ -15932,7 +15943,7 @@ if(typeof render === "function"){
     try{
       if(S.ui.mode === "pm" && typeof mdReady === "function" && mdReady() && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)){
         const sig = (S.md && S.md.syncedAt) + "|" + Object.keys(pmState().rows).length;
-        if(sig !== PM_LATE_AT){ PM_LATE_AT = sig; snapshot(); const n = pmLateRentCarry(); if(n){ commit(); toast(`Rent that came in after an owner's payout moved to the next month (${n} row${n === 1 ? "" : "s"})`); } }
+        if(sig !== PM_LATE_AT){ PM_LATE_AT = sig; snapshot(); const n = pmLateRentCarry(); if(n){ commit(); toast(`Owner payouts matched to when MagicDoor collected the rent (${n} row${n === 1 ? "" : "s"})`); } }
       }
     }catch(e){ console.error("late rent", e); }
     return r;
