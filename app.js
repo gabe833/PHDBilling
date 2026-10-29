@@ -3595,6 +3595,20 @@ async function inboxSyncConfig(force){
 /* Items already approved here but whose "approved" message didn't reach the sheet yet */
 function inboxDone(){ if(!S.inboxDone || typeof S.inboxDone !== "object") S.inboxDone = {}; return S.inboxDone; }
 
+/* an invoice that shows payments already made ("Payment received −$2,792.40"): what's owed now is the total less those,
+   so the inbox amount is the balance — the earlier payment is usually already posted on the property */
+const IB_PAID_LINE = /payment|paid|deposit (applied|received)|amount (applied|received)|prior (payment|balance paid)|less:?\s*(payment|deposit)/i;
+function ibNetOfPayments(it){
+  if(!it || it._netted) return it;
+  const L = Array.isArray(it.line_items) ? it.line_items : [], amt = x => Number(x.amount != null ? x.amount : x.total) || 0;
+  const pays = L.filter(x => amt(x) < 0 && IB_PAID_LINE.test(String(x.description || x.desc || x.name || "")) && !/refund|return|discount/i.test(String(x.description || x.desc || x.name || "")));
+  const total = Number(it.total) || 0, paidC = pays.reduce((a, x) => a - cents(amt(x)), 0);
+  if(!paidC || paidC >= cents(total)) return it;
+  // only when the total is the invoice before payments (the lines without the payments add up to it)
+  const before = L.filter(x => !pays.includes(x)).reduce((a, x) => a + cents(amt(x)), 0);
+  if(Math.abs(before - cents(total)) > 2) return it;
+  return Object.assign({}, it, {_netted:true, total_before:total, paid_before:paidC / 100, total:(cents(total) - paidC) / 100});
+}
 async function inboxRefresh(quiet){
   if(!inboxConn() || INBOX.loading) return;
   INBOX.loading = true; INBOX.err = ""; INBOX.tried = true;
@@ -3607,7 +3621,7 @@ async function inboxRefresh(quiet){
     for(const it of j.items.filter(x => done[x.id])){
       try{ await inboxPost(Object.assign({action:"decide", id:it.id}, done[it.id].msg)); delete done[it.id]; }catch(e){}
     }
-    INBOX.items = j.items.filter(x => !done[x.id]);
+    INBOX.items = j.items.filter(x => !done[x.id]).map(ibNetOfPayments);
     INBOX.last = Date.now();
   }catch(e){
     INBOX.err = String(e.message || e);
@@ -3707,6 +3721,7 @@ function inboxCard(it){
     ${isErr ? `<div class="ib-errline">${esc(it.error || "Unknown error")}</div>` : ""}
     ${it.office_note && !isErr ? `<div class="ib-note">${icon("mail")}<div><b>${esc(it.source === "drive" ? "File name" : it.source === "Upload" ? "Note with the upload" : "Note from " + (String(it.from || "").split("@")[0] || "the office"))}</b><q>${esc(String(it.office_note).replace(/^Subject:\s*/i, "").replace(/^File name:\s*/i, "").replace(/\n+/g, " — "))}</q></div></div>` : ""}
     ${it.reason && !isErr ? `<div class="ib-why">${icon("bolt")} ${esc(it.reason)}</div>` : ""}
+    ${it.paid_before && !isErr ? `<div class="ib-why">${icon("check")} Invoice total ${usd(cents(it.total_before))} less ${usd(cents(it.paid_before))} already paid — this one is for the ${usd(cents(it.total))} still due. The earlier payment should already be on the property; check it isn't added twice.</div>` : ""}
     ${it.pay_status && !isErr ? `<div class="ib-why ib-pay ${it.pay_status === "to_pay" ? "due" : ""}"><span class="tag ${it.pay_status === "to_pay" ? "gold" : "green"}">${it.pay_status === "to_pay" ? "Not paid yet" : "Already paid"}</span>${it.pay_note ? " " + esc(it.pay_note) : ""}${it.due_date && it.pay_status === "to_pay" ? ` · due ${esc(fdateS(it.due_date))}` : ""}</div>` : ""}
     <div class="ib-body">
       <div class="ib-form">
