@@ -212,7 +212,14 @@ function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string)
     const st = S(e.status).toLowerCase(), type = S(e.type), amt = Math.abs(N(e.amount) || 0);
     if (!amt || /void|deleted|cancel|reversed/.test(st)) continue;
     const acct = names[S(((e.chartOfAccountIds as unknown[]) || [])[0])] || "";
-    if (type === "payment") { if (st === "settled" || st === "paid" || st === "completed") add(m, "paid", amt); else if (!/fail|return|declin/.test(st)) add(m, "pending", amt); continue; }
+    if (type === "payment") {
+      if (st === "settled" || st === "paid" || st === "completed") {
+        add(m, "paid", amt);
+        // each payment's day, so the console can tell rent that came in after the owner was paid (it goes out with next month)
+        const o = out[m] as Obj; (o.pays = (o.pays as unknown[] as [string, number][]) || []).push([S(D(e.transactionDate)).slice(0, 10), Math.round(amt * 100) / 100]);
+      } else if (!/fail|return|declin/.test(st)) add(m, "pending", amt);
+      continue;
+    }
     if (type === "credit") { add(m, "credits", amt); continue; }
     if (type === "lateFee" || /late/i.test(acct)) { add(m, "lateFee", amt); continue; }
     if (type !== "charge") continue;

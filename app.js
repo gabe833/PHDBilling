@@ -4135,7 +4135,7 @@ const PMCore = (function(){
       pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
       start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
       tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut)),
-      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
+      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { if(Array.isArray(v)) o[k] = (o[k] || []).concat(v); else o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
@@ -15868,4 +15868,73 @@ function ofRunPaid(r){
 if(typeof render === "function"){
   const cutRender0 = render;
   render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)) try{ pmApplyExpenseCutoff(); }catch(e){ console.error(e); } return r; };
+}
+
+/* =====================================================================
+   RENT THAT CAME IN AFTER THE OWNER WAS PAID
+   A tenant who pays in pieces (a payment capped at $2,500, the rest a week
+   later) can leave part of the month's rent arriving on or after the day
+   the owner's payout went out. That part wasn't in the payout, so it goes
+   out with the next month: an adjustment takes it off this month (the
+   formula then matches what was actually paid) and adds it to next month's
+   row. Read from MagicDoor's lease ledger (each payment's date), checked
+   against what was recorded as paid; closed months are never changed.
+   ===================================================================== */
+function pmLateRentCarry(){
+  if(typeof mdReady !== "function" || !mdReady() || typeof pmState !== "function") return 0;
+  const P2 = pmState(), cur = todayISO().slice(0, 7), months = [monthAdd(cur, -2), monthAdd(cur, -1), cur];
+  let changed = 0;
+  const KEY = "lateRent";
+  P2.properties.filter(p => !p.deleted).forEach(p => {
+    const L = pmMdLease(p); if(!L || !L.months) return;
+    months.forEach(m => {
+      const r = P2.rows[m + "|" + p.id]; if(!r || r.detailOnly || (P2.meta[m] || {}).closed) return;
+      const g = L.months[m], pays = (g && Array.isArray(g.pays)) ? g.pays : null;
+      const paid = has(r.ownerPayout) ? cents(r.ownerPayout) : r.paidOut && has(r.paidOut.amount) ? cents(r.paidOut.amount) : null;
+      const day = r.paidOut && r.paidOut.date ? String(r.paidOut.date).slice(0, 10) : "";
+      const mine = (r.adjustments || []).find(a => a[KEY] === "out");
+      // the formula without our own adjustment, against what the owner was actually paid
+      const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => !a[KEY]), ownerPayout:null});
+      const calcC = PMCore.calc(base, p, todayISO()).calcC;
+      let carryC = 0;
+      if(pays && paid != null && day){
+        const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
+        const gap = calcC - paid;
+        if(gap > 100 && afterC >= gap - 100) carryC = gap;          // the short part is covered by payments made that day or later
+      }
+      const next = monthAdd(m, 1), nk = next + "|" + p.id, nr = P2.rows[nk];
+      const want = carryC ? {amount:-carryC / 100, note:`Rent collected on or after the ${fdateS(day)} payout — paid with ${monthLabel(next)}`, [KEY]:"out", auto:true} : null;
+      if(!want && !mine) return;
+      if(want && mine && cents(mine.amount) === -carryC) { /* already right */ }
+      else {
+        r.adjustments = (r.adjustments || []).filter(a => a[KEY] !== "out"); if(want) r.adjustments.push(want);
+        pmTouch(r); changed++;
+      }
+      // next month: the same amount added back, once its row exists (and it isn't closed)
+      if(nr && !(P2.meta[next] || {}).closed){
+        const have = (nr.adjustments || []).find(a => a[KEY] === "in:" + m);
+        const add = carryC ? {amount:carryC / 100, note:`${monthLabel(m)} rent collected after ${monthLabel(m)}'s payout`, [KEY]:"in:" + m, auto:true} : null;
+        if(!(have && add && cents(have.amount) === carryC) && (have || add)){
+          nr.adjustments = (nr.adjustments || []).filter(a => a[KEY] !== "in:" + m); if(add) nr.adjustments.push(add);
+          pmTouch(nr); changed++;
+        }
+      }
+    });
+  });
+  return changed;
+}
+let PM_LATE_AT = "";
+if(typeof render === "function"){
+  const lateRender0 = render;
+  render = function(){
+    const r = lateRender0.apply(this, arguments);
+    // once per MagicDoor sync (and once when the console opens), in Rentals
+    try{
+      if(S.ui.mode === "pm" && typeof mdReady === "function" && mdReady() && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)){
+        const sig = (S.md && S.md.syncedAt) + "|" + Object.keys(pmState().rows).length;
+        if(sig !== PM_LATE_AT){ PM_LATE_AT = sig; snapshot(); const n = pmLateRentCarry(); if(n){ commit(); toast(`Rent that came in after an owner's payout moved to the next month (${n} row${n === 1 ? "" : "s"})`); } }
+      }
+    }catch(e){ console.error("late rent", e); }
+    return r;
+  };
 }

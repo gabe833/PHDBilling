@@ -219,7 +219,7 @@ const PMCore = (function(){
       pastDueDays:Math.max(0, ...ls.map(l => l.pastDueDays || 0)), lastPayment:max("lastPayment"), unpaidSince:owing.map(l => l.unpaidSince).filter(Boolean).sort()[0] || null,
       start:min("start"), end:null, monthToMonth:false, eviction:ls.some(l => l.eviction), owingCount:owing.length,
       tenants:ls.flatMap(l => (l.tenants || []).filter(t => !t.movedOut)),
-      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
+      months:ls.some(l => l.months) ? ls.reduce((acc, l) => { Object.entries(l.months || {}).forEach(([m, g]) => { const o = acc[m] = acc[m] || {}; Object.entries(g).forEach(([k, v]) => { if(Array.isArray(v)) o[k] = (o[k] || []).concat(v); else o[k] = Math.round(((o[k] || 0) + (Number(v) || 0)) * 100) / 100; }); }); return acc; }, {}) : null};
   }
   // nothing owed, and either a payment this month or a credit balance
   function mdPaidThisMonth(L, m){ return (L.balance || 0) <= 0 && ((L.lastPayment && L.lastPayment.slice(0, 7) >= m) || (L.balance || 0) < 0); }
