@@ -596,7 +596,8 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       // something MagicDoor filled in earlier that its data no longer shows (a charge moved to PHD's side, say) comes off
       if(v == null){ if(g && /^(otherIncome|reimbursement|lateFee|filters|applications)$/.test(k) && was[k] != null && PMCore.has(rr[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
       if(mdOwned(k)){
-        const same = k === "mdAdj" ? JSON.stringify(was.mdAdj || null) === JSON.stringify(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
+        const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") : "";   // key order changes in storage
+        const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
         if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet"});
         return;
       }
