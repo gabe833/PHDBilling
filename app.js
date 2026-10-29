@@ -3754,7 +3754,7 @@ function inboxCard(it){
         ${(it.line_items||[]).length ? `<div class="label" style="margin-bottom:6px">Items on the receipt</div>
           <div class="ib-lines">${it.line_items.slice(0, 12).map(li => `<div><span>${esc(li.desc)}</span><span class="num">${li.amount ? usd(cents(li.amount)) : ""}</span></div>`).join("")}
           ${it.line_items.length > 12 ? `<div class="muted">and ${it.line_items.length - 12} more</div>` : ""}</div>` : `<div class="muted" style="font-size:12.5px">${esc(it.notes || it.subject || "")}</div>`}
-        ${dup.length ? `<div class="ib-dup">${icon("receipt")} <span><b>Possible duplicate.</b> ${dup.map(t => `${esc(t.vendor || "")} ${usd(cents(t.amount))} on ${fdateS(t.date)}`).join("; ")} is already in ${esc(prop.name)}.</span></div>` : ""}
+        ${dup.length ? `<div class="ib-dup">${icon("receipt")} <span><b>Possible duplicate.</b> ${dup.map(t => `${esc(t.vendor || "")} ${usd(cents(t.amount))} on ${fdateS(t.date)}`).join("; ")} is already in ${esc((prop || pmp || {}).name || "this property")}.</span></div>` : ""}
       </div>
     </div>
     ${INBOX.open[it.id] && preview ? `<div class="ib-prev"><iframe src="${esc(preview)}" title="Receipt preview" loading="lazy"></iframe></div>` : ""}
