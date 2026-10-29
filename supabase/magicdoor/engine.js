@@ -23,7 +23,7 @@ const PMCore = (function(){
 
   const DEFAULTS = {
     lateAfterDay: 5,        // rent counts as late after this day of the month
-    payoutDays: 0,          // owner payouts due this many days after month end (0 = by the last day)
+    payoutDay: 15,          // owner payouts are due by this day of the month (the month's rent is paid out mid-month)
     startByDay: 2,          // remind to start the month after this day
     closeByDay: 15,         // previous month should be closed by this day
     renewalDays: 60,        // lease-renewal heads-up window
@@ -370,7 +370,7 @@ const PMCore = (function(){
     // rent, payouts, owners owing — open months only
     [prevM, curM].forEach(m => {
       if((meta[m] || {}).closed) return;
-      const payDue = isoOf(dayNum(endOfMonth(m)) + Number(S.payoutDays || 0));
+      const payDue = m + "-" + String(Math.min(Number(S.payoutDay) || 15, Number(endOfMonth(m).slice(8, 10)))).padStart(2, "0");
       monthRows(m).forEach(r => {
         const p = props.find(x => x.id === r.propertyId); if(!p || p.status === "inactive") return;
         const c = calc(r, p, today);

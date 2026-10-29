@@ -3939,7 +3939,7 @@ const PMCore = (function(){
 
   const DEFAULTS = {
     lateAfterDay: 5,        // rent counts as late after this day of the month
-    payoutDays: 0,          // owner payouts due this many days after month end (0 = by the last day)
+    payoutDay: 15,          // owner payouts are due by this day of the month (the month's rent is paid out mid-month)
     startByDay: 2,          // remind to start the month after this day
     closeByDay: 15,         // previous month should be closed by this day
     renewalDays: 60,        // lease-renewal heads-up window
@@ -4286,7 +4286,7 @@ const PMCore = (function(){
     // rent, payouts, owners owing — open months only
     [prevM, curM].forEach(m => {
       if((meta[m] || {}).closed) return;
-      const payDue = isoOf(dayNum(endOfMonth(m)) + Number(S.payoutDays || 0));
+      const payDue = m + "-" + String(Math.min(Number(S.payoutDay) || 15, Number(endOfMonth(m).slice(8, 10)))).padStart(2, "0");
       monthRows(m).forEach(r => {
         const p = props.find(x => x.id === r.propertyId); if(!p || p.status === "inactive") return;
         const c = calc(r, p, today);
@@ -6040,7 +6040,7 @@ function mdActivity(mpId){
 function pgPmSettings(){
   actions([["Action center", () => go("pmAlerts"), "ghost"]]);
   const s = pmSettings(), v = $("#view");
-  const F = [["lateAfterDay","Rent is late after day","of the month"], ["payoutDays","Owner payouts due","days after month end (0 = by the last day)"],
+  const F = [["lateAfterDay","Rent is late after day","of the month"], ["payoutDay","Owner payouts due by day","of the month"],
              ["startByDay","Remind to start the month after day",""], ["closeByDay","Last month should be closed by day","of the next month"],
              ["renewalDays","Lease renewal heads-up","days before the lease ends"], ["depositDays","Deposit return deadline","days after move-out (South Carolina: 30)"],
              ["vacancyDays","Flag a vacancy after","days"], ["inboxStaleDays","Flag receipts waiting longer than","days"],
@@ -14953,8 +14953,8 @@ function rcReviews(m, write){
   const mm = pmState().meta[m] = Object.assign({month:m, deductions:[], withdrawals:[]}, mt || {});
   mm.recon = mm.recon || {}; return mm.recon;
 }
-/* when an owner payout is due: the month's last day plus the payout days on Alert rules */
-const rcPayDue = m => PMCore.isoOf(PMCore.dayNum(PMCore.endOfMonth(m)) + (Number(pmSettings().payoutDays) || 0));
+/* when an owner payout is due: the payout day on Alert rules (the 15th) of that month */
+const rcPayDue = m => m + "-" + String(Math.min(Number(pmSettings().payoutDay) || 15, Number(PMCore.endOfMonth(m).slice(8, 10)))).padStart(2, "0");
 
 /* one property, one month: the four checks */
 function rcRow(m, row, prop, ledger){
