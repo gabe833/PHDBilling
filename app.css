@@ -2242,3 +2242,12 @@ body.mode-office .switch-wrap{display:none!important}
 .of-line-h{display:flex;align-items:center;gap:10px;margin-bottom:6px} .of-line-h .num{margin-left:auto;font-weight:600}
 .of-in{width:110px;text-align:right;height:28px;padding:2px 6px}
 body.mode-office #qAdd{display:none}
+.of-perm{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
+.of-perm .switchbox{display:flex;gap:8px;align-items:flex-start;margin:6px 0}
+/* ---------- the third side, its own color: Office runs on mulberry ---------- */
+body.mode-office{
+  --dock:#2A1530; --dock-2:#361E3D; --dock-3:#472A4F; --dock-ink:#F4E9F2; --dock-muted:#C9B1C6; --dock-faint:#957C92; --dock-mint:#EBBBE0;
+  --accent:#86397A; --accent-hover:#6C2D62; --accent-2:#A14F92; --accent-3:#D7A6CC; --accent-soft:#F6EAF3; --accent-line:#E8CFE1;
+  --canvas:#F4F0F3; --panel-2:#FAF7F9; --sunken:#EFE8ED; --line:#E7DDE4; --line-2:#EFE8EC; --line-3:#D7C9D3;
+  --ink:#221725; --ink-2:#42344A; --muted:#6C5E6E; --faint:#A496A3;
+}

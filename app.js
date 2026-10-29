@@ -15306,7 +15306,8 @@ if(typeof openSheet === "function"){
 ICON_PATHS.office = '<path d="M2.5 13.5V4.5l5.5-2 5.5 2v9"/><path d="M2.5 13.5h11M5.5 13.5v-3h5v3M5.5 6.5h1M9.5 6.5h1M5.5 8.5h1M9.5 8.5h1"/>';
 ICON_PATHS.clock = '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>';
 const OF_VIEWS = new Set(["ofMe", "ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed"]);
-const OF_ADMIN_VIEWS = new Set(["ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed"]);
+const OF_ADMIN_VIEWS = new Set(["ofRuns", "ofWork", "ofPeople", "ofOwed"]);
+const OF_AGENT_VIEWS = new Set(["ofComm", "ofMls"]);          // admins, and agents for their own
 const OF_EARN = new Set(["hours", "work", "commission", "expense"]), OF_OWE = new Set(["owed", "mls"]);
 const OF_KIND = {hours:"Hours", work:"Work invoice", commission:"Commission", expense:"Reimbursement", timeoff:"Time off", owed:"Owed to PHD", mls:"MLS dues", deduction:"Taken out of pay", payment:"Paid"};
 const OF_ST = {draft:["Draft", "grey"], submitted:["Waiting for review", "gold"], confirmed:["Confirmed", "acc"], rejected:["Sent back", "red"], paid:["Paid", "green"],
@@ -15325,6 +15326,10 @@ const ofMe = () => (typeof Cloud !== "undefined" && Cloud.email) || "";
 const ofIsAdmin = () => !(typeof Cloud !== "undefined" && Cloud.ready) || OF.admin === true;      // working off a file: it's yours
 const ofCanApprove = () => ofIsAdmin() && (!(typeof Cloud !== "undefined" && Cloud.ready) || (ofSettings().approvers || []).map(x => String(x).toLowerCase()).includes(ofMe()));
 const ofMyPerson = () => ofPeople().find(p => p.email && String(p.email).toLowerCase() === ofMe()) || null;
+const ofIsAgent = () => { const m = ofMyPerson(); return !!(m && m.role === "agent"); };
+const ofCanSee = v => !OF_ADMIN_VIEWS.has(v) && !OF_AGENT_VIEWS.has(v) || ofIsAdmin() || (OF_AGENT_VIEWS.has(v) && ofIsAgent());
+// what a page lists: everything for an admin, only your own for anyone else (the database already holds back the rest)
+const ofMine = list => ofIsAdmin() ? list : list.filter(e => { const m = ofMyPerson(); return m && e.person === m.id; });
 const ofSt = s => { const [l, c] = OF_ST[s] || [s || "—", "grey"]; return `<span class="st st-${c}"><i></i>${esc(l)}</span>`; };
 const ofWho = () => (typeof Cloud !== "undefined" && (Cloud.name || Cloud.email)) || "You";
 const ofEntryC = e => e.kind === "hours" ? Math.round((+e.hours || 0) * cents(e.rate || 0)) : (+e.amountC || 0);
@@ -15363,7 +15368,8 @@ if(typeof cloudLabel === "function"){
 async function ofLoadAdmin(){
   if(typeof Cloud === "undefined" || !Cloud.ready || OF.admin != null) return;
   try{ const {data, error} = await Cloud.sb.from("staff").select("admin").eq("email", Cloud.email).maybeSingle();
-    if(error){ OF.noDb = true; OF.admin = false; } else OF.admin = !!(data && data.admin); }
+    if(error){ OF.noDb = true; OF.admin = false; } else OF.admin = !!(data && data.admin);
+    if(OF.admin){ const {data:st} = await Cloud.sb.from("staff").select("email,name,active,admin"); OF.staff = st || []; } }
   catch(e){ OF.admin = false; OF.noDb = true; }
   if(S.ui.mode === "office") render(); else renderNav();
 }
@@ -15393,7 +15399,7 @@ if(typeof go === "function"){
   const ofGo0 = go;
   go = function(view){
     if(OF_VIEWS.has(view)){
-      if(OF_ADMIN_VIEWS.has(view) && OF.admin === false) view = "ofMe";
+      if(OF.admin != null && !ofCanSee(view)) view = "ofMe";
       S.ui.mode = "office"; S.ui.view = view; S.ui.ofLastView = view;
       if(typeof navDrawer === "function") navDrawer(false);
       persistUi(); render(); window.scrollTo(0, 0); return;
@@ -15409,8 +15415,9 @@ if(typeof renderNav === "function"){
   const ofNav0 = renderNav;
   renderNav = function(){
     if(S.ui.mode !== "office") return ofNav0.apply(this, arguments);
-    const n = $("#nav"); n.innerHTML = "";
-    const sw = document.querySelector(".switch-wrap"); if(sw) sw.style.display = "none";
+    const n = $("#nav"), rail = document.querySelector(".rail"), sw = document.querySelector(".switch-wrap");
+    if(sw && rail && sw.parentElement !== rail) rail.insertBefore(sw, n);          // parked, hidden by CSS — Projects puts it back
+    n.innerHTML = "";
     const mk = (k, lbl, ic, badge) => { const b = elm("button", null, `${icon(ic)}<span>${lbl}</span>${badge || ""}`); b.setAttribute("aria-current", S.ui.view === k); b.onclick = () => go(k); n.appendChild(b); };
     const badge = (x, alert) => x ? `<i class="badge${alert ? " alert" : ""}">${x}</i>` : "";
     mk("today", "Today", "bolt");
@@ -15432,17 +15439,23 @@ if(typeof renderNav === "function"){
       mk("ofMls", "MLS dues", "file", badge(es.filter(e => e.kind === "mls" && e.status !== "paid" && e.status !== "rejected" && !e.paidOn).length));
       n.appendChild(elm("div", "nav-gap"));
       n.appendChild(elm("div", "nav-head", "Office"));
-      mk("ofPeople", "People", "user", badge(ofPeople().filter(p => p.active !== false).length));
+      mk("ofPeople", "People & permissions", "user", badge(ofPeople().filter(p => p.active !== false).length));
+    } else if(ofIsAgent()){
+      const mine = ofMyPerson(), es = ofEntries().filter(e => e.person === mine.id);
+      n.appendChild(elm("div", "nav-gap"));
+      n.appendChild(elm("div", "nav-head", "Agent"));
+      mk("ofComm", "My commissions", "chart", badge(es.filter(e => e.kind === "commission" && e.status === "submitted").length));
+      mk("ofMls", "My MLS dues", "file", badge(es.filter(e => e.kind === "mls" && e.status !== "paid").length));
     }
   };
 }
 if(typeof render === "function"){
   const ofRender0 = render;
   render = function(){
-    if(S.ui.mode !== "office" || !OF_VIEWS.has(S.ui.view)){ const sw = document.querySelector(".switch-wrap"); if(sw) sw.style.display = ""; document.body.classList.remove("mode-office"); return ofRender0.apply(this, arguments); }
+    if(S.ui.mode !== "office" || !OF_VIEWS.has(S.ui.view)){ if(S.ui.mode === "office" && !OF_VIEWS.has(S.ui.view)) S.ui.mode = "projects"; document.body.classList.remove("mode-office"); return ofRender0.apply(this, arguments); }
     ofLoadAdmin();
     renderModeSwitch(); renderNav();
-    if(OF_ADMIN_VIEWS.has(S.ui.view) && OF.admin === false) S.ui.view = "ofMe";
+    if(OF.admin != null && !ofCanSee(S.ui.view)) S.ui.view = "ofMe";
     const T = {ofMe:["Office", "My pay & hours", "What you've submitted, what's been paid, and anything you owe the firm"],
       ofRuns:["Office · Pay", "Pay runs", "Put pay together, send it for approval, record it once it's paid"],
       ofWork:["Office · Pay", "Hours & work invoices", "Everything people have submitted, waiting to go on a pay run"],
@@ -15489,7 +15502,7 @@ function ofEntrySheet(id, seed){
   if(!people.length){ toast(admin ? "Add a person first (Office → People)" : "You aren't set up in Office yet — ask Gabe or Peter to add you"); return; }
   if(!e.person) e.person = (seed && seed.person) || people[0].id;
   const mineLocked = !admin && !isNew && !["draft", "submitted", "rejected"].includes(cur.status);
-  const kinds = admin ? ["hours", "work", "commission", "expense", "timeoff", "owed", "mls"] : ["hours", "work", "expense", "timeoff"];
+  const kinds = admin ? ["hours", "work", "commission", "expense", "timeoff", "owed", "mls", "payment", "deduction"] : ["hours", "work", "expense", "timeoff"].concat(ofIsAgent() ? ["commission"] : []);
   const sh = $("#sheet");
   const draw = () => {
     const p = ofPerson(e.person) || {}, k = e.kind;
@@ -15508,15 +15521,18 @@ function ofEntrySheet(id, seed){
         <label class="fld"><span>${k === "timeoff" ? "Note" : k === "hours" ? "What you worked on" : "What it was"}</span><input type="text" id="oeW" value="${esc(e.desc || "")}" placeholder="${k === "work" ? "Lock change, painting, blind install…" : k === "owed" ? "Credit given to an owner, an MLS fine…" : k === "mls" ? "Annual MLS dues, a fine…" : ""}"></label>
         ${["work", "commission", "owed", "mls", "expense"].includes(k) ? `<label class="fld"><span>Property</span><input type="text" id="oeAd" value="${esc(e.address || "")}" placeholder="342 King St"></label>` : ""}
         ${["work", "expense", "owed", "mls", "commission"].includes(k) ? `<label class="fld"><span>Receipt or invoice link <span class="muted" style="font-weight:400">· optional</span></span><input type="url" id="oeL" value="${esc(e.link || "")}" placeholder="https://drive.google.com/…"></label>` : ""}
-        ${admin && !isNew ? `<label class="fld"><span>Office note</span><input type="text" id="oeN" value="${esc(e.note || "")}"></label>` : ""}
+        ${admin && !isNew ? `<div class="f2"><label class="fld"><span>Status</span><select id="oeSt">${["submitted", "confirmed", "rejected", "paid", "draft"].map(x => `<option value="${x}" ${x === e.status ? "selected" : ""}>${OF_ST[x][0]}</option>`).join("")}</select></label>
+          <label class="fld"><span>Paid on</span><input type="date" id="oePd" value="${esc(e.paidOn || "")}"></label></div>
+          <label class="fld"><span>Office note</span><input type="text" id="oeN" value="${esc(e.note || "")}"></label>` : ""}
         ${!isNew ? `<p class="help">Added by ${esc(e.by || "—")}${e.at ? " · " + esc(fdateS(String(e.at).slice(0, 10))) : ""}${e.reviewedBy ? ` · reviewed by ${esc(e.reviewedBy)}` : ""}${e.runId && ofAll()[e.runId] ? ` · on the ${esc(fdateS(ofAll()[e.runId].payDate || ofAll()[e.runId].periodEnd))} pay run` : ""}</p>` : ""}
       </div>
       <div class="sheet-f">
-        ${!isNew && !mineLocked && e.status !== "paid" ? `<button class="btn ghost" id="oeDel">Delete</button>` : ""}
-        ${admin && !isNew && e.status === "submitted" ? `<button class="btn" id="oeBack">Send back</button>` : ""}
+        ${!isNew && !mineLocked && (admin || e.status !== "paid") ? `<button class="btn ghost" id="oeDel">Delete</button>` : ""}
+        ${admin && !isNew && e.status === "submitted" ? `<button class="btn" id="oeBack">Return for changes</button>` : ""}
         <span style="flex:1"></span>
         ${mineLocked ? `<button class="btn" id="shCancel">Close</button>` : `<button class="btn" id="shCancel">Cancel</button>
-          ${admin && (isNew || e.status === "submitted" || e.status === "rejected") ? `<button class="btn" id="oeSave2">${isNew ? "Add as waiting" : "Save"}</button><button class="btn primary" id="oeOk">${isNew ? "Add confirmed" : "Confirm"}</button>`
+          ${admin && !isNew ? `${e.status === "submitted" ? `<button class="btn" id="oeOk">Confirm</button>` : ""}<button class="btn primary" id="oeAdm">Save</button>`
+            : admin ? `<button class="btn" id="oeSave2">Add as waiting</button><button class="btn primary" id="oeOk">Add confirmed</button>`
             : `<button class="btn primary" id="oeSave">${isNew ? "Submit" : e.status === "rejected" ? "Resubmit" : "Save"}</button>`}`}
       </div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
@@ -15536,17 +15552,21 @@ function ofEntrySheet(id, seed){
     const save = st => {
       grab();
       if(e.kind === "hours" ? !(e.hours > 0) : e.kind !== "timeoff" && !(e.amountC > 0)) return toast(e.kind === "hours" ? "Add the hours" : "Add the amount");
+      if($("#oePd") && st !== "paid" && $("#oePd").value) e.paidOn = $("#oePd").value;
       if(!admin && !e.email) return toast("Your profile has no email — ask Gabe or Peter to add it");
       const rid = id || "entry:" + uid() + uid();
       const now = new Date().toISOString();
       const next = Object.assign({}, e, {status:st, by:e.by || ofWho(), at:e.at || now});
-      if(st === "confirmed"){ next.reviewedBy = ofWho(); next.reviewedAt = now; delete next.reviewNote; }
+      if(st === "confirmed" && (!cur || cur.status !== "confirmed")){ next.reviewedBy = ofWho(); next.reviewedAt = now; delete next.reviewNote; }
       if(st === "submitted" && cur && cur.status === "rejected") delete next.reviewNote;
       ofPut(rid, next); closeSheet(); render(); toast(st === "confirmed" ? "Confirmed" : isNew ? "Submitted for review" : "Saved");
     };
     const b1 = $("#oeSave"); if(b1) b1.onclick = () => save(admin && cur && cur.status === "confirmed" ? "confirmed" : "submitted");
     const b2 = $("#oeSave2"); if(b2) b2.onclick = () => save("submitted");
     const b3 = $("#oeOk"); if(b3) b3.onclick = () => save("confirmed");
+    // an admin's save keeps whatever status and paid date they set
+    const b4 = $("#oeAdm"); if(b4) b4.onclick = () => { const st = $("#oeSt").value, pd = $("#oePd").value; e.paidOn = st === "paid" ? (pd || e.paidOn || todayISO()) : pd || ""; if(!e.paidOn) delete e.paidOn;
+      if(st !== cur.status){ e.reviewedBy = ofWho(); e.reviewedAt = new Date().toISOString(); } save(st); };
     const bb = $("#oeBack"); if(bb) bb.onclick = () => { const why = prompt("Why is it going back? (they'll see this)"); if(why == null) return; grab(); ofPut(id, Object.assign({}, e, {status:"rejected", reviewNote:why.trim(), reviewedBy:ofWho(), reviewedAt:new Date().toISOString()})); closeSheet(); render(); toast("Sent back"); };
     const bd = $("#oeDel"); if(bd) bd.onclick = () => { if(!confirm("Delete this entry?")) return; ofPut(id, Object.assign({}, cur, {deleted:true})); delete ofAll()[id]; commit(); closeSheet(); render(); toast("Deleted"); };
   };
@@ -15613,8 +15633,8 @@ function pgOfOwed(){
 /* ---- Commissions (admin) ---- */
 function pgOfComm(){
   const v = $("#view");
-  actions([["Add commission", () => ofEntrySheet(null, {kind:"commission"}), "primary"]]);
-  const list = ofSortE(ofEntries().filter(e => e.kind === "commission"));
+  actions([[ofIsAdmin() ? "Add commission" : "Submit a commission", () => ofEntrySheet(null, {kind:"commission", person:ofIsAdmin() ? undefined : (ofMyPerson() || {}).id}), "primary"]]);
+  const list = ofSortE(ofMine(ofEntries()).filter(e => e.kind === "commission"));
   const yr = todayISO().slice(0, 4), byP = {};
   list.filter(e => String(e.date || "").slice(0, 4) === yr && e.status !== "rejected").forEach(e => { byP[e.person] = (byP[e.person] || 0) + ofEntryC(e); });
   const hero = elm("div", "card pf-hero");
@@ -15627,8 +15647,8 @@ function pgOfComm(){
 /* ---- MLS dues (admin) ---- */
 function pgOfMls(){
   const v = $("#view");
-  actions([["Add dues or a fine", () => ofEntrySheet(null, {kind:"mls"}), "primary"]]);
-  const list = ofSortE(ofEntries().filter(e => e.kind === "mls"));
+  if(ofIsAdmin()) actions([["Add dues or a fine", () => ofEntrySheet(null, {kind:"mls"}), "primary"]]);
+  const list = ofSortE(ofMine(ofEntries()).filter(e => e.kind === "mls"));
   const c = elm("div", "card");
   c.innerHTML = `<p class="help" style="padding:12px 16px 0;margin:0">MLS dues and fines PHD covers for an agent. Confirmed ones count as owed to PHD and can come out of the agent's pay; mark one paid when the agent pays it back directly.</p>${ofTable(list, {empty:"No MLS dues recorded."})}`;
   ofWireRows(c); v.appendChild(c);
@@ -15640,12 +15660,14 @@ function pgOfPeople(){
   actions([["Approvers", () => ofApproversSheet(), "ghost"], ["Add person", () => ofPersonSheet(null), "primary"]]);
   const ps = ofPeople();
   const c = elm("div", "card");
-  c.innerHTML = ps.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Person</th><th>Pay</th><th class="r">Waiting to be paid</th><th class="r">Owed to PHD</th><th>Sign-in</th></tr></thead><tbody>
+  c.innerHTML = ps.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Person</th><th>Pay</th><th class="r">Waiting to be paid</th><th class="r">Owed to PHD</th><th>Sign-in</th><th>Sees in Office</th></tr></thead><tbody>
     ${ps.map(p => { const B = ofBalance(p.id), pay = p.pay || {};
       return `<tr data-p="${esc(p.id)}" tabindex="0" style="cursor:pointer${p.active === false ? ";opacity:.55" : ""}"><td><div class="item-t">${esc(p.name)}</div><div class="item-s">${esc({agent:"Agent", contractor:"1099 contractor", staff:"Staff"}[p.role] || "")}${p.commissionPct ? ` · ${p.commissionPct}% commission` : ""}</div></td>
         <td>${pay.basis === "salary" ? `${usd(cents(pay.amount || 0))} ${esc(pay.period || "bi-weekly")}` : pay.basis === "hourly" ? `${usd(cents(pay.rate || 0))} / hour` : `<span class="muted">Per item</span>`}</td>
         <td class="r num">${usd(B.open)}</td><td class="r num"${B.owedC ? ' style="color:var(--red)"' : ""}>${usd(B.owedC)}${B.owedPending ? `<div class="item-s">+${usd(B.owedPending)} waiting</div>` : ""}</td>
-        <td>${p.email ? esc(p.email) : `<span class="muted">No login — Gabe and Peter enter for them</span>`}</td></tr>`; }).join("")}</tbody></table></div>`
+        <td>${p.email ? esc(p.email) : `<span class="muted">No login — Gabe and Peter enter for them</span>`}</td>
+        <td>${(() => { const em = String(p.email || "").toLowerCase(), st = (OF.staff || []).find(x => x.email === em), appr = (ofSettings().approvers || []).map(x => String(x).toLowerCase()).includes(em);
+          return !em ? `<span class="muted">—</span>` : st && st.admin ? `<span class="st st-acc"><i></i>Everyone's</span>${appr ? ` <span class="st st-green"><i></i>Approves</span>` : ""}` : `<span class="st st-grey"><i></i>Only their own${p.role === "agent" ? " + agent pages" : ""}</span>${appr ? ` <span class="st st-green"><i></i>Approves</span>` : ""}`; })()}</td></tr>`; }).join("")}</tbody></table></div>`
     : `<div class="empty"><b>No one yet</b><p>Add each person PHD pays: how they're paid (salary, hourly or per item), their commission %, and the email they sign in with — that's what lets them see their own pay here and nothing else.</p></div>`;
   c.querySelectorAll("[data-p]").forEach(tr => tr.onclick = () => ofPersonSheet(tr.dataset.p));
   v.appendChild(c);
@@ -15666,6 +15688,12 @@ function ofPersonSheet(id, seed){
       <label class="fld" id="opPerF"><span>Pay period</span><select id="opPer">${["weekly", "bi-weekly", "twice a month", "monthly"].map(x => `<option ${p.pay.period === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label class="fld"><span>Notes</span><textarea id="opNo" rows="2">${esc(p.notes || "")}</textarea></label>
       <label class="switchbox"><input type="checkbox" id="opA" ${p.active !== false ? "checked" : ""}> Active</label>
+      ${(() => { const em = String(p.email || "").toLowerCase(), st = (OF.staff || []).find(x => x.email === em), cloud = typeof Cloud !== "undefined" && Cloud.ready;
+        const appr = (ofSettings().approvers || []).map(x => String(x).toLowerCase()).includes(em);
+        return `<div class="of-perm"><div class="label">What ${esc((p.name || "they").split(" ")[0])} can see in Office</div>
+          <label class="switchbox"><input type="checkbox" id="opAdm" ${st && st.admin ? "checked" : ""} ${em && (st || !cloud) ? "" : "disabled"}> Admin — sees and changes everyone's pay, commissions and dues, and sets these permissions</label>
+          <label class="switchbox"><input type="checkbox" id="opApr" ${appr ? "checked" : ""} ${em ? "" : "disabled"}> Approves pay runs</label>
+          <p class="help" style="margin:4px 0 0">${!em ? "Add their sign-in email to give them access." : cloud && !st ? "This email isn't on the Team list yet — add them under Team first, then they can sign in." : "Everyone else sees only their own pay, hours and what they owe; agents also see their own commissions and MLS dues. Nobody can approve a pay run they're paid in."}</p></div>`; })()}
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="opOk">Save</button></div>`;
   const fit = () => { const b = $("#opB").value; $("#opAmtF").style.display = b === "none" ? "none" : ""; $("#opPerF").style.display = b === "salary" ? "" : "none";
@@ -15681,6 +15709,14 @@ function ofPersonSheet(id, seed){
     delete next._id; delete next.id;
     const pid = id || (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "p") + "-" + uid().slice(0, 4);
     ofPut("person:" + pid, next);
+    // permissions: admin (on the Team list — the database only lets an admin change it) and approver
+    const adm = $("#opAdm"), apr = $("#opApr");
+    if(email && apr){ const L = (ofSettings().approvers || []).map(x => String(x).toLowerCase()).filter(x => x !== email); if(apr.checked) L.push(email);
+      if(L.join() !== (ofSettings().approvers || []).join()) ofPut("settings", Object.assign({}, ofAll().settings || {}, {email:"", approvers:L})); }
+    if(email && adm && !adm.disabled && typeof Cloud !== "undefined" && Cloud.ready){ const st = (OF.staff || []).find(x => x.email === email);
+      if(st && !!st.admin !== adm.checked){
+        if(email === ofMe() && !adm.checked && !confirm("Remove your own admin access? You'll only see your own pay afterwards.")) {}
+        else Cloud.sb.from("staff").update({admin:adm.checked}).eq("email", email).then(({error}) => { if(error) toast("Couldn't change admin: " + error.message); else { st.admin = adm.checked; toast(adm.checked ? `${name} is now an admin` : `${name} is no longer an admin`); if(email === ofMe()){ OF.admin = adm.checked; render(); } } }); } }
     // their entries carry their email (that's what lets them see them)
     if(cur && (cur.email || "") !== email){ snapshot(); ofEntries().filter(e => e.person === pid).forEach(e => { const d = ofAll()[e._id]; d.email = email; }); commit(); }
     closeSheet(); render(); toast("Saved");
@@ -15769,7 +15805,8 @@ function ofRunSheet(id){
       </div>
       <div class="sheet-f">
         ${editable && cur ? `<button class="btn ghost" id="orDel">Delete</button>` : ""}
-        ${canApprove ? `<button class="btn" id="orBack">Send back</button>` : ""}
+        ${canApprove ? `<button class="btn" id="orBack">Return for changes</button>` : ""}
+        ${ofIsAdmin() && (r.status === "submitted" || r.status === "approved") ? `<button class="btn ghost" id="orReopen" title="Back to a draft to change it — it needs approving again">Reopen to edit</button>` : ""}
         <span style="flex:1"></span><button class="btn" id="shCancel">Close</button>
         ${editable ? `<button class="btn" id="orSave">Keep as draft</button><button class="btn primary" id="orSend">Ask to approve</button>` : ""}
         ${canApprove ? `<button class="btn primary" id="orOk" ${mineIn ? "disabled title=\"You're paid in this run\"" : ""}>Approve</button>` : ""}
@@ -15792,6 +15829,7 @@ function ofRunSheet(id){
     const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
     const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); delete ofAll()[r._id]; commit(); closeSheet(); render(); };
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
+    const ro = $("#orReopen"); if(ro) ro.onclick = () => { if(!confirm("Reopen this pay run as a draft? It will need approving again.")) return; const d = store("draft"); delete d.approvedBy; delete d.approvedAt; ofPut(r._id, d); closeSheet(); ofRunSheet(r._id); };
   };
   draw(); openPanel();
 }
