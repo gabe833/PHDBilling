@@ -4556,7 +4556,7 @@ function pgPmMonth(){
     { const nd = stmtCandidates(m).filter(x => !x.why && !x.done).length; acts.push([nd ? `Email statements (${nd})` : "Email statements", () => pmStatementMailSheet(m)]); }
     if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
     if(!closed && !mdReady()) acts.push(["Import Magicdoor", () => pmImportSheet(m)]);
-    if(!closed) acts.push(["Import from workbook", () => wbImportSheet(m)]);
+    if(!closed) acts.push([wbLiveId() ? "Read the workbook" : "Import from workbook", () => wbLiveId() && inboxConn() ? wbLiveSync({months:[m]}) : wbImportSheet(m)]);
     const unpaid = rows.filter(({row, prop}) => !row.detailOnly && !row.locked && !row.paidOut && pmCalc(row, prop).recv > 0 && pmCalc(row, prop).payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))).map(x => x.prop.id);
     if(!closed && unpaid.length) acts.push([`Mark payouts sent (${unpaid.length})`, () => pmMarkPaidSheet(m, unpaid)]);
     acts.push(closed ? ["Reopen month", () => pmCloseMonth(m, false)] : ["Close month", () => pmCloseMonth(m, true), "primary"]);
@@ -5509,7 +5509,7 @@ function wbSheetMonth(name){
 }
 const WB_COLS = [
   ["rentDue", /^monthly\s*rent/i], ["rentReceived", /^rent\s*payment/i], ["repairs", /^repairs$/i], ["adminFee", /^admin\s*fee/i],
-  ["pmFee", /^pm\s*fee/i], ["leasingFee", /^leasing\s*fee/i], ["otherIncome", /other.*income/i], ["ownerPayout", /owners?'?\s*payment/i],
+  ["pmFee", /^pm\s*fee$/i], ["leasingFee", /^leasing\s*fee/i], ["otherIncome", /other.*income/i], ["ownerPayout", /owners?'?\s*payment/i],
   ["applications", /^applications?/i], ["lateFee", /^late\s*fee/i], ["reimbursement", /reimburse|refund/i], ["filters", /^filters?/i]];
 const WB_MONEY = ["rentDue","rentReceived","repairs","adminFee","pmFee","leasingFee","otherIncome","ownerPayout","applications","lateFee","reimbursement","filters"];
 function wbParseMonth(rows){
@@ -5573,11 +5573,20 @@ function wbImportSheet(m){
   sh.innerHTML = `<div class="sheet-h"><h3>Import from the workbook</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <p class="muted" style="margin-top:0">Choose your <b>TOTAL MONTHLY PM INCOME REPORTING</b> workbook (.xlsx). The month's tab is read here in your browser; each property's numbers are written to ${esc(monthLabel(m))} exactly as the sheet has them.</p>
+      <div class="wb-live"><label class="fld"><span>Google Sheet link — read it live instead of uploading a file</span><input id="wbUrl" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(pmSettings().workbookUrl || "")}"></label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px"><button class="btn primary" id="wbLiveGo">Save link and read it now</button><span class="muted">The console then re-reads it every 15 minutes and whenever you open Rentals. billing@ needs view access to the sheet.</span></div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn" id="wbFile">Choose .xlsx file</button><input type="file" id="wbPick" accept=".xlsx" style="display:none"><span class="muted" id="wbName"></span></div>
       <div id="wbBody"></div>
     </div>
     <div class="sheet-f"><label class="switchbox" style="margin-right:auto"><input type="checkbox" id="wbLock" checked> Lock the imported rows (the MagicDoor sync won't change them)</label><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="wbGo" disabled>Import</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#wbLiveGo").onclick = async () => {
+    const u = $("#wbUrl").value.trim();
+    S.pmSettings = Object.assign({}, S.pmSettings || {}, {workbookUrl:u}); commit();
+    if(!wbLiveId()){ toast(u ? "That isn't a Google Sheets link" : "Workbook link removed"); return; }
+    if(!inboxConn()){ toast("Connect the receipt inbox first — the workbook is read through it"); return; }
+    closeSheet(); await wbLiveSync({months:[m, monthAdd(m, -1)]});
+  };
   $("#wbFile").onclick = () => $("#wbPick").click();
   $("#wbPick").onchange = async e => {
     const f = e.target.files[0]; if(!f) return;
@@ -15976,6 +15985,90 @@ if(typeof render === "function"){
         if(sig !== PM_LATE_AT){ PM_LATE_AT = sig; snapshot(); const n = pmLateRentCarry(); if(n){ commit(); toast(`Owner payouts matched to when MagicDoor collected the rent (${n} row${n === 1 ? "" : "s"})`); } }
       }
     }catch(e){ console.error("late rent", e); }
+    return r;
+  };
+}
+
+
+/* =====================================================================
+   THE WORKBOOK, LIVE — reads the PM income Google Sheet through the
+   receipt-inbox Apps Script (billing@ must be able to open it) and keeps
+   each month's rows equal to what the sheet says. The sheet is the record:
+   a property is taken from it once its owner payment is filled in there
+   (or it already came from the sheet). Closed months are never touched.
+   Every change is listed in MagicDoor → Recent updates as "Workbook".
+   ===================================================================== */
+function wbLiveId(){
+  const u = String((pmSettings() || {}).workbookUrl || "").trim();
+  const m = u.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/) || u.match(/^([A-Za-z0-9_-]{30,})$/);
+  return m ? m[1] : "";
+}
+const WBL = {busy:false, at:0, last:null};
+const WB_ZERO = ["repairs","adminFee","pmFee","ownerPayout"];
+function wbSheetVal(x, k){ const v = x.v[k] != null ? x.v[k] : (WB_ZERO.includes(k) ? 0 : null); return v == null ? null : cents(v); }
+function wbRowVal(r, k){ const v = r ? r[k] : null; return v == null || v === "" ? null : cents(v); }
+async function wbLiveSync(opts){
+  opts = opts || {};
+  if(WBL.busy || !wbLiveId() || typeof inboxConn !== "function" || !inboxConn()) return null;
+  WBL.busy = true; WBL.at = Date.now();
+  try{
+    const cur = todayISO().slice(0, 7), want = opts.months || [monthAdd(cur, -1), cur];
+    const meta = await inboxPost({action:"workbookRead", sheetId:wbLiveId()});
+    const tabs = (meta.sheets || []).filter(t => want.includes(wbSheetMonth(t)));
+    if(!tabs.length){ if(!opts.quiet) toast(`The workbook has no tab for ${want.map(monthLabel).join(" or ")} yet`); return null; }
+    const j = await inboxPost({action:"workbookRead", sheetId:wbLiveId(), tabs});
+    const P2 = pmState(), lines = [], unmatched = [];
+    let snap = false; const touch = () => { if(!snap){ snapshot(); snap = true; } };
+    const lbl = {rentDue:"rent due", rentReceived:"rent received", repairs:"repairs", adminFee:"admin fee", pmFee:"PM fee", leasingFee:"leasing fee", otherIncome:"other owner income", ownerPayout:"owner payment", applications:"applications", lateFee:"late fee", reimbursement:"reimbursement", filters:"filters"};
+    tabs.forEach(t => {
+      const m = wbSheetMonth(t); if((P2.meta[m] || {}).closed) return;
+      const res = wbParseMonth(j.tabs[t] || []); if(res.error) return;
+      res.rows.forEach(x => {
+        const p = pmMatchProperty(x.addr);
+        if(!p){ if(Object.keys(x.v).length) unmatched.push(x.addr); return; }
+        const r = P2.rows[pmKey(m, p.id)];
+        if(r && r.detailOnly) return;
+        const fromSheet = r && r.source === "workbook";
+        if(!fromSheet && x.v.ownerPayout == null) return;                 // not finished on the sheet yet
+        if(x.vacant && !Object.keys(x.v).length && !r) return;
+        const diff = WB_MONEY.filter(k => wbSheetVal(x, k) !== wbRowVal(r, k));
+        const st = (x.status || null) !== (r ? r.wbStatus || null : null);
+        if(r && !diff.length && !st) return;
+        touch();
+        const was = {}; diff.forEach(k => was[k] = wbRowVal(r, k));
+        x.propId = p.id; wbApply(m, [x], r ? (r.locked !== false) : true);
+        if(diff.length) lines.push({prop:p.name, pid:p.id, what:`${monthLabel(m)} from the workbook: ${diff.map(k => `${lbl[k]} ${was[k] == null ? "—" : usd(was[k])} → ${wbSheetVal(x, k) == null ? "—" : usd(wbSheetVal(x, k))}`).join(", ")}`});
+      });
+      // the deductions / losses box under the totals
+      const mm = P2.meta[m] || {}, had = JSON.stringify((mm.deductions || []).filter(d => d.wb).map(d => [d.label, d.amount, d.note || ""]));
+      if(had !== JSON.stringify((res.deductions || []).map(d => [d.label, d.amount, d.note || ""])) && (res.deductions || []).length + (mm.deductions || []).filter(d => d.wb).length){
+        touch(); wbApply(m, [], false, res.deductions || []);
+        lines.push({prop:"", pid:"", what:`${monthLabel(m)} deductions / losses updated from the workbook`});
+      }
+    });
+    if(lines.length){
+      const L = mdLinks(); L.log.unshift({at:new Date().toISOString(), by:"Workbook", lines:lines.slice(0, 120), more:Math.max(0, lines.length - 120)}); L.log = L.log.slice(0, 25);
+      commit();
+    }
+    WBL.last = {at:new Date().toISOString(), n:lines.length, unmatched, modified:j.modified || meta.modified || ""};
+    if(!opts.quiet || lines.length) toast(lines.length ? `Workbook: ${lines.length} change${lines.length === 1 ? "" : "s"} brought in — see MagicDoor → Recent updates` : "Workbook read — everything already matches", true);
+    if(unmatched.length && !opts.quiet) toast(`Workbook rows that match no property: ${unmatched.slice(0, 4).join("; ")}${unmatched.length > 4 ? "…" : ""}`);
+    if(lines.length) render();
+    return WBL.last;
+  }catch(e){
+    WBL.last = {at:new Date().toISOString(), error:String(e && e.message || e)};
+    if(!opts.quiet) toast("Workbook: " + WBL.last.error);
+    return null;
+  }finally{ WBL.busy = false; }
+}
+if(typeof render === "function"){
+  const wbRender0 = render;
+  render = function(){
+    const r = wbRender0.apply(this, arguments);
+    try{
+      if(document.body.classList.contains("mode-pm") && wbLiveId() && Date.now() - WBL.at > 15 * 60 * 1000 && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email))
+        setTimeout(() => wbLiveSync({quiet:true}), 1500);
+    }catch(e){}
     return r;
   };
 }

@@ -639,6 +639,19 @@ function doPost(e){
       });
       return json_({ok:true, results:out});
     }
+    if(b.action === 'workbookRead'){
+      // the PM income workbook (a Google Sheet billing@ can open): its tab names, and the values of the tabs asked for.
+      // Read-only: the console compares these to its own month rows.
+      let ss;
+      try{ ss = SpreadsheetApp.openById(String(b.sheetId || '')); }
+      catch(e){ return json_({ok:false, error:'billing@ can\'t open the workbook — share it with billing@ (Viewer is enough)'}); }
+      const names = ss.getSheets().map(sh => sh.getName()), tabs = {};
+      (Array.isArray(b.tabs) ? b.tabs : []).slice(0, 4).forEach(t => {
+        const sh = ss.getSheetByName(String(t)); if(!sh) return;
+        tabs[t] = sh.getDataRange().getValues().map(r => r.map(v => v instanceof Date ? Utilities.formatDate(v, 'America/New_York', 'yyyy-MM-dd') : v));
+      });
+      return json_({ok:true, title:ss.getName(), sheets:names, tabs, modified:DriveApp.getFileById(ss.getId()).getLastUpdated().toISOString()});
+    }
     if(b.action === 'describe'){
       // one vendor invoice (from MagicDoor, via the console): say in a line what work was done, for an owner statement
       const mime = String(b.mime || '').toLowerCase(), kind = MIME_OK[mime];
