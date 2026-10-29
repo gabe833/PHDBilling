@@ -9,7 +9,7 @@
 -- =====================================================================
 
 alter table public.staff add column if not exists admin boolean not null default false;
-update public.staff set admin = true where email in ('gabe@phdproperties.realestate', 'peter@phdproperties.realestate');
+-- who's an admin is set separately (Team settings / a one-line update), not in this public file
 
 create or replace function public.is_admin() returns boolean
 language sql stable security definer set search_path = public as $$
