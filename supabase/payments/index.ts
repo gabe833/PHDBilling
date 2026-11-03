@@ -331,8 +331,15 @@ async function projCustomer(p: Obj, number: string, map: Obj): Promise<Obj> {
 /* ====================================================================
    ACTIONS THAT CHANGE NICKEL — each one confirmed by the person in the console
    ==================================================================== */
-async function act(op: string, body: Obj, by: string, runId: string): Promise<Obj> {
-  const ask = (title: string) => confirmer(runId, by, title);
+// AUTOMATIC: the console may create project invoices and vendor bills without the confirm click, when the office
+// turned that on (Payments setup → Automatic). Only these creates qualify — never paying, sending, deleting or changing.
+const AUTO_OPS: Record<string, string> = { "project.invoice": "invoices", "owner.create": "invoices", "bill.create": "bills", "txn.bill": "bills" };
+const autoYes: Ask = async (params: Obj) => {
+  const props = (params.requestedSchema && params.requestedSchema.properties) || {};
+  return { action: "accept", content: { [Object.keys(props)[0] || "confirm"]: true } };
+};
+async function act(op: string, body: Obj, by: string, runId: string, auto = false): Promise<Obj> {
+  const ask = (title: string) => auto && AUTO_OPS[op] ? autoYes : confirmer(runId, by, title);
   const map = await nkMap(), acct = await accounting();
 
   if (op === "vendor.create") {
@@ -1208,6 +1215,17 @@ async function handle(req: Request): Promise<Response> {
       case "nk.plan": return done(await plan((body.billIds || []).map(S), who.email));
       case "nk.do": {
         const runId = S(body.runId); if (!/^[A-Za-z0-9_-]{8,64}$/.test(runId)) throw new Error("Missing run id");
+        if (body.auto === true) {
+          const op = S(body.op), grp = AUTO_OPS[op], on = !!(((await accounting()).nkAuto || {}) as Obj)[grp];
+          if (!grp || !on) return json({ ok: false, error: "Automatic creation isn't turned on for this (Payments setup → Automatic)" });
+          if (op === "project.invoice" && body.requireQb !== true) return json({ ok: false, error: "Automatic invoices always go into QuickBooks" });
+          // one automatic try per item at a time, even with the console open in several places
+          const claim = "nkauto:" + op + ":" + [body.propertyId, body.unitId, body.no, body.billId, body.txnId, body.ownerId].map(S).join("|");
+          const prev = Number(await getSetting(claim)) || 0;
+          if (Date.now() - prev < 10 * 60 * 1000) return json({ ok: false, busy: true, error: "Already being created" });
+          await setSetting(claim, String(Date.now()));
+          return done(await act(op, body, who.email + " (automatic)", runId, true));
+        }
         return done(await act(S(body.op), body, who.email, runId));
       }
       case "nk.pending": {

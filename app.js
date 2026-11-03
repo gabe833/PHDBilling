@@ -16072,3 +16072,153 @@ if(typeof render === "function"){
     return r;
   };
 }
+
+/* =====================================================================
+   AUTOMATIC NICKEL — project invoices and vendor bills are created in
+   Nickel without the confirm click, when turned on in Payments setup.
+   · Project invoices: once an invoice is Ready (at its cap, or the final
+     one), it's locked and created in Nickel + QuickBooks with its pay link.
+     It is NOT emailed: you still press Email owner.
+   · Vendor bills: an unpaid bill (Bills page) or a project expense marked
+     "vendor still needs to be paid" is added to Nickel as a bill, when the
+     vendor is already in Nickel. Paying it still takes your confirmation.
+   Runs while the console is open (checked every few minutes). Nothing that
+   moves money, sends email, deletes or changes is ever automatic — the
+   payments function refuses anything else with the automatic flag.
+   ===================================================================== */
+const NKA = {busy:false, at:0, tried:{}, last:null};
+function nkAutoCfg(){ return (S.acct || {}).nkAuto || {}; }
+const nkAutoOn = k => !!nkAutoCfg()[k];
+async function nkAutoRun(op, args){ return payCall("nk.do", Object.assign({op, runId:"auto_" + uid() + uid(), auto:true}, args), {raw:true}); }
+function nkAutoTry(k){ const t = NKA.tried[k]; if(t && Date.now() - t < 6 * 3600 * 1000) return false; NKA.tried[k] = Date.now(); return true; }
+// what's waiting right now (also shown on Payments setup)
+function nkAutoQueue(){
+  const out = {invoices:[], bills:[], txns:[]}, base = nkAutoCfg().baseline || {};
+  if(typeof live === "function") live().forEach(p => {
+    const C = typeof ALL !== "undefined" && ALL[p.id]; if(!C || !C.units) return;
+    p.units.forEach(unit => (C.units[unit.id] || []).forEach(inv => {
+      const reg = inv.reg || {};
+      if(reg.nickel && reg.nickel.invoiceId) return;
+      if(!String(inv.status || "").startsWith("Ready")) return;           // at the cap, or the final invoice
+      if(reg.paid || reg.dateSent || reg.link || reg.nickelOld) return;     // already went out another way
+      if(base[`i:${p.id}|${unit.id}|${inv.no}`]) return;                    // was already waiting when this was turned on
+      out.invoices.push({p, unit, inv});
+    }));
+    (p.transactions || []).forEach(t => {
+      if(!pjVendorOpen(t) || (t.nickelBill && t.nickelBill.billId) || !(Number(t.amount) > 0) || base["t:" + t.id]) return;
+      out.txns.push({p, t});
+    });
+  });
+  billList().forEach(b => { if(b.status === "open" && !(b.nickel && b.nickel.billId) && cents(b.amount) > 0 && !base["b:" + b.id]) out.bills.push(b); });
+  return out;
+}
+const nkExactVendor = name => { const k = vendorKey(name); return k.length >= 3 ? nkVendorList().find(v => vendorKey(v.name) === k) || null : null; };
+function nkBillVendor(b){ const v = pmVendors().find(x => x.id === b.vendorId) || pmVendors().find(x => vendorKey(x.name) === vendorKey(b.vendor)); return v && nkVendor(v.id).id ? v : null; }
+async function nkAutoPass(){
+  if(NKA.busy || !nickelOn() || !(nkAutoOn("invoices") || nkAutoOn("bills"))) return;
+  NKA.busy = true; NKA.at = Date.now();
+  const made = [], waiting = [], skipped = [];
+  try{
+    const q = nkAutoQueue();
+    if(!q.invoices.length && !q.bills.length && !q.txns.length) return;
+    await payCall("nk.match", {}, {raw:true}).catch(() => {});
+    if(nkAutoOn("invoices") && q.invoices.length){
+      await pjLoadLists();
+      for(const x of q.invoices){
+        const {unit} = x, p = S.properties.find(y => y.id === x.p.id); if(!p) continue;
+        const k = `inv:${p.id}|${unit.id}|${x.inv.no}`, label = `${p.name}${pjUnitLabel(p, unit)} · Invoice ${x.inv.no}`;
+        const o = ownerRec(p), why = pjQbWhy(p, x.inv);
+        if(!o || !o.email){ skipped.push(`${label}: the owner has no email`); continue; }
+        if(why){ skipped.push(`${label}: ${why}`); continue; }
+        if(!nkAutoTry(k)) continue;
+        // lock it first, so what goes into QuickBooks can't repack afterwards
+        if(!x.inv.locked){ snapshot(); p.register = p.register || {}; const g = p.register[pjKey(unit, x.inv)] = p.register[pjKey(unit, x.inv)] || {}; g.lock = true; g.autoLocked = new Date().toISOString(); commit(); }
+        const inv = ((ALL[p.id] || {}).units || {})[unit.id] && ALL[p.id].units[unit.id].find(i => i.no === x.inv.no);
+        if(!inv || !(inv.reg && inv.reg.frozen)){ skipped.push(`${label}: couldn't lock it`); continue; }
+        let cust = null; try{ cust = ((await payCall("nk.projCustomer", {propertyId:p.id, invoiceNumber:pjInvNumber(p, unit, inv)}, {noSave:true})) || {}).customer || {}; }catch(e){}
+        if(!(cust && cust.id) && !nkOwner(p.ownerId).id){
+          const r0 = await nkAutoRun("owner.create", {ownerId:p.ownerId});
+          if(!r0.ok && !r0.already){ (r0.approvalUrl ? waiting : skipped).push(`${label}: adding ${ownerLabel(o)} to Nickel — ${r0.error || "didn't go through"}`); continue; }
+        }
+        const due = PMCore.isoOf(PMCore.dayNum(todayISO()) + pjTermsDays(p));
+        const r = await nkAutoRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:pjInvNumber(p, unit, inv), dueDate:due, requireQb:true, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)});
+        if(r.ok || r.already){
+          const pp = S.properties.find(y => y.id === p.id); if(pp){ snapshot(); const g = pp.register[pjKey(unit, inv)] = pp.register[pjKey(unit, inv)] || {}; if(!g.due) g.due = due; commit(); }
+          made.push(`${label} · ${usd(inv.totalC)}`);
+        } else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
+      }
+    }
+    if(nkAutoOn("bills")){
+      for(const b of q.bills){
+        const label = `${b.vendor} ${usd(cents(b.amount))} · ${(pmProp(b.propertyId) || {}).name || ""}`;
+        if(!nkBillVendor(b)){ skipped.push(`${label}: ${b.vendor} isn't in Nickel yet`); continue; }
+        if(!nkAutoTry("b:" + b.id)) continue;
+        const r = await nkAutoRun("bill.create", {billId:b.id});
+        if(r.ok || r.already) made.push(`Bill: ${label}`); else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
+      }
+      for(const {p, t} of q.txns){
+        const label = `${t.vendor || "Vendor"} ${usd(cents(t.amount))} · ${p.name}`, v = nkExactVendor(t.vendor);
+        if(!v){ skipped.push(`${label}: no vendor named “${t.vendor || ""}” in Nickel`); continue; }
+        if(!nkAutoTry("t:" + t.id)) continue;
+        const r = await nkAutoRun("txn.bill", {propertyId:p.id, txnId:t.id, nickelVendorId:v.id, dueDate:(t.vendorDue && t.vendorDue.due) || todayISO()});
+        if(r.ok || r.already) made.push(`Bill: ${label}`); else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
+      }
+    }
+  }catch(e){ skipped.push(String(e && e.message || e)); }
+  finally{
+    NKA.busy = false;
+    if(made.length || waiting.length || skipped.length) NKA.last = {at:new Date().toISOString(), made, waiting, skipped};
+    if(made.length){
+      const F = typeof finState === "function" ? finState() : null;
+      if(F){ snapshot(); made.forEach(m => finLog("Created in Nickel automatically: " + m)); commit(); }
+      toast(`Nickel: ${made.length} created automatically — ${made.slice(0, 2).join("; ")}${made.length > 2 ? "…" : ""}`, true);
+      try{ await payCall("nickel.refresh", {}, {noSave:true}); }catch(e){}
+      render();
+    }
+    if(waiting.length) toast(`Nickel: ${waiting.length} waiting for approval in Nickel`);
+  }
+}
+// check every few minutes while the console is open (and soon after something new comes in)
+if(typeof render === "function"){
+  const nkaRender0 = render;
+  render = function(){
+    const r = nkaRender0.apply(this, arguments);
+    try{ if(nickelOn() && (nkAutoOn("invoices") || nkAutoOn("bills")) && !NKA.busy && Date.now() - NKA.at > 3 * 60 * 1000) setTimeout(nkAutoPass, 2500); }catch(e){}
+    return r;
+  };
+}
+// Payments setup → Automatic
+if(typeof paySetupInto === "function"){
+  const psa0 = paySetupInto;
+  paySetupInto = function(v){
+    psa0(v);
+    const grid = v.querySelector(".ps-grid"); if(!grid || !nickelOn()) return;
+    const c = nkAutoCfg(), q = nkAutoQueue(), base = Object.keys(c.baseline || {}).length;
+    const card = elm("div","card");
+    card.innerHTML = `<div class="card-h"><h3>Automatic</h3>${c.invoices || c.bills ? `<span class="tag green">On</span>` : `<span class="tag grey">Off</span>`}</div>
+      <div class="card-b ps-b">
+        <label class="ps-chk"><input type="checkbox" id="naInv" ${c.invoices ? "checked" : ""}> <span><b>Create project invoices in Nickel + QuickBooks</b> as soon as they're ready (at the cap, or the final invoice). The pay link is made; the owner isn't emailed until you press Email owner.</span></label>
+        <label class="ps-chk"><input type="checkbox" id="naBill" ${c.bills ? "checked" : ""}> <span><b>Create vendor bills in Nickel</b> for vendor invoices still to be paid (Bills page, and project expenses marked “vendor still needs to be paid”), when the vendor is in Nickel. Paying stays a click.</span></label>
+        <p class="help">No confirmation window for these. Paying, emailing, deleting and changing always still ask. If Nickel's own approval rules hold one, it waits in Nickel for approval.</p>
+        <div class="ps-kv"><span>Waiting now</span><b>${q.invoices.length} invoice${q.invoices.length === 1 ? "" : "s"} · ${q.bills.length + q.txns.length} bill${q.bills.length + q.txns.length === 1 ? "" : "s"}</b></div>
+        ${base ? `<p class="help">${base} invoice${base === 1 ? "" : "s"} or bill${base === 1 ? " was" : "s were"} already waiting when this was turned on and ${base === 1 ? "is" : "are"} left for you to do by hand. <a href="#" id="naBase">Create those automatically too</a></p>` : ""}
+        ${NKA.last ? `<div class="sectl">Last run · ${esc(mdAgo(NKA.last.at))}</div>${[["Created", NKA.last.made], ["Waiting for approval in Nickel", NKA.last.waiting], ["Not created", NKA.last.skipped]].filter(([, l]) => l.length).map(([h, l]) => `<p class="help"><b>${h}:</b> ${l.slice(0, 8).map(esc).join("<br>")}${l.length > 8 ? `<br>… ${l.length - 8} more` : ""}</p>`).join("")}` : ""}
+        <button class="btn sm" id="naNow" ${c.invoices || c.bills ? "" : "disabled"}>Run now</button>
+      </div>`;
+    grid.appendChild(card);
+    const save = (k, on) => {
+      snapshot(); const n = Object.assign({}, nkAutoCfg(), {[k]:on});
+      // turning one on: what's already waiting stays for you to decide (not dumped into Nickel at once)
+      if(on && !nkAutoCfg()[k]){ const b0 = Object.assign({}, nkAutoCfg().baseline || {}), q0 = nkAutoQueue();
+        if(k === "bills"){ q0.bills.forEach(b => b0["b:" + b.id] = 1); q0.txns.forEach(x => b0["t:" + x.t.id] = 1); }
+        if(k === "invoices") q0.invoices.forEach(x => b0[`i:${x.p.id}|${x.unit.id}|${x.inv.no}`] = 1);
+        n.baseline = b0; }
+      n.changedAt = new Date().toISOString(); n.changedBy = (typeof Cloud !== "undefined" && Cloud.email) || "";
+      S.acct = Object.assign({}, S.acct || {}, {nkAuto:n}); commit(); toast(on ? "On — Nickel items are created automatically" : "Off", true); NKA.at = 0; render();
+    };
+    card.querySelector("#naInv").onchange = e => save("invoices", e.target.checked);
+    card.querySelector("#naBill").onchange = e => save("bills", e.target.checked);
+    const nb = card.querySelector("#naBase"); if(nb) nb.onclick = e => { e.preventDefault(); snapshot(); S.acct = Object.assign({}, S.acct || {}, {nkAuto:Object.assign({}, nkAutoCfg(), {baseline:{}})}); commit(); NKA.at = 0; render(); };
+    card.querySelector("#naNow").onclick = async e => { e.target.disabled = true; NKA.at = 0; NKA.tried = {}; await nkAutoPass(); render(); };
+  };
+}
