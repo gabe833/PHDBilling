@@ -52,10 +52,13 @@ const CFG = {
   ]
 };
 
+// bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
+const SCRIPT_VERSION = 7;   // 7: workbook read, pay-from account, address on the document, attach receipts
+
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
   'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text','pay_status','pay_note',
-  'office_note','bill_to','no_fee','hold','party'];
+  'office_note','bill_to','no_fee','hold','party','pay_account','address_seen'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -304,6 +307,8 @@ Rules:
 - For a vendor invoice, total is the balance due, and order_no is the invoice number.
 - pay_status: "to_pay" if this is a bill or invoice that still has to be paid (balance due, "please pay", a forwarding note asking for payment), "paid" if it shows payment already made (store receipt, PAID stamp, zero balance, card charged), otherwise "unknown".
 - pay_note: any payment instruction from the email or invoice in a few words, e.g. "pay from account 4091 today" or "due on receipt"; otherwise empty.
+- pay_account: when the email or our office note says which of OUR accounts to pay from ("pay with account 8186", "use the 4091 account", "pay from Operating ending 2680"), the last 4 digits of that account; otherwise empty. Never use the vendor's own bank or remit-to account.
+- address_seen: the job, service, delivery or property address printed on the document or named in the email (street number and street, plus unit if any), exactly as written; empty if none is shown. Do not use the vendor's own address or a billing address for our office.
 - is_receipt false for marketing, shipping-only notices, quotes/estimates, or anything that is not a charge or credit.
 - If there is a note from our office, follow it: property/unit it names, "unpaid"/"needs paying" (pay_status to_pay), "paid" (paid), "refund", "return" or "credit" (is_credit true), and fill bill_to: "contractor" when it says to bill or back-charge a contractor/sub/vendor (put their name in party), "owner_paid_direct" when the owner paid the contractor directly, "phd" when we absorb it / it isn't billable, "owner" when it says to bill the owner; otherwise empty. no_fee true when it says no fee / at cost. hold true when it says hold / final billing / don't bill yet. office_note: what the note asked for, in a few words.`});
 
@@ -319,6 +324,8 @@ Rules:
         due_date:{type:'string', description:'YYYY-MM-DD or empty'},
         pay_status:{type:'string', enum:['to_pay','paid','unknown']},
         pay_note:{type:'string'},
+        pay_account:{type:'string', description:'last 4 digits of our account to pay from, or empty'},
+        address_seen:{type:'string', description:'job/service/property address shown, or empty'},
         total:{type:'number'},
         is_credit:{type:'boolean'},
         description:{type:'string'},
@@ -414,6 +421,8 @@ function clean_(x, props){
     due_date: /^\d{4}-\d{2}-\d{2}$/.test(s(x.due_date)) ? s(x.due_date) : '',
     pay_status: ['to_pay','paid'].indexOf(x.pay_status) >= 0 ? x.pay_status : '',
     pay_note: s(x.pay_note).slice(0, 140),
+    pay_account: (s(x.pay_account).match(/\d{4}(?!.*\d)/) || [''])[0],
+    address_seen: s(x.address_seen).slice(0, 120),
     total: Math.round(Math.abs(Number(x.total) || 0) * 100) / 100,
     is_credit: x.is_credit === true,
     description: s(x.description).slice(0, 80),
@@ -446,7 +455,7 @@ function doGet(e){
   const p = (e && e.parameter) || {};
   if(!tokenOk_(p.token)) return json_({ok:false, error:'unauthorized'});
   const action = p.action || 'list';
-  if(action === 'ping') return json_({ok:true, sheet:sheetUrl_(), model:PropertiesService.getScriptProperties().getProperty('MODEL')});
+  if(action === 'ping') return json_({ok:true, sheet:sheetUrl_(), model:PropertiesService.getScriptProperties().getProperty('MODEL'), version:SCRIPT_VERSION});
   if(action === 'folders'){
     // where receipts are filed in Drive, so the console's Drive buttons open the right folder
     const root = rootFolder_(), out = [], it = root.getFolders();
@@ -915,6 +924,7 @@ function publicRow_(r){
     confidence:r.confidence, reason:r.reason, line_items:(function(){ try{ return JSON.parse(r.line_items || '[]'); }catch(e){ return []; } })(),
     order_no:r.order_no, notes:r.notes, error:r.error,
     side:String(r.side || ''), pay_status:String(r.pay_status || ''), pay_note:String(r.pay_note || ''),
+    pay_account:String(r.pay_account || ''), address_seen:String(r.address_seen || ''), email_hint:String(r.email_text || '').slice(0, 600),
     office_note:String(r.office_note || ''), bill_to:String(r.bill_to || ''), party:String(r.party || ''),
     no_fee:r.no_fee === true || r.no_fee === 'TRUE', hold:r.hold === true || r.hold === 'TRUE',
     due_date:r.due_date instanceof Date ? Utilities.formatDate(r.due_date, Session.getScriptTimeZone(), 'yyyy-MM-dd') : String(r.due_date || '')};

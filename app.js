@@ -3853,7 +3853,7 @@ async function inboxApprove(it, openAfter){
     notes:[it.order_no ? "Order " + it.order_no : "", "From receipt inbox"].filter(Boolean).join(" · "),
     tags:[], reconciled:false, reconciledAt:"", date:d.date, vendor:d.vendor.trim(), desc:(d.desc || "").trim() + (d.credit && !/return|refund|credit/i.test(d.desc) ? " — return" : ""),
     amount: d.credit ? -amt : amt, scope, status:"billable", applyFee:true, allowPartial:true};
-  if(d.toPay && !d.credit) rec.vendorDue = {since:todayISO(), due:d.due || "", note:it.pay_note || "", by:billWho()};
+  if(d.toPay && !d.credit) rec.vendorDue = {since:todayISO(), due:d.due || "", note:ibPayNote(it), by:billWho(), payFrom4:ibPayAccount(it) || ""};
   if(d.credit && p.tags.some(t => t.id === RETURN_TAG_ID)) rec.tags = [RETURN_TAG_ID];
   const bt = d.billTo || "owner";
   if(it.office_note) rec.notes += " · Note: " + String(it.office_note).replace(/^(Subject|File name):\s*/i, "").replace(/\n+/g, " — ").slice(0, 200);
@@ -3904,8 +3904,9 @@ async function inboxApprovePm(it, openAfter){
     // receipts and vendor invoices become bills: paid already, or waiting to be paid; the owner side follows the bill
     const rec = d.pmRec || (p.ownerId ? "deduct" : "phd"), paid = d.pmPaid !== "topay";
     bill = billNew({propertyId:p.id, vendor:d.vendor, amount:amt, date:d.date, memo:d.desc, recover:p.ownerId ? rec : "phd", deductMonth:m,
-      receipt:it.file_url ? {url:it.file_url, name:fileName} : null, source:"Receipt inbox", inbox:it.id, payNote:paid ? "" : (it.pay_note || ""), due:paid ? "" : (it.due_date || ""),
+      receipt:it.file_url ? {url:it.file_url, name:fileName} : null, source:"Receipt inbox", inbox:it.id, payNote:paid ? "" : ibPayNote(it), due:paid ? "" : (it.due_date || ""),
       status:paid ? "paid" : "open", pay:paid ? {method:"Card / receipt", date:d.date, ref:"", by:billWho(), at:new Date().toISOString()} : null});
+    if(!paid && ibPayAccount(it)) bill.payFrom4 = ibPayAccount(it);
     billSave(bill, true);
   }
   const msg = {decision:"approved", txnId:"pm:" + m + "|" + p.id, propertyName:p.name, fileName};
@@ -7656,7 +7657,7 @@ function billNew(f){
   return {id:"bl_" + uid(), propertyId:f.propertyId, vendor:(f.vendor || "").trim(), vendorId:null, billNo:f.billNo || "", date:f.date || todayISO(), due:f.due || "",
     amount:Math.round(Number(f.amount) * 100) / 100, memo:(f.memo || "").trim(), category:f.category || "Repairs", receipt:f.receipt || null,
     recover:f.recover || (p && p.ownerId ? "deduct" : "phd"), feeMode:f.feeMode || "auto", status:f.status || "open", pay:f.pay || null, deduct:f.deductMonth ? {month:f.deductMonth, pid:f.propertyId} : null,
-    invoiceId:null, qbo:null, nickel:null, source:f.source || "", inbox:f.inbox || "", payNote:(f.payNote || "").trim()};
+    invoiceId:null, qbo:null, nickel:null, source:f.source || "", inbox:f.inbox || "", payNote:(f.payNote || "").trim(), payFrom4:f.payFrom4 || ""};
 }
 
 /* ---------- server calls (Supabase function "payments") ---------- */
@@ -8076,12 +8077,15 @@ async function billPaySheet(ids){
   }
   try{ plan = await payCall("nk.plan", {billIds:ids}); }catch(e){ sh.querySelector(".sheet-b").innerHTML = `<div class="pm-banner">${esc(e.message)}</div>`; return; }
   const rows = plan.bills || [], ready = rows.filter(x => x.need === "" || x.need === "bill"), toAdd = ready.filter(x => x.need === "bill"), blocked = rows.filter(x => x.need === "vendor" || x.need === "details");
-  const accts = plan.payFrom || [], a = S.acct || {}, acct = accts.find(x => x.id === a.nickelPayFrom) || accts.find(x => x.isDefault) || accts[0];
+  const accts = plan.payFrom || [], a = S.acct || {}, want4 = [...new Set(ids.map(id => (billById(id) || {}).payFrom4).filter(Boolean))];
+  const named = want4.length === 1 ? accts.find(x => String(x.label || "").includes(want4[0])) : null;
+  const acct = named || accts.find(x => x.id === a.nickelPayFrom) || accts.find(x => x.isDefault) || accts[0];
   const totC = ready.reduce((s, x) => s + cents((billById(x.id) || {}).amount), 0);
   const steps = toAdd.length + 1;
   sh.innerHTML = `<div class="sheet-h"><div><h3>Pay with Nickel</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${ready.length} bill${ready.length === 1 ? "" : "s"} ready · ${usd(totC)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       ${!plan.canPay ? `<div class="pm-banner">Only people on the payments list can send money (${esc((plan.payers || []).join(", ") || "nobody yet")}).</div>` : ""}
+      ${named ? `<p class="help" style="margin:0 0 6px">The vendor's email said to pay from the account ending ${esc(want4[0])} — it's picked below.</p>` : want4.length === 1 ? `<div class="pm-banner">The email said to pay from an account ending ${esc(want4[0])}, but Nickel has no account like that. Check before paying.</div>` : ""}
       <label class="fld"><span>Pay from</span><select id="npFrom">${accts.map(x => `<option value="${esc(x.id)}" ${acct && x.id === acct.id ? "selected" : ""}>${esc(x.label)}</option>`).join("") || "<option value=''>No account in Nickel</option>"}</select></label>
       <label class="ps-chk"><input type="checkbox" id="npDue"> Pay by each bill's due date (Nickel keeps the money until then)</label>
       ${ready.length ? `<div class="sm-list" style="margin-top:12px">${ready.map(x => { const b = billById(x.id); return `<div class="sm-r np-r"><span></span><div class="sm-t"><b>${esc(b.vendor)}</b><span>${esc((pmProp(b.propertyId) || {}).name || "")}${b.memo ? " · " + esc(b.memo) : ""}${b.due ? " · due " + esc(fdateS(b.due)) : ""}</span></div><span class="muted" style="font-size:12px">${esc(x.delivery || "")}${x.need === "bill" ? `<br><span class="tag grey">adds to Nickel</span>` : ""}</span><b class="num">${usd(cents(b.amount))}</b><span></span></div>`; }).join("")}</div>` : ""}
@@ -8100,7 +8104,7 @@ async function billPaySheet(ids){
   $("#npGo").onclick = async () => {
     const from = $("#npFrom").value, byDue = $("#npDue").checked, go2 = $("#npGo");
     go2.disabled = true;
-    if(from !== a.nickelPayFrom){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:from}); commit(); }
+    if(from !== a.nickelPayFrom && !(named && from === named.id)){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {nickelPayFrom:from}); commit(); }
     try{
       for(const x of toAdd){
         const b = billById(x.id);
@@ -8745,7 +8749,7 @@ function pjTxnNickelBlock(p, t){
   const st = PAY.status && PAY.status.nickel, canPay = !!(st && st.canPay);
   if(nb.billId){
     const nv = nkVendorList().find(v => v.id === nb.vendorId) || {}, ready = (nv.payout || []).length > 0;
-    const from = (st && st.payFrom || []).find(x => x.id === (S.acct || {}).nickelPayFrom) || (st && st.payFrom || []).find(x => x.isDefault) || (st && st.payFrom || [])[0];
+    const p4 = t.vendorDue && t.vendorDue.payFrom4, from = (p4 && (st && st.payFrom || []).find(x => String(x.label || "").includes(p4))) || (st && st.payFrom || []).find(x => x.id === (S.acct || {}).nickelPayFrom) || (st && st.payFrom || []).find(x => x.isDefault) || (st && st.payFrom || [])[0];
     box.innerHTML = `<div class="sectl">Nickel</div><p class="help" style="margin-top:0">Bill for ${usd(cents(t.amount))} to <b>${esc(nb.vendor || nv.name || "")}</b> is in Nickel${nb.qb ? " (and QuickBooks)" : ""}, not paid yet.${nb.failed ? ` The last try didn't go through: ${esc(nb.failed)}.` : ""}</p>
       ${!ready ? `<div class="pm-banner">${esc(nv.name || "The vendor")} has no bank account or check address in Nickel yet. Add it in Nickel, then pay here.</div>`
         : !canPay ? `<p class="help">Only people on the payments list can send money.</p>`
@@ -11614,7 +11618,7 @@ function buFileName(it, p, b){
 function buPreset(it, f){
   const paid = f.kind === "paid";
   return {propertyId:f.prop || (pmProp(it.property_id) ? it.property_id : ""), vendor:it.vendor || "", amount:it.total || "", date:it.date || todayISO(), due:paid ? "" : (it.due_date || ""),
-    memo:it.description || "", billNo:it.order_no || "", payNote:paid ? "" : (it.pay_note || ""), receipt:it.file_url ? {url:it.file_url, name:it.file_name || f.name} : null, source:"Upload", inbox:it.id,
+    memo:it.description || "", billNo:it.order_no || "", payNote:paid ? "" : ibPayNote(it), payFrom4:paid ? "" : ibPayAccount(it), receipt:it.file_url ? {url:it.file_url, name:it.file_name || f.name} : null, source:"Upload", inbox:it.id,
     status:paid ? "paid" : "open", pay:paid ? {method:"Card / receipt", date:it.date || todayISO(), ref:"", by:billWho(), at:new Date().toISOString()} : null};
 }
 function buCreate(f, p){
@@ -16220,5 +16224,206 @@ if(typeof paySetupInto === "function"){
     card.querySelector("#naBill").onchange = e => save("bills", e.target.checked);
     const nb = card.querySelector("#naBase"); if(nb) nb.onclick = e => { e.preventDefault(); snapshot(); S.acct = Object.assign({}, S.acct || {}, {nkAuto:Object.assign({}, nkAutoCfg(), {baseline:{}})}); commit(); NKA.at = 0; render(); };
     card.querySelector("#naNow").onclick = async e => { e.target.disabled = true; NKA.at = 0; NKA.tried = {}; await nkAutoPass(); render(); };
+  };
+}
+
+/* =====================================================================
+   RECEIPT INBOX ON AUTOPILOT
+   A receipt or vendor invoice that reads cleanly is approved by itself:
+   it goes to the property (a bill on a rental, an expense on a project);
+   when it still has to be paid the bill is left open — and, with
+   Payments → Automatic on, it's added to Nickel too. Anything unclear
+   waits for you, with the reason on the card. The rules:
+   · the reading is "high" confidence, with vendor, date and amount
+   · the property is certain: the address printed on it matches the
+     property, or the office note named it, or this vendor has only ever
+     been approved to this property — and on a multi-unit project the
+     unit is known
+   · it says whether it's paid or still to pay
+   · it isn't a possible duplicate, the total adds up, the date is real
+     (not in the future, not older than 120 days)
+   · the amount is under the limit (Payments → Automatic, $5,000 default)
+   · a refund on a rental, and a back-charge with no name, wait for you
+   A payment instruction ("pay with account 8186") becomes a note on the
+   bill, and the Pay window picks that Nickel account.
+   ===================================================================== */
+function ibPayAccount(it){
+  if(!it) return "";
+  if(/^\d{4}$/.test(String(it.pay_account || ""))) return String(it.pay_account);
+  const txt = [it.pay_note, it.office_note, it.email_hint].filter(Boolean).join(" \n ");
+  const m = txt.match(/\b(?:pay|paid|use|charge|from|with)\b[^.\n]{0,40}?\b(?:acc(?:oun)?t|acct|card|checking|operating)\b[^\d\n]{0,25}?(?:ending(?:\s*in)?|#|no\.?|x+|\*+|•+)?\s*(\d{4})\b/i)
+    || txt.match(/\b(?:acc(?:oun)?t|acct)\s*(?:ending(?:\s*in)?|#|no\.?)?\s*[x*•]*\s*(\d{4})\b[^.\n]{0,30}\b(?:pay|use)/i);
+  return m ? m[1] : "";
+}
+function ibPayNote(it){
+  const n = String((it && it.pay_note) || "").trim(), a = ibPayAccount(it);
+  if(!a) return n;
+  return new RegExp(a).test(n) ? n : (n ? n + " · " : "") + `Pay from account ending ${a}`;
+}
+const IBA_DEFAULT_CAP = 5000;
+function ibInfoSheet(title, html){
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><h3>${esc(title)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div><div class="sheet-b ib-info">${html}</div><div class="sheet-f"><span style="flex:1"></span><button class="btn primary" id="shCancel">Got it</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+}
+function ibAutoCfg(){ const c = (S.acct || {}).inboxAuto || {}; return {on:c.on !== false, cap:Number(c.cap) > 0 ? Number(c.cap) : IBA_DEFAULT_CAP}; }
+// "27 Smith St, Charleston" → {no:"27", st:"smith", unit:""}
+function ibAddrKey(s){
+  const t = String(s || "").toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  const m = t.match(/\b(\d{1,6})(?:-?([a-z]))?\s+(?:(?:n|s|e|w|north|south|east|west)\s+)?([a-z0-9]+)/); if(!m) return null;
+  const u = (t.match(/(?:#|\bunit\s*|\bapt\.?\s*|\bsuite\s*|\bste\s*)\s*([a-z0-9]{1,5})\b/) || [])[1] || m[2] || "";
+  return {no:m[1], st:m[3], unit:u};
+}
+function ibAddrMatch(seen, prop){
+  const a = ibAddrKey(seen); if(!a) return null;          // nothing readable printed
+  const cands = [prop.address, prop.name].concat(prop.aliases || []).filter(Boolean).map(ibAddrKey).filter(Boolean);
+  if(!cands.length) return null;
+  const hit = cands.find(c => c.no === a.no && (c.st === a.st || c.st.startsWith(a.st) || a.st.startsWith(c.st)));
+  if(!hit) return false;
+  if(a.unit && hit.unit && a.unit !== hit.unit) return false; // the right building, a different unit
+  return true;
+}
+// has this vendor only ever gone to this one property? (learned from what you approved before)
+function ibVendorHome(vendor){
+  const k = vendorKey(vendor); if(k.length < 3) return null;
+  const seen = new Set();
+  S.properties.forEach(p => (p.transactions || []).forEach(t => { if(vendorKey(t.vendor) === k) seen.add(p.id); }));
+  billList().forEach(b => { if(vendorKey(b.vendor) === k && b.propertyId) seen.add(b.propertyId); });
+  const big = /lowe|home ?depot|amazon|walmart|target|costco|sherwin|ace hardware|dominion|sce&?g|berkeley|dorchester|charleston water|comcast|xfinity/i.test(vendor);
+  return !big && seen.size === 1 ? [...seen][0] : null;
+}
+// why a receipt needs a person; empty = it can go by itself
+function ibAutoWhy(it){
+  const why = [], cfg = ibAutoCfg();
+  if(!it || it.status !== "pending") return ["Not ready"];
+  const d = inboxDraft(it), prop = S.properties.find(p => p.id === d.propId), pmp = prop ? null : pmProp(d.propId), P = prop || pmp;
+  if(!P) why.push("No property matched");
+  if(String(it.confidence || "") !== "high") why.push(it.confidence ? `The reading is only ${it.confidence} confidence` : "Not sure it read it right");
+  if(!String(d.vendor || "").trim()) why.push("No vendor");
+  if(!(Number(d.amount) > 0)) why.push("No amount");
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d.date || "")) why.push("No date");
+  else { const age = PMCore.dayNum(todayISO()) - PMCore.dayNum(d.date); if(age < -3) why.push("Dated in the future"); else if(age > 120) why.push("Dated over 4 months ago"); }
+  if(Number(d.amount) > cfg.cap) why.push(`Over the ${usd(cents(cfg.cap))} limit for approving by itself`);
+  if(/check the total|lines add up/i.test(String(it.notes || ""))) why.push("The lines don't add up to the total");
+  if(it.pay_status !== "to_pay" && it.pay_status !== "paid") why.push("Couldn't tell if it's paid or still to pay");
+  if(P){
+    const named = /^Named in the note/i.test(String(it.reason || "")) || !!it.office_note && new RegExp(String(P.name).split(/[ ,#]/).slice(0, 2).join("\\s+"), "i").test(it.office_note);
+    const addr = it.address_seen ? ibAddrMatch(it.address_seen, P) : null;
+    if(addr === false) why.push(`The address on it (${it.address_seen}) isn't ${P.name}`);
+    else if(addr !== true && !named && ibVendorHome(d.vendor) !== P.id) why.push("No property address on it to confirm the property");
+    if(prop && d.unit !== "split" && !prop.units.some(u => u.id === d.unit)) why.push("Which unit?");
+    const dup = prop ? inboxDupes(prop, d, it) : inboxPmDupes(pmp, d, it);
+    if(dup.length) why.push("Might be a duplicate of one already entered");
+    if(pmp && d.credit) why.push("A refund on a rental — check which month");
+    if(pmp && !inboxReady(d)) why.push("Missing a field");
+    if(prop && d.billTo === "contractor" && !String(d.party || "").trim()) why.push("Back-charge with no name");
+  }
+  if(INBOX.touched && INBOX.touched[it.id]) why.push("You started editing it");
+  return why;
+}
+INBOX.touched = INBOX.touched || {};
+const IBA = {busy:false, today:[]};
+async function ibAutoPass(){
+  if(IBA.busy || !ibAutoCfg().on || !inboxConn()) return 0;
+  IBA.busy = true; let n = 0;
+  try{
+    for(const it of INBOX.items.slice()){
+      if(it.status !== "pending" || ibAutoWhy(it).length) continue;
+      const d = INBOX.draft[it.id] = inboxDraft(it);
+      d.toPay = it.pay_status === "to_pay"; d.pmPaid = d.toPay ? "topay" : "paid";
+      if(!inboxReady(d)) continue;
+      const P = S.properties.find(p => p.id === d.propId) || pmProp(d.propId);
+      try{ await inboxApprove(it, false); }catch(e){ continue; }
+      if(INBOX.items.some(x => x.id === it.id)) continue;            // didn't go through
+      n++;
+      const line = {at:new Date().toISOString(), vendor:d.vendor, amount:Number(d.amount), prop:P ? P.name : "", pid:d.propId, side:pmProp(d.propId) ? "pm" : "projects", toPay:!!d.toPay, note:d.toPay ? ibPayNote(it) : "", file:it.file_url || ""};
+      IBA.today.unshift(line);
+      snapshot(); const L = ((S.acct = Object.assign({}, S.acct || {})).inboxAutoLog || []).slice(0, 59); L.unshift(line); S.acct.inboxAutoLog = L;
+      if(typeof finLog === "function") finLog(`Receipt approved automatically: ${d.vendor} ${usd(cents(d.amount))} → ${line.prop}${d.toPay ? " (still to pay)" : ""}`);
+      commit();
+    }
+  }finally{ IBA.busy = false; }
+  if(n){ toast(`Receipt inbox: ${n} approved automatically`, true); if(typeof NKA !== "undefined") NKA.at = 0; render(); }
+  return n;
+}
+// after every inbox check
+{
+  const ibRefresh0 = inboxRefresh;
+  // a short random wait first, so two open consoles don't approve the same receipt at the same moment
+  // (the second one then sees it as a duplicate of what the first just added)
+  inboxRefresh = async function(){
+    const r = await ibRefresh0.apply(this, arguments);
+    try{ if(ibAutoCfg().on && INBOX.items.some(it => it.status === "pending" && !ibAutoWhy(it).length)){ await new Promise(ok => setTimeout(ok, 2000 + Math.random() * 20000)); if(typeof Cloud !== "undefined" && Cloud.pull) await Cloud.pull().catch(() => {}); await ibAutoPass(); } }
+    catch(e){ console.error("Receipt autopilot", e); }
+    return r;
+  };
+}
+// each card that waits says why; editing a card keeps it for you
+{
+  const ibCard0 = inboxCard;
+  inboxCard = function(it){
+    const card = ibCard0(it);
+    try{
+      const mark = () => { INBOX.touched[it.id] = 1; };
+      card.addEventListener("input", mark, true); card.addEventListener("change", mark, true);
+      if(it.status === "pending" && ibAutoCfg().on){
+        const why = ibAutoWhy(it).filter(w => w !== "You started editing it");
+        if(why.length){ const b = elm("div", "ib-why", `<b>Waiting for you:</b> ${why.map(esc).join(" · ")}`); const top = card.querySelector(".ib-top"); if(top && top.nextSibling) card.insertBefore(b, top.nextSibling); else card.prepend(b); }
+      }
+      const a = ibPayAccount(it);
+      if(a && it.pay_status === "to_pay"){ const b = elm("div", "ib-pay4", `${icon("card")} Pay from the account ending <b>${esc(a)}</b> — noted on the bill`); const top = card.querySelector(".ib-top"); if(top && top.nextSibling) card.insertBefore(b, top.nextSibling); }
+    }catch(e){}
+    return card;
+  };
+}
+// the inbox page: what went by itself, and the autopilot switch
+if(typeof pgInbox === "function"){
+  const pgInbox0 = pgInbox;
+  pgInbox = function(){
+    pgInbox0();
+    const v = $("#view"); if(!v || !inboxConn()) return;
+    const cfg = ibAutoCfg(), L = ((S.acct || {}).inboxAutoLog || []).filter(x => PMCore.dayNum(todayISO()) - PMCore.dayNum(String(x.at).slice(0, 10)) <= 7);
+    const box = elm("div", "card ib-auto");
+    box.innerHTML = `<div class="ib-auto-h"><label class="switchbox"><input type="checkbox" id="ibaOn" ${cfg.on ? "checked" : ""}> <b>Approve clean receipts by themselves</b></label>
+        <span class="muted">up to <input type="number" id="ibaCap" min="50" step="50" value="${cfg.cap}" style="width:90px"> each</span>
+        <a href="#" id="ibaRules" class="muted" style="margin-left:auto">What counts as clean?</a></div>
+      ${L.length ? `<details class="ib-auto-l"><summary>${L.length} approved automatically in the last 7 days</summary>${L.map(x => `<div class="ib-auto-r"><span>${esc(fdateS(String(x.at).slice(0, 10)))}</span><b>${esc(x.vendor || "")}</b><span>${usd(cents(x.amount))}</span><a href="#" data-iba="${esc(x.pid)}" data-side="${esc(x.side)}">${esc(x.prop)}</a><span class="muted">${x.toPay ? "still to pay" + (x.note ? " · " + esc(x.note) : "") : "paid"}</span>${x.file ? `<a href="${esc(x.file)}" target="_blank" rel="noopener" class="muted">receipt</a>` : ""}</div>`).join("")}</details>` : ""}`;
+    const first = v.querySelector(".ib-head") || v.querySelector(".sc-bar") || v.firstChild;
+    if(first) v.insertBefore(box, first); else v.appendChild(box);
+    const save = patch => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {inboxAuto:Object.assign({}, (S.acct || {}).inboxAuto || {}, patch)}); commit(); };
+    box.querySelector("#ibaOn").onchange = e => { save({on:e.target.checked}); if(e.target.checked) ibAutoPass(); toast(e.target.checked ? "On — clean receipts go by themselves" : "Off — every receipt waits for you", true); };
+    box.querySelector("#ibaCap").onchange = e => { const n = Math.max(50, Number(e.target.value) || IBA_DEFAULT_CAP); save({cap:n}); ibAutoPass(); };
+    box.querySelector("#ibaRules").onclick = e => { e.preventDefault(); ibInfoSheet("What counts as clean", `<p>A receipt is approved by itself only when all of these are true:</p><ul>
+      <li>It was read with high confidence, and has a vendor, a date and an amount.</li>
+      <li>The property is certain: the job or service address printed on it matches the property, or the office note named it, or this vendor has only ever been used on that property. On a multi-unit project the unit is known.</li>
+      <li>It says whether it's paid or still to pay. Still to pay → the bill stays open (and goes to Nickel when Payments → Automatic is on). A payment instruction like “pay with account 8186” is noted on the bill.</li>
+      <li>It isn't a possible duplicate, its lines add up, and its date isn't in the future or over 4 months old.</li>
+      <li>It's under the limit set here.</li>
+      <li>It isn't a refund on a rental, and you haven't started editing it.</li></ul><p>Anything else waits here with the reason on the card.</p>`); };
+    box.querySelectorAll("[data-iba]").forEach(a => a.onclick = e => { e.preventDefault(); if(a.dataset.side === "pm") pmOpenProperty(a.dataset.iba); else { S.ui.mode = "projects"; go("txns", a.dataset.iba); } });
+  };
+}
+
+
+/* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
+const IB_SCRIPT_NEED = 7;
+const IBV = {checked:0, version:null};
+async function ibScriptCheck(){
+  if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
+  IBV.checked = Date.now();
+  try{ const j = await inboxGet({action:"ping"}); IBV.version = Number(j.version) || 0; }catch(e){ return; }
+  if(IBV.version < IB_SCRIPT_NEED && S.ui.view === "inbox") render();
+}
+{
+  const pgIb0 = pgInbox;
+  pgInbox = function(){
+    pgIb0();
+    if(!inboxConn()) return;
+    ibScriptCheck();
+    if(IBV.version != null && IBV.version < IB_SCRIPT_NEED){
+      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (reading the workbook, the pay-from account on bills, checking the address on a receipt) only work with the newer copy.
+        <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
+      v.insertBefore(b, v.firstChild);
+    }
   };
 }
