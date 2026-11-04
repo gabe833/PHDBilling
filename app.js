@@ -14965,10 +14965,19 @@ const rcPayDue = m => m + "-" + String(Math.min(Number(pmSettings().payoutDay) |
 /* one property, one month: the four checks */
 function rcRow(m, row, prop, ledger){
   const c = pmCalc(row, prop), today = todayISO(), over = m < today.slice(0, 7), st = {};
+  // an open month before its payout day is still filling in: rent that hasn't all come in, and bills the console has
+  // that MagicDoor doesn't yet, are "waiting", not mistakes — they only become discrepancies after the payout day
+  const early = !over && !row.locked && !(pmState().meta[m] || {}).closed && today <= rcPayDue(m);
+  const items = row.repairItems || [];
+  const notMd = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount));
+  const notMdC = notMd.reduce((a, it) => a + cents(it.amount) + itemFeeC(it, prop), 0);
+  // the same vendor and amount twice within a week on one statement: almost always a receipt entered twice
+  const dupes = items.filter((it, i) => items.some((o, j) => j < i && cents(o.amount) === cents(it.amount) && cents(it.amount) > 0 && vendorKey(o.vendor) === vendorKey(it.vendor) && o.date && it.date && Math.abs(PMCore.dayNum(o.date) - PMCore.dayNum(it.date)) <= 7));
   // 1 · rent in, against rent due
   if(c.dueC <= 0 && !c.recv) st.rent = {s:"na", a:null, t:"No rent due this month"};
   else if(c.recv >= c.dueC) st.rent = {s:"ok", a:c.recv, t:c.dueC > 0 && c.recv > c.dueC + 100 ? `Received ${usd(c.recv)} — ${usd(c.recv - c.dueC)} more than the ${usd(c.dueC)} due` : `Received ${usd(c.recv)}${c.dueC > 0 ? " — rent paid in full" : ""}`};
-  else if(c.recv > 0) st.rent = {s:"bad", a:c.recv, d:c.dueC - c.recv, t:`Received ${usd(c.recv)} — ${usd(c.dueC - c.recv)} short of the ${usd(c.dueC)} due`};
+  else if(c.recv > 0) st.rent = early ? {s:"wait", a:c.recv, t:`${usd(c.recv)} in so far — ${usd(c.dueC - c.recv)} of the ${usd(c.dueC)} still to come`}
+    : {s:"bad", a:c.recv, d:c.dueC - c.recv, t:`Received ${usd(c.recv)} — ${usd(c.dueC - c.recv)} short of the ${usd(c.dueC)} due`};
   else st.rent = over || row.locked ? {s:"bad", a:0, d:c.dueC, t:`No rent recorded — ${usd(c.dueC)} was due`} : {s:"wait", a:0, t:`${usd(c.dueC)} due — not in yet`};
   // 2 · MagicDoor's owner statement, against the console's own payout
   if(!has(row.mdNet)) st.md = {s:"na", a:null, t:"No MagicDoor owner statement for this month"};
@@ -14979,6 +14988,21 @@ function rcRow(m, row, prop, ledger){
     const mdC = cents(row.mdNet), d = c.calcC + heldC - mdC;
     st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)} — the same once the ${usd(heldC)} collected after the payout is added back`.replace(/ once the \$0\.00 collected after the payout is added back$/, "")}
       : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
+    // the usual reason: bills entered here (receipt inbox, Bills page) that aren't in MagicDoor yet
+    // and the management fee, which MagicDoor only charges around the payout (the 14th)
+    const feeLater = !(row.md && has(row.md.pmFee)) && c.pmFeeC > 0 ? c.pmFeeC : 0;
+    if(st.md.s === "bad" && d < 0 && (notMd.length || feeLater)){
+      const rest = -d - notMdC - feeLater, list = notMd.slice(0, 3).map(it => `${it.vendor || "bill"} ${usd(cents(it.amount))}`).join(", ") + (notMd.length > 3 ? ` +${notMd.length - 3} more` : "");
+      const whys = [notMd.length ? `${notMd.length} bill${notMd.length === 1 ? " isn't" : "s aren't"} in MagicDoor yet (${list}${notMdC !== notMd.reduce((a, it) => a + cents(it.amount), 0) ? ", with the admin fee" : ""} = ${usd(notMdC)})` : "",
+        feeLater ? `MagicDoor hasn't charged the ${usd(feeLater)} PM fee yet` : ""].filter(Boolean), why = whys.join(" and ");
+      if(Math.abs(rest) <= 1) st.md = early ? {s:"wait", a:mdC, t:`MagicDoor says ${usd(mdC)} for now: ${why}${notMd.length ? ` — add or pay ${notMd.length === 1 ? "it" : "them"} in MagicDoor before the payout` : ""}`}
+        : {s:"bad", a:mdC, d:notMdC + feeLater, t:`MagicDoor says ${usd(mdC)}: ${why}`};
+      else st.md.t += ` · ${why}; ${usd(Math.abs(rest))} is something else`;
+    }
+  }
+  if(dupes.length){
+    const t = `Possible double entry: ${dupes.map(it => `${it.vendor || "bill"} ${usd(cents(it.amount))} (${fdateS(it.date)})`).join(", ")} — the same vendor and amount is on this statement twice`;
+    st.md = st.md && st.md.s === "bad" ? Object.assign({}, st.md, {t:st.md.t + " · " + t}) : {s:"bad", a:st.md ? st.md.a : null, d:dupes.reduce((a, it) => a + cents(it.amount), 0), t};
   }
   // 3 · the owner payout: a recorded figure has to agree with rent less fees and repairs
   if(c.recordedC != null && Math.abs(c.recordedC - c.calcC) > 1) st.payout = {s:"bad", a:c.recordedC, d:Math.abs(c.recordedC - c.calcC), t:`Recorded payout ${usd(c.recordedC)}; rent less fees and repairs gives ${usd(c.calcC)}`};
