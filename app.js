@@ -58,7 +58,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -67,7 +67,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team","payments","today","connections","money"].includes(view)) S.ui.mode = "projects";
+  else if(!["owners","inbox","team","payments","today","connections","money","unpaid","activity"].includes(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -12129,6 +12129,7 @@ function navMoney(n, mk){
   n.appendChild(elm("div","nav-head","Money"));
   const fb = typeof finNavBadge === "function" ? finNavBadge() : null;
   mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1");
+  { const u = unpaidAll(), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
   if(S.ui.mode === "pm"){
     const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
     mk("pmBills", "Bills", "receipt", navBadge(nOpen));
@@ -12148,6 +12149,7 @@ function navPeople(n, mk){
   const nIn = inboxCount();
   mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (typeof inboxConn === "function" && !inboxConn() ? navBadge("set up", "gold") : null), () => { go("inbox"); inboxRefresh(); });
   if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
+  mk("activity", "Activity log", "list");
 }
 function renderNavPM(){
   const n = $("#nav"); n.innerHTML = "";
@@ -16425,5 +16427,332 @@ async function ibScriptCheck(){
         <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
       v.insertBefore(b, v.firstChild);
     }
+  };
+}
+
+/* =====================================================================
+   ACTIVITY LOG — one place to see what happened, by whom (or by the
+   console on its own), newest first. Entries are kept per month in
+   shared documents ("activity:2026-11") and merged, so two people
+   working at once never lose each other's lines. The page also folds in
+   the logs that already exist: MagicDoor and workbook updates, the
+   finance log, and (for the team tab) every saved change in the database.
+   ===================================================================== */
+const actState = () => (S.activity = S.activity || {});
+const ACT_SRC = {inbox:"Receipt inbox", bills:"Bills & payments", nickel:"Nickel", qb:"QuickBooks", rentals:"Rentals", projects:"Projects", sync:"MagicDoor & workbook", finance:"Money", team:"Team edits"};
+function actMonthDoc(m){ const k = "activity:" + m, A = actState(); return A[k] = A[k] || {month:m, log:[]}; }
+function actLog(src, what, ref){
+  try{
+    const at = new Date().toISOString(), d = actMonthDoc(at.slice(0, 7));
+    const auto = !!(typeof IBA !== "undefined" && IBA.busy) || !!(typeof NKA !== "undefined" && NKA.busy) || !!ACTX.auto;
+    d.log.unshift({id:uid() + uid(), at, by:auto ? "Automatic" : ((typeof Cloud !== "undefined" && Cloud.email) || "This browser"), src, what:String(what).slice(0, 300), ref:ref || null});
+    if(d.log.length > 1500) d.log.length = 1500;
+  }catch(e){}
+}
+const ACTX = {auto:false};
+if(typeof cloudDocs === "function"){
+  const actDocs0 = cloudDocs;
+  cloudDocs = function(){ const out = actDocs0.apply(this, arguments); Object.entries(actState()).forEach(([k, d]) => { if(d && d.log) out.set("shared/" + k, d); }); return out; };
+}
+if(typeof cloudApply === "function"){
+  const actApply0 = cloudApply;
+  cloudApply = function(kind, id, data, deleted){
+    if(kind === "shared" && String(id).startsWith("activity:")){
+      const A = actState();
+      if(deleted || !data){ delete A[id]; return; }
+      // merge: keep every line either side has
+      const mine = (A[id] || {}).log || [], seen = new Set(), all = [];
+      [...(data.log || []), ...mine].forEach(e => { if(e && e.id && !seen.has(e.id)){ seen.add(e.id); all.push(e); } });
+      all.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      A[id] = Object.assign({}, data, {log:all.slice(0, 1500)});
+      return;
+    }
+    return actApply0.apply(this, arguments);
+  };
+}
+if(typeof cloudLabel === "function"){ const actLbl0 = cloudLabel; cloudLabel = function(kind, id){ if(kind === "shared" && String(id).startsWith("activity:")) return "the activity log"; return actLbl0.apply(this, arguments); }; }
+
+// what gets logged: receipts in and out of the inbox
+{
+  const ap0 = inboxApprove;
+  inboxApprove = async function(it){
+    const d = (INBOX.draft || {})[it && it.id] || {}, P = S.properties.find(p => p.id === d.propId) || pmProp(d.propId);
+    const r = await ap0.apply(this, arguments);
+    if(it && !INBOX.items.some(x => x.id === it.id)){
+      snapshot();
+      actLog("inbox", `${(typeof IBA !== "undefined" && IBA.busy) ? "Approved automatically" : "Approved"}: ${d.vendor || "Receipt"} ${usd(cents(d.amount))} → ${P ? P.name : "a property"}${d.credit ? " (credit)" : d.toPay ? " · still to pay" + (ibPayNote(it) ? " · " + ibPayNote(it) : "") : ""}`, {file:it.file_url || "", pid:d.propId || "", side:pmProp(d.propId) ? "pm" : "projects"});
+      commit();
+    }
+    return r;
+  };
+  const rj0 = inboxReject;
+  inboxReject = async function(it){
+    const r = await rj0.apply(this, arguments);
+    if(it && !INBOX.items.some(x => x.id === it.id)){ snapshot(); actLog("inbox", `Dismissed: ${it.vendor || it.subject || "receipt"}${it.total ? " " + usd(cents(it.total)) : ""}`, {file:it.file_url || ""}); commit(); }
+    return r;
+  };
+}
+// a bill that changes to paid, or is added, from anywhere
+{
+  const bs0 = billSave;
+  billSave = function(b, isNew){
+    const before = !isNew && b && b.id ? (pmState().bills[b.id] || {}).status : null;
+    const r = bs0.apply(this, arguments);
+    try{
+      const P = pmProp(b.propertyId), where = P ? " · " + P.name : "";
+      if(isNew && b.source !== "Receipt inbox") actLog("bills", `Bill added: ${b.vendor || "Vendor"} ${usd(cents(b.amount))}${where}${b.status === "open" ? " · to pay" : ""}`, {bill:b.id});
+      else if(before && before !== b.status && b.status === "paid" && !(b.pay && b.pay.by === "QuickBooks")) actLog("bills", `Bill paid: ${b.vendor || "Vendor"} ${usd(cents(b.amount))}${where}${b.pay && b.pay.method ? " · " + b.pay.method : ""}`, {bill:b.id});
+      else if(before && before !== b.status && b.status === "void") actLog("bills", `Bill voided: ${b.vendor || "Vendor"} ${usd(cents(b.amount))}${where}`, {bill:b.id});
+    }catch(e){}
+    return r;
+  };
+}
+// Nickel automatic: its results go here too
+if(typeof finLog === "function"){
+  const fl0 = finLog;
+  finLog = function(what, ref){ const r = fl0.apply(this, arguments); try{ if(/^Created in Nickel automatically/.test(what)) actLog("nickel", what.replace(/^Created in Nickel automatically: /, "Created in Nickel automatically: "), ref); }catch(e){} return r; };
+}
+
+function actEntries(){
+  const out = [];
+  Object.values(actState()).forEach(d => (d.log || []).forEach(e => out.push(e)));
+  // MagicDoor and workbook updates
+  ((typeof mdLinks === "function" ? mdLinks().log : []) || []).forEach(e => (e.lines || []).forEach((l, i) => out.push({id:"md" + e.at + i, at:e.at, by:e.by, src:"sync", what:`${l.prop ? l.prop + ": " : ""}${l.what}`, ref:l.pid ? {pid:l.pid, side:"pm"} : null})));
+  // the finance log (holds, transfers, reconciliation)
+  try{ (finState().log || []).forEach((e, i) => { if(!/^Created in Nickel automatically|^Receipt approved automatically/.test(e.what)) out.push({id:"fin" + e.at + i, at:e.at, by:e.by, src:"finance", what:e.what}); }); }catch(e){}
+  return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+const ACTV = {team:null, teamAt:0};
+async function actTeamLoad(){
+  if(!(typeof Cloud !== "undefined" && Cloud.sb) || Date.now() - ACTV.teamAt < 60000) return;
+  ACTV.teamAt = Date.now();
+  try{
+    const {data} = await Cloud.sb.from("audit_log").select("at,actor,kind,doc_id,action").order("at", {ascending:false}).limit(300);
+    ACTV.team = (data || []).filter(r => r.actor).map((r, i) => ({id:"au" + i + r.at, at:r.at, by:r.actor, src:"team", what:`${r.action === "INSERT" ? "Added" : r.action === "DELETE" ? "Deleted" : "Changed"} ${typeof cloudLabel === "function" ? cloudLabel(r.kind, r.doc_id, null) : r.doc_id}`}));
+  }catch(e){ ACTV.team = []; }
+  if(S.ui.view === "activity") render();
+}
+function pgActivity(){
+  $("#pgCrumb").textContent = "Console"; $("#pgTitle").textContent = "Activity log";
+  const F = S.ui.actF || "all", q = String(S.ui.actQ || "").toLowerCase();
+  if(F === "team") actTeamLoad();
+  const all = F === "team" ? (ACTV.team || []) : actEntries();
+  const list = all.filter(e => (F === "all" || F === "team" || e.src === F) && (!q || (e.what + " " + (e.by || "")).toLowerCase().includes(q)));
+  $("#pgSub").textContent = `${list.length} entr${list.length === 1 ? "y" : "ies"}${F !== "all" ? " · " + ACT_SRC[F] : ""}`;
+  actions([]);
+  const v = $("#view");
+  const bar = elm("div", "act-bar");
+  bar.innerHTML = `<div class="sc-seg act-seg">${[["all", "Everything"], ...Object.entries(ACT_SRC)].map(([k, l]) => `<button data-af="${k}" class="${F === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+    <input type="search" class="act-q" placeholder="Search — vendor, property, amount, person" value="${esc(S.ui.actQ || "")}">`;
+  v.appendChild(bar);
+  bar.querySelectorAll("[data-af]").forEach(b => b.onclick = () => { S.ui.actF = b.dataset.af; persistUi(); render(); });
+  const qi = bar.querySelector(".act-q"); qi.oninput = () => { S.ui.actQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = document.querySelector(".act-q"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
+  if(F === "team" && ACTV.team == null){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here yet</b><p class="muted">Approvals, bills, payments, syncs and automatic actions show up here as they happen.</p></div>`)); return; }
+  const card = elm("div", "card act-card"); let day = "", html = "";
+  list.slice(0, 600).forEach(e => {
+    const d = String(e.at).slice(0, 10);
+    if(d !== day){ day = d; html += `<div class="act-day">${esc(d === todayISO() ? "Today" : fdateS(d))}</div>`; }
+    const who = e.by === "Automatic" || /sync$|^Workbook$|^MagicDoor/i.test(e.by || "") ? `<span class="act-auto">${esc(e.by === "Automatic" ? "Automatic" : e.by)}</span>` : esc(typeof cloudWhoSafe === "function" ? cloudWhoSafe(e.by) : (e.by || ""));
+    const ref = e.ref || {};
+    html += `<div class="act-r"><span class="act-t">${esc(new Date(e.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))}</span><span class="act-s act-${esc(e.src)}">${esc(ACT_SRC[e.src] || e.src)}</span>
+      <span class="act-w">${esc(e.what)}</span><span class="act-by">${who}</span>
+      <span class="act-l">${ref.file ? `<a href="${esc(ref.file)}" target="_blank" rel="noopener">Receipt</a>` : ""}${ref.pid ? `<a href="#" data-ap="${esc(ref.pid)}" data-as="${esc(ref.side || "")}">Open</a>` : ""}${ref.bill ? `<a href="#" data-ab="${esc(ref.bill)}">Bill</a>` : ""}</span></div>`;
+  });
+  card.innerHTML = html + (list.length > 600 ? `<p class="help" style="padding:10px 16px">Showing the newest 600 — search to find older ones.</p>` : "");
+  v.appendChild(card);
+  card.querySelectorAll("[data-ap]").forEach(a => a.onclick = ev => { ev.preventDefault(); if(a.dataset.as === "pm" || pmProp(a.dataset.ap)) pmOpenProperty(a.dataset.ap); else go("txns", a.dataset.ap); });
+  card.querySelectorAll("[data-ab]").forEach(a => a.onclick = ev => { ev.preventDefault(); go("pmBills"); setTimeout(() => billSheet(a.dataset.ab), 30); });
+}
+
+/* =====================================================================
+   UNPAID BILLS — every vendor still to be paid, rentals and projects in
+   one list: what, where, how much, due when, how to pay (the note from
+   the email), and whether it's already in Nickel.
+   ===================================================================== */
+function unpaidAll(){
+  const out = [], today = todayISO(), wk = PMCore.isoOf(PMCore.dayNum(today) + 7);
+  billList().forEach(b => {
+    if(b.status !== "open" && b.status !== "paying") return;
+    const P = pmProp(b.propertyId), due = b.due || "";
+    out.push({kind:"bill", id:b.id, vendor:b.vendor || "Vendor", what:b.memo || b.category || "", where:P ? P.name : "—", side:"Rental", amountC:cents(b.amount), date:b.date || "", due, late:!!(due && due < today), soon:!!(due && due >= today && due <= wk),
+      note:b.payNote || "", nickel:b.nickel && b.nickel.billId ? (b.status === "paying" ? "Payment on the way" : "In Nickel") : "", paying:b.status === "paying", file:b.receipt && b.receipt.url, b});
+  });
+  S.properties.forEach(p => (p.transactions || []).forEach(t => {
+    if(!pjVendorOpen(t) || !(Number(t.amount) > 0)) return;
+    const due = (t.vendorDue && t.vendorDue.due) || "";
+    out.push({kind:"txn", id:t.id, pid:p.id, vendor:t.vendor || "Vendor", what:t.desc || "", where:p.name, side:"Project", amountC:cents(t.amount), date:t.date || "", due, late:!!(due && due < today), soon:!!(due && due >= today && due <= wk),
+      note:(t.vendorDue && t.vendorDue.note) || "", nickel:t.nickelBill && t.nickelBill.billId ? "In Nickel" : "", file:t.link, t});
+  }));
+  return out.sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999") || a.vendor.localeCompare(b.vendor));
+}
+function unpaidMarkPaid(x){
+  snapshot();
+  if(x.kind === "bill"){ const b = billById(x.id); if(b){ b.status = "paid"; b.pay = {method:"Marked paid", date:todayISO(), ref:"", by:billWho(), at:new Date().toISOString()}; billSave(b, false); } }
+  else { const p = S.properties.find(y => y.id === x.pid), t = p && p.transactions.find(y => y.id === x.id); if(t){ t.vendorPaid = {date:todayISO(), by:billWho()}; actLog("bills", `Vendor marked paid: ${t.vendor || "Vendor"} ${usd(cents(t.amount))} · ${p.name}`, {pid:p.id}); } }
+  commit(); toast(`${x.vendor} marked paid`, true);
+}
+function pgUnpaid(){
+  const all = unpaidAll(), G = S.ui.upG || "due", F = S.ui.upF || "all";
+  const list = all.filter(x => F === "all" || (F === "late" && x.late) || (F === "rental" && x.side === "Rental") || (F === "project" && x.side === "Project") || (F === "nickel" && !x.nickel));
+  const tot = list.reduce((a, x) => a + x.amountC, 0), late = all.filter(x => x.late), soon = all.filter(x => x.soon);
+  $("#pgCrumb").textContent = "Money"; $("#pgTitle").textContent = "Unpaid bills";
+  $("#pgSub").textContent = all.length ? `${all.length} to pay · ${usd(all.reduce((a, x) => a + x.amountC, 0))}` : "Every vendor is paid";
+  const pmSel = list.filter(x => x.kind === "bill" && !x.paying).map(x => x.id);
+  actions([...(typeof nickelOn === "function" && nickelOn() && pmSel.length ? [[`Pay rental bills in Nickel (${pmSel.length})`, () => billPaySheet(pmSel), "primary"]] : [])]);
+  const v = $("#view");
+  const hero = elm("div", "card pf-hero");
+  hero.innerHTML = [["all", "Still to pay", usd(all.reduce((a, x) => a + x.amountC, 0)), `${all.length} bill${all.length === 1 ? "" : "s"}`, ""],
+    ["late", "Past due", usd(late.reduce((a, x) => a + x.amountC, 0)), late.length ? `${late.length} bill${late.length === 1 ? "" : "s"} — pay these first` : "Nothing late", late.length ? "color:var(--red)" : ""],
+    ["all", "Due in 7 days", usd(soon.reduce((a, x) => a + x.amountC, 0)), `${soon.length} bill${soon.length === 1 ? "" : "s"}`, soon.length ? "color:var(--gold)" : ""],
+    ["nickel", "Not in Nickel yet", String(all.filter(x => !x.nickel).length), "add them to pay through Nickel", ""]]
+    .map(([f, l, n, s2, st]) => `<div class="pf-cell" data-uf2="${f}" style="cursor:pointer"><div class="label">${l}</div><div class="pf-v"${st ? ` style="${st}"` : ""}>${n}</div><div class="pf-note">${s2}</div></div>`).join("");
+  v.appendChild(hero);
+  hero.querySelectorAll("[data-uf2]").forEach(c => c.onclick = () => { S.ui.upF = c.dataset.uf2; persistUi(); render(); });
+  const bar = elm("div", "act-bar");
+  bar.innerHTML = `<div class="sc-seg">${[["all", "All"], ["late", "Past due"], ["rental", "Rentals"], ["project", "Projects"], ["nickel", "Not in Nickel"]].map(([k, l]) => `<button data-uf="${k}" class="${F === k ? "on" : ""}">${l}</button>`).join("")}</div>
+    <div class="sc-seg">${[["due", "By due date"], ["vendor", "By vendor"]].map(([k, l]) => `<button data-ug="${k}" class="${G === k ? "on" : ""}">${l}</button>`).join("")}</div>`;
+  v.appendChild(bar);
+  bar.querySelectorAll("[data-uf]").forEach(b => b.onclick = () => { S.ui.upF = b.dataset.uf; persistUi(); render(); });
+  bar.querySelectorAll("[data-ug]").forEach(b => b.onclick = () => { S.ui.upG = b.dataset.ug; persistUi(); render(); });
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>${all.length ? "Nothing in this filter" : "All caught up"}</b><p class="muted">Vendor invoices still to pay — from the receipt inbox, the Bills page, or a project expense marked “vendor still needs to be paid” — collect here.</p></div>`)); return; }
+  const groups = G === "vendor" ? [...list.reduce((m, x) => m.set(x.vendor, [...(m.get(x.vendor) || []), x]), new Map())] : [["", list]];
+  const card = elm("div", "card");
+  card.innerHTML = groups.map(([g, xs]) => `${g ? `<div class="up-g"><b>${esc(g)}</b><span>${xs.length} · ${usd(xs.reduce((a, x) => a + x.amountC, 0))}</span></div>` : ""}
+    <div class="tbl-wrap"><table class="tbl up-tbl"><thead><tr><th>Vendor</th><th>For</th><th>Property</th><th>Due</th><th class="r">Amount</th><th></th></tr></thead><tbody>
+    ${xs.map((x, i) => `<tr data-ui="${esc(x.kind + ":" + x.id)}">
+      <td><div class="item-t">${esc(x.vendor)}${x.file ? ` <a class="att" href="${esc(x.file)}" target="_blank" rel="noopener" data-nos title="Open the invoice">${icon("clip")}</a>` : ""}</div>${x.note ? `<div class="up-note">${icon("card")} ${esc(x.note)}</div>` : ""}</td>
+      <td><div class="item-s" style="margin:0">${esc(x.what || "—")}</div><div class="item-s">${x.date ? "Billed " + esc(fdateS(x.date)) : ""}</div></td>
+      <td><span class="tag ${x.side === "Rental" ? "green" : "acc"}">${x.side}</span> <span class="item-s" style="display:inline">${esc(x.where)}</span></td>
+      <td>${x.due ? `<span class="${x.late ? "up-late" : x.soon ? "up-soon" : ""}">${esc(fdateS(x.due))}${x.late ? " · late" : ""}</span>` : `<span class="muted">—</span>`}${x.nickel ? `<div class="item-s">${esc(x.nickel)}</div>` : ""}</td>
+      <td class="r num"><b>${usd(x.amountC)}</b></td>
+      <td class="act up-act"><button class="btn sm" data-uo>Open</button>${x.paying ? "" : `<button class="btn sm ghost" data-up>Mark paid</button>`}</td></tr>`).join("")}
+    </tbody></table></div>`).join("");
+  v.appendChild(card);
+  const byKey = new Map(list.map(x => [x.kind + ":" + x.id, x]));
+  card.querySelectorAll("tr[data-ui]").forEach(tr => {
+    const x = byKey.get(tr.dataset.ui); if(!x) return;
+    const o = tr.querySelector("[data-uo]"); if(o) o.onclick = e => { e.stopPropagation(); if(x.kind === "bill"){ billSheet(x.id); } else { go("txns", x.pid); setTimeout(() => openSheet(x.id), 40); } };
+    const pd = tr.querySelector("[data-up]"); if(pd) pd.onclick = e => { e.stopPropagation(); if(confirm(`Mark ${x.vendor} ${usd(x.amountC)} as paid?`)) unpaidMarkPaid(x); };
+  });
+}
+
+/* =====================================================================
+   QUICKBOOKS → PAID — when QuickBooks shows a vendor invoice paid, the
+   console stops listing it as unpaid. A rental bill that's still open
+   is marked paid when QuickBooks has the same vendor and amount as a
+   payment (a bank or card purchase, or a bill with nothing left owing)
+   dated from a week before the bill to two months after. A project
+   expense that's still to pay is marked paid once it's matched to a
+   QuickBooks payment. Each record is used once, and every change goes
+   in the activity log.
+   ===================================================================== */
+let QBP_SIG = "";
+function qbAutoPaid(){
+  if(typeof qbReady !== "function" || !qbReady()) return 0;
+  const today = todayISO(); let n = 0;
+  const paidRec = qt => !qt.credit && !qbIsMove(qt) && (qt.type === "Purchase" || (qt.type === "Bill" && Number(qt.balance) === 0));
+  const used = new Set();
+  billList().forEach(b => { if(b.pay && b.pay.qb) used.add(b.pay.qb); });
+  const m = qbMatch(), units = m ? [...m.res.values()].flatMap(r => (r.units || [])) : [];
+  units.forEach(u => used.add(qbKey(u.qt.type, u.qt.id)));
+  const day = d => PMCore.dayNum(String(d).slice(0, 10));
+  const changes = [];
+  billList().filter(b => b.status === "open" && cents(b.amount) > 0 && b.date).forEach(b => {
+    const c = cents(b.amount), d0 = day(b.date);
+    const hit = S.qbo.txns.filter(qt => paidRec(qt) && !used.has(qbKey(qt.type, qt.id)) && cents(qt.total) === c && qbVendorHit(b.vendor, qt) && day(qt.date) >= d0 - 7 && day(qt.date) <= d0 + 62)
+      .sort((a, z) => Math.abs(day(a.date) - d0) - Math.abs(day(z.date) - d0))[0];
+    if(!hit) return;
+    used.add(qbKey(hit.type, hit.id)); changes.push(() => {
+      b.status = "paid"; b.pay = {method:"Paid (QuickBooks)", date:String(hit.date).slice(0, 10), ref:`${hit.type} ${hit.doc || hit.id}`, by:"QuickBooks", at:new Date().toISOString(), qb:qbKey(hit.type, hit.id)};
+      ACTX.auto = true; try{ billSave(b, false); actLog("qb", `Marked paid from QuickBooks: ${b.vendor} ${usd(c)} · ${(pmProp(b.propertyId) || {}).name || ""} (${hit.type === "Bill" ? "bill paid" : "paid"} ${fdateS(String(hit.date).slice(0, 10))})`, {bill:b.id}); } finally{ ACTX.auto = false; }
+    });
+  });
+  S.properties.forEach(p => (p.transactions || []).forEach(t => {
+    if(!pjVendorOpen(t)) return;
+    const r = qbResult(p, t); if(!r || r.state !== "matched") return;
+    const pay = (r.units || []).map(u => u.qt).find(paidRec); if(!pay) return;
+    changes.push(() => { t.vendorPaid = {date:String(pay.date).slice(0, 10), by:"QuickBooks", qb:qbKey(pay.type, pay.id)};
+      ACTX.auto = true; try{ actLog("qb", `Marked paid from QuickBooks: ${t.vendor || "Vendor"} ${usd(cents(t.amount))} · ${p.name}`, {pid:p.id}); } finally{ ACTX.auto = false; } });
+  }));
+  if(!changes.length) return 0;
+  snapshot(); changes.forEach(f => { f(); n++; }); commit();
+  toast(`QuickBooks: ${n} unpaid bill${n === 1 ? "" : "s"} marked paid — see the Activity log`, true);
+  return n;
+}
+
+/* =====================================================================
+   ONE BUILDING, BOTH SIDES — a property can be a renovation project and
+   a managed rental at the same time. Each side keeps its own books
+   (project invoices vs. rent and owner statements); they're linked, so
+   either page shows the other and opens it in one click.
+   ===================================================================== */
+const pjOfPm = pm => pm && pm.pjId ? S.properties.find(p => p.id === pm.pjId) || null : null;
+const pmOfPj = pj => pj ? pmState().properties.find(x => x.pjId === pj.id && !x.deleted) || null : null;
+function pjOpen(p){ S.activeId = p.id; S.ui.mode = "projects"; go("overview", p.id); }
+function linkFindTwin(name, address){
+  const k = s => { const a = ibAddrKey(s); return a ? a.no + " " + a.st + (a.unit ? " " + a.unit : "") : ""; };
+  const want = [k(name), k(address)].filter(Boolean);
+  return {pm:pmState().properties.find(x => !x.deleted && !x.pjId && want.some(w => w && (k(x.name) === w || k(x.address) === w))) || null,
+          pj:S.properties.find(x => !pmState().properties.some(y => y.pjId === x.id) && want.some(w => w && (k(x.name) === w || k(x.address) === w))) || null};
+}
+function makeRentalToo(pj){
+  const have = pmOfPj(pj); if(have) return pmOpenProperty(have.id);
+  const twin = linkFindTwin(pj.name, pj.address).pm;
+  snapshot();
+  let pm = twin;
+  if(pm){ pm.pjId = pj.id; }
+  else {
+    pm = {id:"pm_" + uid(), name:pj.name, address:pj.address || "", aliases:[], rent:null, feeRule:{type:"pct", rate:10}, adminRate:10, status:"marketing", ownerId:pj.ownerId || null, tenants:"", notes:"", recurring:[], pjId:pj.id};
+    pmState().properties.push(pm);
+  }
+  actLog("projects", twin ? `Linked ${pj.name} (project) with the rental ${pm.name}` : `${pj.name} is now also a rental`, {pid:pm.id, side:"pm"});
+  commit(); toast(twin ? `Linked to the rental ${pm.name}` : `${pj.name} added to rentals — set the rent and fee on its page`, true);
+  pmOpenProperty(pm.id);
+}
+function makeProjectToo(pm){
+  const have = pjOfPm(pm); if(have) return pjOpen(have);
+  const twin = linkFindTwin(pm.name, pm.address).pj;
+  snapshot();
+  let pj = twin;
+  if(!pj){ pj = newProperty({name:pm.name, address:pm.address || "", ownerId:pm.ownerId || null}); S.properties.push(pj); }
+  pm.pjId = pj.id;
+  actLog("rentals", twin ? `Linked the rental ${pm.name} with the project ${pj.name}` : `${pm.name} is now also a project`, {pid:pj.id, side:"projects"});
+  commit(); toast(twin ? `Linked to the project ${pj.name}` : `${pm.name} added to projects — add its expenses there`, true);
+  pjOpen(pj);
+}
+function unlinkTwins(pm){ if(!pm || !pm.pjId) return; if(!confirm("Unlink the project and the rental? Both keep their own records.")) return; snapshot(); const pj = pjOfPm(pm); delete pm.pjId; actLog("rentals", `Unlinked ${pm.name} from its project${pj ? " " + pj.name : ""}`); commit(); render(); }
+function twinCard(kind, p){
+  const other = kind === "pj" ? pmOfPj(p) : pjOfPm(p), card = elm("div", "card twin-card");
+  card.innerHTML = other
+    ? `<div class="twin"><span class="twin-ic">${icon(kind === "pj" ? "home" : "building")}</span><div><b>Also a ${kind === "pj" ? "rental" : "project"}</b><span>${esc(other.name)} — ${kind === "pj" ? "rent, owner statements and bills live on the rental side" : "renovation expenses and invoices live on the project side"}</span></div>
+        <button class="btn sm primary" data-tw="open">Open the ${kind === "pj" ? "rental" : "project"}</button><button class="btn sm ghost" data-tw="unlink">Unlink</button></div>`
+    : `<div class="twin"><span class="twin-ic muted">${icon(kind === "pj" ? "home" : "building")}</span><div><b>${kind === "pj" ? "Managing this property too?" : "Renovating this property?"}</b><span>${kind === "pj" ? "Make it a rental as well — it keeps this project and adds rent, owner statements and bills." : "Make it a project as well — it keeps the rental and adds renovation expenses and invoices."}</span></div>
+        <button class="btn sm" data-tw="make">${kind === "pj" ? "Also make it a rental" : "Also make it a project"}</button></div>`;
+  const q = s => card.querySelector(`[data-tw="${s}"]`);
+  if(q("open")) q("open").onclick = () => kind === "pj" ? pmOpenProperty(other.id) : pjOpen(other);
+  if(q("unlink")) q("unlink").onclick = () => unlinkTwins(kind === "pj" ? other : p);
+  if(q("make")) q("make").onclick = () => kind === "pj" ? makeRentalToo(p) : makeProjectToo(p);
+  return card;
+}
+{
+  const ov0 = pgOverview;
+  pgOverview = function(){ const r = ov0.apply(this, arguments); try{ const p = P(); if(p){ const v = $("#view"); const c = twinCard("pj", p); if(pmOfPj(p)) v.insertBefore(c, v.firstChild); else v.appendChild(c); } }catch(e){} return r; };
+  const st0 = pgSettings;
+  pgSettings = function(){ const r = st0.apply(this, arguments); try{ const p = P(); if(p) $("#view").appendChild(twinCard("pj", p)); }catch(e){} return r; };
+  const pp0 = pgPmProperty;
+  pgPmProperty = function(){ const r = pp0.apply(this, arguments); try{ const p = pmProp(S.ui.pmPropId); if(p){ const v = $("#view"); const c = twinCard("pm", p); if(pjOfPm(p)) v.insertBefore(c, v.firstChild); else v.appendChild(c); } }catch(e){} return r; };
+}
+
+// run the quiet jobs when their data changes
+if(typeof render === "function"){
+  const qbpRender0 = render;
+  render = function(){
+    const r = qbpRender0.apply(this, arguments);
+    try{
+      const sig = (S.qbo && S.qbo.syncedAt) || "";
+      if(sig && sig !== QBP_SIG && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){ QBP_SIG = sig; setTimeout(() => { try{ qbAutoPaid(); }catch(e){ console.error("QuickBooks paid", e); } }, 3000); }
+    }catch(e){}
+    return r;
   };
 }
