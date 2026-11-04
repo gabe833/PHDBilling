@@ -7616,6 +7616,8 @@ function billDeductMonth(b){
 // keep the repair line in Month close in step with the bill (added, changed, moved or removed)
 function billSyncDeduction(b){
   const P2 = pmState();
+  // already charged to the owner on a statement (e.g. MagicDoor or the workbook had it): the bill only tracks paying the vendor
+  if(b.charged && b.charged.month) return;
   const drop = () => { if(!b.deduct || !b.deduct.month) return; const r = P2.rows[b.deduct.month + "|" + (b.deduct.pid || b.propertyId)];
     if(r && !(P2.meta[b.deduct.month] || {}).closed){ r.repairItems = (r.repairItems || []).filter(i => i.billId !== b.id); pmTouch(r); } b.deduct = null; };
   if(b.status === "void" || b.recover !== "deduct" || !b.propertyId){ drop(); return; }
@@ -7955,6 +7957,7 @@ function billSheet(id, preset){
         <div class="bl-rec">${Object.entries(BILL_REC).map(([k, l]) => `<label class="${b.recover === k ? "on" : ""} ${lockedOwner ? "dis" : ""}"><input type="radio" name="rec" value="${k}" ${b.recover === k ? "checked" : ""} ${lockedOwner || (k !== "phd" && !(o)) ? "disabled" : ""}> ${l}</label>`).join("")}</div>
         ${b.recover !== "phd" ? `<label class="fld" style="margin-top:8px"><span>Admin fee</span><select data-k="feeMode"><option value="auto" ${b.feeMode !== "none" ? "selected" : ""}>Add ${p ? p.adminRate ?? 10 : 10}% admin fee${feeC ? " (" + usd(feeC) + ")" : ""}</option><option value="none" ${b.feeMode === "none" ? "selected" : ""}>No admin fee</option></select></label>` : ""}
         <p class="help" style="margin-top:6px">${!p ? "" : !o ? "This property has no owner on file, so the bill is a PHD expense until one is added." :
+          b.charged && b.charged.month ? `Already charged to ${esc(ownerLabel(o) || "the owner")} on the <b>${esc(monthLabel(b.charged.month))}</b> statement${b.charged.note ? ` (${esc(b.charged.note)})` : ""} — this bill only tracks paying the vendor.` :
           b.recover === "deduct" ? `Taken out of ${esc(ownerLabel(o))}'s payout${b.deduct && b.deduct.month ? ` for <b>${esc(monthLabel(b.deduct.month))}</b>` : ` for ${esc(monthLabel(billDeductMonth(b)))}`} — it shows in Month close as a repair line.` :
           b.recover === "invoice" ? (inv ? `On owner invoice <b>${esc(inv.no)}</b> (${esc(inv.status)}).` : `Goes on ${esc(ownerLabel(o))}'s next owner invoice.`) : "PHD pays this and doesn't bill the owner."}</p>
 
@@ -16776,6 +16779,29 @@ if(typeof render === "function"){
     try{
       const sig = (S.qbo && S.qbo.syncedAt) || "";
       if(sig && sig !== QBP_SIG && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){ QBP_SIG = sig; setTimeout(() => { try{ qbAutoPaid(); }catch(e){ console.error("QuickBooks paid", e); } }, 3000); }
+    }catch(e){}
+    return r;
+  };
+}
+
+
+/* bills added from outside the console (a vendor's statement entered for you) carry syncOnLoad: the first console
+   that opens finishes them the normal way — vendor linked, and taken out of the owner's payout unless already charged */
+if(typeof render === "function"){
+  const bsoRender0 = render;
+  render = function(){
+    const r = bsoRender0.apply(this, arguments);
+    try{
+      if(typeof pmState === "function" && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+        const todo = Object.values(pmState().bills || {}).filter(b => b && b.syncOnLoad && !b.deleted);
+        if(todo.length) setTimeout(() => {
+          const now = Object.values(pmState().bills || {}).filter(b => b && b.syncOnLoad && !b.deleted); if(!now.length) return;
+          snapshot();
+          now.forEach(b => { delete b.syncOnLoad; if(b.vendor){ const v = vendorEnsure(b.vendor); b.vendorId = v.id; b.vendor = v.name; } billSyncDeduction(b);
+            actLog("bills", `Bill added: ${b.vendor} ${usd(cents(b.amount))} · ${(pmProp(b.propertyId) || {}).name || ""}${b.charged ? ` · already on the ${monthLabel(b.charged.month)} statement` : " · to pay"}`, {bill:b.id}); });
+          commit(); toast(`${now.length} vendor bill${now.length === 1 ? "" : "s"} added to Unpaid bills`, true);
+        }, 1200);
+      }
     }catch(e){}
     return r;
   };
