@@ -16604,6 +16604,7 @@ if(typeof cloudLabel === "function"){ const actLbl0 = cloudLabel; cloudLabel = f
   inboxApprove = async function(it){
     const d = (INBOX.draft || {})[it && it.id] || {}, P = S.properties.find(p => p.id === d.propId) || pmProp(d.propId);
     const r = await ap0.apply(this, arguments);
+    if(it && !INBOX.items.some(x => x.id === it.id)) try{ ibAddEarlierPayment(it, d); }catch(e){ console.error("earlier payment", e); }
     if(it && !INBOX.items.some(x => x.id === it.id)){
       snapshot();
       actLog("inbox", `${(typeof IBA !== "undefined" && IBA.busy) ? "Approved automatically" : "Approved"}: ${d.vendor || "Receipt"} ${usd(cents(d.amount))} → ${P ? P.name : "a property"}${d.credit ? " (credit)" : d.toPay ? " · still to pay" + (ibPayNote(it) ? " · " + ibPayNote(it) : "") : ""}`, {file:it.file_url || "", pid:d.propId || "", side:pmProp(d.propId) ? "pm" : "projects"});
@@ -16904,4 +16905,37 @@ if(typeof render === "function"){
     }catch(e){}
     return r;
   };
+}
+
+
+/* an invoice that shows a payment already made ("Payment received −$629.48") goes in as the balance. The earlier
+   payment is usually on the property already — when it isn't, it's added too (as paid), so the owner is billed for the
+   whole job and not just the second half. */
+function ibAddEarlierPayment(it, d){
+  if(!it || !it._netted || !(Number(it.paid_before) > 0) || !d || d.credit) return;
+  const amtC = cents(it.paid_before), vk = vendorKey(d.vendor).slice(0, 6), day = PMCore.dayNum(d.date || todayISO());
+  const near = (vend, date, c) => c === amtC && (!vk || vendorKey(vend).includes(vk) || vk.includes(vendorKey(vend).slice(0, 6))) && (!date || Math.abs(PMCore.dayNum(date) - day) <= 150);
+  const p = S.properties.find(x => x.id === d.propId);
+  if(p){
+    if(p.transactions.some(t => near(t.vendor, t.date, Math.abs(cents(t.amount))))) return;
+    const main = p.transactions.find(t => it.file_url && t.link === it.file_url && cents(t.amount) === cents(d.amount)); if(!main) return;
+    snapshot();
+    const dep = Object.assign(JSON.parse(JSON.stringify(main)), {id:uid(), amount:amtC / 100, desc:(main.desc || "Payment") + " — earlier payment",
+      notes:`Earlier payment shown on the vendor's invoice (${usd(cents(it.total_before))} total, ${usd(amtC)} already paid) · added with the balance from the receipt inbox`, reconciled:false, reconciledAt:""});
+    delete dep.vendorDue; delete dep.vendorPaid; delete dep.nickelBill; delete dep.nickelPay; delete dep.qb;
+    p.transactions.splice(p.transactions.indexOf(main), 0, dep);
+    actLog("inbox", `Also added the earlier payment: ${d.vendor || "Vendor"} ${usd(amtC)} → ${p.name} (the invoice's ${usd(cents(it.total_before))} total, less ${usd(amtC)} already paid)`, {pid:p.id, side:"projects"});
+    commit(); toast(`Also added the earlier ${usd(amtC)} payment, so ${p.name} shows the whole ${usd(cents(it.total_before))}`, true);
+    return;
+  }
+  const pm = pmProp(d.propId); if(!pm) return;
+  const seen = billList().some(b => b.propertyId === pm.id && near(b.vendor, b.date, cents(b.amount)))
+    || Object.values(pmState().rows).some(r => r.propertyId === pm.id && (r.repairItems || []).some(x => near(x.vendor, x.date, cents(x.amount))));
+  if(seen) return;
+  const main = billList().find(b => b.propertyId === pm.id && b.receipt && b.receipt.url === it.file_url); if(!main) return;
+  const dep = billNew({propertyId:pm.id, vendor:main.vendor, amount:amtC / 100, date:main.date, memo:(main.memo || "Repair") + " — earlier payment", recover:main.recover,
+    receipt:main.receipt, source:"Receipt inbox", inbox:it.id, status:"paid", pay:{method:"Paid earlier (on the invoice)", date:main.date, ref:"", by:billWho(), at:new Date().toISOString()}});
+  billSave(dep, true);
+  actLog("inbox", `Also added the earlier payment: ${main.vendor} ${usd(amtC)} → ${pm.name}`, {pid:pm.id, side:"pm"});
+  toast(`Also added the earlier ${usd(amtC)} payment to ${pm.name}`, true);
 }
