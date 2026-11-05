@@ -12311,6 +12311,51 @@ Cloud.queue = function(){
   Cloud.timer = setTimeout(Cloud.flush, 450);
   Cloud.status = "saving"; chip();
 };
+
+/* ---------- saving safely when two people (or two tabs) change the same thing ----------
+   cloudCanon: the same data always gives the same text (keys sorted), so a save that changes nothing is never sent
+   — the database reorders keys, and comparing raw text used to send "changes" that were only a different order.
+   cloudMerge3: our unsaved changes and theirs, combined against what both started from. Lists of things with ids
+   (transactions, repair lines, adjustments) merge item by item; where both changed the same value, ours wins. */
+function cloudCanon(x){
+  if(typeof x === "string"){ try{ x = JSON.parse(x); }catch(e){ return x; } }
+  const c = v => v === null || typeof v !== "object" ? v : Array.isArray(v) ? v.map(c) : Object.keys(v).sort().reduce((o, k) => { if(v[k] !== undefined) o[k] = c(v[k]); return o; }, {});
+  return JSON.stringify(c(x));
+}
+function cloudMerge3(base, mine, theirs){
+  const same = (a, b) => cloudCanon(a === undefined ? null : a) === cloudCanon(b === undefined ? null : b);
+  if(same(mine, theirs)) return mine;
+  if(same(mine, base)) return theirs;
+  if(same(theirs, base)) return mine;
+  const isObj = v => v && typeof v === "object" && !Array.isArray(v);
+  const idList = v => Array.isArray(v) && v.length > 0 && v.every(x => isObj(x) && x.id != null);
+  if(Array.isArray(mine) && Array.isArray(theirs) && (idList(mine) || idList(theirs)) && (!mine.length || idList(mine)) && (!theirs.length || idList(theirs))){
+    const B = new Map((Array.isArray(base) ? base : []).filter(isObj).map(x => [String(x.id), x])), M = new Map(mine.map(x => [String(x.id), x])), T = new Map(theirs.map(x => [String(x.id), x]));
+    const out = [];
+    theirs.forEach(t => { const k = String(t.id), m = M.get(k), b = B.get(k);
+      if(m) out.push(cloudMerge3(b, m, t));
+      else if(!b || !same(b, t)) out.push(t);                       // we deleted it but they changed it: keep theirs
+    });
+    mine.forEach((m, i) => { const k = String(m.id); if(T.has(k)) return; const b = B.get(k);
+      if(!b || !same(b, m)) out.splice(Math.min(i, out.length), 0, m);   // ours is new (or they deleted what we changed): keep ours
+    });
+    return out;
+  }
+  if(isObj(mine) && isObj(theirs)){
+    const b0 = isObj(base) ? base : {}, out = {};
+    new Set([...Object.keys(mine), ...Object.keys(theirs)]).forEach(k => {
+      const inM = k in mine, inT = k in theirs, inB = k in b0;
+      if(inM && inT) out[k] = cloudMerge3(b0[k], mine[k], theirs[k]);
+      else if(inM){ if(!(inB && same(b0[k], mine[k]))) out[k] = mine[k]; }          // they removed it and we didn't touch it: removed
+      else if(inT){ if(!(inB && same(b0[k], theirs[k]))) out[k] = theirs[k]; }
+    });
+    return out;
+  }
+  return mine;
+}
+// what was last saved is kept in the same canonical text
+{ const set0 = Cloud.synced.set.bind(Cloud.synced); Cloud.synced.set = (k, v) => set0(k, Object.assign({}, v, {json:v && v.json != null ? cloudCanon(v.json) : v && v.json})); }
+
 Cloud.flush = async function(){
   if(!Cloud.ready) return;
   if(Cloud.saving){ Cloud.again = true; return; }
@@ -12318,7 +12363,7 @@ Cloud.flush = async function(){
   try{
     const docs = cloudDocs(), inserts = [], updates = [];
     for(const [key, data] of docs){
-      const json = JSON.stringify(data), s = Cloud.synced.get(key);
+      const json = cloudCanon(data), s = Cloud.synced.get(key);
       if(!s) inserts.push({key, data, json});
       else if(s.json !== json || s.deleted) updates.push({key, data, json, prev:s});
     }
@@ -12353,14 +12398,23 @@ Cloud.writeOne = async function(op, prev){
   const patch = op.del ? {deleted:true} : {data:op.data, deleted:false};
   const {data, error} = await Cloud.sb.from("docs").update(patch).eq("kind", kind).eq("id", id).eq("version", prev.version).select("version");
   if(error) throw error;
-  if(!data.length) return Cloud.conflict(kind, id);
+  if(!data.length) return Cloud.conflict(kind, id, op, prev);
   Cloud.synced.set(op.key, {json:op.del ? prev.json : op.json, version:data[0].version, deleted:!!op.del});
 };
-Cloud.conflict = async function(kind, id){
+Cloud.conflict = async function(kind, id, op, prev){
   const {data} = await Cloud.sb.from("docs").select("data,version,deleted,updated_by").eq("kind", kind).eq("id", id).maybeSingle();
   if(!data) return;
+  const key = kind + "/" + id, mine = op && !op.del ? op.data : null;
+  // both sides changed it: keep both — their changes and ours — instead of dropping ours
+  if(mine && !data.deleted && prev && prev.json){
+    const merged = cloudMerge3(JSON.parse(prev.json), mine, data.data);
+    cloudApply(kind, id, merged, false);
+    Cloud.synced.set(key, {json:data.data, version:data.version, deleted:false});
+    recalc(); Cloud.remoteDirty = true; Cloud.again = true;           // the merged copy is saved on the next pass
+    return;
+  }
   cloudApply(kind, id, data.data, data.deleted);
-  Cloud.synced.set(kind + "/" + id, {json:JSON.stringify(data.data), version:data.version, deleted:data.deleted});
+  Cloud.synced.set(key, {json:data.data, version:data.version, deleted:data.deleted});
   recalc(); Cloud.remoteDirty = true;
   toast(`${cloudWho(data.updated_by)} changed ${cloudLabel(kind, id, data.data)} at the same moment — their version was kept. Please redo your last change there.`);
 };
@@ -12384,15 +12438,22 @@ Cloud.onRemote = function(row){
   const key = row.kind + "/" + row.id, s = Cloud.synced.get(key);
   if(s && row.version <= s.version) return;                     // our own save coming back
   const localNow = cloudDocs().get(key);
-  // our own save echoing back before its response arrived: nothing to show
-  if(!row.deleted && localNow && JSON.stringify(localNow) === JSON.stringify(row.data)){ Cloud.synced.set(key, {json:JSON.stringify(row.data), version:row.version, deleted:row.deleted}); return; }
-  const unsaved = s && localNow && JSON.stringify(localNow) !== s.json;
+  // our own save echoing back before its response arrived (or a save that changed nothing): nothing to show
+  if(!row.deleted && localNow && cloudCanon(localNow) === cloudCanon(row.data)){ Cloud.synced.set(key, {json:row.data, version:row.version, deleted:row.deleted}); return; }
+  const unsaved = s && localNow && cloudCanon(localNow) !== s.json;
+  if(unsaved && !row.deleted && row.data){
+    // we have changes that aren't saved yet: merge theirs into ours rather than losing ours
+    const merged = cloudMerge3(JSON.parse(s.json), localNow, row.data);
+    cloudApply(row.kind, row.id, merged, false);
+    Cloud.synced.set(key, {json:row.data, version:row.version, deleted:false});
+    recalc(); Cloud.remoteDirty = true; Cloud.queue();
+    return;
+  }
   cloudApply(row.kind, row.id, row.data, row.deleted);
-  Cloud.synced.set(key, {json:JSON.stringify(row.data), version:row.version, deleted:row.deleted});
+  Cloud.synced.set(key, {json:row.data, version:row.version, deleted:row.deleted});
   recalc(); Cloud.remoteDirty = true;
   const msg = `${cloudWho(row.updated_by)} updated ${cloudLabel(row.kind, row.id, row.data)}`;
-  if(unsaved) toast(msg + " while you were editing it — theirs is showing now. Please redo your change.");
-  else if(!Cloud.lastRemote || Date.now() - Cloud.lastRemote > 4000) toast(msg);
+  if(!Cloud.lastRemote || Date.now() - Cloud.lastRemote > 4000) toast(msg);
   Cloud.lastRemote = Date.now();
 };
 /* re-draw after remote changes, but never while someone is typing or has a panel open */
