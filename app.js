@@ -58,7 +58,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -67,7 +67,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team","payments","today","connections","money","unpaid","activity"].includes(view)) S.ui.mode = "projects";
+  else if(!["owners","inbox","team","payments","today","connections","money","unpaid","activity","recover"].includes(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -15119,6 +15119,8 @@ function rcRow(m, row, prop, ledger){
       : today > due ? {s:"bad", a:0, d:fr.owedC, t:`${usd(fr.owedC)} owed — not paid (due ${fdateS(due)})`}
       : {s:"wait", a:0, t:`${usd(fr.owedC)} to pay by ${fdateS(due)}`};
   }
+  { const rv = S.recov && (S.recov.items || []).find(x => x.pid === prop.id && x.month === m);
+    if(rv && st.paid) st.paid = Object.assign({}, st.paid, {t:`${st.paid.t} · paid twice — ${usd(rv.amountC)} duplicate from ${(rv.paid || [])[1] ? rv.paid[1].by : "a second payment"}; ${rvLeftC(rv) ? usd(rvLeftC(rv)) + " still to recover" : "recovered"} (Money → Duplicate payouts)`}); }
   const bad = RC_STEPS.filter(([k]) => st[k].s === "bad").map(([k]) => k);
   const varC = bad.reduce((a, k) => a + (st[k].d || 0), 0);
   // the numbers a review was made against: change any of them and the discrepancy comes back
@@ -16938,4 +16940,139 @@ function ibAddEarlierPayment(it, d){
   billSave(dep, true);
   actLog("inbox", `Also added the earlier payment: ${main.vendor} ${usd(amtC)} → ${pm.name}`, {pid:pm.id, side:"pm"});
   toast(`Also added the earlier ${usd(amtC)} payment to ${pm.name}`, true);
+}
+
+/* =====================================================================
+   DUPLICATE PAYOUTS — owners who were paid twice for the same month
+   (October 2026: MagicDoor/Payabli's Oct 14 batch went out on Oct 19
+   after the office had already paid the same owners through Nickel).
+   For each owner you choose how the extra money comes back:
+     · Hold        — decide later; nothing changes on any statement
+     · Next payout — taken out of the next payout(s) until it's covered
+     · Monthly     — a set amount per payout until it's covered
+     · Owner repays— they send it back; record what arrives
+     · Write off   — PHD absorbs it
+   Offsets go on the owner's statement as their own line with a plain
+   note, never on a closed or already-paid month. The page also tracks
+   what PHD owes Payabli and what has been paid to them.
+   ===================================================================== */
+const RV_PLANS = {hold:"Hold — decide later", offset:"Take it from the next payout(s)", installment:"A set amount each month", repay:"Owner sends it back", forgive:"Write off (PHD absorbs it)"};
+function rvState(){ if(!S.recov || !Array.isArray(S.recov.items)) S.recov = Object.assign({v:1, items:[], payabli:{owedC:0, paid:[]}}, S.recov || {}, {items:(S.recov && S.recov.items) || []}); S.recov.payabli = S.recov.payabli || {owedC:0, paid:[]}; return S.recov; }
+if(typeof cloudDocs === "function"){ const rvDocs0 = cloudDocs; cloudDocs = function(){ const out = rvDocs0.apply(this, arguments); if(S.recov) out.set("shared/recoveries", S.recov); return out; }; }
+if(typeof cloudApply === "function"){ const rvApply0 = cloudApply; cloudApply = function(kind, id, data, deleted){ if(kind === "shared" && id === "recoveries"){ S.recov = deleted ? null : data; return; } return rvApply0.apply(this, arguments); }; }
+if(typeof cloudLabel === "function"){ const rvLbl0 = cloudLabel; cloudLabel = function(kind, id){ if(kind === "shared" && id === "recoveries") return "duplicate payouts"; return rvLbl0.apply(this, arguments); }; }
+function rvOffsetC(it, which){   // which: "done" = on statements already paid out or closed, "planned" = on open ones, else both
+  let c = 0; const P2 = pmState();
+  Object.values(P2.rows).forEach(r => { const done = !!(r.paidOut || (P2.meta[r.month] || {}).closed); if(which === "done" && !done || which === "planned" && done) return;
+    (r.adjustments || []).forEach(a => { if(a.recov === it.id) c -= cents(a.amount); }); });
+  return c;
+}
+function rvRepaidC(it){ return (it.repaid || []).reduce((a, x) => a + (Number(x.amountC) || 0), 0); }
+function rvLeftC(it){ return it.plan === "forgive" ? 0 : Math.max(0, it.amountC - rvOffsetC(it) - rvRepaidC(it)); }
+// keep each owner's offset line right on every open month's statement
+function rvApply(){
+  const R = S.recov; if(!R || !R.items || !R.items.length || typeof pmState !== "function") return 0;
+  const P2 = pmState(); let n = 0;
+  R.items.forEach(it => {
+    const rows = Object.values(P2.rows).filter(r => r.propertyId === it.pid).sort((a, b) => a.month.localeCompare(b.month));
+    let doneC = rvRepaidC(it);
+    rows.forEach(r => {
+      const mine = (r.adjustments || []).find(a => a.recov === it.id);
+      const frozen = (P2.meta[r.month] || {}).closed || r.locked || r.paidOut || r.detailOnly;
+      if(frozen){ if(mine) doneC -= cents(mine.amount); return; }          // already on a finished statement: counts, never changes
+      let wantC = 0;
+      if((it.plan === "offset" || it.plan === "installment") && r.month >= (it.start || "0000-00")){
+        const left = Math.max(0, it.amountC - doneC);
+        const prop = pmProp(r.propertyId);
+        const base = Object.assign({}, r, {adjustments:(r.adjustments || []).filter(a => a.recov !== it.id), ownerPayout:null});
+        const avail = prop ? Math.max(0, PMCore.calc(base, prop, todayISO()).calcC) : 0;
+        wantC = Math.min(left, avail, it.plan === "installment" ? Math.max(0, Number(it.perMonthC) || 0) : Infinity);
+      }
+      const note = `Recovering the ${monthLabel(it.month)} payout that was paid twice (${it.second || "duplicate payment"}) — ${usd(Math.min(it.amountC, doneC + wantC))} of ${usd(it.amountC)} recovered`;
+      if(wantC > 0){
+        if(!(mine && cents(mine.amount) === -wantC && mine.note === note)){
+          r.adjustments = (r.adjustments || []).filter(a => a.recov !== it.id); r.adjustments.push({id:uid(), recov:it.id, amount:-wantC / 100, note, auto:true}); pmTouch(r); n++;
+        }
+        doneC += wantC;
+      } else if(mine){ r.adjustments = r.adjustments.filter(a => a.recov !== it.id); pmTouch(r); n++; }
+    });
+  });
+  return n;
+}
+let RV_SIG = "";
+if(typeof render === "function"){
+  const rvRender0 = render;
+  render = function(){
+    const r = rvRender0.apply(this, arguments);
+    try{
+      if(S.recov && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+        const sig = cloudCanon(S.recov) + "|" + Object.values(pmState().rows).filter(x => S.recov.items.some(i => i.pid === x.propertyId)).map(x => x.month + (x.paidOut ? "p" : "") + (x.locked ? "l" : "") + cloudCanon(x.adjustments || [])).join(",");
+        if(sig !== RV_SIG){ RV_SIG = sig; setTimeout(() => { snapshot(); const n = rvApply(); if(n){ commit(); } }, 400); }
+      }
+    }catch(e){}
+    return r;
+  };
+}
+function rvMessage(it){
+  const o = ownerById(it.ownerId), first = String((o && (o.name || o.company)) || it.owner || "").split(/[ ,]/)[0];
+  const plan = it.plan === "installment" ? `we'll take ${usd(Number(it.perMonthC) || 0)} from each monthly payout, starting ${monthLabel(it.start || thisMonth())}, until the ${usd(it.amountC)} is covered`
+    : it.plan === "repay" ? `we'd ask you to send the ${usd(it.amountC)} back — reply and we'll send the easiest way to do that`
+    : `we'll take it from your ${monthLabel(it.start || thisMonth())} payout${it.amountC > 0 ? " (and the next one if needed)" : ""} so nothing needs to be sent back`;
+  return `Hi ${first || "there"},\n\nWe want to let you know about a payment error on our payment processor's side. Your ${monthLabel(it.month)} owner payout for ${it.prop} (${usd(it.amountC)}) was sent to you twice: once by us on ${fdateS(((it.paid || [])[0] || {}).date || "")}, and again by MagicDoor's processor on ${fdateS(((it.paid || [])[1] || {}).date || "")} after it had told us that payment was stopped.\n\nNothing is owed beyond that one extra payment. Unless you'd prefer otherwise, ${plan}. Your statement will show it as its own line.\n\nWe're sorry for the confusion — please reach out with any questions.\n\nPHD Properties`;
+}
+function pgRecover(){
+  const R = rvState(), items = R.items;
+  $("#pgCrumb").textContent = "Money"; $("#pgTitle").textContent = "Duplicate payouts";
+  const totC = items.reduce((a, x) => a + x.amountC, 0), leftC = items.reduce((a, x) => a + rvLeftC(x), 0), backC = items.reduce((a, x) => a + rvOffsetC(x, "done") + rvRepaidC(x), 0), planC = items.reduce((a, x) => a + rvOffsetC(x, "planned"), 0);
+  const P = R.payabli, paidPC = (P.paid || []).reduce((a, x) => a + (Number(x.amountC) || 0), 0), owePC = Math.max(0, (Number(P.owedC) || 0) - paidPC);
+  $("#pgSub").textContent = items.length ? `${items.length} owner payout${items.length === 1 ? "" : "s"} paid twice · ${usd(leftC)} still to recover` : "No duplicate payouts";
+  actions([]);
+  const v = $("#view");
+  const hero = elm("div", "card pf-hero");
+  hero.innerHTML = [["Paid twice", usd(totC), `${items.length} payout${items.length === 1 ? "" : "s"}`, ""], ["Recovered so far", usd(backC), planC ? `${usd(planC)} more on statements not paid yet` : "from payouts and repayments", backC ? "color:var(--green)" : ""],
+    ["Not planned yet", usd(leftC), `${items.filter(x => rvLeftC(x) > 0).length} owner${items.filter(x => rvLeftC(x) > 0).length === 1 ? "" : "s"}`, leftC ? "color:var(--gold)" : ""],
+    ["Owed to Payabli", usd(owePC), paidPC ? `${usd(paidPC)} paid so far` : "nothing paid yet", owePC ? "color:var(--red)" : ""]]
+    .map(([l, n, s2, st]) => `<div class="pf-cell"><div class="label">${l}</div><div class="pf-v"${st ? ` style="${st}"` : ""}>${n}</div><div class="pf-note">${s2}</div></div>`).join("");
+  v.appendChild(hero);
+  v.appendChild(elm("div", "pm-banner rv-how", `<b>How this works.</b> Choose a plan for each owner. “Take it from the next payout(s)” and “A set amount each month” add a line to that owner's statement for the open month (never a closed or already-paid one), until the amount is covered. Nothing changes while a plan is “Hold”. The money held back stays in the trust account to repay Payabli.`));
+  const card = elm("div", "card");
+  card.innerHTML = `<div class="tbl-wrap"><table class="tbl rv-tbl"><thead><tr><th>Owner · property</th><th>Paid twice</th><th>Plan</th><th class="r">Recovered</th><th class="r">Not planned</th><th></th></tr></thead><tbody>
+    ${items.map(it => { const left = rvLeftC(it), got = rvOffsetC(it, "done") + rvRepaidC(it), plan = rvOffsetC(it, "planned");
+      return `<tr data-rv="${esc(it.id)}"><td><div class="item-t">${esc(it.owner || "")}</div><div class="item-s"><a href="#" data-rvp>${esc(it.prop)}</a>${it.contacted ? ` · told ${esc(fdateS(it.contacted))}` : ` · <span style="color:var(--gold)">not told yet</span>`}</div></td>
+        <td><b>${usd(it.amountC)}</b><div class="item-s">${(it.paid || []).map(p => `${esc(p.by)} ${esc(fdateS(p.date))}`).join(" + ")}</div></td>
+        <td><select data-rvplan>${Object.entries(RV_PLANS).map(([k, l]) => `<option value="${k}" ${it.plan === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+          ${it.plan === "installment" ? `<div class="rv-sub">$<input type="number" step="50" min="0" data-rvper value="${(Number(it.perMonthC) || 0) / 100 || ""}" placeholder="per month"> a month</div>` : ""}
+          ${it.plan === "offset" || it.plan === "installment" ? `<div class="rv-sub">starting <input type="month" data-rvstart value="${esc(it.start || thisMonth())}"></div>` : ""}</td>
+        <td class="r num">${usd(got)}${plan ? `<div class="item-s">+ ${usd(plan)} on ${esc(monthLabel(Object.values(pmState().rows).filter(r => r.propertyId === it.pid && (r.adjustments || []).some(a => a.recov === it.id) && !r.paidOut).map(r => r.month).sort()[0] || thisMonth()))}'s statement</div>` : ""}</td><td class="r num"><b${left ? ' style="color:var(--gold)"' : ""}>${left ? usd(left) : it.plan === "forgive" ? "Written off" : "All planned"}</b></td>
+        <td class="act rv-act"><button class="btn sm" data-rvmsg>Owner message</button>${it.plan === "repay" ? `<button class="btn sm" data-rvpay>Record repayment</button>` : ""}<button class="btn sm ghost" data-rvtold>${it.contacted ? "Told ✓" : "Mark told"}</button></td></tr>`; }).join("")}
+    </tbody></table></div>`;
+  v.appendChild(card);
+  const save = (it, patch) => { snapshot(); Object.assign(it, patch); rvApply(); actLog("finance", `Duplicate payout · ${it.prop}: ${Object.entries(patch).map(([k, x]) => k === "plan" ? RV_PLANS[x] : k === "perMonthC" ? usd(x) + " a month" : k === "start" ? "starting " + monthLabel(x) : k === "contacted" ? (x ? "owner told" : "not told") : k).join(", ")}`); commit(); render(); };
+  card.querySelectorAll("tr[data-rv]").forEach(tr => {
+    const it = items.find(x => x.id === tr.dataset.rv); if(!it) return; const q = s => tr.querySelector(s);
+    q("[data-rvplan]").onchange = e => save(it, {plan:e.target.value, start:it.start || thisMonth()});
+    if(q("[data-rvper]")) q("[data-rvper]").onchange = e => save(it, {perMonthC:Math.round((Number(e.target.value) || 0) * 100)});
+    if(q("[data-rvstart]")) q("[data-rvstart]").onchange = e => e.target.value && save(it, {start:e.target.value});
+    q("[data-rvtold]").onclick = () => save(it, {contacted:it.contacted ? "" : todayISO()});
+    q("[data-rvp]").onclick = e => { e.preventDefault(); pmOpenProperty(it.pid); };
+    q("[data-rvmsg]").onclick = () => { const t = rvMessage(it); ibInfoSheet(`Message to ${it.owner}`, `<p class="muted" style="margin-top:0">Ready to copy. It follows the plan chosen for this owner.</p><textarea class="rv-msg" rows="14">${esc(t)}</textarea>`); const ta = document.querySelector(".rv-msg"); if(ta){ ta.focus(); ta.select(); } };
+    if(q("[data-rvpay]")) q("[data-rvpay]").onclick = () => { const a = prompt(`How much did ${it.owner} send back? (left: ${usd(rvLeftC(it))})`, (rvLeftC(it) / 100).toFixed(2)); const c = Math.round((Number(String(a || "").replace(/[$,]/g, "")) || 0) * 100); if(!c) return;
+      snapshot(); it.repaid = (it.repaid || []).concat([{date:todayISO(), amountC:c, by:billWho()}]); actLog("finance", `Duplicate payout · ${it.prop}: ${it.owner} sent back ${usd(c)}`); commit(); render(); };
+  });
+  // Payabli
+  const pc = elm("div", "card");
+  pc.innerHTML = `<div class="card-h"><h3>Owed to Payabli</h3></div><div class="card-b">
+    <p class="help" style="margin-top:0">${esc(P.note || "Payabli sent these payouts with its own money; the debit to cover them was stopped at the bank. It will collect the total from PHD — record each payment here as it's made.")}</p>
+    <div class="f2"><label class="fld"><span>Total owed</span><input type="number" step="0.01" id="rvOwed" value="${((Number(P.owedC) || 0) / 100).toFixed(2)}"></label><div class="fld"><span>Paid so far</span><b style="font-size:18px">${usd(paidPC)}</b></div></div>
+    ${(P.paid || []).length ? `<div class="sm-list">${P.paid.map(x => `<div class="sm-r"><span>${esc(fdateS(x.date))}</span><b class="num">${usd(x.amountC)}</b><span class="muted">${esc(x.ref || "")}</span></div>`).join("")}</div>` : ""}
+    <button class="btn sm" id="rvPayP">Record a payment to Payabli</button></div>`;
+  v.appendChild(pc);
+  pc.querySelector("#rvOwed").onchange = e => { snapshot(); P.owedC = Math.round((Number(e.target.value) || 0) * 100); commit(); render(); };
+  pc.querySelector("#rvPayP").onclick = () => { const a = prompt("Amount paid to Payabli", (owePC / 100).toFixed(2)); const c = Math.round((Number(String(a || "").replace(/[$,]/g, "")) || 0) * 100); if(!c) return; const ref = prompt("Reference (optional)", "") || "";
+    snapshot(); P.paid = (P.paid || []).concat([{date:todayISO(), amountC:c, ref, by:billWho()}]); actLog("finance", `Paid Payabli ${usd(c)} toward the duplicate payouts${ref ? " (" + ref + ")" : ""}`); commit(); render(); };
+}
+// the Money menu shows it while anything is left to recover or owed
+{
+  const nm0 = navMoney;
+  navMoney = function(n, mk){ nm0.apply(this, arguments); try{ const R = S.recov; if(R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){} };
 }
