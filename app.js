@@ -11,6 +11,7 @@ function toast(m, withUndo){
 
 /* ===================== chrome ===================== */
 function render(){
+  try{ if(PM_VIEWS.has(S.ui.view) && S.ui.mode !== "pm" && S.ui.mode !== "office") S.ui.mode = "pm"; }catch(e){}
   const p = P();
   const portfolioView = S.ui.view === "portfolio" || S.ui.view === "reconcile" || S.ui.view === "owners" || S.ui.view === "inbox" || S.ui.view === "team" || S.ui.view === "payments" || S.ui.view === "today" || S.ui.view === "charges" || S.ui.view === "inventory" || S.ui.view === "business" || S.ui.mode === "pm";
   renderModeSwitch();
@@ -67,7 +68,7 @@ function actions(list){
 }
 function go(view, propId){
   if(PM_VIEWS.has(view)) S.ui.mode = "pm";
-  else if(!["owners","inbox","team","payments","today","connections","money","unpaid","activity","recover"].includes(view)) S.ui.mode = "projects";
+  else if(!SHARED_VIEWS.has(view)) S.ui.mode = "projects";
   const switching = propId && propId !== S.activeId;
   if(propId) S.activeId = propId;
   S.ui.view = view;
@@ -3045,11 +3046,14 @@ function pgOwners(){
   const id = S.ui.ownerId && ownerById(S.ui.ownerId) ? S.ui.ownerId : null;
   if(id) return pgOwnerDetail(ownerById(id));
   actions([["New owner", () => { snapshot(); const n = cleanOwner(Object.assign(blankOwner(), {id:uid()})); S.owners.push(n); Store.save(S); openOwner(n.id); }, "primary"]]);
-  const v = $("#view");
+  const v = $("#view"), pmSide = S.ui.mode === "pm";
+  $("#pgCrumb").textContent = sideName(sideNow());
+  // an owner with nothing on either side yet (just added) shows on both
   const owners = (S.owners||[]).filter(o => ownerLabel(o) || ownerProps(o, true).length || ownerPmProps(o).length)
-    .map(o => ({o, R:ownerRoll(o), props:ownerProps(o), pm:ownerPmProps(o)}))
-    .sort((a,b) => b.props.length - a.props.length || ownerLabel(a.o).localeCompare(ownerLabel(b.o)));
-  const unassigned = live().filter(p => !p.ownerId);
+    .filter(o => { const pj = ownerProps(o, true).length, pm = ownerPmProps(o).length; return pmSide ? (pm || !pj) : (pj || !pm); })
+    .map(o => ({o, R:ownerRoll(o), props:pmSide ? [] : ownerProps(o), pm:pmSide ? ownerPmProps(o) : []}))
+    .sort((a,b) => (b.props.length + b.pm.length) - (a.props.length + a.pm.length) || ownerLabel(a.o).localeCompare(ownerLabel(b.o)));
+  const unassigned = pmSide ? [] : live().filter(p => !p.ownerId);
 
   if(!owners.length && !unassigned.length){
     v.appendChild(elm("div","card",`<div class="empty"><b>No owners yet</b><p>Add owners from each property's Owner page.</p></div>`));
@@ -3062,12 +3066,13 @@ function pgOwners(){
         <div style="min-width:0"><b>${esc(ownerLabel(o) || "Unnamed owner")}</b><span>${esc([o.name && o.company ? o.company : "", o.email].filter(Boolean).join(" · ") || "No contact details yet")}</span></div>
         ${props.length + pm.length > 1 ? `<span class="tag acc" style="margin-left:auto">${props.length + pm.length} properties</span>` : ""}</div>
       <div class="ow-props">${props.length || pm.length ? props.map(p => `<span title="Project billing">${icon("clip")}${esc(p.name)}</span>`).join("") + pm.map(p => `<span title="Property management">${icon("home")}${esc(p.name)}</span>`).join("") : `<span class="muted">No active properties</span>`}</div>
-      <div class="ow-nums">
+      ${pmSide ? (() => { const rentC = pm.reduce((a, p) => a + cents(p.rent), 0), inv = (typeof invList === "function" ? invList() : []).filter(x => x.ownerId === o.id && x.status === "sent"), dueC = inv.reduce((a, x) => a + invTotals(x).dueC, 0);
+        return `<div class="ow-nums"><div><div class="label">Rentals</div><div class="num">${pm.length}</div></div><div><div class="label">Monthly rent</div><div class="num">${usd(rentC)}</div></div><div><div class="label">Invoices due</div><div class="num"${dueC ? ' style="color:var(--gold)"' : ""}>${usd(dueC)}</div></div></div>`; })() : `<div class="ow-nums">
         <div><div class="label">Charges</div><div class="num">${usd(R.chargesC)}</div></div>
         <div><div class="label">Collected</div><div class="num" style="color:var(--green)">${usd(R.paidC)}</div></div>
         <div><div class="label">Due now</div><div class="num">${usd(R.dueC)}</div></div>
         <div><div class="label">Ready</div><div class="num"${R.readyC ? ' style="color:var(--gold)"' : ""}>${usd(R.readyC)}</div></div>
-      </div>`;
+      </div>`}`;
     c.onclick = () => openOwner(o.id);
     list.appendChild(c);
   });
@@ -3089,19 +3094,21 @@ function pgOwners(){
 }
 
 function pgOwnerDetail(o){
-  const props = ownerProps(o), allProps = ownerProps(o, true);
-  $("#pgCrumb").textContent = "Owners";
+  const props = ownerProps(o), allProps = ownerProps(o, true), pmSide = S.ui.mode === "pm";
+  $("#pgCrumb").textContent = sideName(sideNow()) + " · Owners";
   $("#pgTitle").textContent = ownerLabel(o) || "New owner";
   { const n = props.length + ownerPmProps(o).length; $("#pgSub").textContent = n ? `${n} propert${n===1?"y":"ies"}${props.length && ownerPmProps(o).length ? " · projects and management" : ""}` : "Not linked to a property yet"; }
   const acts = [["All owners", () => { S.ui.ownerId = null; persistUi(); render(); }, "ghost"]];
   if(!allProps.length && !ownerPmProps(o).length) acts.push(["Delete owner", () => {
     if(!confirm(`Delete ${ownerLabel(o) || "this owner"}? No property uses them.`)) return;
     snapshot(); S.owners = S.owners.filter(x => x.id !== o.id); S.ui.ownerId = null; commit(); toast("Owner deleted", true); }, "ghost"]);
-  if(props.length) acts.push(["Combined statement", () => ownerStatementSheet(o.id), "primary"]);
+  if(!pmSide && props.length) acts.push(["Combined statement", () => ownerStatementSheet(o.id), "primary"]);
+  { const other = pmSide ? props.length : ownerPmProps(o).length;
+    if(other) acts.unshift([`${other} ${pmSide ? "project" : "rental"}${other === 1 ? "" : "s"} on ${pmSide ? "Projects" : "Property management"} →`, () => { S.ui.mode = pmSide ? "projects" : "pm"; S.ui.ownerId = o.id; go("owners"); }, "ghost"]); }
   actions(acts);
   const v = $("#view"), R = ownerRoll(o);
 
-  if(props.length){
+  if(!pmSide && props.length){
     const st = elm("div","card ow-stats");
     st.innerHTML = [["Total charges", usd(R.chargesC), ""],["Collected", usd(R.paidC), "var(--green)"],
       ["Due now", usd(R.dueC), R.dueC ? "var(--ink)" : ""],["Ready to send", usd(R.readyC), R.readyC ? "var(--gold)" : ""],
@@ -3113,7 +3120,7 @@ function pgOwnerDetail(o){
     wirePropRows(pt);
     v.appendChild(pt);
   }
-  const pmT = ownerPmTableHTML(o);
+  const pmT = pmSide ? ownerPmTableHTML(o) : "";
   if(pmT){ const pc = elm("div","card"); pc.style.marginBottom = "16px"; pc.innerHTML = `<div class="card-h"><h3>Managed properties</h3><span class="muted" style="margin-left:auto;font-size:12px">Rent, fees and payouts from property management</span></div>${pmT}`; v.appendChild(pc); }
   const grid = elm("div","owner-grid");
   const card = elm("div","card"); card.innerHTML = ownerCardHTML(o, props, {emptyTitle:"New owner", emptySub:"Fill in the details on the right"});
@@ -3447,14 +3454,14 @@ function cmdItems(q){
   const p = P(), out = [];
   const push = (sec, ic, main, sub, amt, run) => out.push({sec, ic, main, sub, amt, run});
   const pages = S.ui.mode === "pm"
-    ? [["pmMonth","Month close","check"],["pmRecon","Reconcile rent & payouts","recon"],["pmProps","Properties","building"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
+    ? [["pmMonth","Month close","check"],["pmRecon","Reconcile rent & payouts","recon"],["pmProps","Properties","building"],["pmBills","Bills","receipt"],["unpaid","Unpaid bills","receipt"],["pmInvoices","Owner invoices","file"],["pmStatements","Owner statements","mail"],["money","Cash & payouts","card"],["recover","Duplicate payouts","receipt"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
     : [["overview","Overview","home"],["txns","Transactions","list"],["invoices","Invoices","file"],
        ["owner","Owner","user"],["scope","Scope of work","clip"],["settings","Settings","gear"]];
   const acts = [
     ["New transaction", "plus", "in " + p.name, () => goQuick()],
     ["Import transactions", "download", "paste rows from a spreadsheet", () => { go("txns"); importSheet(); }],
     ["Client report", "file", "statement for " + p.name, () => { if(["portfolio","reconcile","owners"].includes(S.ui.view)) go("overview"); reportSheet(); }],
-    ["Reconcile", "check", "match bank and card activity", () => go("reconcile")],
+    S.ui.mode === "pm" ? ["Reconcile", "check", "rent, bills and payouts against MagicDoor and Nickel", () => go("pmRecon")] : ["Reconcile", "check", "project expenses against QuickBooks", () => go("reconcile")],
     ["Switch to " + (S.ui.mode === "pm" ? "project billing" : "property management"), "arrow", "", () => setMode(S.ui.mode === "pm" ? "projects" : "pm")],
     ["Record rent", "home", "property management · this month", () => { S.ui.mode = "pm"; pmQuick(); }],
     ["Team & activity", "user", "who has access, who changed what", () => go("team")],
@@ -3463,11 +3470,12 @@ function cmdItems(q){
     ["Undo last change", "undo", "", () => undo()],
     ["Download backup", "download", "everything, as a JSON file", () => backup()]
   ];
+  if(S.ui.mode === "pm"){ const pjOnly = new Set(["New transaction", "Import transactions", "Client report"]); for(let i = acts.length - 1; i >= 0; i--) if(pjOnly.has(acts[i][0])) acts.splice(i, 1); }
   if(!qq){
     pages.forEach(([k,l,ic]) => push(S.ui.mode === "pm" ? "Go to — property management" : "Go to — " + p.name, ic, l, "", "", () => go(k)));
-    push("Go to — portfolio", "grid", "All properties", "", "", () => go("portfolio"));
-    push("Go to — portfolio", "user", "Owners", `${(S.owners||[]).filter(ownerLabel).length} on file`, "", () => { S.ui.ownerId = null; go("owners"); });
-    live().filter(x => x.id !== p.id).forEach(x => push("Go to — portfolio", "building", x.name, ownerName(x), "", () => go("overview", x.id)));
+    if(S.ui.mode !== "pm") push("Go to — portfolio", "grid", "All properties", "", "", () => go("portfolio"));
+    push(S.ui.mode === "pm" ? "Go to — property management" : "Go to — portfolio", "user", "Owners", `${(S.owners||[]).filter(ownerLabel).length} on file`, "", () => { S.ui.ownerId = null; go("owners"); });
+    if(S.ui.mode !== "pm") live().filter(x => x.id !== p.id).forEach(x => push("Go to — portfolio", "building", x.name, ownerName(x), "", () => go("overview", x.id)));
     acts.forEach(([l,ic,s,fn]) => push("Actions", ic, l, s, "", fn));
     return out;
   }
@@ -3629,7 +3637,9 @@ async function inboxRefresh(quiet){
   INBOX.loading = false;
   if(S.ui.view === "inbox") render(); else renderNav();
 }
-const inboxCount = () => INBOX.items.filter(i => i.status === "pending").length;
+// which side a receipt belongs to: the mailbox it came to, or the property it's matched to ("" = not known yet → shows on both)
+const ibSideOf = i => i.side || (pmProp(i.property_id) ? "pm" : S.properties.some(p => p.id === i.property_id) ? "projects" : "");
+const inboxCount = side => INBOX.items.filter(i => i.status === "pending" && (!side || !ibSideOf(i) || ibSideOf(i) === side)).length;
 
 /* ---------- the page ---------- */
 function pgInbox(){
@@ -3646,17 +3656,19 @@ function pgInbox(){
     er.querySelector("button").onclick = () => inboxRefresh();
     v.appendChild(er);
   }
-  const sideOf = i => i.side || (pmProp(i.property_id) ? "pm" : S.properties.some(p => p.id === i.property_id) ? "projects" : "");
+  const sideOf = ibSideOf, here = sideNow(), there = here === "pm" ? "projects" : "pm";
   const cnt = k => INBOX.items.filter(i => (i.status === "pending" || i.status === "error") && (k === "all" || sideOf(i) === k || !sideOf(i))).length;
-  let F = S.ui.ibSide || "all";
-  if(F !== "all" && !cnt(F) && cnt("all")) F = "all";      // never an empty page while the other side has receipts waiting
+  // the side you're on, unless you picked "All" on this side
+  const F = (S.ui.ibSideBy || {})[here] === "all" ? "all" : here;
   const items = INBOX.items.filter(i => F === "all" || sideOf(i) === F || !sideOf(i));
+  const onlyThere = INBOX.items.filter(i => (i.status === "pending" || i.status === "error") && sideOf(i) === there).length;
   const pend = items.filter(i => i.status === "pending"), errs = items.filter(i => i.status === "error");
   if(INBOX.items.length){
     const seg = elm("div","sc-bar");
-    seg.innerHTML = `<div class="sc-seg">${[["pm","Property management"],["projects","Projects"],["all","All"]].map(([k, l]) => `<button data-sd="${k}" class="${F === k ? "on" : ""}">${l} <span>${cnt(k)}</span></button>`).join("")}</div>
-      <span class="muted" style="font-size:12.5px">Mail to <b>PMBilling@</b> lands under Property management, <b>ProjectBilling@</b> under Projects.</span>`;
-    seg.querySelectorAll("[data-sd]").forEach(b => b.onclick = () => { S.ui.ibSide = b.dataset.sd; persistUi(); render(); });
+    seg.innerHTML = `<div class="sc-seg">${[[here, sideName(here)], ["all", "Both sides"]].map(([k, l]) => `<button data-sd="${k}" class="${F === k ? "on" : ""}">${l} <span>${cnt(k)}</span></button>`).join("")}</div>
+      <span class="muted" style="font-size:12.5px">Mail to <b>PMBilling@</b> lands under Property management, <b>ProjectBilling@</b> under Projects.${F !== "all" && onlyThere ? ` <a href="#" id="ibOther">${onlyThere} waiting on ${esc(sideName(there))} →</a>` : ""}</span>`;
+    seg.querySelectorAll("[data-sd]").forEach(b => b.onclick = () => { S.ui.ibSideBy = Object.assign({}, S.ui.ibSideBy || {}, {[here]:b.dataset.sd === "all" ? "all" : ""}); persistUi(); render(); });
+    const ot = seg.querySelector("#ibOther"); if(ot) ot.onclick = e => { e.preventDefault(); S.ui.mode = there; go("inbox"); };
     v.appendChild(seg);
   }
   if(!items.length){
@@ -4456,7 +4468,7 @@ function pmAlertState(){ if(!S.pmAlerts || typeof S.pmAlerts !== "object") S.pmA
 function pmAlerts(){
   if(!pmState().properties.length) return [];
   return PMCore.alerts({pm:pmState(), owners:S.owners || [], settings:pmSettings(), today:todayISO(), state:pmAlertState(), md:mdReady() ? S.md : null, mdLinks:mdLinks().links, billUnit:mdLinks().billUnit || {},
-                        inbox:(typeof INBOX !== "undefined" ? INBOX.items : [])});
+                        inbox:(typeof INBOX !== "undefined" ? INBOX.items.filter(i => ibSideOf(i) !== "projects") : [])});
 }
 function pmRentStatus(m, p){ const r = pmRow(m, p.id); if(r) r._lateAfter = pmSettings().lateAfterDay; return PMCore.rentStatus(r, p, todayISO()); }
 // this month's status, with MagicDoor's live balance deciding when rent isn't recorded here yet (same rule as the alerts)
@@ -11775,8 +11787,23 @@ function nkWhereFrom(entityId, r){
   }
   return null;
 }
+/* which side a Nickel payment belongs to ("" = can't tell — a transfer, a fee, an unmatched payment — shown on both) */
+function nkSideOf(r){
+  if(!r) return "";
+  if(r.owner) return "pm";
+  const id = r.entityId; if(!id) return "";
+  if(billList().some(x => (x.pay && (x.pay.paymentId === id || (x.pay.receipt && x.pay.receipt.id === id))) || (x.nickel && x.nickel.billId === id))) return "pm";
+  if(invList().some(x => (x.payments || []).some(p => p.nkId === id) || (x.nickel && x.nickel.invoiceId === id))) return "pm";
+  for(const p of S.properties || []){
+    for(const g of Object.values(p.register || {})) if(g && g.nickel && (g.nickel.invoiceId === id || (g.nickel.payments || []).some(x => x.id === id))) return "projects";
+    if((p.transactions || []).some(t => t.nickelBill && t.nickelBill.billId === id)) return "projects";
+  }
+  return "";
+}
 function pgPayments(){
-  $("#pgCrumb").textContent = "Money"; $("#pgTitle").textContent = "Nickel";
+  const side = sideNow(), there = side === "pm" ? "projects" : "pm", both = !!S.ui.payBoth;
+  const nkShow = r => both || !nkSideOf(r) || nkSideOf(r) === side;
+  $("#pgCrumb").textContent = sideName(side); $("#pgTitle").textContent = "Nickel";
   const tab = S.ui.payTab === "setup" ? "setup" : "money";
   $("#pgSub").textContent = tab === "setup" ? "Nickel pays vendors and collects from owners · Nickel keeps QuickBooks up to date" : "Everything moving through Nickel, with a receipt for each payment";
   const v = $("#view");
@@ -11814,20 +11841,23 @@ function pgPayments(){
   }
   // filters
   const bar = elm("div","sc-bar");
-  const F = [["","All"], ["RECEIVABLE","Money received"], ["OWNERPAY","Owner payouts"], ["PAYABLE","Vendor & bill payments"], ["DEPOSIT","Deposits"], ["WITHDRAWAL","Transfers out"], ["REFUND","Refunds"]];
+  const F = [["","All"], ["RECEIVABLE","Money received"], ...(side === "pm" || both ? [["OWNERPAY","Owner payouts"]] : []), ["PAYABLE","Vendor & bill payments"], ["DEPOSIT","Deposits"], ["WITHDRAWAL","Transfers out"], ["REFUND","Refunds"]];
   bar.innerHTML = `<div class="sc-seg">${F.map(([k, l]) => `<button data-s="${k}" class="${src === k ? "on" : ""}">${l}</button>`).join("")}</div>
-    <div class="sc-q"><input type="text" id="pyQ" placeholder="Owner or vendor name…" value="${esc(q)}"></div>`;
+    <div class="sc-q"><input type="text" id="pyQ" placeholder="Owner or vendor name…" value="${esc(q)}"></div>
+    <label class="muted" style="font-size:12.5px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="pyBoth"${both ? " checked" : ""}> Show ${esc(sideName(there))} too</label>`;
   v.appendChild(bar);
+  bar.querySelector("#pyBoth").onchange = e => { S.ui.payBoth = e.target.checked; persistUi(); render(); };
   bar.querySelectorAll("[data-s]").forEach(b => b.onclick = () => { S.ui.paySrc = b.dataset.s; render(); });
   const qi = bar.querySelector("#pyQ"); qi.onkeydown = e => { if(e.key === "Enter"){ S.ui.payQ = qi.value.trim(); render(); } };
   qi.onchange = () => { S.ui.payQ = qi.value.trim(); render(); };
   const card = elm("div","card");
   if(PAYV.err){ card.innerHTML = `<div class="empty"><b>Couldn't read Nickel</b><p>${esc(PAYV.err)}</p></div>`; v.appendChild(card); return; }
   if(!d){ card.innerHTML = `<div class="empty"><p class="muted">Reading Nickel…</p></div>`; v.appendChild(card); return; }
-  if(!d.items.length){ card.innerHTML = `<div class="empty"><b>Nothing here</b><p>Try another filter.</p></div>`; v.appendChild(card); return; }
+  const hidden = d.items.filter(r => !nkShow(r)).length;
+  if(!d.items.length || hidden === d.items.length){ card.innerHTML = `<div class="empty"><b>Nothing here</b><p>${hidden ? `${hidden} payment${hidden === 1 ? " is" : "s are"} on the ${esc(sideName(there))} side. ` : ""}Try another filter.</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl py-tbl");
   t.innerHTML = `<thead><tr><th>Date</th><th>What</th><th>Status</th><th class="r">Amount</th><th></th></tr></thead><tbody>
-    ${d.items.map((r, i) => { const inn = nkMoneyIn(r), from = nkWhereFrom(r.entityId, r), hasRc = ["RECEIVABLE", "PAYABLE"].includes(r.source) && r.entityId;
+    ${d.items.map((r, i) => { if(!nkShow(r)) return ""; const inn = nkMoneyIn(r), from = nkWhereFrom(r.entityId, r), hasRc = ["RECEIVABLE", "PAYABLE"].includes(r.source) && r.entityId;
       return `<tr><td class="nw muted">${esc(fdateS(String(r.at).slice(0, 10)))}</td>
         <td><div class="item-t">${esc(r.who || NK_SRC[r.source] || "")}${r.what ? ` <span class="muted">· ${esc(r.what)}</span>` : ""}</div><div class="item-s">${esc(r.owner ? NK_SRC.OWNER : NK_SRC[r.source] || r.source)}${r.account ? " · " + esc(r.account) : ""}${from ? ` · <a href="#" data-from="${i}">${esc(from.label)}</a>` : r.desc && r.desc !== r.what ? " · " + esc(r.desc.slice(0, 90)) : ""}</div></td>
         <td>${nkStatusTag(r.status)}</td><td class="r num" style="color:${inn ? "var(--green)" : "inherit"}">${inn ? "+" : "−"}${usd(Math.abs(r.amountC))}</td>
@@ -11835,8 +11865,9 @@ function pgPayments(){
   t.querySelectorAll("[data-rc]").forEach(b => b.onclick = () => { const r = d.items[Number(b.dataset.rc)]; nkOpenReceipt(r.source, r.entityId); });
   t.querySelectorAll("[data-from]").forEach(a => a.onclick = e => { e.preventDefault(); const r = d.items[Number(a.dataset.from)], f = nkWhereFrom(r.entityId, r); if(f) f.open(); });
   const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w);
+  if(hidden && !d.hasMore) card.appendChild(elm("p", "help", `<span style="display:block;padding:10px 16px">${hidden} payment${hidden === 1 ? "" : "s"} on the ${esc(sideName(there))} side not shown. Payments that can't be tied to either side (transfers, fees, unmatched) show on both.</span>`));
   if(d.hasMore){
-    const more = elm("div", null, `<div style="padding:12px 16px;display:flex;gap:10px;align-items:center"><button class="btn sm" id="pyMore">Show more</button><span class="muted" style="font-size:12.5px">${d.items.length} of ${d.total}</span></div>`);
+    const more = elm("div", null, `<div style="padding:12px 16px;display:flex;gap:10px;align-items:center"><button class="btn sm" id="pyMore">Show more</button><span class="muted" style="font-size:12.5px">${d.items.length} of ${d.total}${hidden ? ` · ${hidden} on ${esc(sideName(there))} not shown` : ""}</span></div>`);
     card.appendChild(more);
     more.querySelector("#pyMore").onclick = async e => { e.target.disabled = true; try{ const r = await payCall("nk.activity", {source:src, q, page:(d.page || 1) + 1}, {noSave:true}); d.items = d.items.concat(r.items || []); d.hasMore = r.hasMore; d.page = (d.page || 1) + 1; render(); }catch(er){ toast(er.message); e.target.disabled = false; } };
   }
@@ -11852,7 +11883,8 @@ function nkOpenNickelInvoices(){
 function nkApplyDepositSheet(dep){
   const sh = $("#sheet"), list = nkOpenNickelInvoices(), avail = dep.unappliedC || dep.amountC;
   sh.innerHTML = `<div class="sheet-h"><div><h3>Apply a deposited check</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(dep.payer || "Check")} · ${usd(avail)} to apply</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b">${list.length ? `<label class="fld"><span>Invoice</span><select id="dpI">${list.map((x, i) => `<option value="${i}">${esc(x.label)} · ${usd(x.dueC)} due</option>`).join("")}</select></label>
+    <div class="sheet-b">${list.length ? `<label class="fld"><span>Invoice</span><select id="dpI">${(() => { const here = sideNow() === "pm" ? "pm" : "project", grp = (k, l) => { const xs = list.map((x, i) => [x, i]).filter(([x]) => x.kind === k); return xs.length ? `<optgroup label="${l}">${xs.map(([x, i]) => `<option value="${i}">${esc(x.label)} · ${usd(x.dueC)} due</option>`).join("")}</optgroup>` : ""; };
+        return here === "pm" ? grp("pm", "Owner invoices (rentals)") + grp("project", "Project invoices") : grp("project", "Project invoices") + grp("pm", "Owner invoices (rentals)"); })()}</select></label>
       <label class="fld"><span>Amount</span><input type="number" step="0.01" id="dpA"></label>
       <p class="help">No money moves: the check is already in your Nickel balance. Nickel marks the invoice paid, and QuickBooks follows. If the bank returns the check, Nickel reopens the invoice by itself.</p>`
       : `<div class="empty"><b>No open invoices in Nickel</b><p>Only invoices created through Nickel can take a deposited check.</p></div>`}</div>
@@ -12130,8 +12162,11 @@ function todayPm(v){
    SHELL — Projects | Property management switch, PM navigation,
    and the hooks that let owners, receipts and search span both sides.
    ===================================================================== */
-const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","money"]);
-const PM_VIEWS = new Set(["pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
+function sideNow(){ return S.ui && S.ui.mode === "pm" ? "pm" : "projects"; }
+const sideName = k => k === "pm" ? "Property management" : "Projects";
+/* Shared pages show only the side you're on (Projects or Property management); PM_VIEWS are rentals-only. */
+const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","unpaid","activity"]);
+const PM_VIEWS = new Set(["money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
   S.ui.mode = mode;
@@ -12161,9 +12196,8 @@ function navMk(n, cur){
 const navBadge = (t, kind, title) => t === "" || t == null || t === 0 ? null : `<i class="badge${kind === "alert" ? " alert" : ""}"${kind === "gold" ? ' style="color:var(--gold)"' : kind === "goldfill" ? ' style="background:var(--gold);color:#fff"' : ""}${title ? ` title="${esc(title)}"` : ""}>${t}</i>`;
 function navMoney(n, mk){
   n.appendChild(elm("div","nav-head","Money"));
-  const fb = typeof finNavBadge === "function" ? finNavBadge() : null;
-  mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1");
-  { const u = unpaidAll(), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
+  if(S.ui.mode === "pm"){ const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
+  { const u = unpaidAll(sideNow()), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
   if(S.ui.mode === "pm"){
     const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
     mk("pmBills", "Bills", "receipt", navBadge(nOpen));
@@ -12180,7 +12214,7 @@ function navPeople(n, mk){
   n.appendChild(elm("div","nav-head","People"));
   mk("owners", "Owners", "user", navBadge((S.owners || []).filter(ownerLabel).length), () => { S.ui.ownerId = null; go("owners"); });
   if(S.ui.mode === "pm") mk("pmVendors", "Vendors", "user");
-  const nIn = inboxCount();
+  const nIn = inboxCount(sideNow());
   mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (typeof inboxConn === "function" && !inboxConn() ? navBadge("set up", "gold") : null), () => { go("inbox"); inboxRefresh(); });
   if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
   mk("activity", "Activity log", "list");
@@ -13976,7 +14010,7 @@ function finExceptions0(){
   });
   // Nickel payments that failed or came back (not owner payouts — those are above)
   const since = Date.now() - 30 * 864e5;
-  finLedger().filter(r => (r._st === "failed" || r._st === "returned") && Date.parse(r.at) > since && !r.owner).forEach(r =>
+  finLedger().filter(r => (r._st === "failed" || r._st === "returned") && Date.parse(r.at) > since && !r.owner && nkSideOf(r) !== "projects").forEach(r =>
     add("warn", "nkf|" + r.id, `${finSrc(r)} ${r._st} · ${r.who || "—"}`, `${usd(Math.abs(r.amountC))}${r.ref ? " · " + r.ref : ""} on ${fdateS(finDay(r.at))}.`, () => finTxnSheet(r.id), "Open"));
   // transfers that haven't shown up on both sides
   finState().transfers.forEach(t => { const st = finTransferState(t), age = (Date.now() - Date.parse(t.date || t.createdAt || 0)) / 864e5;
@@ -14012,7 +14046,7 @@ function finAckSheet(x){
    THE MONEY PAGE
    ==================================================================== */
 function pgMoney(){
-  $("#pgCrumb").textContent = S.ui.mode === "pm" ? "Property management" : "Projects"; $("#pgTitle").textContent = "Money";
+  $("#pgCrumb").textContent = "Property management"; $("#pgTitle").textContent = "Cash & payouts";
   const at = finLedgerAt(), ago = t => { if(!t) return "—"; const mn = Math.round((Date.now() - Date.parse(t)) / 60000); return mn < 2 ? "just now" : mn < 60 ? mn + " min ago" : mn < 1440 ? Math.round(mn / 60) + " h ago" : fdateS(String(t).slice(0, 10)); };
   $("#pgSub").innerHTML = `<span class="mn-src"><i class="${at && Date.now() - Date.parse(at) < 2 * 3600e3 ? "ok" : "old"}"></i>Nickel ${esc(ago(at))}</span><span class="mn-src"><i class="${S.md && Date.now() - Date.parse(S.md.syncedAt) < 2 * 3600e3 ? "ok" : "old"}"></i>MagicDoor ${esc(ago(S.md && S.md.syncedAt))}</span><span class="mn-src"><i class="${S.qbo && Date.now() - Date.parse(S.qbo.syncedAt) < 2 * 3600e3 ? "ok" : "old"}"></i>QuickBooks ${esc(ago(S.qbo && S.qbo.syncedAt))}</span>`;
   const repM = () => S.ui.mnMonth && /^\d{4}-\d{2}$/.test(S.ui.mnMonth) ? S.ui.mnMonth : pmCurrentMonth();
@@ -14487,7 +14521,7 @@ if(typeof cmdItems === "function"){
   const finCmd0 = cmdItems;
   cmdItems = function(q){
     const out = finCmd0.apply(this, arguments), qq = String(q || "").trim();
-    if(!qq || qq.length < 2) { out.unshift({sec:"Go to", ic:"card", main:"Money", sub:"payouts, ledger, holds, transfers", amt:"", run:() => go("money")}); return out; }
+    if(!qq || qq.length < 2) { if(S.ui.mode === "pm") out.unshift({sec:"Go to", ic:"card", main:"Cash & payouts", sub:"payouts, ledger, holds, transfers", amt:"", run:() => go("money")}); return out; }
     const extra = [], ix = finRefIndex(), low = qq.toLowerCase();
     finSearch(qq).slice(0, 8).forEach(r => { const ab = finAbout(r, ix);
       extra.push({sec:"Money — Nickel", ic:"card", main:`${r.who || finSrc(r)}${r.ref ? " · " + r.ref : ""}`, sub:`${finSrc(r)} · ${FIN_ST[r._st] ? FIN_ST[r._st][0] : r._st} · ${fdateS(finDay(r.at))}${ab ? " · " + ab.label : ""}`, amt:(r._in ? "+" : "−") + usd(Math.abs(r.amountC)), run:() => { go("money"); setTimeout(() => finTxnSheet(r.id), 30); }}); });
@@ -14509,7 +14543,7 @@ if(typeof renderNav === "function"){
     const r = finNav0.apply(this, arguments);
     try{
       const n = $("#nav"), today = n && [...n.children].find(b => b.tagName === "BUTTON" && /Today/.test(b.textContent));
-      if(n && !n.querySelector("[data-fin]")){
+      if(n && S.ui.mode === "pm" && !n.querySelector("[data-fin]")){
         const ex = finExceptions().filter(x => !x.ack), urgent = ex.filter(x => x.tier === "critical").length, warn = ex.filter(x => x.tier === "action").length;
         const b = elm("button", null, `${icon("card")}<span>Money</span>${urgent ? `<i class="badge alert" title="Critical">${urgent}</i>` : warn ? `<i class="badge" style="color:var(--gold)" title="To act on">${warn}</i>` : ""}`);
         b.dataset.fin = "1"; b.setAttribute("aria-current", S.ui.view === "money"); b.onclick = () => go("money");
@@ -14597,19 +14631,16 @@ function finOwedCard(v){
   const o = finOwed(), c = elm("div", "pm-grid2 mn-owed");
   const li = (rows) => rows.length ? `<table class="pm-sum">${rows.join("")}</table>` : `<p class="muted" style="margin:0">Nothing</p>`;
   const top = (arr, f, n) => arr.slice().sort((a, b) => (b.dueC || b.c) - (a.dueC || a.c)).slice(0, n || 5).map(f);
-  c.innerHTML = `<div class="card"><div class="card-h"><h3>Owed to PHD</h3><b class="num" style="margin-left:auto">${usd(o.toPhdC)}</b></div><div class="card-b">
+  c.innerHTML = `<div class="card"><div class="card-h"><h3>Owed to PHD</h3><b class="num" style="margin-left:auto">${usd(o.ownerInv.reduce((s, x) => s + x.dueC, 0))}</b></div><div class="card-b">
       <div class="label" style="margin-bottom:6px">Owner invoices sent · ${usd(o.ownerInv.reduce((s, x) => s + x.dueC, 0))}${o.lateInvC ? ` · <span style="color:var(--red)">${usd(o.lateInvC)} past due</span>` : ""}</div>
       ${li(top(o.ownerInv, x => `<tr data-oi="${esc(x.v.id)}" style="cursor:pointer"><td>${esc(ownerLabel(ownerById(x.v.ownerId)) || "Owner")} · ${esc(x.v.no || "")}${x.late ? ` <span class="tag red">${x.late}d late</span>` : ""}</td><td class="r num">${usd(x.dueC)}</td></tr>`))}
-      <div class="label" style="margin:12px 0 6px">Renovation invoices sent, not paid · ${usd(o.projInv.reduce((s, x) => s + x.dueC, 0))}</div>
-      ${li(top(o.projInv, x => `<tr data-pj="${esc(x.p.id)}" style="cursor:pointer"><td>${esc(x.p.name)}</td><td class="r num">${usd(x.dueC)}</td></tr>`))}
-      ${o.readyC ? `<p class="help" style="margin:10px 0 0">${usd(o.readyC)} more is ready to invoice on ${o.projReady.length} project${o.projReady.length === 1 ? "" : "s"}: ${o.projReady.map(x => esc(x.p.name)).join(", ")}.</p>` : ""}</div></div>
+      <p class="help" style="margin:10px 0 0">Project invoices are on the Projects side, under Today and All properties.</p></div></div>
     <div class="card"><div class="card-h"><h3>PHD owes</h3><b class="num" style="margin-left:auto">${usd(o.phdOwesC + o.payingC)}</b></div><div class="card-b">
       <div class="label" style="margin-bottom:6px">Vendor bills to pay · ${usd(o.phdOwesC)}${o.lateBillsC ? ` · <span style="color:var(--red)">${usd(o.lateBillsC)} past due</span>` : ""}</div>
       ${li(top(o.bills, x => `<tr data-bl="${esc(x.b.id)}" style="cursor:pointer"><td>${esc(x.b.vendor || "Vendor")} · ${esc((pmProp(x.b.propertyId) || {}).name || "")}${x.late ? ` <span class="tag red">${x.late}d late</span>` : x.b.due ? ` <span class="muted">due ${esc(fdateS(x.b.due))}</span>` : ""}</td><td class="r num">${usd(x.c)}</td></tr>`, 6))}
       ${o.billsPaying.length ? `<div class="label" style="margin:12px 0 6px">Being paid in Nickel · ${usd(o.payingC)}</div>${li(top(o.billsPaying, x => `<tr><td>${esc(x.b.vendor || "Vendor")}</td><td class="r num">${usd(x.c)}</td></tr>`))}` : ""}
       <p class="help" style="margin:10px 0 0">Owner payouts aren't here — they're above, under Owed to owners.</p></div></div>`;
   c.querySelectorAll("[data-oi]").forEach(r => r.onclick = () => { S.ui.mode = "pm"; S.ui.invOpen = r.dataset.oi; go("pmInvoices"); });
-  c.querySelectorAll("[data-pj]").forEach(r => r.onclick = () => { S.ui.mode = "projects"; go("invoices", r.dataset.pj); });
   c.querySelectorAll("[data-bl]").forEach(r => r.onclick = () => { S.ui.mode = "pm"; go("pmBills"); });
   v.appendChild(c);
 }
@@ -16251,7 +16282,7 @@ function nkBillVendor(b){ const v = pmVendors().find(x => x.id === b.vendorId) |
 async function nkAutoPass(){
   if(NKA.busy || !nickelOn() || !(nkAutoOn("invoices") || nkAutoOn("bills"))) return;
   NKA.busy = true; NKA.at = Date.now();
-  const made = [], waiting = [], skipped = [];
+  const made = [], waiting = [], skipped = [], madeRef = new Map();
   try{
     const q = nkAutoQueue();
     if(!q.invoices.length && !q.bills.length && !q.txns.length) return;
@@ -16278,7 +16309,7 @@ async function nkAutoPass(){
         const r = await nkAutoRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:pjInvNumber(p, unit, inv), dueDate:due, requireQb:true, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)});
         if(r.ok || r.already){
           const pp = S.properties.find(y => y.id === p.id); if(pp){ snapshot(); const g = pp.register[pjKey(unit, inv)] = pp.register[pjKey(unit, inv)] || {}; if(!g.due) g.due = due; commit(); }
-          made.push(`${label} · ${usd(inv.totalC)}`);
+          made.push(`${label} · ${usd(inv.totalC)}`); madeRef.set(made[made.length - 1], {pid:p.id, side:"projects"});
         } else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
       }
     }
@@ -16288,14 +16319,14 @@ async function nkAutoPass(){
         if(!nkBillVendor(b)){ skipped.push(`${label}: ${b.vendor} isn't in Nickel yet`); continue; }
         if(!nkAutoTry("b:" + b.id)) continue;
         const r = await nkAutoRun("bill.create", {billId:b.id});
-        if(r.ok || r.already) made.push(`Bill: ${label}`); else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
+        if(r.ok || r.already){ made.push(`Bill: ${label}`); madeRef.set(made[made.length - 1], {bill:b.id, side:"pm"}); } else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
       }
       for(const {p, t} of q.txns){
         const label = `${t.vendor || "Vendor"} ${usd(cents(t.amount))} · ${p.name}`, v = nkExactVendor(t.vendor);
         if(!v){ skipped.push(`${label}: no single Nickel vendor matches “${t.vendor || ""}” — pick it on the expense`); continue; }
         if(!nkAutoTry("t:" + t.id)) continue;
         const r = await nkAutoRun("txn.bill", {propertyId:p.id, txnId:t.id, nickelVendorId:v.id, dueDate:(t.vendorDue && t.vendorDue.due) || todayISO()});
-        if(r.ok || r.already) made.push(`Bill: ${label}`); else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
+        if(r.ok || r.already){ made.push(`Bill: ${label}`); madeRef.set(made[made.length - 1], {pid:p.id, side:"projects"}); } else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);
       }
     }
   }catch(e){ skipped.push(String(e && e.message || e)); }
@@ -16304,7 +16335,7 @@ async function nkAutoPass(){
     if(made.length || waiting.length || skipped.length) NKA.last = {at:new Date().toISOString(), made, waiting, skipped};
     if(made.length){
       const F = typeof finState === "function" ? finState() : null;
-      if(F){ snapshot(); made.forEach(m => finLog("Created in Nickel automatically: " + m)); commit(); }
+      if(F){ snapshot(); made.forEach(m => finLog("Created in Nickel automatically: " + m, madeRef.get(m) || null)); commit(); }
       toast(`Nickel: ${made.length} created automatically — ${made.slice(0, 2).join("; ")}${made.length > 2 ? "…" : ""}`, true);
       try{ await payCall("nickel.refresh", {}, {noSave:true}); }catch(e){}
       render();
@@ -16657,27 +16688,47 @@ async function actTeamLoad(){
   ACTV.teamAt = Date.now();
   try{
     const {data} = await Cloud.sb.from("audit_log").select("at,actor,kind,doc_id,action").order("at", {ascending:false}).limit(300);
-    ACTV.team = (data || []).filter(r => r.actor).map((r, i) => ({id:"au" + i + r.at, at:r.at, by:r.actor, src:"team", what:`${r.action === "INSERT" ? "Added" : r.action === "DELETE" ? "Deleted" : "Changed"} ${typeof cloudLabel === "function" ? cloudLabel(r.kind, r.doc_id, null) : r.doc_id}`}));
+    ACTV.team = (data || []).filter(r => r.actor).map((r, i) => ({id:"au" + i + r.at, at:r.at, by:r.actor, src:"team", side:actDocSide(r.kind, r.doc_id), what:`${r.action === "INSERT" ? "Added" : r.action === "DELETE" ? "Deleted" : "Changed"} ${typeof cloudLabel === "function" ? cloudLabel(r.kind, r.doc_id, null) : r.doc_id}`}));
   }catch(e){ ACTV.team = []; }
   if(S.ui.view === "activity") render();
 }
+/* which side an entry belongs to: "pm", "projects", or "" (both — e.g. a dismissed receipt) */
+const ACT_PM_DOCS = new Set(["finance", "magicdoor", "mdlinks", "pmsettings", "recoveries", "stmtmail", "vendors", "alerts", "ledger"]);
+function actDocSide(kind, id){
+  if(/^pm_/.test(kind || "")) return "pm";
+  if(kind === "pj_property") return "projects";
+  if(kind === "shared"){ if(ACT_PM_DOCS.has(id)) return "pm"; if(id === "billmail") return "projects"; }
+  return "";
+}
+function actSide(e){
+  const r = e.ref || {};
+  if(e.side) return e.side;
+  if(r.side) return r.side;
+  if(r.bill) return "pm";
+  if(r.pid) return pmProp(r.pid) ? "pm" : S.properties.some(p => p.id === r.pid) ? "projects" : "";
+  if(["sync", "finance", "rentals"].includes(e.src)) return "pm";
+  if(e.src === "projects") return "projects";
+  return "";
+}
+const ACT_SRC_SIDE = {rentals:"pm", sync:"pm", finance:"pm", projects:"projects"};
 function pgActivity(){
-  $("#pgCrumb").textContent = "Console"; $("#pgTitle").textContent = "Activity log";
-  const F = S.ui.actF || "all", q = String(S.ui.actQ || "").toLowerCase();
+  const side = sideNow();
+  $("#pgCrumb").textContent = sideName(side); $("#pgTitle").textContent = "Activity log";
+  const F0 = S.ui.actF || "all", F = ACT_SRC_SIDE[F0] && ACT_SRC_SIDE[F0] !== side ? "all" : F0, q = String(S.ui.actQ || "").toLowerCase();
   if(F === "team") actTeamLoad();
-  const all = F === "team" ? (ACTV.team || []) : actEntries();
+  const all = (F === "team" ? (ACTV.team || []) : actEntries()).filter(e => { const s2 = actSide(e); return !s2 || s2 === side; });
   const list = all.filter(e => (F === "all" || F === "team" || e.src === F) && (!q || (e.what + " " + (e.by || "")).toLowerCase().includes(q)));
   $("#pgSub").textContent = `${list.length} entr${list.length === 1 ? "y" : "ies"}${F !== "all" ? " · " + ACT_SRC[F] : ""}`;
   actions([]);
   const v = $("#view");
   const bar = elm("div", "act-bar");
-  bar.innerHTML = `<div class="sc-seg act-seg">${[["all", "Everything"], ...Object.entries(ACT_SRC)].map(([k, l]) => `<button data-af="${k}" class="${F === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+  bar.innerHTML = `<div class="sc-seg act-seg">${[["all", "Everything"], ...Object.entries(ACT_SRC).filter(([k]) => !ACT_SRC_SIDE[k] || ACT_SRC_SIDE[k] === side)].map(([k, l]) => `<button data-af="${k}" class="${F === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
     <input type="search" class="act-q" placeholder="Search — vendor, property, amount, person" value="${esc(S.ui.actQ || "")}">`;
   v.appendChild(bar);
   bar.querySelectorAll("[data-af]").forEach(b => b.onclick = () => { S.ui.actF = b.dataset.af; persistUi(); render(); });
   const qi = bar.querySelector(".act-q"); qi.oninput = () => { S.ui.actQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = document.querySelector(".act-q"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
   if(F === "team" && ACTV.team == null){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
-  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here yet</b><p class="muted">Approvals, bills, payments, syncs and automatic actions show up here as they happen.</p></div>`)); return; }
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here yet</b><p class="muted">Approvals, bills, payments, syncs and automatic actions on the ${esc(sideName(side).toLowerCase())} side show up here as they happen.</p></div>`)); return; }
   const card = elm("div", "card act-card"); let day = "", html = "";
   list.slice(0, 600).forEach(e => {
     const d = String(e.at).slice(0, 10);
@@ -16699,15 +16750,15 @@ function pgActivity(){
    one list: what, where, how much, due when, how to pay (the note from
    the email), and whether it's already in Nickel.
    ===================================================================== */
-function unpaidAll(){
+function unpaidAll(side){
   const out = [], today = todayISO(), wk = PMCore.isoOf(PMCore.dayNum(today) + 7);
-  billList().forEach(b => {
+  if(side !== "projects") billList().forEach(b => {
     if(b.status !== "open" && b.status !== "paying") return;
     const P = pmProp(b.propertyId), due = b.due || "";
     out.push({kind:"bill", id:b.id, vendor:b.vendor || "Vendor", what:b.memo || b.category || "", where:P ? P.name : "—", side:"Rental", amountC:cents(b.amount), date:b.date || "", due, late:!!(due && due < today), soon:!!(due && due >= today && due <= wk),
       note:b.payNote || "", nickel:b.nickel && b.nickel.billId ? (b.status === "paying" ? "Payment on the way" : "In Nickel") : "", paying:b.status === "paying", file:b.receipt && b.receipt.url, b});
   });
-  S.properties.forEach(p => (p.transactions || []).forEach(t => {
+  if(side !== "pm") S.properties.forEach(p => (p.transactions || []).forEach(t => {
     if(!pjVendorOpen(t) || !(Number(t.amount) > 0)) return;
     const due = (t.vendorDue && t.vendorDue.due) || "";
     out.push({kind:"txn", id:t.id, pid:p.id, vendor:t.vendor || "Vendor", what:t.desc || "", where:p.name, side:"Project", amountC:cents(t.amount), date:t.date || "", due, late:!!(due && due < today), soon:!!(due && due >= today && due <= wk),
@@ -16722,13 +16773,13 @@ function unpaidMarkPaid(x){
   commit(); toast(`${x.vendor} marked paid`, true);
 }
 function pgUnpaid(){
-  const all = unpaidAll(), G = S.ui.upG || "due", F = S.ui.upF || "all";
-  const list = all.filter(x => F === "all" || (F === "late" && x.late) || (F === "rental" && x.side === "Rental") || (F === "project" && x.side === "Project") || (F === "nickel" && !x.nickel));
+  const pmSide = S.ui.mode === "pm", all = unpaidAll(sideNow()), G = S.ui.upG || "due", F = ["all", "late", "nickel"].includes(S.ui.upF) ? S.ui.upF : "all";
+  const list = all.filter(x => F === "all" || (F === "late" && x.late) || (F === "nickel" && !x.nickel));
   const tot = list.reduce((a, x) => a + x.amountC, 0), late = all.filter(x => x.late), soon = all.filter(x => x.soon);
-  $("#pgCrumb").textContent = "Money"; $("#pgTitle").textContent = "Unpaid bills";
+  $("#pgCrumb").textContent = sideName(sideNow()); $("#pgTitle").textContent = pmSide ? "Unpaid bills · rentals" : "Unpaid bills · projects";
   $("#pgSub").textContent = all.length ? `${all.length} to pay · ${usd(all.reduce((a, x) => a + x.amountC, 0))}` : "Every vendor is paid";
   const pmSel = list.filter(x => x.kind === "bill" && !x.paying).map(x => x.id);
-  actions([...(typeof nickelOn === "function" && nickelOn() && pmSel.length ? [[`Pay rental bills in Nickel (${pmSel.length})`, () => billPaySheet(pmSel), "primary"]] : [])]);
+  actions([...(pmSide && typeof nickelOn === "function" && nickelOn() && pmSel.length ? [[`Pay in Nickel (${pmSel.length})`, () => billPaySheet(pmSel), "primary"]] : [])]);
   const v = $("#view");
   const hero = elm("div", "card pf-hero");
   hero.innerHTML = [["all", "Still to pay", usd(all.reduce((a, x) => a + x.amountC, 0)), `${all.length} bill${all.length === 1 ? "" : "s"}`, ""],
@@ -16739,12 +16790,12 @@ function pgUnpaid(){
   v.appendChild(hero);
   hero.querySelectorAll("[data-uf2]").forEach(c => c.onclick = () => { S.ui.upF = c.dataset.uf2; persistUi(); render(); });
   const bar = elm("div", "act-bar");
-  bar.innerHTML = `<div class="sc-seg">${[["all", "All"], ["late", "Past due"], ["rental", "Rentals"], ["project", "Projects"], ["nickel", "Not in Nickel"]].map(([k, l]) => `<button data-uf="${k}" class="${F === k ? "on" : ""}">${l}</button>`).join("")}</div>
+  bar.innerHTML = `<div class="sc-seg">${[["all", "All"], ["late", "Past due"], ["nickel", "Not in Nickel"]].map(([k, l]) => `<button data-uf="${k}" class="${F === k ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="sc-seg">${[["due", "By due date"], ["vendor", "By vendor"]].map(([k, l]) => `<button data-ug="${k}" class="${G === k ? "on" : ""}">${l}</button>`).join("")}</div>`;
   v.appendChild(bar);
   bar.querySelectorAll("[data-uf]").forEach(b => b.onclick = () => { S.ui.upF = b.dataset.uf; persistUi(); render(); });
   bar.querySelectorAll("[data-ug]").forEach(b => b.onclick = () => { S.ui.upG = b.dataset.ug; persistUi(); render(); });
-  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>${all.length ? "Nothing in this filter" : "All caught up"}</b><p class="muted">Vendor invoices still to pay — from the receipt inbox, the Bills page, or a project expense marked “vendor still needs to be paid” — collect here.</p></div>`)); return; }
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>${all.length ? "Nothing in this filter" : "All caught up"}</b><p class="muted">${pmSide ? "Rental vendor bills still to pay — from the receipt inbox or the Bills page — collect here." : "Project expenses marked “vendor still needs to be paid” collect here."}</p></div>`)); return; }
   const groups = G === "vendor" ? [...list.reduce((m, x) => m.set(x.vendor, [...(m.get(x.vendor) || []), x]), new Map())] : [["", list]];
   const card = elm("div", "card");
   card.innerHTML = groups.map(([g, xs]) => `${g ? `<div class="up-g"><b>${esc(g)}</b><span>${xs.length} · ${usd(xs.reduce((a, x) => a + x.amountC, 0))}</span></div>` : ""}
@@ -16752,7 +16803,7 @@ function pgUnpaid(){
     ${xs.map((x, i) => `<tr data-ui="${esc(x.kind + ":" + x.id)}">
       <td><div class="item-t">${esc(x.vendor)}${x.file ? ` <a class="att" href="${esc(x.file)}" target="_blank" rel="noopener" data-nos title="Open the invoice">${icon("clip")}</a>` : ""}</div>${x.note ? `<div class="up-note">${icon("card")} ${esc(x.note)}</div>` : ""}</td>
       <td><div class="item-s" style="margin:0">${esc(x.what || "—")}</div><div class="item-s">${x.date ? "Billed " + esc(fdateS(x.date)) : ""}</div></td>
-      <td><span class="tag ${x.side === "Rental" ? "green" : "acc"}">${x.side}</span> <span class="item-s" style="display:inline">${esc(x.where)}</span></td>
+      <td><span class="item-s" style="display:inline">${esc(x.where)}</span></td>
       <td>${x.due ? `<span class="${x.late ? "up-late" : x.soon ? "up-soon" : ""}">${esc(fdateS(x.due))}${x.late ? " · late" : ""}</span>` : `<span class="muted">—</span>`}${x.nickel ? `<div class="item-s">${esc(x.nickel)}</div>` : ""}</td>
       <td class="r num"><b>${usd(x.amountC)}</b></td>
       <td class="act up-act"><button class="btn sm" data-uo>Open</button>${x.paying ? "" : `<button class="btn sm ghost" data-up>Mark paid</button>`}</td></tr>`).join("")}
@@ -17074,5 +17125,5 @@ function pgRecover(){
 // the Money menu shows it while anything is left to recover or owed
 {
   const nm0 = navMoney;
-  navMoney = function(n, mk){ nm0.apply(this, arguments); try{ const R = S.recov; if(R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){} };
+  navMoney = function(n, mk){ nm0.apply(this, arguments); try{ const R = S.recov; if(S.ui.mode === "pm" && R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){} };
 }
