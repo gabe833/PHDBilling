@@ -8754,34 +8754,62 @@ function pjTxnNickelBlock(p, t){
     const nv = nkVendorList().find(v => v.id === nb.vendorId) || {}, ready = (nv.payout || []).length > 0;
     const p4 = t.vendorDue && t.vendorDue.payFrom4, from = (p4 && (st && st.payFrom || []).find(x => String(x.label || "").includes(p4))) || (st && st.payFrom || []).find(x => x.id === (S.acct || {}).nickelPayFrom) || (st && st.payFrom || []).find(x => x.isDefault) || (st && st.payFrom || [])[0];
     box.innerHTML = `<div class="sectl">Nickel</div><p class="help" style="margin-top:0">Bill for ${usd(cents(t.amount))} to <b>${esc(nb.vendor || nv.name || "")}</b> is in Nickel${nb.qb ? " (and QuickBooks)" : ""}, not paid yet.${nb.failed ? ` The last try didn't go through: ${esc(nb.failed)}.` : ""}</p>
+      <div class="nk-vrow"><span class="muted">Wrong vendor, or deleted in Nickel?</span><button type="button" class="btn sm" data-nkchg>Change vendor</button><button type="button" class="btn sm ghost" data-nkrm>Remove from Nickel</button></div>
       ${!ready ? `<div class="pm-banner">${esc(nv.name || "The vendor")} has no bank account or check address in Nickel yet. Add it in Nickel, then pay here.</div>`
         : !canPay ? `<p class="help">Only people on the payments list can send money.</p>`
         : `<div class="f2"><label class="fld"><span>Pay from</span><select id="txFrom">${(st.payFrom || []).map(x => `<option value="${esc(x.id)}" ${from && x.id === from.id ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>
             <label class="fld"><span>Arrive by (blank = now)</span><input type="date" id="txArr"></label></div>
           <div class="bl-pay"><button class="btn primary" id="txPay">Pay ${usd(cents(t.amount))} · ${esc(nv.payout[0].label)}</button></div>`}`;
+    const unbill = async again => {
+      try{ const r = await nkRun("txn.unbill", {propertyId:p.id, txnId:t.id}, `Remove the ${nb.vendor || "vendor"} bill (${usd(cents(t.amount))}) from Nickel`);
+        if(r.ok || r.already){ toast(r.alreadyGone ? "It was already deleted in Nickel — cleared here" : "Removed from Nickel"); if(again){ S.ui.nkPickFor = t.id; } openSheet(t.id); } }catch(er){ toast(er.message); } };
+    box.querySelector("[data-nkchg]").onclick = () => unbill(true);
+    box.querySelector("[data-nkrm]").onclick = () => unbill(false);
     const b = box.querySelector("#txPay"); if(b) b.onclick = async () => {
       b.disabled = true;
       try{ const r = await nkRun("txn.pay", {propertyId:p.id, txnId:t.id, payFrom:box.querySelector("#txFrom").value, arrivalDate:box.querySelector("#txArr").value}, `Pay ${nv.name} ${usd(cents(t.amount))} · ${p.name}`);
         if(r.ok){ toast("Paid through Nickel — the receipt is on the transaction"); closeSheet(); render(); } else b.disabled = false; }catch(e){ toast(e.message); b.disabled = false; } };
     return box;
   }
-  const g = nkGuessVendor(t.vendor);
+  const g = nkExactVendor(t.vendor) || nkGuessVendor(t.vendor);
   box.innerHTML = `<div class="sectl">Pay through Nickel</div>
-    <p class="help" style="margin-top:0">Adds this expense to Nickel as a bill${(S.acct || {}).nkProjBillExp && nkQbOn() ? " (Nickel puts it in QuickBooks)" : ""}, then pays the vendor. Two confirmations in the Nickel window. Already paid another way? Skip this.</p>
-    <div class="f2"><label class="fld"><span>Vendor in Nickel</span><input type="text" id="txV" list="txVl" value="${esc(g ? g.name : "")}" placeholder="Start typing…"><datalist id="txVl">${nkVendorList().slice(0, 900).map(v => `<option value="${esc(v.name)}">`).join("")}</datalist></label>
-      <label class="fld"><span>Due</span><input type="date" id="txDue" value="${todayISO()}"></label></div>
-    <div class="help" id="txVinfo"></div>
-    <div class="bl-pay"><button class="btn" id="txBill">Add to Nickel</button></div>`;
-  const vi = box.querySelector("#txV"), info = box.querySelector("#txVinfo");
-  const pick = () => nkVendorList().find(v => v.name.toLowerCase() === vi.value.trim().toLowerCase());
-  const show = () => { const v = pick(); info.innerHTML = v ? ((v.payout || []).length ? `Pays by ${esc(v.payout[0].label)}` : `No bank details in Nickel yet — you can add the bill now and pay once they're in.`) : vi.value ? "Not a vendor in Nickel — pick one from the list (add new vendors on the Vendors page)." : ""; };
-  vi.oninput = show; show();
+    <p class="help" style="margin-top:0">Adds this expense to Nickel as a bill${(S.acct || {}).nkProjBillExp && nkQbOn() ? " (Nickel puts it in QuickBooks)" : ""}, then pays the vendor. Already paid another way? Skip this.</p>
+    <div class="f2"><div class="fld"><span>Vendor in Nickel</span><div class="nkv" id="txVbox"></div></div>
+      <label class="fld"><span>Due</span><input type="date" id="txDue" value="${(t.vendorDue && t.vendorDue.due) || todayISO()}"></label></div>
+    <div class="bl-pay"><button class="btn primary" id="txBill" disabled>Add to Nickel</button></div>`;
+  let chosen = null;
+  nkVendorPicker(box.querySelector("#txVbox"), g, v => { chosen = v; box.querySelector("#txBill").disabled = !v; }, S.ui.nkPickFor === t.id);
+  S.ui.nkPickFor = null;
   box.querySelector("#txBill").onclick = async e => {
-    const v = pick(); if(!v) return toast("Pick the vendor from Nickel's list");
+    const v = chosen; if(!v) return toast("Pick the vendor from Nickel's list");
     e.target.disabled = true;
     try{ const r = await nkRun("txn.bill", {propertyId:p.id, txnId:t.id, nickelVendorId:v.id, dueDate:box.querySelector("#txDue").value}, `Add the ${v.name} bill (${usd(cents(t.amount))}) to Nickel`);
-      if(r.ok){ toast("Bill added in Nickel"); openSheet(t.id); } else e.target.disabled = false; }catch(er){ toast(er.message); e.target.disabled = false; } };
+      if(r.ok){ nkRememberVendor(t.vendor, v); toast("Bill added in Nickel"); openSheet(t.id); } else e.target.disabled = false; }catch(er){ toast(er.message); e.target.disabled = false; } };
   return box;
+}
+/* ---------- picking the vendor in Nickel: every Nickel vendor, searchable, with how each one gets paid ---------- */
+function nkPayLabel(v){ const p = (v && v.payout) || []; return p.length ? p[0].label : ""; }
+function nkRememberVendor(name, v){ const k = vendorKey(name); if(k.length < 3 || !v) return; snapshot(); const a = S.acct = Object.assign({}, S.acct || {}); a.nkVendorPick = Object.assign({}, a.nkVendorPick || {}, {[k]:v.id}); commit(); }
+function nkVendorPicker(host, initial, onPick, openNow){
+  const all = nkVendorList().slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  let cur = initial || null;
+  host.innerHTML = `<div class="nkv-in"><input type="text" placeholder="Search ${all.length} Nickel vendors…" value="${esc(cur ? cur.name : "")}" autocomplete="off"><button type="button" class="nkv-clr" aria-label="Clear">×</button></div>
+    <div class="nkv-pay"></div><div class="nkv-list" hidden></div>`;
+  const inp = host.querySelector("input"), list = host.querySelector(".nkv-list"), pay = host.querySelector(".nkv-pay");
+  const tag = v => { const l = nkPayLabel(v); return l ? `<span class="nkv-ok">${esc(l)}</span>` : `<span class="nkv-no">No bank or check info</span>`; };
+  const showPay = () => { pay.innerHTML = cur ? (nkPayLabel(cur) ? `Pays by <b>${esc(nkPayLabel(cur))}</b>` : `<span class="nkv-no">No bank account or check address in Nickel yet</span> — you can add the bill now and pay once they're in.`) : ""; };
+  const draw = () => {
+    const q = vendorKey(inp.value), hits = (q ? all.filter(v => vendorKey(v.name).includes(q)) : all).slice(0, 80);
+    list.innerHTML = hits.length ? hits.map(v => `<button type="button" class="nkv-i${cur && cur.id === v.id ? " on" : ""}" data-id="${esc(v.id)}"><span>${esc(v.name)}</span>${tag(v)}</button>`).join("") + (q && hits.length === 80 ? `<div class="nkv-more">Keep typing to narrow it down</div>` : "")
+      : `<div class="nkv-more">No Nickel vendor matches “${esc(inp.value)}”. Add it on the Vendors page or in Nickel.</div>`;
+    list.hidden = false;
+  };
+  inp.onfocus = draw; inp.oninput = () => { cur = null; onPick(null); showPay(); draw(); };
+  list.onmousedown = ev => { const b = ev.target.closest("[data-id]"); if(!b) return; ev.preventDefault(); cur = all.find(v => v.id === b.dataset.id) || null; inp.value = cur ? cur.name : ""; list.hidden = true; showPay(); onPick(cur); };
+  inp.onblur = () => setTimeout(() => { list.hidden = true; }, 120);
+  host.querySelector(".nkv-clr").onclick = () => { cur = null; inp.value = ""; onPick(null); showPay(); inp.focus(); };
+  showPay(); onPick(cur);
+  if(openNow) setTimeout(() => { inp.focus(); inp.select(); }, 60);
 }
 /* ---------- has the vendor been paid? (project expenses) ----------
    A project expense can be marked "vendor not paid yet" (from the receipt inbox, or here). It stays on
@@ -16206,7 +16234,14 @@ function nkAutoQueue(){
   billList().forEach(b => { if(b.status === "open" && !(b.nickel && b.nickel.billId) && cents(b.amount) > 0 && !base["b:" + b.id]) out.bills.push(b); });
   return out;
 }
-const nkExactVendor = name => { const k = vendorKey(name); return k.length >= 3 ? nkVendorList().find(v => vendorKey(v.name) === k) || null : null; };
+const nkExactVendor = name => {
+  const k = vendorKey(name); if(k.length < 3) return null;
+  const L = nkVendorList(), pick = ((S.acct || {}).nkVendorPick || {})[k];
+  if(pick){ const v = L.find(x => x.id === pick); if(v) return v; }
+  // "Holmes Glass" vs "Tommy Holmes - Holmes Glass": more than one could be meant, so a person picks
+  const like = L.filter(v => { const n = vendorKey(v.name); return n === k || (n.length > 3 && (n.includes(k) || k.includes(n))); });
+  return like.length === 1 ? like[0] : null;
+};
 function nkBillVendor(b){ const v = pmVendors().find(x => x.id === b.vendorId) || pmVendors().find(x => vendorKey(x.name) === vendorKey(b.vendor)); return v && nkVendor(v.id).id ? v : null; }
 async function nkAutoPass(){
   if(NKA.busy || !nickelOn() || !(nkAutoOn("invoices") || nkAutoOn("bills"))) return;
@@ -16252,7 +16287,7 @@ async function nkAutoPass(){
       }
       for(const {p, t} of q.txns){
         const label = `${t.vendor || "Vendor"} ${usd(cents(t.amount))} · ${p.name}`, v = nkExactVendor(t.vendor);
-        if(!v){ skipped.push(`${label}: no vendor named “${t.vendor || ""}” in Nickel`); continue; }
+        if(!v){ skipped.push(`${label}: no single Nickel vendor matches “${t.vendor || ""}” — pick it on the expense`); continue; }
         if(!nkAutoTry("t:" + t.id)) continue;
         const r = await nkAutoRun("txn.bill", {propertyId:p.id, txnId:t.id, nickelVendorId:v.id, dueDate:(t.vendorDue && t.vendorDue.due) || todayISO()});
         if(r.ok || r.already) made.push(`Bill: ${label}`); else if(!r.busy) (r.approvalUrl ? waiting : skipped).push(`${label}: ${r.error || "didn't go through"}`);

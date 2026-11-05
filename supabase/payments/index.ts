@@ -699,6 +699,22 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
   }
 
   /* ---- project expenses: bill a vendor in Nickel and pay it, from the transaction ---- */
+  if (op === "txn.unbill") {   // take a project expense's bill out of Nickel (wrong vendor, or already deleted there)
+    const pid = S(body.propertyId), tid = S(body.txnId), p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
+    const t = (p.transactions || []).find((x: Obj) => x.id === tid); if (!t) throw new Error("Transaction not found");
+    const nb = t.nickelBill || {}; if (!nb.billId) return { ok: true, already: true };
+    if (nb.paymentId || (t.nickelPay && t.nickelPay.id && !t.nickelPay.dismissed)) throw new Error("It's already paid in Nickel, so it can't be removed");
+    let gone = false;
+    try { const cur = await read("get_bill", { billId: nb.billId }); const st = S(cur && (cur.status || cur.state)).toUpperCase(); gone = !cur || /DELET|CANCEL|VOID|ARCHIV/.test(st); }
+    catch { gone = true; }                                                // Nickel no longer has it
+    if (!gone) {
+      const r = await tool("delete_bill", { billId: nb.billId }, ask(`Delete the ${S(nb.vendor) || "vendor"} bill (${money(cents(t.amount))}) in Nickel`));
+      if (!r.ok) return refused(r, "Deleting the bill");
+    }
+    await patch("pj_property", pid, (x) => { const y = (x.transactions || []).find((z: Obj) => z.id === tid); if (y) { y.nickelBillOld = { ...(y.nickelBill || {}), removed: new Date().toISOString(), by, alreadyGone: gone }; delete y.nickelBill; } });
+    return { ok: true, alreadyGone: gone };
+  }
+
   if (op === "txn.bill" || op === "txn.pay") {
     const pid = S(body.propertyId), tid = S(body.txnId), p = await docData("pj_property", pid); if (!p) throw new Error("Project not found");
     const t = (p.transactions || []).find((x: Obj) => x.id === tid); if (!t) throw new Error("Transaction not found");
