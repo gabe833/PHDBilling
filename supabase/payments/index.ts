@@ -704,12 +704,17 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const t = (p.transactions || []).find((x: Obj) => x.id === tid); if (!t) throw new Error("Transaction not found");
     const nb = t.nickelBill || {}; if (!nb.billId) return { ok: true, already: true };
     if (nb.paymentId || (t.nickelPay && t.nickelPay.id && !t.nickelPay.dismissed)) throw new Error("It's already paid in Nickel, so it can't be removed");
-    let gone = false;
-    try { const cur = await read("get_bill", { billId: nb.billId }); const st = S(cur && (cur.status || cur.state)).toUpperCase(); gone = !cur || /DELET|CANCEL|VOID|ARCHIV/.test(st); }
-    catch { gone = true; }                                                // Nickel no longer has it
+    let gone = body.forget === true;                                      // "I already deleted it in Nickel": just clear it here
+    if (!gone) {
+      try { const cur = await read("get_bill", { billId: nb.billId }); const st = S(cur && (cur.status || cur.state)).toUpperCase(); gone = !cur || !!(cur.deletedAt || cur.isDeleted || cur.deleted) || /DELET|CANCEL|VOID|ARCHIV/.test(st); }
+      catch { gone = true; }                                              // Nickel no longer has it
+    }
     if (!gone) {
       const r = await tool("delete_bill", { billId: nb.billId }, ask(`Delete the ${S(nb.vendor) || "vendor"} bill (${money(cents(t.amount))}) in Nickel`));
-      if (!r.ok) return refused(r, "Deleting the bill");
+      if (!r.ok) {
+        if (/not ?found|no longer|already|deleted|does not exist|doesn't exist/i.test(S(r.error && r.error.message))) gone = true;   // it was deleted there already
+        else return refused(r, "Deleting the bill");
+      }
     }
     await patch("pj_property", pid, (x) => { const y = (x.transactions || []).find((z: Obj) => z.id === tid); if (y) { y.nickelBillOld = { ...(y.nickelBill || {}), removed: new Date().toISOString(), by, alreadyGone: gone }; delete y.nickelBill; } });
     return { ok: true, alreadyGone: gone };

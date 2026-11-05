@@ -8754,17 +8754,20 @@ function pjTxnNickelBlock(p, t){
     const nv = nkVendorList().find(v => v.id === nb.vendorId) || {}, ready = (nv.payout || []).length > 0;
     const p4 = t.vendorDue && t.vendorDue.payFrom4, from = (p4 && (st && st.payFrom || []).find(x => String(x.label || "").includes(p4))) || (st && st.payFrom || []).find(x => x.id === (S.acct || {}).nickelPayFrom) || (st && st.payFrom || []).find(x => x.isDefault) || (st && st.payFrom || [])[0];
     box.innerHTML = `<div class="sectl">Nickel</div><p class="help" style="margin-top:0">Bill for ${usd(cents(t.amount))} to <b>${esc(nb.vendor || nv.name || "")}</b> is in Nickel${nb.qb ? " (and QuickBooks)" : ""}, not paid yet.${nb.failed ? ` The last try didn't go through: ${esc(nb.failed)}.` : ""}</p>
-      <div class="nk-vrow"><span class="muted">Wrong vendor, or deleted in Nickel?</span><button type="button" class="btn sm" data-nkchg>Change vendor</button><button type="button" class="btn sm ghost" data-nkrm>Remove from Nickel</button></div>
+      <div class="nk-vrow"><button type="button" class="btn sm" data-nkchg>Change vendor</button><button type="button" class="btn sm ghost" data-nkrm>Delete the bill in Nickel</button><button type="button" class="btn sm ghost" data-nkgone>I already deleted it in Nickel</button></div>
       ${!ready ? `<div class="pm-banner">${esc(nv.name || "The vendor")} has no bank account or check address in Nickel yet. Add it in Nickel, then pay here.</div>`
         : !canPay ? `<p class="help">Only people on the payments list can send money.</p>`
         : `<div class="f2"><label class="fld"><span>Pay from</span><select id="txFrom">${(st.payFrom || []).map(x => `<option value="${esc(x.id)}" ${from && x.id === from.id ? "selected" : ""}>${esc(x.label)}</option>`).join("")}</select></label>
             <label class="fld"><span>Arrive by (blank = now)</span><input type="date" id="txArr"></label></div>
           <div class="bl-pay"><button class="btn primary" id="txPay">Pay ${usd(cents(t.amount))} · ${esc(nv.payout[0].label)}</button></div>`}`;
-    const unbill = async again => {
-      try{ const r = await nkRun("txn.unbill", {propertyId:p.id, txnId:t.id}, `Remove the ${nb.vendor || "vendor"} bill (${usd(cents(t.amount))}) from Nickel`);
+    const unbill = async (again, forget) => {
+      try{ const r = forget ? await payCall("nk.do", {op:"txn.unbill", runId:"run_" + uid() + uid(), propertyId:p.id, txnId:t.id, forget:true}, {raw:true})
+                            : await nkRun("txn.unbill", {propertyId:p.id, txnId:t.id}, `Remove the ${nb.vendor || "vendor"} bill (${usd(cents(t.amount))}) from Nickel`);
+        if(r && r.error && !r.ok) toast(r.error);
         if(r.ok || r.already){ toast(r.alreadyGone ? "It was already deleted in Nickel — cleared here" : "Removed from Nickel"); if(again){ S.ui.nkPickFor = t.id; } openSheet(t.id); } }catch(er){ toast(er.message); } };
     box.querySelector("[data-nkchg]").onclick = () => unbill(true);
     box.querySelector("[data-nkrm]").onclick = () => unbill(false);
+    box.querySelector("[data-nkgone]").onclick = () => unbill(true, true);
     const b = box.querySelector("#txPay"); if(b) b.onclick = async () => {
       b.disabled = true;
       try{ const r = await nkRun("txn.pay", {propertyId:p.id, txnId:t.id, payFrom:box.querySelector("#txFrom").value, arrivalDate:box.querySelector("#txArr").value}, `Pay ${nv.name} ${usd(cents(t.amount))} · ${p.name}`);
