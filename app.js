@@ -1292,6 +1292,9 @@ function pgSettings(){
       <label class="fld"><span>Invoice cap</span><input type="number" step="1" id="sTarget" value="${p.invoiceTarget}"></label>
       <label class="fld"><span>Project fee %</span><input type="number" step="0.01" id="sFee" value="${p.feePct}"></label>
     </div>
+    ${(() => { const rentC = pjMonthlyRentC(p), on = p.billEarly !== false;
+      return `<label class="fld"><span>Bill early</span><select id="sEarly"><option value="on" ${on ? "selected" : ""}>${rentC ? `When charges pass a month's rent (${usd(rentC)})` : "When charges pass a month's rent"}</option><option value="off" ${on ? "" : "selected"}>Only at the cap</option></select>
+        <span class="help">${rentC ? `Rent from ${pjRentals(p).map(x => esc(x.name)).join(", ")}. An invoice is ready as soon as it's over ${usd(rentC)} — no waiting to reach the ${usd0(cents(p.invoiceTarget))} cap.` : "Link the rental (Overview → Also a rental) so the console knows the monthly rent."}</span></label>`; })()}
     <label class="fld"><span>Fee line label</span><input type="text" id="sFeeLabel" value="${esc(p.feeLabel)}">
       <span class="help">Expense room in a full invoice: <b class="num">${usd(Math.round(COMP.targetC/(1+COMP.rate)))}</b> before the fee.</span></label>
   </div>`;
@@ -1405,6 +1408,7 @@ function pgSettings(){
     const bind = (sel,k,num) => $(sel).onchange = e => { snapshot(); P()[k] = num ? (Number(e.target.value)||0) : e.target.value; commit(); };
     bind("#sName","name"); bind("#sAddr","address");
     if($("#sOwnerLink")) $("#sOwnerLink").onclick = e => { e.preventDefault(); go("owner"); }; bind("#sTarget","invoiceTarget",true); bind("#sFee","feePct",true); bind("#sFeeLabel","feeLabel");
+    if($("#sEarly")) $("#sEarly").onchange = e => { snapshot(); if(e.target.value === "off") P().billEarly = false; else delete P().billEarly; commit(); };
     $("#sHold").onchange = e => { snapshot(); P().holdRules = e.target.value.split(",").map(x=>x.trim()).filter(Boolean); commit(); };
     $("#sHeldNote").onchange = e => { snapshot(); P().heldNote = e.target.value.trim(); commit(); };
     if($("#sHoldApply")) $("#sHoldApply").onclick = () => {
@@ -1475,8 +1479,8 @@ function newPropSheet(){
       <div class="f2" id="n_newown"><label class="fld"><span>Owner name</span><input type="text" id="n_owner" placeholder="Who gets billed"></label>
       <label class="fld"><span>Owner email</span><input type="email" id="n_email" placeholder="optional"></label></div>
       <div class="f2">
-        <label class="fld"><span>Invoice cap</span><input type="number" id="n_target" value="10000"></label>
-        <label class="fld"><span>Project fee %</span><input type="number" step="0.01" id="n_fee" value="15"></label>
+        <label class="fld"><span>Invoice cap</span><input type="number" id="n_target" value="5500"></label>
+        <label class="fld"><span>Project fee %</span><input type="number" step="0.01" id="n_fee" value="10"></label>
       </div>
       <label class="fld"><span>Units</span><input type="text" id="n_units" placeholder="Unit A, Unit B">
         <span class="help">Comma separated. Leave blank for a single-unit property — one invoice run for the whole building.</span></label>
@@ -1490,7 +1494,7 @@ function newPropSheet(){
     snapshot();
     const p = newProperty({
       name:$("#n_name").value.trim() || "New property", owner:$("#n_owner").value.trim(),
-      invoiceTarget:Number($("#n_target").value)||10000, feePct:Number($("#n_fee").value)||0, units
+      invoiceTarget:Number($("#n_target").value)||5500, feePct:Number($("#n_fee").value)||0, units
     });
     if(units.length === 2) p.defaultSplit = {[units[0].id]:50,[units[1].id]:50};
     { const pick = $("#n_pick") ? $("#n_pick").value : "__new";
@@ -7958,7 +7962,7 @@ function pgPmBills(){
         <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
-        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
         <td class="bl-o">${billOwnerTag(b)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-nos]")) return; billSheet(tr.dataset.b); });
   t.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => { sel[c.dataset.sel] = c.checked; render(); });
@@ -17321,5 +17325,77 @@ function stmtBulkSheet(pre){
       const b = elm("button", "btn", "Statements PDF"); b.onclick = () => stmtBulkSheet({props:ownerPmProps(o).map(p => p.id), months:owed});
       bar.insertBefore(b, bar.firstChild);
     }catch(e){ console.warn("owner statements pdf", e); }
+  };
+}
+
+/* ---------- cash flow: bill projects early, and move big rental bills to a project ----------
+   Rule of thumb: when a job costs more than the property brings in a month, don't take it out of rent —
+   bill the owner on a project invoice: $5,000 of charges + the 10% fee per invoice, and anything over a
+   month's rent goes out right away instead of waiting for the cap. */
+function pjRentals(pj){ return pj ? pmState().properties.filter(x => x.pjId === pj.id && !x.deleted) : []; }
+function pmRentC(pm){
+  if(!pm) return 0;
+  if(Number(pm.rent) > 0) return cents(pm.rent);
+  const x = typeof mdReady === "function" && mdReady() ? mdFor(pm.id) : null;
+  return x && x.lease && Number(x.lease.rent) > 0 ? cents(x.lease.rent) : 0;
+}
+function pjMonthlyRentC(pj){ return pjRentals(pj).reduce((a, x) => a + pmRentC(x), 0); }
+function billEarlyFor(pj){ try{ return pj && pj.billEarly !== false ? pjMonthlyRentC(pj) : 0; }catch(e){ return 0; } }
+// a rental bill bigger than a month's rent (and not already on a statement or a sent owner invoice)
+function billTooBig(b){
+  const pm = b && pmProp(b.propertyId); if(!pm || !pm.ownerId) return 0;
+  if(b.status === "void" || b.recover === "phd" || b.movedTo || (b.charged && b.charged.month)) return 0;
+  const inv = b.invoiceId && invById(b.invoiceId); if(inv && inv.status !== "draft") return 0;
+  const rentC = pmRentC(pm); return rentC && cents(b.amount) > rentC ? rentC : 0;
+}
+function billMoveToProject(id){
+  const b0 = billById(id); if(!b0) return;
+  const pm = pmProp(b0.propertyId); if(!pm) return toast("The bill has no property");
+  if(b0.charged && b0.charged.month) return toast(`Already charged on the ${monthLabel(b0.charged.month)} statement`);
+  const inv0 = b0.invoiceId && invById(b0.invoiceId); if(inv0 && inv0.status !== "draft") return toast("It's on a sent owner invoice — void that first");
+  let pj = pjOfPm(pm);
+  if(!confirm(`Move this ${usd(cents(b0.amount))} ${b0.vendor || ""} bill to ${pj ? "the project " + pj.name : "a new project for " + pm.name}?\n\nIt comes off ${pm.name}'s rent and is billed to the owner on project invoices ($5,000 + 10% each). ${b0.nickel && b0.nickel.billId ? "The vendor bill already in Nickel stays as it is and is paid from the project." : ""}`)) return;
+  snapshot();
+  if(!pj){
+    const tw = typeof linkFindTwin === "function" ? linkFindTwin(pm.name, pm.address).pj : null;
+    pj = tw || newProperty({name:pm.name, address:pm.address || "", ownerId:pm.ownerId || null, units:[{id:uid(), name:"Whole property"}]});
+    if(!tw) S.properties.push(pj);
+    pm.pjId = pj.id;
+  }
+  const b = billById(id), who = billWho(), now = new Date().toISOString();
+  const nkV = b.vendorId && typeof nkVendor === "function" ? nkVendor(b.vendorId) : {};
+  const t = {id:uid(), date:b.date || todayISO(), vendor:b.vendor || "", desc:b.memo || "Repair", receipt:(b.receipt && b.receipt.name) || "", link:(b.receipt && b.receipt.url) || "",
+    amount:Number(b.amount), scope:{type:"single", unit:pj.units[0].id, splits:{}}, status:"billable", applyFee:true, allowPartial:true, pin:null, party:"Owner", tags:[],
+    notes:`Moved from the rental bill on ${pm.name}${b.billNo ? " · vendor invoice " + b.billNo : ""}${b.payNote ? " · " + b.payNote : ""}`, reconciled:false, reconciledAt:"", fromBill:b.id};
+  if(b.status === "paid" || b.status === "paying"){
+    if(b.pay && b.pay.method === "Nickel" && b.pay.receipt && b.pay.receipt.id) t.nickelPay = {id:b.pay.receipt.id, url:b.pay.receipt.url || "", link:b.pay.receipt.link || "", date:b.pay.date || "", to:b.vendor || "", status:b.pay.receipt.delivery || "", bill:(b.nickel && b.nickel.ref) || ""};
+  } else t.vendorDue = {since:todayISO(), due:b.due || "", note:b.payNote || "", by:who};
+  if(b.nickel && b.nickel.billId) t.nickelBill = {billId:b.nickel.billId, vendorId:nkV.id || "", vendor:nkV.name || b.vendor || "", ref:b.nickel.ref || "", at:b.nickel.at || now, by:b.nickel.by || who, qb:!!b.nickel.qb, movedFrom:b.id};
+  pj.transactions.push(t);
+  if(b.invoiceId){ const v2 = invById(b.invoiceId); if(v2 && v2.status === "draft") v2.lines = v2.lines.filter(l => l.billId !== b.id); b.invoiceId = null; }
+  b.status = "void"; b.deduct = null; b.movedTo = {pjId:pj.id, txnId:t.id, at:now, by:who};
+  b.updatedAt = now; b.updatedBy = who;
+  pmState().bills[b.id] = b; billSyncDeduction(b);
+  actLog("rentals", `Moved the ${b.vendor} ${usd(cents(b.amount))} bill from ${pm.name}'s rent to the project ${pj.name}`, {pid:pj.id, side:"projects"});
+  commit(); closeSheet();
+  toast(`Moved to the project ${pj.name} — it's billed on project invoices now`, true);
+  pjOpen(pj);
+}
+{ const bs0 = billSheet;
+  billSheet = function(id, preset){
+    bs0.apply(this, arguments);
+    try{
+      const b = id && billById(id); if(!b) return;
+      const sh = $("#sheet"), foot = sh.querySelector(".sheet-f"), body = sh.querySelector(".sheet-b"); if(!foot || !body) return;
+      if(b.movedTo){ const pj = S.properties.find(p => p.id === b.movedTo.pjId);
+        body.insertAdjacentHTML("afterbegin", `<div class="pm-banner">Moved to the project <b>${esc(pj ? pj.name : "")}</b> on ${esc(fdateS(String(b.movedTo.at).slice(0, 10)))} — billed to the owner on project invoices, not taken from rent. ${pj ? `<a href="#" id="bsPj">Open the project</a>` : ""}</div>`);
+        const a = $("#bsPj"); if(a) a.onclick = e => { e.preventDefault(); closeSheet(); pjOpen(pj); }; return; }
+      if(b.status === "void" || (b.charged && b.charged.month)) return;
+      const big = billTooBig(b), pm = pmProp(b.propertyId);
+      if(big) body.insertAdjacentHTML("afterbegin", `<div class="pm-flags"><div class="warn">This bill (${usd(cents(b.amount))}) is more than ${esc(pm.name)}'s monthly rent (${usd(big)}). Bill the owner on a project invoice instead of taking it from rent — $5,000 + 10% now, the rest after.</div></div>`);
+      const btn = elm("button", "btn " + (big ? "primary" : "ghost"), "Move to project"); btn.id = "bsMove"; btn.type = "button";
+      btn.onclick = () => billMoveToProject(b.id);
+      foot.insertBefore(btn, foot.querySelector("span[style*='flex']") || foot.firstChild);
+    }catch(e){ console.warn("move to project", e); }
   };
 }

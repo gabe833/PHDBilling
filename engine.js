@@ -53,7 +53,7 @@ function newProperty(o){
   const u1 = uid();
   return Object.assign({
     id:uid(), name:"New property", owner:"", address:"",
-    invoiceTarget:10000, feePct:15, feeLabel:"Project Management Fee",
+    invoiceTarget:5500, feePct:10, feeLabel:"Project Management Fee",     // $5,000 of charges + the 10% fee per invoice
     units:[{id:u1, name:"Unit 1"}], defaultSplit:{},
     transactions:[], register:{}, scope:[], holdRules:[], heldNote:"", report:{}, tags:defaultTags(), archived:false,
     ownerInfo:{name:"",company:"",email:"",phone:"",address:"",city:"",state:"",zip:"",method:"",terms:"",notes:"",cc:""},
@@ -332,13 +332,17 @@ function compute(prop){
     });
     const invs = packUnit(shares, targetC, rate, frozenMap);
     closeoutMerge(prop, u.id, invs, rate, targetC);
+    /* Cash-flow rule: once what's waiting to be billed is more than the property brings in a month (its rent),
+       bill it now instead of waiting for the cap. billEarlyFor() lives in the app (it knows the rent). */
+    const earlyC = typeof billEarlyFor === "function" ? billEarlyFor(prop) : 0;
+    if(earlyC > 0) invs.forEach(inv => { if(!inv.frozen && !inv.full && !inv.final && inv.totalC > earlyC) inv.early = true; });
     shares.forEach(sh => { if(sh.lockedC) out.txn[sh.txnId].lockedC = (out.txn[sh.txnId].lockedC||0) + sh.lockedC; });
     invs.forEach(inv => {
       const reg = prop.register[u.id+"|"+inv.no] || {};
       inv.unitId = u.id; inv.unitName = u.name; inv.reg = reg;
       inv.locked = !!reg.frozen;
       inv.status = reg.paid ? "Paid" : reg.dateSent ? "Sent"
-                 : inv.final ? "Ready — final" : inv.full ? "Ready to send"
+                 : inv.final ? "Ready — final" : inv.full ? "Ready to send" : inv.early ? "Ready — over a month's rent"
                  : inv.closedShort ? "Ready — closed short" : "Draft";
       inv.lines.forEach(l => {
         l.txn = prop.transactions.find(x => x.id === l.txnId);
