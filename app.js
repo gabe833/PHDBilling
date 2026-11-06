@@ -17924,6 +17924,21 @@ async function poLoadPlan(ownerIds, force){
   try{ PO.plan = await payCall("nk.payoutPlan", {ownerIds}, {noSave:true}); PO.at = Date.now(); }catch(e){ PO.plan = {error:e.message}; }
   PO.loading = false; return PO.plan;
 }
+// who a property's payout goes to: a payee picked for that property, else the Nickel payee named after the property
+// ("Hayden Albert - 7620 Stargazer Dr"), else the owner's payee
+const poKey = t => String(t || "").split(",")[0].toUpperCase().replace(/#.*$/, "").replace(/[^A-Z0-9 ]/g, " ").trim().split(/\s+/).slice(0, 2).join("");
+function poPayeeFor(x){
+  const list = typeof nkVendorList === "function" ? nkVendorList() : [], a = S.acct || {};
+  const pick = (a.propVendor || {})[x.p.id], nv0 = pick && list.find(v => v.id === pick);
+  if(nv0) return {id:nv0.id, name:nv0.name, payout:nv0.payout || [], how:"property"};
+  const k = poKey(x.p.name), unit = (String(x.p.name).match(/#\s*([A-Za-z0-9]+)/) || [])[1];
+  if(k.length >= 5){
+    let hits = list.filter(v => String(v.name || "").toUpperCase().replace(/[^A-Z0-9]/g, "").includes(k));
+    if(hits.length > 1 && unit) { const h = hits.filter(v => new RegExp("(#|UNIT\\s*)" + unit + "\\b", "i").test(v.name)); if(h.length) hits = h; }
+    if(hits.length === 1) return {id:hits[0].id, name:hits[0].name, payout:hits[0].payout || [], how:"name"};
+  }
+  return x.o ? Object.assign(poPayee(x.o.id), {how:"owner"}) : {id:""};
+}
 function poPayee(oid){
   const a = S.acct || {}, pl = PO.plan && PO.plan.owners ? PO.plan.owners[oid] : null;
   const list = typeof nkVendorList === "function" ? nkVendorList() : [];
@@ -17936,13 +17951,25 @@ function pgPayouts(){
   const P2 = pmState(); if(!P2.properties.length) return pmEmpty();
   const m = S.ui.poMonth || pmCurrentMonth(), v = $("#view"), today = todayISO();
   const rows = poRows(m), sel = S.ui.poSel = S.ui.poSel || {};
-  const ready = rows.filter(x => x.k === "owed" && (x.via === "nickel" || S.ui.poMd)), mdRows = rows.filter(x => x.k === "owed" && x.via === "magicdoor");
+  let ready = rows.filter(x => x.k === "owed" && (x.via === "nickel" || S.ui.poMd)); const mdRows = rows.filter(x => x.k === "owed" && x.via === "magicdoor");
+  // splits: several properties' payouts pooled and shared between several payees
+  const splitLines = [];
+  poSplits().forEach(sp => {
+    const mine = rows.filter(x => sp.pids.includes(x.p.id)); if(!mine.length) return;
+    ready = ready.filter(x => !sp.pids.includes(x.p.id));
+    const owed = mine.filter(x => x.k === "owed"), waiting = mine.filter(x => x.k !== "owed");
+    if(!owed.length) return;
+    const totC = owed.reduce((a, x) => a + x.amountC, 0), shares = poSplitAmounts(totC, sp.to);
+    splitLines.push({split:sp, m, rows:owed, waiting, amountC:totC, shares, o:{id:"split:" + sp.id}, p:{id:"split:" + sp.id, name:owed.map(x => x.p.name).join(" · ")}});
+  });
   const held = rows.filter(x => x.k === "held"), done = rows.filter(x => x.k === "paid" || x.k === "sched");
-  const ownerIds = [...new Set(ready.map(x => x.o && x.o.id).filter(Boolean))];
+  const ownerIds = [...new Set(ready.filter(x => !x.split).map(x => x.o && x.o.id).filter(Boolean))];
   if(nickelOn() && ownerIds.length) poLoadPlan(ownerIds).then(pl => { if(pl && S.ui.view === "payouts" && !v._po){ v._po = 1; render(); } });
   const plan = PO.plan || {};
-  const payee = x => x.o ? poPayee(x.o.id) : {id:""};
-  const okToSend = x => { const pe = payee(x); return x.amountC > 0 && pe.id && (pe.payout || []).length; };
+  const payee = x => x.o ? poPayeeFor(x) : {id:""};
+  const okToSend = x => x.split ? x.amountC > 0 && !x.waiting.length && x.shares.every(sh => sh.amountC <= 0 || ((poNv(sh.vendorId) || {}).payout || []).length)
+    : (() => { const pe = payee(x); return x.amountC > 0 && pe.id && (pe.payout || []).length; })();
+  ready = ready.concat(splitLines).sort((a, b) => (a.split ? a.split.name : ownerLabel(a.o)).localeCompare(b.split ? b.split.name : ownerLabel(b.o)));
   ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = !!okToSend(x); });
   const picked = ready.filter(x => sel[x.m + "|" + x.p.id] && okToSend(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
   $("#pgCrumb").textContent = "Property management · Money"; $("#pgTitle").textContent = "Owner payouts";
@@ -17971,19 +17998,26 @@ function pgPayouts(){
 
   // the list
   const card = elm("div", "card");
-  const line = x => { const k = x.m + "|" + x.p.id, pe = payee(x), ok = okToSend(x), oneB = (pe.payout || [])[0];
+  const line = x => { if(x.split) return splitLine(x); const k = x.m + "|" + x.p.id, pe = payee(x), ok = okToSend(x), oneB = (pe.payout || [])[0];
     const who = !nickelOn() ? `<span class="muted">Nickel isn't connected</span>`
       : !PO.plan ? `<span class="muted">Checking Nickel…</span>`
-      : !pe.id ? `<span class="po-no">Not a payee in Nickel</span> <button class="btn sm" data-padd="${esc(x.o.id)}">Add to Nickel</button> <button class="btn sm ghost" data-ppick="${esc(x.o.id)}">Pick payee</button>`
-      : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · no bank on file</span> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.o.id)}">Pick payee</button>`
-      : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.o.id)}" class="muted" style="font-size:12px">change</a>`;
+      : !pe.id ? `<span class="po-no">Not a payee in Nickel</span> <button class="btn sm" data-padd="${esc(x.o.id)}">Add to Nickel</button> <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
+      : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · no bank on file</span> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
+      : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.p.id)}" class="muted" style="font-size:12px">change</a>`;
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
       <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""}</div></td>
       <td class="po-who">${who}</td><td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
+  const splitLine = x => { const k = x.m + "|" + x.p.id, ok = okToSend(x);
+    return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
+      <td><b>${esc(x.split.name)}</b> <span class="tag">split</span><div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
+      <td class="po-who">${x.shares.map(sh => { const nv = poNv(sh.vendorId), b = nv && (nv.payout || [])[0]; return `<div class="po-sh"><span>${esc(nv ? nv.name : sh.name || "Pick a payee")}${b ? ` · <span class="muted">${esc(b.label || b.type)}</span>` : nv ? ` · <span class="po-no">no bank on file</span>` : ""}</span><b class="num">${usd(sh.amountC)}</b></div>`; }).join("")}
+        <a href="#" data-psplit="${esc(x.split.id)}" class="muted" style="font-size:12px">edit split</a></td>
+      <td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
   card.innerHTML = `<div class="card-h"><h3>Ready to send · ${ready.length}</h3>
       ${ready.length ? `<a href="#" id="poAll" style="margin-left:auto;font-size:13px">${picked.length === ready.filter(okToSend).length ? "Clear" : "Select all"}</a>` : ""}</div>
     ${ready.length ? `<div class="tbl-wrap"><table class="tbl po-tbl"><thead><tr><th></th><th>Owner · property</th><th>Paid to</th><th class="r">Payout</th></tr></thead><tbody>${ready.map(line).join("")}</tbody></table></div>`
       : `<div class="empty"><b>Nothing waiting</b><p>${monthLabel(m)} payouts are all paid, scheduled or held.</p></div>`}
+    <p class="help" style="padding:8px 16px 0"><a href="#" id="poNewSplit">Split a payout between several bank accounts…</a></p>
     ${mdRows.length ? `<p class="help" style="padding:0 16px 12px">${mdRows.length} rental${mdRows.length === 1 ? " is" : "s are"} paid by MagicDoor and left out. <a href="#" id="poMd">${S.ui.poMd ? "Leave them out" : "Show them here too"}</a></p>` : ""}`;
   v.appendChild(card);
   const shut = (h, list, tagf) => { if(!list.length) return; const c = elm("div", "card"); c.innerHTML = `<div class="card-h"><h3>${h} · ${list.length}</h3></div><div class="tbl-wrap"><table class="tbl"><tbody>${list.map(x => `<tr class="off"><td><b>${esc(ownerLabel(x.o))}</b><div class="sub">${esc(x.p.name)}</div></td><td>${tagf(x)}</td><td class="r num">${usd(x.amountC)}</td></tr>`).join("")}</tbody></table></div>`; v.appendChild(c); };
@@ -17999,28 +18033,42 @@ function pgPayouts(){
 
   v.querySelectorAll("[data-po]").forEach(i => i.onchange = () => { sel[i.dataset.po] = i.checked; render(); });
   const all = $("#poAll"); if(all) all.onclick = e => { e.preventDefault(); const on = picked.length !== ready.filter(okToSend).length; ready.forEach(x => { if(okToSend(x)) sel[x.m + "|" + x.p.id] = on; }); render(); };
+  const ns = $("#poNewSplit"); if(ns) ns.onclick = e => { e.preventDefault(); poSplitSheet(null); };
   const md = $("#poMd"); if(md) md.onclick = e => { e.preventDefault(); S.ui.poMd = !S.ui.poMd; persistUi(); render(); };
   v.querySelectorAll("[data-pp]").forEach(a2 => a2.onclick = e => { e.preventDefault(); S.ui.pmPropId = a2.dataset.pp; S.ui.pmPropM = m; go("pmProperty"); });
   v.querySelectorAll("[data-padd]").forEach(b => b.onclick = async () => { const o = ownerById(b.dataset.padd); try{ const r = await nkRun("owner.payee", {ownerId:o.id}, `Add ${ownerLabel(o)} to Nickel as a payee`); if(r.ok){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {ownerVendor:Object.assign({}, (S.acct || {}).ownerVendor || {}, {[o.id]:r.nickelId})}); commit(); toast(`${ownerLabel(o)} added — email them the bank-details form next`, true); } }catch(e){ toast(e.message); } await poLoadPlan(ownerIds, true); render(); });
   v.querySelectorAll("[data-pask]").forEach(b => b.onclick = async () => { const o = ownerById(b.dataset.pask); try{ const r = await nkRun("owner.ask", {ownerId:o.id, nickelVendorId:poPayee(o.id).id}, `Email ${ownerLabel(o)} Nickel's bank-details form`); if(r.ok) toast(`Sent to ${o.email}`, true); }catch(e){ toast(e.message); } await poLoadPlan(ownerIds, true); render(); });
-  v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); poPickSheet(ownerById(b.dataset.ppick)); });
+  v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); const p = pmProp(b.dataset.ppick); if(p) poPickSheet(p); });
+  v.querySelectorAll("[data-psplit]").forEach(b => b.onclick = e => { e.preventDefault(); poSplitSheet(b.dataset.psplit); });
   $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : ""});
 }
-function poPickSheet(o){
-  const sh = $("#sheet");
-  sh.innerHTML = `<div class="sheet-h"><div><h3>Who in Nickel is ${esc(ownerLabel(o))}?</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Owner payouts for all of ${esc(ownerLabel(o))}'s rentals go to this payee</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b"><div id="poPick"></div></div>`;
-  $("#shClose").onclick = closeSheet; openPanel();
-  const cur = poPayee(o.id);
-  nkVendorPicker($("#poPick"), cur.id ? cur : null, nv => { if(!nv) return; snapshot(); S.acct = Object.assign({}, S.acct || {}, {ownerVendor:Object.assign({}, (S.acct || {}).ownerVendor || {}, {[o.id]:nv.id})}); commit(); closeSheet(); render(); toast(`${ownerLabel(o)} → ${nv.name}`); }, true);
+function poPickSheet(p){
+  const o = ownerById(p.ownerId), sh = $("#sheet"), others = o ? ownerPmProps(o).filter(x => x.id !== p.id) : [];
+  const cur = poPayeeFor({p, o}); let chosen = null;
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Who gets ${esc(p.name)}'s payout?</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(o ? ownerLabel(o) : "")} · pick the payee in Nickel</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><div id="poPick"></div>
+      ${others.length ? `<label class="switchbox" style="margin-top:12px"><input type="checkbox" id="poAllP"> Use it for all of ${esc(ownerLabel(o))}'s rentals (${others.length + 1})</label>` : ""}
+      <p class="help">Saved for this property; the next payouts go to the same payee.</p></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="poPickOk" disabled>Use this payee</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  nkVendorPicker($("#poPick"), cur.id ? cur : null, nv => { chosen = nv && nv.id !== cur.id ? nv : (nv && nv.id === cur.id ? null : null); const b = $("#poPickOk"); if(b) b.disabled = !chosen; }, true);
+  $("#poPickOk").onclick = () => {
+    if(!chosen) return;
+    const ids = [p.id].concat($("#poAllP") && $("#poAllP").checked ? others.map(x => x.id) : []);
+    snapshot(); const pv = Object.assign({}, (S.acct || {}).propVendor || {}); ids.forEach(id => pv[id] = chosen.id);
+    S.acct = Object.assign({}, S.acct || {}, {propVendor:pv}); commit(); closeSheet(); render(); toast(`${ids.length === 1 ? p.name : ids.length + " rentals"} → ${chosen.name}`, true);
+  };
 }
 async function poSend(list, o){
   const totC = list.reduce((a, x) => a + x.amountC, 0);
-  if(!confirm(`Send ${list.length} owner payout${list.length === 1 ? "" : "s"} — ${usd(totC)} — from ${o.acctLabel || "the account picked"}, ${o.when === "asap" ? "as soon as possible" : "arriving " + fdateS(o.date)}?\n\n${list.map(x => `· ${ownerLabel(x.o)} · ${x.p.name} — ${usd(x.amountC)}`).join("\n")}\n\nNickel will ask you to confirm once more for each batch of up to 25.`)) return;
+  if(!confirm(`Send ${list.length} owner payout${list.length === 1 ? "" : "s"} — ${usd(totC)} — from ${o.acctLabel || "the account picked"}, ${o.when === "asap" ? "as soon as possible" : "arriving " + fdateS(o.date)}?\n\n${list.map(x => x.split ? `· ${x.split.name} (${x.rows.length} properties) — ${usd(x.amountC)}: ${x.shares.filter(sh => sh.amountC > 0).map(sh => `${(poNv(sh.vendorId) || {}).name || sh.name} ${usd(sh.amountC)}`).join(", ")}` : `· ${ownerLabel(x.o)} · ${x.p.name} — ${usd(x.amountC)}`).join("\n")}\n\nNickel will ask you to confirm once more for each batch of up to 25.`)) return;
   try{
-    const r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:list.map(x => { const pe = poPayee(x.o.id); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; })}, `Send ${list.length} owner payout${list.length === 1 ? "" : "s"} · ${usd(totC)}`);
+    const r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:list.map(x => {
+      if(x.split) return {month:x.m, pids:x.rows.map(r => r.p.id), amounts:Object.fromEntries(x.rows.map(r => [r.p.id, r.amountC])), groupKey:x.split.key || x.split.name,
+        splits:x.shares.filter(sh => sh.amountC > 0).map(sh => ({vendorId:sh.vendorId, payoutMethodId:(((poNv(sh.vendorId) || {}).payout || [])[0] || {}).id, amountC:sh.amountC, key:sh.key || (poNv(sh.vendorId) || {}).name || ""}))};
+      const pe = poPayeeFor(x); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; })}, `Send ${list.length} owner payout${list.length === 1 ? "" : "s"} · ${usd(totC)}`);
     if(r && r.results){
-      const bad = r.results.filter(x => !x.ok && x.pid);
+      const bad = r.results.filter(x => !x.ok && x.pid && !String(x.pid).startsWith("split:"));
       actLog("finance", `Owner payouts sent from the console: ${r.sent} of ${list.length}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
       if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
       toast(`${r.sent} payout${r.sent === 1 ? "" : "s"} sent${bad.length ? ` · ${bad.length} didn't go: ${bad.slice(0, 3).map(x => `${(pmProp(x.pid) || {}).name}: ${x.why}`).join("; ")}` : ""}${r.oneByOne ? " · Nickel's plan sends them one at a time" : ""}`, true);
@@ -18045,4 +18093,62 @@ async function poSend(list, o){
     }catch(e){}
     return r;
   };
+}
+
+/* splits: S.acct.payoutSplits = [{id, name, key, pids:[...], to:[{vendorId, name, key, fixedC | pct}]}]
+   set amounts come off the top (in order), what's left is shared by the percentages; the last share takes the cents */
+const poSplits = () => ((S.acct || {}).payoutSplits || []).filter(x => x && x.pids && x.pids.length && x.to && x.to.length);
+const poNv = id => (typeof nkVendorList === "function" ? nkVendorList() : []).find(v => v.id === id) || null;
+const poFixed = t => t.fixedC != null && t.fixedC !== "";
+function poSplitAmounts(totC, to){
+  let left = totC; const out = to.map(t => ({vendorId:t.vendorId, name:t.name, key:t.key, amountC:0}));
+  to.forEach((t, i) => { if(poFixed(t)){ const a = Math.min(left, Math.max(0, Math.round(+t.fixedC))); out[i].amountC = a; left -= a; } });
+  const pi = to.map((t, i) => i).filter(i => !poFixed(to[i])), sum = pi.reduce((a, i) => a + (+to[i].pct || 0), 0);
+  let rest = left; pi.forEach((i, n) => { const a = n === pi.length - 1 ? rest : Math.round(left * (+to[i].pct || 0) / (sum || 1)); out[i].amountC = a; rest -= a; });
+  if(!pi.length && left > 0 && out.length) out[out.length - 1].amountC += left;     // all set amounts: the last one takes what's over
+  return out;
+}
+function poSplitSheet(id){
+  const all = poSplits(), cur = id ? all.find(x => x.id === id) : null;
+  const sp = cur ? JSON.parse(JSON.stringify(cur)) : {id:"sp_" + uid(), name:"", key:"", pids:[], to:[{vendorId:"", fixedC:null, pct:100}]};
+  const props = pmState().properties.filter(p => !p.deleted).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const payees = (typeof nkVendorList === "function" ? nkVendorList() : []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const sh = $("#sheet");
+  const draw = () => {
+    const ex = poSplitAmounts(1000000, sp.to);
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${cur ? "Edit split" : "Split a payout"}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Pool these properties' payouts each month and share them between bank accounts</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <div class="f2"><label class="fld"><span>Name</span><input type="text" id="spN" value="${esc(sp.name)}" placeholder="e.g. Reed &amp; Welt"></label>
+          <label class="fld"><span>Short code on the Nickel bills</span><input type="text" id="spK" maxlength="8" value="${esc(sp.key || "")}" placeholder="e.g. RAD"></label></div>
+        <div class="sectl">Properties</div>
+        <div class="bk-ps" style="margin-left:0">${props.map(p => `<label><input type="checkbox" data-spp="${p.id}" ${sp.pids.includes(p.id) ? "checked" : ""}> ${esc(p.name)}</label>`).join("")}</div>
+        <div class="sectl" style="margin-top:14px">Paid to</div>
+        ${sp.to.map((t, i) => `<div class="sp-r"><select data-spv="${i}"><option value="">Pick a payee in Nickel…</option>${payees.map(v => `<option value="${esc(v.id)}" ${v.id === t.vendorId ? "selected" : ""}>${esc(v.name)}${(v.payout || []).length ? " · " + esc(v.payout[0].label || v.payout[0].type) : " · no bank on file"}</option>`).join("")}</select>
+          <select data-spt="${i}"><option value="fixed" ${poFixed(t) ? "selected" : ""}>Set amount</option><option value="pct" ${poFixed(t) ? "" : "selected"}>% of what's left</option></select>
+          <input type="number" step="0.01" min="0" data-spa="${i}" value="${poFixed(t) ? (t.fixedC / 100).toFixed(2) : (t.pct ?? "")}" style="max-width:110px">
+          ${sp.to.length > 1 ? `<button class="btn sm ghost" data-spx="${i}">✕</button>` : ""}</div>`).join("")}
+        <button class="btn sm" id="spAdd" style="margin-top:6px">Add a bank account</button>
+        <p class="help">Set amounts come out first, then what's left is shared by the percentages. On a $10,000 month: ${ex.map(e => `${esc((poNv(e.vendorId) || {}).name || "—")} ${usd(e.amountC)}`).join(" · ")}.</p>
+      </div>
+      <div class="sheet-f">${cur ? `<button class="btn ghost" id="spDel">Remove split</button>` : ""}<span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="spSave">Save</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const keep = () => { sp.name = $("#spN").value.trim(); sp.key = $("#spK").value.trim().toUpperCase(); };
+    sh.querySelectorAll("[data-spp]").forEach(c => c.onchange = () => { keep(); c.checked ? sp.pids.push(c.dataset.spp) : sp.pids = sp.pids.filter(x => x !== c.dataset.spp); });
+    sh.querySelectorAll("[data-spv]").forEach(c => c.onchange = () => { keep(); const t = sp.to[+c.dataset.spv]; t.vendorId = c.value; t.name = (poNv(c.value) || {}).name || ""; draw(); });
+    sh.querySelectorAll("[data-spt]").forEach(c => c.onchange = () => { keep(); const t = sp.to[+c.dataset.spt]; if(c.value === "fixed"){ t.fixedC = 0; delete t.pct; } else { t.fixedC = null; t.pct = 0; } draw(); });
+    sh.querySelectorAll("[data-spa]").forEach(c => c.onchange = () => { keep(); const t = sp.to[+c.dataset.spa]; if(poFixed(t)) t.fixedC = cents(c.value); else t.pct = +c.value || 0; draw(); });
+    sh.querySelectorAll("[data-spx]").forEach(c => c.onclick = () => { keep(); sp.to.splice(+c.dataset.spx, 1); draw(); });
+    $("#spAdd").onclick = () => { keep(); sp.to.push({vendorId:"", fixedC:null, pct:0}); draw(); };
+    const dl = $("#spDel"); if(dl) dl.onclick = () => { if(!confirm("Remove this split? Each property goes back to paying its own owner.")) return; snapshot(); S.acct = Object.assign({}, S.acct || {}, {payoutSplits:poSplits().filter(x => x.id !== sp.id)}); commit(); closeSheet(); render(); };
+    $("#spSave").onclick = () => {
+      keep();
+      if(!sp.name) return toast("Name the split");
+      if(!sp.pids.length) return toast("Pick the properties");
+      if(sp.to.some(t => !t.vendorId)) return toast("Pick a payee for each bank account");
+      const others = poSplits().filter(x => x.id !== sp.id), clash = sp.pids.find(pid => others.some(x => x.pids.includes(pid)));
+      if(clash) return toast(`${(pmProp(clash) || {}).name} is already in another split`);
+      snapshot(); S.acct = Object.assign({}, S.acct || {}, {payoutSplits:others.concat([sp])}); commit(); closeSheet(); render(); toast("Split saved", true);
+    };
+  };
+  draw(); openPanel();
 }

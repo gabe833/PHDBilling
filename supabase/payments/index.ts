@@ -458,65 +458,90 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const arrival = /^\d{4}-\d{2}-\d{2}$/.test(S(body.arrivalDate)) && S(body.arrivalDate) > today() ? S(body.arrivalDate) : "";
     const fin = (await docData("shared", "finance")) || {}, holds: Obj[] = Array.isArray(fin.holds) ? fin.holds : [];
     const props: Obj[] = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data);
-    const nvs: Obj[] = map.nickelVendors || [], results: Obj[] = [], ready: Obj[] = [];
+    const nvs: Obj[] = map.nickelVendors || [], results: Obj[] = [], units: Obj[] = [];
+    // each item is one payout: one property to one payee, or a split — several properties' payouts pooled and
+    // shared between several payees (Susan, Stephen and their joint account), with the shares adding up exactly
     for (const it of ((body.items || []) as Obj[]).slice(0, 100)) {
-      const month = S(it.month), pid = S(it.pid), amt = Math.round(Number(it.amountC) || 0), key = `${month}|${pid}`;
-      const say = (why: string) => results.push({ month, pid, ok: false, why });
-      if (!/^\d{4}-\d{2}$/.test(month)) { say("No month"); continue; }
-      const p = props.find((x) => x && x.id === pid), row = await docData("pm_row", key);
-      if (!p || !row) { say("No month row for this property"); continue; }
-      if (row.paidOut) { say("Already paid"); continue; }
-      if (holds.some((h) => h && h.status === "active" && (h.propIds || []).includes(pid) && (!h.from || h.from <= month) && (!h.to || h.to >= month))) { say("On hold"); continue; }
-      if (!(amt > 0)) { say("Nothing to pay"); continue; }
-      if (amt > Math.round(Number(row.rentReceived || 0) * 100) + Math.round(Number(row.otherIncome || 0) * 100) + 100) { say("More than the month took in — check the month first"); continue; }
-      const nv = nvs.find((x) => x.id === S(it.vendorId)); if (!nv) { say("The owner isn't a payee in Nickel"); continue; }
-      const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(it.payoutMethodId)) || (nv.payout || [])[0];
-      if (!pm) { say("No bank account on file in Nickel"); continue; }
-      ready.push({ month, pid, amt, p, nv, pm, ref: `OWN-${month}-${alnum(p.name).slice(0, 16)}` });
+      const month = S(it.month), pids: string[] = (it.pids ? (it.pids as unknown[]).map(S) : [S(it.pid)]).filter(Boolean);
+      const amounts: Record<string, number> = {}; pids.forEach((pid) => { amounts[pid] = Math.round(Number(it.pids ? (it.amounts || {})[pid] : it.amountC) || 0); });
+      const say = (why: string) => pids.forEach((pid) => results.push({ month, pid, ok: false, why }));
+      if (!/^\d{4}-\d{2}$/.test(month) || !pids.length) { say("No month"); continue; }
+      let bad = "";
+      const ps: Obj[] = [];
+      for (const pid of pids) {
+        const p = props.find((x) => x && x.id === pid), row = await docData("pm_row", `${month}|${pid}`);
+        if (!p || !row) { bad = "No month row for " + (p ? p.name : "a property"); break; }
+        if (row.paidOut) { bad = `${p.name} is already paid`; break; }
+        if (holds.some((h) => h && h.status === "active" && (h.propIds || []).includes(pid) && (!h.from || h.from <= month) && (!h.to || h.to >= month))) { bad = `${p.name} is on hold`; break; }
+        if (!(amounts[pid] > 0)) { bad = `Nothing to pay for ${p.name}`; break; }
+        if (amounts[pid] > Math.round(Number(row.rentReceived || 0) * 100) + Math.round(Number(row.otherIncome || 0) * 100) + 100) { bad = `${p.name}: more than the month took in — check the month first`; break; }
+        ps.push(p);
+      }
+      if (bad) { say(bad); continue; }
+      const totC = pids.reduce((a, pid) => a + amounts[pid], 0);
+      const shares: Obj[] = it.splits ? (it.splits as Obj[]) : [{ vendorId: it.vendorId, payoutMethodId: it.payoutMethodId, amountC: totC, key: "" }];
+      if (shares.reduce((a, x) => a + Math.round(Number(x.amountC) || 0), 0) !== totC) { say("The split doesn't add up to the payout"); continue; }
+      const recips: Obj[] = [];
+      for (const x of shares) {
+        const amt = Math.round(Number(x.amountC) || 0); if (!(amt > 0)) continue;
+        const nv = nvs.find((y) => y.id === S(x.vendorId)); if (!nv) { bad = "A payee isn't in Nickel"; break; }
+        const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(x.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { bad = `${nv.name} has no bank account on file in Nickel`; break; }
+        const base = it.splits ? `OWN-${month}-${alnum(it.groupKey || ps[0].name).slice(0, 8)}` : `OWN-${month}-${alnum(ps[0].name).slice(0, 16)}`;
+        recips.push({ nv, pm, amt, ref: it.splits ? `${base}-${alnum(x.key || nv.name).slice(0, 10)}` : base });
+      }
+      if (bad) { say(bad); continue; }
+      units.push({ month, pids, amounts, ps, totC, recips });
     }
     // 1) the bills (reusing an unpaid one with the same number)
-    for (const x of ready) {
+    for (const u of units) for (const x of u.recips) {
       let found: Obj | null = null;
       try { found = items(await read("search_bills", { invoiceNumbers: [x.ref] })).find((b) => b.vendorId === x.nv.id) || null; } catch { /* make one */ }
-      if (found && S(found.paidStatus).toUpperCase() !== "UNPAID") { x.skip = "Nickel already shows this payout"; continue; }
-      if (found && cAmt(found) !== x.amt) { x.skip = `Nickel has ${x.ref} for a different amount — fix it there first`; continue; }
+      if (found && S(found.paidStatus).toUpperCase() !== "UNPAID") { u.skip = `Nickel already shows ${x.ref}`; break; }
+      if (found && cAmt(found) !== x.amt) { u.skip = `Nickel has ${x.ref} for a different amount — fix it there first`; break; }
       if (found) { x.billId = S(found.id); continue; }
-      const r = await tool("create_bill", { vendorId: x.nv.id, amountInCents: x.amt, dueDate: arrival || today(), invoiceNumber: x.ref, description: `Owner distribution · ${S(x.p.name)} · ${x.month}` }, autoYes);
-      if (!r.ok) { x.skip = r.error.message; continue; }
+      const r = await tool("create_bill", { vendorId: x.nv.id, amountInCents: x.amt, dueDate: arrival || today(), invoiceNumber: x.ref, description: `Owner distribution · ${u.ps.map((p: Obj) => S(p.name)).join(", ")} · ${u.month}`.slice(0, 200) }, autoYes);
+      if (!r.ok) { u.skip = r.error.message; break; }
       x.billId = newId(r.data, "billId");
       if (!x.billId) { try { const f = items(await read("search_bills", { invoiceNumbers: [x.ref] })).find((b) => b.vendorId === x.nv.id); x.billId = f ? S(f.id) : ""; } catch { /* below */ } }
-      if (!x.billId) x.skip = "Nickel added the bill but didn't say its id";
+      if (!x.billId) { u.skip = "Nickel added the bill but didn't say its id"; break; }
     }
-    const go = ready.filter((x) => !x.skip);
-    ready.filter((x) => x.skip).forEach((x) => results.push({ month: x.month, pid: x.pid, ok: false, why: x.skip }));
+    units.filter((u) => u.skip).forEach((u) => u.pids.forEach((pid: string) => results.push({ month: u.month, pid, ok: false, why: u.skip })));
+    const go: Obj[] = []; units.filter((u) => !u.skip).forEach((u) => u.recips.forEach((x: Obj) => { x.u = u; go.push(x); }));
     // 2) pay: batches of 25, one confirmation each (shown in the console); if batches aren't allowed, one at a time
     const pay = async (batch: Obj[], title: string) => {
       const rows = batch.map((x) => { const row: Obj = { billId: x.billId, vendorId: x.nv.id, merchantPaymentMethodId: from, vendorPayoutMethodId: x.pm.id }; if (arrival) row.arrivalDate = arrival; return row; });
       return await tool("pay_bill", { bills: rows }, ask(title));
     };
-    const settle = async (x: Obj, res: string) => {
+    const check = async (x: Obj, res: string) => {
       let st: Obj = {}; try { st = (await read("get_bill", { billId: x.billId })) || {}; } catch { /* keep going */ }
-      const moving = ((st.amountScheduled || {}).amountInCents || 0) + ((st.amountPaid || {}).amountInCents || 0) > 0 || Number(st.amountScheduled) > 0 || S(st.paidStatus).toUpperCase() !== "UNPAID";
-      const errM = (res.match(new RegExp(`"billId":"${x.billId}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
-      if (!moving) { results.push({ month: x.month, pid: x.pid, ok: false, why: errM || "Nickel didn't start this payment" }); return; }
-      await updateDoc("pm_row", `${x.month}|${x.pid}`, (r) => {
-        if (r.paidOut) return false;
-        r.paidOut = { date: arrival || today(), method: "Nickel", by: "Nickel", amount: x.amt / 100, nickelBillId: x.billId, ref: x.ref, pending: true, ...(arrival ? { scheduled: true, arrives: arrival } : {}), sentBy: by, sentAt: new Date().toISOString(), delivery: S(x.pm.type) };
-        r.updatedAt = new Date().toISOString(); r.updatedBy = by;
-      });
-      results.push({ month: x.month, pid: x.pid, ok: true, ref: x.ref, scheduled: !!arrival });
+      x.moving = ((st.amountScheduled || {}).amountInCents || 0) + ((st.amountPaid || {}).amountInCents || 0) > 0 || Number(st.amountScheduled) > 0 || S(st.paidStatus).toUpperCase() !== "UNPAID";
+      x.err = (res.match(new RegExp(`"billId":"${x.billId}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
     };
     let batchOff = false, stopped = "";
     for (let i = 0; i < go.length && !stopped; i += 25) {
       const batch = go.slice(i, i + 25), tot = batch.reduce((a, x) => a + x.amt, 0);
       let r = batchOff ? null : await pay(batch, `Send ${batch.length} owner payout${batch.length === 1 ? "" : "s"} · $${(tot / 100).toFixed(2)}`);
       if (r && !r.ok && batch.length > 1 && /plan|upgrade|batch|not (?:available|enabled|allowed)|subscription/i.test(S(r.error.message))) { batchOff = true; r = null; }
-      if (r && !r.ok) { const ref = refused(r, "The payouts"); stopped = S(ref.error); if (ref.approvalUrl) results.push({ ok: false, approvalUrl: ref.approvalUrl, why: stopped }); batch.forEach((x) => results.push({ month: x.month, pid: x.pid, ok: false, why: stopped })); break; }
-      if (r) { const res = JSON.stringify(r.data || {}); for (const x of batch) await settle(x, res); continue; }
+      if (r && !r.ok) { const ref = refused(r, "The payouts"); stopped = S(ref.error); if (ref.approvalUrl) results.push({ ok: false, approvalUrl: ref.approvalUrl, why: stopped }); batch.forEach((x) => { x.err = stopped; }); break; }
+      if (r) { const res = JSON.stringify(r.data || {}); for (const x of batch) await check(x, res); continue; }
       for (const x of batch) {   // one at a time (Nickel's plan doesn't allow batches)
-        const r1 = await pay([x], `Send ${S(x.p.name)} · $${(x.amt / 100).toFixed(2)}`);
-        if (!r1.ok) { const ref = refused(r1, "The payout"); results.push({ month: x.month, pid: x.pid, ok: false, why: S(ref.error) }); if (ref.declined || ref.timedOut) { stopped = S(ref.error); break; } continue; }
-        await settle(x, JSON.stringify(r1.data || {}));
+        const r1 = await pay([x], `Send ${S(x.nv.name)} · $${(x.amt / 100).toFixed(2)}`);
+        if (!r1.ok) { const ref = refused(r1, "The payout"); x.err = S(ref.error); if (ref.declined || ref.timedOut) { stopped = x.err; break; } continue; }
+        await check(x, JSON.stringify(r1.data || {}));
+      }
+    }
+    // 3) record each property's payout — only when every share of it is on its way
+    for (const u of units.filter((u) => !u.skip)) {
+      const notYet = u.recips.filter((x: Obj) => !x.moving);
+      if (notYet.length) { u.pids.forEach((pid: string) => results.push({ month: u.month, pid, ok: false, partial: notYet.length < u.recips.length, why: notYet.length < u.recips.length ? `Only part of the split went (${u.recips.filter((x: Obj) => x.moving).map((x: Obj) => x.nv.name).join(", ")}) — finish ${notYet.map((x: Obj) => x.nv.name).join(", ")} in Nickel` : (notYet[0].err || "Nickel didn't start this payment") })); continue; }
+      const group = u.recips.length > 1 || u.pids.length > 1 ? { ids: u.recips.map((x: Obj) => x.billId), refs: u.recips.map((x: Obj) => x.ref), props: u.ps.map((p: Obj) => S(p.name)), totalC: u.totC } : null;
+      for (const pid of u.pids) {
+        await updateDoc("pm_row", `${u.month}|${pid}`, (r) => {
+          if (r.paidOut) return false;
+          r.paidOut = { date: arrival || today(), method: "Nickel", by: "Nickel", amount: u.amounts[pid] / 100, nickelBillId: u.recips[0].billId, ref: u.recips[0].ref, pending: true, ...(group ? { group } : {}), ...(arrival ? { scheduled: true, arrives: arrival } : {}), sentBy: by, sentAt: new Date().toISOString() };
+          r.updatedAt = new Date().toISOString(); r.updatedBy = by;
+        });
+        results.push({ month: u.month, pid, ok: true, scheduled: !!arrival });
       }
     }
     return { ok: true, sent: results.filter((x) => x.ok).length, failed: results.filter((x) => !x.ok && x.pid).length, oneByOne: batchOff, results };
