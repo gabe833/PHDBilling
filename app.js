@@ -17480,9 +17480,19 @@ function rvMailGroups(){
     return Object.assign(x, {totalC, to:list.join(", "), cc:x.o ? stmtCcList(x.o).join(", ") : "", first:stmtFirstName(x.o) || String(x.owner || "").split(/\s+/)[0] || "there", props:x.items.map(it => it.prop), mail});
   });
 }
+const RV_AMT = /\$?\{amount\}|\$\[Amount\]|\[Amount\]/i, RV_PROP = /\{propert(y|ies)\}|\[Property Address\]/i;
 function rvMailFill(t, g){
-  const amt = usd(g.totalC), props = g.props.length === 1 ? g.props[0] : g.props.slice(0, -1).join(", ") + " and " + g.props[g.props.length - 1];
-  return String(t || "").replace(/\{first\}|\[Owner Name\]/gi, g.first).replace(/\$?\{amount\}|\$\[Amount\]|\[Amount\]/gi, amt).replace(/\{propert(y|ies)\}|\[Property Address\]/gi, props).replace(/\{owner\}/gi, ownerLabel(g.o) || g.owner || "");
+  const sub = (x, props, amtC) => String(x || "").replace(/\{first\}|\[Owner Name\]/gi, g.first).replace(new RegExp(RV_AMT.source, "gi"), usd(amtC))
+    .replace(new RegExp(RV_PROP.source, "gi"), props).replace(/\{total\}/gi, usd(g.totalC)).replace(/\{owner\}/gi, ownerLabel(g.o) || g.owner || "");
+  const all = g.props.length === 1 ? g.props[0] : g.props.slice(0, -1).join(", ") + " and " + g.props[g.props.length - 1];
+  if(g.items.length < 2) return sub(t, all, g.totalC);
+  // an owner with several properties: each paragraph that states an amount is written once per property, with that
+  // property's own amount, and the total follows
+  return String(t || "").split(/\n{2,}/).map(par => {
+    if(!RV_AMT.test(par)) return sub(par, all, g.totalC);
+    const each = g.items.map(it => RV_PROP.test(par) ? sub(par, it.prop, it.amountC) : `${it.prop}: ${sub(par, it.prop, it.amountC)}`);
+    return each.concat([`Total overpayment across both properties: ${usd(g.totalC)}.`.replace("both", g.items.length === 2 ? "both" : "all " + g.items.length)]).join("\n\n");
+  }).join("\n\n");
 }
 const rvMailHtml = text => String(text || "").split(/\n{2,}/).map(p => `<p style="margin:0 0 12px">${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
 function rvMailSheet(){
@@ -17503,7 +17513,7 @@ function rvMailSheet(){
         ${msg ? `<div class="pm-banner">${msg}</div>` : ""}
         <label class="fld"><span>Subject</span><input type="text" id="rmS" value="${esc(tpl.subject)}"></label>
         <label class="fld"><span>Email</span><textarea id="rmB" rows="14" style="font-family:inherit;line-height:1.45">${esc(tpl.body)}</textarea>
-          <span class="help"><b>{first}</b> becomes the owner's first name, <b>{amount}</b> their duplicate amount (both properties added up for an owner with two), <b>{properties}</b> the addresses. billing@'s Gmail signature goes under “Thank you,”.</span></label>
+          <span class="help"><b>{first}</b> becomes the owner's first name, <b>{amount}</b> their duplicate amount, <b>{properties}</b> the address — an owner with more than one property gets that paragraph once per property with its own amount, then the total. billing@'s Gmail signature goes under “Thank you,”.</span></label>
         <div class="sectl">Owners · ${G.length}</div>
         <div class="rm-list">${G.map(g => `<div class="rm-r${pick.has(g.key) ? " on" : ""}">
           <label class="rm-h"><input type="checkbox" data-rmk="${esc(g.key)}"${pick.has(g.key) ? " checked" : ""}${busy ? " disabled" : ""}>
