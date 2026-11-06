@@ -12475,7 +12475,15 @@ Cloud.flush = async function(){
       if(!s) inserts.push({key, data, json});
       else if(s.json !== json || s.deleted) updates.push({key, data, json, prev:s});
     }
-    for(const [key, s] of Cloud.synced) if(!docs.has(key) && !s.deleted && !SERVER_DOCS.has(key)) updates.push({key, del:true, prev:s});   // documents only the server writes are never touched here
+    for(const [key, s] of Cloud.synced) if(!docs.has(key) && !s.deleted && !SERVER_DOCS.has(key) && !key.startsWith("hr/")) updates.push({key, del:true, prev:s});
+    // safety net: a save that would delete a pile of records at once is almost always a page that hasn't finished loading
+    { const dels = updates.filter(u => u.del);
+      if(dels.length > 8){
+        const kinds = {}; for(const [key, s] of Cloud.synced) if(!s.deleted){ const k = key.split("/")[0]; kinds[k] = (kinds[k] || 0) + 1; }
+        const by = {}; dels.forEach(u => { const k = u.key.split("/")[0]; by[k] = (by[k] || 0) + 1; });
+        const wipe = Object.keys(by).filter(k => by[k] > 8 && by[k] >= kinds[k] * 0.5);     // half or more of a whole kind of record at once
+        if(wipe.length){ console.warn("Held back deleting", wipe.map(k => `${by[k]} ${k}`).join(", ")); for(let i = updates.length - 1; i >= 0; i--) if(updates[i].del && wipe.includes(updates[i].key.split("/")[0])) updates.splice(i, 1); }
+      } }   // documents only the server writes are never touched here
     for(let i = 0; i < inserts.length; i += 200){
       const chunk = inserts.slice(i, i + 200);
       const rows = chunk.map(op => { const [kind, ...rest] = op.key.split("/"); return {kind, id:rest.join("/"), data:op.data}; });
@@ -15556,7 +15564,7 @@ const ofPeople = () => ofList("person:").sort((a, b) => (b.active !== false) - (
 const ofPerson = id => { const d = ofAll()["person:" + id]; return d && !d.deleted ? Object.assign({_id:"person:" + id, id}, d) : null; };
 const ofEntries = () => ofList("entry:");
 const ofRuns = () => ofList("run:").sort((a, b) => String(b.payDate || b.periodEnd || "").localeCompare(String(a.payDate || a.periodEnd || "")));
-const ofSettings = () => ofAll().settings || {approvers:["peter@phdproperties.realestate"]};
+const ofSettings = () => ofAll().settings || {approvers:["peter@phdproperties.realestate", "gabe@phdproperties.realestate"]};
 const ofMe = () => (typeof Cloud !== "undefined" && Cloud.email) || "";
 const ofIsAdmin = () => !(typeof Cloud !== "undefined" && Cloud.ready) || OF.admin === true;      // working off a file: it's yours
 const ofCanApprove = () => ofIsAdmin() && (!(typeof Cloud !== "undefined" && Cloud.ready) || (ofSettings().approvers || []).map(x => String(x).toLowerCase()).includes(ofMe()));
@@ -15586,7 +15594,7 @@ function ofBalance(pid){
 if(typeof cloudDocs === "function"){
   const ofDocs0 = cloudDocs;
   // only once the database knows about Office records (office-setup.sql) — before that, saving them would fail every save
-  cloudDocs = function(){ const out = ofDocs0.apply(this, arguments); if(!(typeof Cloud !== "undefined" && Cloud.ready) || OF.admin != null && !OF.noDb) Object.entries(ofAll()).forEach(([k, v]) => { if(v) out.set("hr/" + k, v); }); return out; };
+  cloudDocs = function(){ const out = ofDocs0.apply(this, arguments); Object.entries(ofAll()).forEach(([k, v]) => { if(v) out.set("hr/" + k, v); }); return out; };
 }
 if(typeof cloudApply === "function"){
   const ofApply0 = cloudApply;
@@ -15803,7 +15811,7 @@ function ofEntrySheet(id, seed){
     const b4 = $("#oeAdm"); if(b4) b4.onclick = () => { const st = $("#oeSt").value, pd = $("#oePd").value; e.paidOn = st === "paid" ? (pd || e.paidOn || todayISO()) : pd || ""; if(!e.paidOn) delete e.paidOn;
       if(st !== cur.status){ e.reviewedBy = ofWho(); e.reviewedAt = new Date().toISOString(); } save(st); };
     const bb = $("#oeBack"); if(bb) bb.onclick = () => { const why = prompt("Why is it going back? (they'll see this)"); if(why == null) return; grab(); ofPut(id, Object.assign({}, e, {status:"rejected", reviewNote:why.trim(), reviewedBy:ofWho(), reviewedAt:new Date().toISOString()})); closeSheet(); render(); toast("Sent back"); };
-    const bd = $("#oeDel"); if(bd) bd.onclick = () => { if(!confirm("Delete this entry?")) return; ofPut(id, Object.assign({}, cur, {deleted:true})); delete ofAll()[id]; commit(); closeSheet(); render(); toast("Deleted"); };
+    const bd = $("#oeDel"); if(bd) bd.onclick = () => { if(!confirm("Delete this entry?")) return; ofPut(id, Object.assign({}, cur, {deleted:true})); commit(); closeSheet(); render(); toast("Deleted"); };
   };
   draw(); openPanel();
 }
@@ -15921,6 +15929,7 @@ function ofPersonSheet(id, seed){
       <div class="f2"><label class="fld"><span>Paid by</span><select id="opB">${[["none", "Per item (invoices, commissions)"], ["hourly", "Hourly"], ["salary", "Set amount each pay period"]].map(([k, l]) => `<option value="${k}" ${p.pay.basis === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <label class="fld" id="opAmtF"><span id="opAmtL"></span><input type="number" step="0.01" min="0" id="opAmt"></label></div>
       <label class="fld" id="opPerF"><span>Pay period</span><select id="opPer">${["weekly", "bi-weekly", "twice a month", "monthly"].map(x => `<option ${p.pay.period === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label class="fld"><span>When they owe PHD money</span><select id="opOw"><option value="">Take it out of their pay</option><option value="extras" ${p.owedFrom === "extras" ? "selected" : ""}>Work it off — take it only from extra work (lock changes, cleanings…); regular pay is paid in full</option></select></label>
       <label class="fld"><span>Notes</span><textarea id="opNo" rows="2">${esc(p.notes || "")}</textarea></label>
       <label class="switchbox"><input type="checkbox" id="opA" ${p.active !== false ? "checked" : ""}> Active</label>
       ${(() => { const em = String(p.email || "").toLowerCase(), st = (OF.staff || []).find(x => x.email === em), cloud = typeof Cloud !== "undefined" && Cloud.ready;
@@ -15940,7 +15949,7 @@ function ofPersonSheet(id, seed){
     const email = $("#opE").value.trim().toLowerCase(); if(email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("That email doesn't look right");
     const b = $("#opB").value, amt = +$("#opAmt").value || 0;
     const next = Object.assign({}, cur || {}, {type:"person", name, email, role:$("#opR").value, commissionPct:+$("#opC").value || 0, notes:$("#opNo").value.trim(), active:$("#opA").checked,
-      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}});
+      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}, owedFrom:$("#opOw").value || ""});
     delete next._id; delete next.id;
     const pid = id || (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "p") + "-" + uid().slice(0, 4);
     ofPut("person:" + pid, next);
@@ -15997,9 +16006,9 @@ function ofRunLine(p, run, keep){
   const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
   if(keep){ L.entries = keep.entries || []; L.timeoff = off.map(e => e._id); }
   L.grossC = (+L.baseC || 0) + L.entries.reduce((a, k) => a + (ofAll()[k] ? ofEntryC(ofAll()[k]) : 0), 0);
-  const owed = ofBalance(p.id).owedC;
-  if(!keep || keep.deductC == null) L.deductC = Math.min(owed, L.grossC);
-  L.deductC = Math.max(0, Math.min(+L.deductC || 0, L.grossC));
+  const owed = ofBalance(p.id).owedC, capC = p.owedFrom === "extras" ? Math.max(0, L.grossC - (+L.baseC || 0)) : L.grossC;
+  if(!keep || keep.deductC == null) L.deductC = Math.min(owed, capC);
+  L.deductC = Math.max(0, Math.min(+L.deductC || 0, capC));
   L.netC = L.grossC - L.deductC;
   L.owedC = owed;
   return L;
@@ -16062,7 +16071,7 @@ function ofRunSheet(id){
     const sd = $("#orSend"); if(sd) sd.onclick = () => { if(!r.lines.length) return toast("Nobody is on this run"); const d = store("submitted"); d.submittedAt = new Date().toISOString(); d.submittedBy = ofWho(); delete d.rejectNote; ofPut(r._id, d); closeSheet(); render(); toast(`Sent to ${(ofSettings().approvers || []).join(", ") || "the approver"}`); };
     const ok = $("#orOk"); if(ok) ok.onclick = () => { if(!confirm(`Approve ${usd(sum("netC"))} of pay for ${r.lines.map(l => l.name).join(", ")}?`)) return; const d = store("approved"); d.approvedBy = ofMe() || ofWho(); d.approvedAt = new Date().toISOString(); closeSheet(); render(); toast("Approved"); };
     const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
-    const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); delete ofAll()[r._id]; commit(); closeSheet(); render(); };
+    const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); commit(); closeSheet(); render(); };
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
     const ro = $("#orReopen"); if(ro) ro.onclick = () => { if(!confirm("Reopen this pay run as a draft? It will need approving again.")) return; const d = store("draft"); delete d.approvedBy; delete d.approvedAt; ofPut(r._id, d); closeSheet(); ofRunSheet(r._id); };
   };
