@@ -2462,3 +2462,18 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .fc-r > div:first-child{flex:1;min-width:0}
 .fc-r .muted{font-size:12.5px}
 .fc-n{display:flex;flex-direction:column;align-items:flex-end}
+
+/* How do I… */
+.hlp-l{display:flex;flex-direction:column}
+.hlp-r{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--line)}
+.hlp-r:first-child{border-top:0}
+.hlp-r > div{flex:1;min-width:0}
+.hlp-r .muted{font-size:12.5px;margin-top:2px}
+.hlp-r .btn{flex:none}
+/* PHD income: this month and last */
+.inc-two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.inc-m{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.inc-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.inc-g{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 12px}
+.inc-g > div:first-child{grid-column:1 / -1}
+@media (max-width:760px){.inc-two{grid-template-columns:1fr}.hlp-r{flex-wrap:wrap}}

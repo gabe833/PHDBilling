@@ -41,7 +41,8 @@ function render(){
     pmMd:     ["Rent", "MagicDoor", ""],
     pmProps:  ["Rent", "Properties", "Every rental PHD manages — rent, fee rule and owner"],
     pmDeposits:["Rent", "Security deposits", "What PHD is holding, for whom"],
-    pmIncome: ["Money", "PHD income", "PHD's management income, month by month"],
+    pmIncome: ["This month", "PHD income", "What PHD earns from management — this month so far, and every month before"],
+    help:     ["", "How do I…", "The things people look for most, one click away"],
     pmBills:  ["Money", "Bills", ""],
     pmInvoices:["Money", "Owner invoices", ""],
     pmStatements:["Money", "Owner statements", ""],
@@ -59,7 +60,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, help:pgHelp, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -7477,7 +7478,7 @@ function pgPmStatements(){
   $("#pgSub").textContent = `${monthLabel(m)} · ${meta.closed ? "month closed" : "month still open"} · sent from ${(stmtConn() || {}).mailbox || "pm@phdproperties.realestate"}`;
   const nReady = cands.filter(x => !x.why && !x.done).length;
   actions([["Print all", () => { const g = {}; cands.forEach(x => { const k = x.p.ownerId || "p:" + x.p.id; (g[k] = g[k] || []).push(x.p.id); }); printDoc(pmStatementHTML(m, null, Object.values(g))); }],
-           ["Download PDF…", () => stmtBulkSheet({months:[m]})],
+           ["Download PDFs", () => stmtBulkSheet({months:[m]})],
            [nReady ? `Email statements (${nReady})` : "Email statements", () => pmStatementMailSheet(m), "primary"]]);
   const v = $("#view");
 
@@ -12207,7 +12208,7 @@ function todayPm(v){
 function sideNow(){ return S.ui && S.ui.mode === "pm" ? "pm" : "projects"; }
 const sideName = k => k === "pm" ? "Property management" : "Projects";
 /* Shared pages show only the side you're on (Projects or Property management); PM_VIEWS are rentals-only. */
-const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","unpaid","activity"]);
+const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","unpaid","activity","help"]);
 const PM_VIEWS = new Set(["money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
@@ -13418,7 +13419,7 @@ renderNav = function(){
 })();
 
 /* ---------- page header: three buttons at most, the rest under More ---------- */
-const POL_MORE = /^(export|import|download|restore|duplicate|expand all|collapse all|report$|client report|paste|build (it )?from|read an order|all properties$|settings$|check nickel|refresh)/i;
+const POL_MORE = /^(export|import|download(?! ?pdfs?\b)|restore|duplicate|expand all|collapse all|report$|client report|paste|build (it )?from|read an order|all properties$|settings$|check nickel|refresh)/i;
 function polMore(){
   const box = $("#pgActions"); if(!box || box._pol) return;
   box._pol = true;
@@ -17734,4 +17735,149 @@ function pmOwedDocHTML(o){
   </style></head><body>
     <div class="top"><div><div class="brand">PHD PROPERTY MANAGEMENT</div><h1>Rental income owed</h1></div><div class="muted">Prepared ${esc(new Date().toLocaleDateString("en-US", {month:"long", day:"numeric", year:"numeric"}))}</div></div>
     ${h}</body></html>`;
+}
+
+/* ---------- finding things: the Property management menu by job, and a "How do I…" page ----------
+   The menu follows the questions people ask: what's happening this month, what do the owners get,
+   what do we owe vendors, where's the money — then the setup pages. */
+renderNavPM = function(){
+  const n = $("#nav"); n.innerHTML = "";
+  const V = S.ui.view, cur = k => V === k || (k === "pmProps" && V === "pmProperty") || (k === "payments" && V === "pmPaySetup");
+  const mk = navMk(n, cur), head = t => { n.appendChild(elm("div", "nav-gap")); n.appendChild(elm("div", "nav-head", t)); };
+  const P2 = pmState(), m = pmCurrentMonth(), al = P2.properties.length ? pmAlerts() : [];
+  const urgent = al.filter(a => a.level === "urgent").length, act = al.filter(a => a.level !== "info").length;
+  mk("today", "Today", "bolt");
+  mk("pmAlerts", "Action center", "check", act ? `<i class="badge alert"${urgent ? "" : ' style="background:var(--gold)"'}>${act}</i>` : null);
+  mk("help", "How do I…", "list");
+
+  head(`This month · ${monthShort(m)}`);
+  mk("pmMonth", "Month close", "list", `<i class="badge">${monthShort(m)}</i>`);
+  { const rm = rcMonth(), nIs = rcIssueCount(rm); mk("pmRecon", "Reconcile", "recon", nIs ? navBadge(nIs, "alert", `${nIs} don't match · ${monthLabel(rm)}`) : null); }
+  { let inc = null; try{ inc = pmMonthRoll(m).netC; }catch(e){} mk("pmIncome", "PHD income", "chart", inc ? `<i class="badge" title="Net PHD income so far in ${esc(monthLabel(m))}">${usd0(inc)}</i>` : null); }
+  mk("pmHome", "Rent overview", "home");
+
+  head("Owners");
+  let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
+    if(!mt.closed || String(mt.closedBy || "").startsWith("Imported") || !mt.closedAt || Date.now() - Date.parse(mt.closedAt) > 40 * 864e5) nSt = 0; }catch(e){}
+  mk("pmStatements", "Owner statements", "mail", navBadge(nSt, null, "Not sent yet"));
+  { const nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length; mk("pmInvoices", "Owner invoices", "file", navBadge(nInv)); }
+  mk("owners", "Owners", "user", navBadge((S.owners || []).filter(ownerLabel).length), () => { S.ui.ownerId = null; go("owners"); });
+  try{ const R = S.recov; if(R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){}
+  mk("pmDeposits", "Security deposits", "receipt");
+
+  head("Bills & vendors");
+  mk("pmBills", "Bills", "receipt", navBadge(billList().filter(b => b.status === "open").length));
+  { const u = unpaidAll("pm"), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
+  { const nIn = inboxCount("pm"); mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (typeof inboxConn === "function" && !inboxConn() ? navBadge("set up", "gold") : null), () => { go("inbox"); inboxRefresh(); }); }
+  mk("pmVendors", "Vendors", "user");
+
+  head("Money");
+  { const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
+  mk("payments", "Nickel", "sync", typeof payNavBadge === "function" ? payNavBadge() : null);
+
+  head("Setup");
+  mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
+  if(mdReady() || (typeof Cloud !== "undefined" && Cloud.ready)){
+    const xm = mdx(), nUn = xm ? xm.unmatchedProps.length : 0;
+    mk("pmMd", "MagicDoor", "sync", mdReady() ? (nUn ? navBadge(nUn, null, "Not linked") : `<i class="badge">${mdAgo(S.md.syncedAt).replace(" ago", "")}</i>`) : null);
+  }
+  if(typeof Cloud !== "undefined" && Cloud.ready) mk("team", "Team", "user", Cloud.online.length ? `<i class="badge" style="color:var(--green)">${Cloud.online.length + 1} on</i>` : null);
+  mk("activity", "Activity log", "list");
+};
+// the Projects menu gets the same "How do I…" under Today
+{ const pjNav0 = renderNav;
+  renderNav = function(){
+    const r = pjNav0.apply(this, arguments);
+    try{ if(S.ui.mode !== "pm"){ const n = $("#nav"), first = n && n.querySelector("button"); if(first && !n.querySelector('[data-help]')){ const b = elm("button", null, `${icon("list")}<span>How do I…</span>`); b.dataset.help = "1"; b.setAttribute("aria-current", S.ui.view === "help"); b.onclick = () => go("help"); first.after(b); } } }catch(e){}
+    return r;
+  };
+}
+
+/* the questions people ask, each with the button that does it */
+function helpTasks(){
+  const pm = S.ui.mode === "pm", m = pmCurrentMonth(), lm = PMCore.monthAdd(m, -1);
+  const open = (view, extra) => () => { if(extra) extra(); go(view); };
+  const PM = [
+    ["Owner statements", [
+      ["Download several statements as one PDF", "Pick any months and properties — one page per property per month.", "Download PDFs", () => { go("pmStatements"); setTimeout(() => stmtBulkSheet({months:[lm]}), 60); }],
+      ["Email this month's statements to owners", "Sent from pm@ with the PDF attached. Review each one first.", "Owner statements", open("pmStatements")],
+      ["One owner's statements, any months", "Owners → pick the owner → Statements PDF.", "Owners", open("owners", () => { S.ui.ownerId = null; })],
+      ["What we still owe an owner", "Owners → pick the owner. The \"Rental income owed\" box lists every payout not sent yet, unit by unit, with Download PDF.", "Owners", open("owners", () => { S.ui.ownerId = null; })]]],
+    ["Income", [
+      [`PHD income this month (${monthLabel(m)})`, "PM fees, admin fees, leasing and the rest — this month so far at the top, every month below.", "PHD income", open("pmIncome")],
+      ["Rent collected, property by property", "Month close lists every rental: rent due, received, fees and the owner payout.", "Month close", open("pmMonth")],
+      ["Check the month against MagicDoor and Nickel", "Reconcile marks anything that doesn't match.", "Reconcile", open("pmRecon")]]],
+    ["Bills & vendors", [
+      ["Add a bill", "Upload the vendor invoice or type it in — it's charged to the owner on the statement.", "Add a bill", () => { go("pmBills"); setTimeout(() => typeof billUploadSheet === "function" ? billUploadSheet() : billSheet(null), 60); }],
+      ["See every vendor we still need to pay", "Rental bills not paid yet, past due first.", "Unpaid bills", open("unpaid")],
+      ["A bill is bigger than a month's rent", "Open the bill → Move to project. The owner is billed on project invoices ($5,000 + 10%) instead.", "Bills", open("pmBills")],
+      ["Receipts that came in by email", "Clean ones are added for you; the rest wait here.", "Receipt inbox", () => { go("inbox"); inboxRefresh(); }]]],
+    ["Payouts & money", [
+      ["Owner payouts and cash on hand", "What's due to owners, holds, transfers.", "Cash & payouts", open("money")],
+      ["The October duplicate payouts", "Each owner's plan, the owner email, and what's owed to Payabli.", "Duplicate payouts", open("recover")],
+      ["Waive the PM fee to pay an owner back", "Open the rental → Fee credits → Add a fee credit.", "Properties", open("pmProps")],
+      ["Nickel payments and deposits", "Everything in and out of Nickel.", "Nickel", open("payments")]]],
+    ["Properties", [
+      ["Change a property's PM fee or owner", "Properties → open the rental → edit.", "Properties", open("pmProps")],
+      ["Find anything fast", "Press ⌘K (Ctrl+K on Windows) and type a property, owner, vendor or amount.", "Search", () => openCmd()]]]];
+  const PJ = [
+    ["Project billing", [
+      ["Send the next project invoice", "Open the property → Invoices. An invoice is ready at $5,000 + 10%, or sooner once it's more than a month's rent.", "All properties", open("portfolio")],
+      ["Add a project expense", "Open the property → Transactions → New transaction, or let the receipt inbox add it.", "All properties", open("portfolio")],
+      ["Start a project on a rental", "Open the rental (Property management) → Also a project.", "All properties", open("portfolio")]]],
+    ["Bills & receipts", [
+      ["Vendors we still need to pay", "Project expenses marked \"vendor still needs to be paid\".", "Unpaid bills", open("unpaid")],
+      ["Receipts that came in by email", "", "Receipt inbox", () => { go("inbox"); inboxRefresh(); }],
+      ["Check project expenses against QuickBooks", "", "Reconcile", open("reconcile")]]],
+    ["Owners", [
+      ["An owner's combined statement", "Owners → pick the owner → Combined statement.", "Owners", open("owners", () => { S.ui.ownerId = null; })],
+      ["Find anything fast", "Press ⌘K (Ctrl+K on Windows) and type a property, owner, vendor or amount.", "Search", () => openCmd()]]]];
+  return pm ? PM : PJ;
+}
+function pgHelp(){
+  const q = String(S.ui.helpQ || "").toLowerCase().trim(), v = $("#view");
+  $("#pgCrumb").textContent = sideName(sideNow());
+  const groups = helpTasks().map(([g, xs]) => [g, xs.filter(x => !q || (x[0] + " " + x[1] + " " + x[2]).toLowerCase().includes(q))]).filter(([, xs]) => xs.length);
+  const bar = elm("div", "sc-bar"); bar.innerHTML = `<div class="sc-q" style="flex:1;max-width:560px"><input type="text" id="hlpQ" style="width:100%" placeholder="What are you looking for? e.g. statements, income, unpaid…" value="${esc(S.ui.helpQ || "")}"></div>`;
+  v.appendChild(bar);
+  const qi = bar.querySelector("#hlpQ"); qi.oninput = () => { S.ui.helpQ = qi.value; const pos = qi.selectionStart; render(); const j = $("#hlpQ"); if(j){ j.focus(); j.setSelectionRange(pos, pos); } };
+  if(!groups.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing by that name</b><p>Try ⌘K — it searches every property, owner, vendor and amount.</p></div>`)); return; }
+  const fns = [];
+  groups.forEach(([g, xs]) => {
+    const c = elm("div", "card hlp");
+    c.innerHTML = `<div class="card-h"><h3>${esc(g)}</h3></div><div class="hlp-l">${xs.map(x => { fns.push(x[3]); return `<div class="hlp-r"><div><b>${esc(x[0])}</b>${x[1] ? `<div class="muted">${esc(x[1])}</div>` : ""}</div><button class="btn sm" data-hl="${fns.length - 1}">${esc(x[2])}</button></div>`; }).join("")}</div>`;
+    v.appendChild(c);
+  });
+  v.querySelectorAll("[data-hl]").forEach(b => b.onclick = () => fns[+b.dataset.hl]());
+}
+
+// PHD income: this month (and last) at the top, before the history
+{ const inc0 = pgPmIncome;
+  pgPmIncome = function(){
+    const r = inc0.apply(this, arguments);
+    try{
+      const v = $("#view"), m = pmCurrentMonth(), lm = PMCore.monthAdd(m, -1);
+      const tile = mm => { const R = pmMonthRoll(mm), other = PM_EXTRA.reduce((a, [k]) => a + cents((R.extras[k] || 0) / 100), 0);
+        return `<div class="inc-m"><div class="inc-h"><b>${esc(monthLabel(mm))}</b>${mm === m ? `<span class="tag gold">so far</span>` : (pmState().meta[mm] || {}).closed ? `<span class="tag green">closed</span>` : `<span class="tag">open</span>`}<a href="#" data-incm="${mm}" style="margin-left:auto">Open the month →</a></div>
+          <div class="inc-g"><div><div class="label">Net PHD income</div><div class="pf-v a">${usd(R.netC)}</div></div>
+            <div><div class="label">PM fees</div><div class="num">${usd(R.pmFeeC)}</div></div><div><div class="label">Admin fees</div><div class="num">${usd(R.adminC)}</div></div>
+            <div><div class="label">Leasing</div><div class="num">${usd(R.leasingC)}</div></div><div><div class="label">Other</div><div class="num">${usd(other)}</div></div>
+            <div><div class="label">Rent collected</div><div class="num">${usd(R.recv)}</div></div><div><div class="label">To owners</div><div class="num">${usd(R.payoutC)}</div></div></div></div>`; };
+      const c = elm("div", "card inc-now"); c.innerHTML = `<div class="card-h"><h3>This month and last</h3></div><div class="card-b inc-two">${tile(m)}${tile(lm)}</div>`;
+      v.insertBefore(c, v.firstChild);
+      c.querySelectorAll("[data-incm]").forEach(a => a.onclick = e => { e.preventDefault(); S.ui.pmMonth = a.dataset.incm; go("pmMonth"); });
+    }catch(e){ console.warn("income now", e); }
+    return r;
+  };
+}
+// ⌘K: the same tasks, searchable
+{ const ci0 = cmdItems;
+  cmdItems = function(q){
+    const out = ci0.apply(this, arguments);
+    try{
+      const qq = String(q || "").toLowerCase().trim(); if(qq.length < 3) return out;
+      helpTasks().forEach(([g, xs]) => xs.forEach(x => { if((x[0] + " " + x[1] + " " + x[2]).toLowerCase().includes(qq)) out.push({sec:"How do I…", ic:"list", main:x[0], sub:x[2], amt:"", run:x[3]}); }));
+    }catch(e){}
+    return out;
+  };
 }
