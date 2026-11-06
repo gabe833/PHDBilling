@@ -43,6 +43,7 @@ function render(){
     pmDeposits:["Rent", "Security deposits", "What PHD is holding, for whom"],
     pmIncome: ["This month", "PHD income", "What PHD earns from management — this month so far, and every month before"],
     help:     ["", "How do I…", "The things people look for most, one click away"],
+    payouts:  ["Money", "Owner payouts", "Send owner payouts through Nickel — pick who, when it lands, and send them together"],
     pmBills:  ["Money", "Bills", ""],
     pmInvoices:["Money", "Owner invoices", ""],
     pmStatements:["Money", "Owner statements", ""],
@@ -60,7 +61,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, help:pgHelp, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, help:pgHelp, payouts:pgPayouts, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -12209,7 +12210,7 @@ function sideNow(){ return S.ui && S.ui.mode === "pm" ? "pm" : "projects"; }
 const sideName = k => k === "pm" ? "Property management" : "Projects";
 /* Shared pages show only the side you're on (Projects or Property management); PM_VIEWS are rentals-only. */
 const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","unpaid","activity","help"]);
-const PM_VIEWS = new Set(["money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
+const PM_VIEWS = new Set(["payouts","money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
 const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
   S.ui.mode = mode;
@@ -13019,6 +13020,7 @@ function brandOf(el){
   if(/mail\.google|^mailto:/.test(h)) return "gmail";
   if(/nickel/.test(h)) return "nickel";
   if(/nickel/i.test(t) || /^create in quickbooks/i.test(t) || el.id === "vnAsk" || el.dataset.rc != null) return "nickel";
+  if(el.id === "poSend") return "nickel";
   if(/^(email|send|remind|save (as|\d+ as) gmail|save .*draft)/i.test(t)) return "gmail";
   if(/^pay(\b| \d)/i.test(t) && typeof nickelOn === "function" && nickelOn()) return "nickel";
   return null;
@@ -17781,6 +17783,7 @@ renderNavPM = function(){
   mk("pmVendors", "Vendors", "user");
 
   head("Money");
+  { let n = 0; try{ n = poRows(pmCurrentMonth()).filter(x => x.k === "owed" && x.via === "nickel").length; }catch(e){} mk("payouts", "Owner payouts", "card", n ? navBadge(n, "goldfill", "Ready to send") : null); }
   { const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
   mk("payments", "Nickel", "sync", typeof payNavBadge === "function" ? payNavBadge() : null);
 
@@ -17822,6 +17825,7 @@ function helpTasks(){
       ["A bill is bigger than a month's rent", "Open the bill → Move to project. The owner is billed on project invoices ($5,000 + 10%) instead.", "Bills", open("pmBills")],
       ["Receipts that came in by email", "Clean ones are added for you; the rest wait here.", "Receipt inbox", () => { go("inbox"); inboxRefresh(); }]]],
     ["Payouts & money", [
+      ["Send owner payouts", "Pick the owners, the day it lands (or as soon as possible) and the account — one Send for all of them.", "Owner payouts", open("payouts")],
       ["Owner payouts and cash on hand", "What's due to owners, holds, transfers.", "Cash & payouts", open("money")],
       ["The October duplicate payouts", "Each owner's plan, the owner email, and what's owed to Payabli.", "Duplicate payouts", open("recover")],
       ["Waive the PM fee to pay an owner back", "Open the rental → Fee credits → Add a fee credit.", "Properties", open("pmProps")],
@@ -17888,5 +17892,157 @@ function pgHelp(){
       helpTasks().forEach(([g, xs]) => xs.forEach(x => { if((x[0] + " " + x[1] + " " + x[2]).toLowerCase().includes(qq)) out.push({sec:"How do I…", ic:"list", main:x[0], sub:x[2], amt:"", run:x[3]}); }));
     }catch(e){}
     return out;
+  };
+}
+
+/* ---------- Owner payouts: send them from the console ----------
+   Every rental's payout for a month in one list: what's ready, what's held, what's paid. Pick who, when it
+   should land (as soon as possible, or on a date — Nickel times the withdrawal) and the account, then one Send.
+   The server makes one Nickel bill per property (OWN-<month>-<property>, the office's numbering) and pays them
+   in batches of 25 — Nickel's confirmation for each batch shows here. Properties MagicDoor pays are kept out
+   unless you switch them to Nickel. */
+const PO = {plan:null, loading:false, at:0};
+// how a rental's owner is paid: the property's setting, else what the income report said last
+function poVia(p){
+  if(p.payVia === "nickel" || p.payVia === "magicdoor") return p.payVia;
+  const rows = Object.values(pmState().rows).filter(r => r.propertyId === p.id && r.wbStatus).sort((a, b) => b.month.localeCompare(a.month));
+  const w = rows.length ? String(rows[0].wbStatus) : "";
+  return /^\s*MD\b/i.test(w) ? "magicdoor" : "nickel";
+}
+function poRows(m){
+  const out = [];
+  pmState().properties.filter(p => !p.deleted && p.ownerId).forEach(p => {
+    const row = pmRow(m, p.id); if(!row || row.deleted || row.detailOnly) return;
+    const s = pmPayoutState(p, m, row); if(s.k === "none") return;
+    out.push({p, m, row, k:s.k, s, amountC:s.c ? s.c.payoutC : 0, o:ownerById(p.ownerId), via:poVia(p)});
+  });
+  return out.sort((a, b) => ownerLabel(a.o).localeCompare(ownerLabel(b.o)) || a.p.name.localeCompare(b.p.name, undefined, {numeric:true}));
+}
+async function poLoadPlan(ownerIds, force){
+  if(PO.loading || (!force && PO.plan && Date.now() - PO.at < 120000 && ownerIds.every(id => PO.plan.owners && id in PO.plan.owners))) return PO.plan;
+  PO.loading = true;
+  try{ PO.plan = await payCall("nk.payoutPlan", {ownerIds}, {noSave:true}); PO.at = Date.now(); }catch(e){ PO.plan = {error:e.message}; }
+  PO.loading = false; return PO.plan;
+}
+function poPayee(oid){
+  const a = S.acct || {}, pl = PO.plan && PO.plan.owners ? PO.plan.owners[oid] : null;
+  const list = typeof nkVendorList === "function" ? nkVendorList() : [];
+  const pick = (a.ownerVendor || {})[oid];
+  const nv = (pick && list.find(v => v.id === pick)) || (pl && pl.id && (list.find(v => v.id === pl.id) || pl)) || null;
+  return nv ? {id:nv.id, name:nv.name, payout:nv.payout || [], asked:pl && pl.asked} : {id:"", asked:pl && pl.asked};
+}
+const poBusinessDays = (iso, n) => { let d = new Date(iso + "T12:00:00"), k = 0; while(k < n){ d.setDate(d.getDate() + 1); if(d.getDay() % 6) k++; } return d.toISOString().slice(0, 10); };
+function pgPayouts(){
+  const P2 = pmState(); if(!P2.properties.length) return pmEmpty();
+  const m = S.ui.poMonth || pmCurrentMonth(), v = $("#view"), today = todayISO();
+  const rows = poRows(m), sel = S.ui.poSel = S.ui.poSel || {};
+  const ready = rows.filter(x => x.k === "owed" && (x.via === "nickel" || S.ui.poMd)), mdRows = rows.filter(x => x.k === "owed" && x.via === "magicdoor");
+  const held = rows.filter(x => x.k === "held"), done = rows.filter(x => x.k === "paid" || x.k === "sched");
+  const ownerIds = [...new Set(ready.map(x => x.o && x.o.id).filter(Boolean))];
+  if(nickelOn() && ownerIds.length) poLoadPlan(ownerIds).then(pl => { if(pl && S.ui.view === "payouts" && !v._po){ v._po = 1; render(); } });
+  const plan = PO.plan || {};
+  const payee = x => x.o ? poPayee(x.o.id) : {id:""};
+  const okToSend = x => { const pe = payee(x); return x.amountC > 0 && pe.id && (pe.payout || []).length; };
+  ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = !!okToSend(x); });
+  const picked = ready.filter(x => sel[x.m + "|" + x.p.id] && okToSend(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
+  $("#pgCrumb").textContent = "Property management · Money"; $("#pgTitle").textContent = "Owner payouts";
+  $("#pgSub").textContent = `${monthLabel(m)} · due the ${pmSettings().payoutDay || 15}th · ${ready.length} ready${held.length ? ` · ${held.length} held` : ""}${done.length ? ` · ${done.length} paid or scheduled` : ""}`;
+  const due15 = `${m}-${String(pmSettings().payoutDay || 15).padStart(2, "0")}`, minDate = poBusinessDays(today, 1);
+  const when = S.ui.poWhen || "asap", date = S.ui.poDate && S.ui.poDate >= minDate ? S.ui.poDate : (due15 >= minDate ? due15 : minDate);
+  const accts = plan.payFrom || [], a = S.acct || {}, acct = accts.find(x => x.id === (S.ui.poFrom || a.ownerPayFrom || a.nickelPayFrom)) || accts.find(x => x.isDefault) || accts[0];
+
+  // month and when
+  const top = elm("div", "card po-top");
+  const months = [...new Set(pmMonths().filter(mm => mm <= pmCurrentMonth()))].sort().reverse().slice(0, 8);
+  top.innerHTML = `<div class="po-ctl">
+      <label class="fld"><span>Month</span><select id="poM">${months.map(mm => `<option value="${mm}" ${mm === m ? "selected" : ""}>${esc(monthLabel(mm))}</option>`).join("")}</select></label>
+      <div class="fld"><span>When it lands</span><div class="sc-seg po-when"><button data-w="asap" class="${when === "asap" ? "on" : ""}">As soon as possible</button><button data-w="date" class="${when === "date" ? "on" : ""}">On a date</button></div></div>
+      ${when === "date" ? `<label class="fld"><span>Arrives on</span><input type="date" id="poD" min="${minDate}" value="${date}"></label>` : ""}
+      <label class="fld"><span>Pay from</span><select id="poF">${accts.map(x => `<option value="${esc(x.id)}" ${acct && x.id === acct.id ? "selected" : ""}>${esc(x.label)}</option>`).join("") || `<option value="">${nickelOn() ? (plan.error ? "Couldn't reach Nickel" : "Loading accounts…") : "Nickel isn't connected"}</option>`}</select></label>
+    </div>
+    <p class="help po-note">${when === "asap"
+      ? "Goes out today. Nickel sends it by ACH and uses its fastest delivery the owner's bank supports — often the same day. Nickel doesn't let the console choose instant delivery; that's decided in Nickel."
+      : `Lands on ${esc(fdateS(date))}. Nickel holds the money and starts the ACH early enough to arrive that day${date < poBusinessDays(today, 3) ? " — this is soon, so it may start today" : ""}.`}</p>`;
+  v.appendChild(top);
+  top.querySelector("#poM").onchange = e => { S.ui.poMonth = e.target.value; S.ui.poSel = {}; persistUi(); render(); };
+  top.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { S.ui.poWhen = b.dataset.w; if(b.dataset.w === "date" && !S.ui.poDate) S.ui.poDate = date; persistUi(); render(); });
+  const di = top.querySelector("#poD"); if(di) di.onchange = () => { S.ui.poDate = di.value; persistUi(); render(); };
+  top.querySelector("#poF").onchange = e => { S.ui.poFrom = e.target.value; snapshot(); S.acct = Object.assign({}, S.acct || {}, {ownerPayFrom:e.target.value}); commit(); };
+
+  // the list
+  const card = elm("div", "card");
+  const line = x => { const k = x.m + "|" + x.p.id, pe = payee(x), ok = okToSend(x), oneB = (pe.payout || [])[0];
+    const who = !nickelOn() ? `<span class="muted">Nickel isn't connected</span>`
+      : !PO.plan ? `<span class="muted">Checking Nickel…</span>`
+      : !pe.id ? `<span class="po-no">Not a payee in Nickel</span> <button class="btn sm" data-padd="${esc(x.o.id)}">Add to Nickel</button> <button class="btn sm ghost" data-ppick="${esc(x.o.id)}">Pick payee</button>`
+      : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · no bank on file</span> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.o.id)}">Pick payee</button>`
+      : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.o.id)}" class="muted" style="font-size:12px">change</a>`;
+    return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
+      <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""}</div></td>
+      <td class="po-who">${who}</td><td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
+  card.innerHTML = `<div class="card-h"><h3>Ready to send · ${ready.length}</h3>
+      ${ready.length ? `<a href="#" id="poAll" style="margin-left:auto;font-size:13px">${picked.length === ready.filter(okToSend).length ? "Clear" : "Select all"}</a>` : ""}</div>
+    ${ready.length ? `<div class="tbl-wrap"><table class="tbl po-tbl"><thead><tr><th></th><th>Owner · property</th><th>Paid to</th><th class="r">Payout</th></tr></thead><tbody>${ready.map(line).join("")}</tbody></table></div>`
+      : `<div class="empty"><b>Nothing waiting</b><p>${monthLabel(m)} payouts are all paid, scheduled or held.</p></div>`}
+    ${mdRows.length ? `<p class="help" style="padding:0 16px 12px">${mdRows.length} rental${mdRows.length === 1 ? " is" : "s are"} paid by MagicDoor and left out. <a href="#" id="poMd">${S.ui.poMd ? "Leave them out" : "Show them here too"}</a></p>` : ""}`;
+  v.appendChild(card);
+  const shut = (h, list, tagf) => { if(!list.length) return; const c = elm("div", "card"); c.innerHTML = `<div class="card-h"><h3>${h} · ${list.length}</h3></div><div class="tbl-wrap"><table class="tbl"><tbody>${list.map(x => `<tr class="off"><td><b>${esc(ownerLabel(x.o))}</b><div class="sub">${esc(x.p.name)}</div></td><td>${tagf(x)}</td><td class="r num">${usd(x.amountC)}</td></tr>`).join("")}</tbody></table></div>`; v.appendChild(c); };
+  shut("Held", held, x => `<span class="tag red">${esc((x.s.hold && x.s.hold.title) || "Held")}</span>`);
+  shut("Paid or scheduled", done, x => `<span class="tag ${x.k === "paid" ? "green" : "gold"}">${x.k === "paid" ? "Paid" : "Scheduled"}${x.s.date ? " · " + esc(fdateS(x.s.date)) : ""}${x.s.how ? " · " + esc(x.s.how) : ""}</span>`);
+
+  // send bar
+  const bar = elm("div", "po-bar");
+  bar.innerHTML = `<span>${picked.length ? `<b>${picked.length}</b> payout${picked.length === 1 ? "" : "s"} · <b class="num">${usd(totC)}</b> · ${when === "asap" ? "as soon as possible" : "arrives " + esc(fdateS(date))}` : "Pick the payouts to send"}</span>
+    ${plan.canPay === false ? `<span class="muted" style="font-size:12px">Only people on the payments list can send (${esc((plan.payers || []).join(", "))})</span>` : ""}
+    <button class="btn primary" id="poSend" ${!picked.length || !acct || plan.canPay === false ? "disabled" : ""}>Send ${picked.length || ""} payout${picked.length === 1 ? "" : "s"}</button>`;
+  v.appendChild(bar);
+
+  v.querySelectorAll("[data-po]").forEach(i => i.onchange = () => { sel[i.dataset.po] = i.checked; render(); });
+  const all = $("#poAll"); if(all) all.onclick = e => { e.preventDefault(); const on = picked.length !== ready.filter(okToSend).length; ready.forEach(x => { if(okToSend(x)) sel[x.m + "|" + x.p.id] = on; }); render(); };
+  const md = $("#poMd"); if(md) md.onclick = e => { e.preventDefault(); S.ui.poMd = !S.ui.poMd; persistUi(); render(); };
+  v.querySelectorAll("[data-pp]").forEach(a2 => a2.onclick = e => { e.preventDefault(); S.ui.pmPropId = a2.dataset.pp; S.ui.pmPropM = m; go("pmProperty"); });
+  v.querySelectorAll("[data-padd]").forEach(b => b.onclick = async () => { const o = ownerById(b.dataset.padd); try{ const r = await nkRun("owner.payee", {ownerId:o.id}, `Add ${ownerLabel(o)} to Nickel as a payee`); if(r.ok){ snapshot(); S.acct = Object.assign({}, S.acct || {}, {ownerVendor:Object.assign({}, (S.acct || {}).ownerVendor || {}, {[o.id]:r.nickelId})}); commit(); toast(`${ownerLabel(o)} added — email them the bank-details form next`, true); } }catch(e){ toast(e.message); } await poLoadPlan(ownerIds, true); render(); });
+  v.querySelectorAll("[data-pask]").forEach(b => b.onclick = async () => { const o = ownerById(b.dataset.pask); try{ const r = await nkRun("owner.ask", {ownerId:o.id, nickelVendorId:poPayee(o.id).id}, `Email ${ownerLabel(o)} Nickel's bank-details form`); if(r.ok) toast(`Sent to ${o.email}`, true); }catch(e){ toast(e.message); } await poLoadPlan(ownerIds, true); render(); });
+  v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); poPickSheet(ownerById(b.dataset.ppick)); });
+  $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : ""});
+}
+function poPickSheet(o){
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Who in Nickel is ${esc(ownerLabel(o))}?</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Owner payouts for all of ${esc(ownerLabel(o))}'s rentals go to this payee</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><div id="poPick"></div></div>`;
+  $("#shClose").onclick = closeSheet; openPanel();
+  const cur = poPayee(o.id);
+  nkVendorPicker($("#poPick"), cur.id ? cur : null, nv => { if(!nv) return; snapshot(); S.acct = Object.assign({}, S.acct || {}, {ownerVendor:Object.assign({}, (S.acct || {}).ownerVendor || {}, {[o.id]:nv.id})}); commit(); closeSheet(); render(); toast(`${ownerLabel(o)} → ${nv.name}`); }, true);
+}
+async function poSend(list, o){
+  const totC = list.reduce((a, x) => a + x.amountC, 0);
+  if(!confirm(`Send ${list.length} owner payout${list.length === 1 ? "" : "s"} — ${usd(totC)} — from ${o.acctLabel || "the account picked"}, ${o.when === "asap" ? "as soon as possible" : "arriving " + fdateS(o.date)}?\n\n${list.map(x => `· ${ownerLabel(x.o)} · ${x.p.name} — ${usd(x.amountC)}`).join("\n")}\n\nNickel will ask you to confirm once more for each batch of up to 25.`)) return;
+  try{
+    const r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:list.map(x => { const pe = poPayee(x.o.id); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; })}, `Send ${list.length} owner payout${list.length === 1 ? "" : "s"} · ${usd(totC)}`);
+    if(r && r.results){
+      const bad = r.results.filter(x => !x.ok && x.pid);
+      actLog("finance", `Owner payouts sent from the console: ${r.sent} of ${list.length}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
+      if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
+      toast(`${r.sent} payout${r.sent === 1 ? "" : "s"} sent${bad.length ? ` · ${bad.length} didn't go: ${bad.slice(0, 3).map(x => `${(pmProp(x.pid) || {}).name}: ${x.why}`).join("; ")}` : ""}${r.oneByOne ? " · Nickel's plan sends them one at a time" : ""}`, true);
+      S.ui.poSel = {};
+    }
+  }catch(e){ toast(e.message); }
+  render();
+}
+// a rental's page: who pays this owner (Nickel or MagicDoor)
+{ const pp2 = pgPmProperty;
+  pgPmProperty = function(){
+    const r = pp2.apply(this, arguments);
+    try{
+      const p = pmProp(S.ui.pmPropId); if(!p) return r;
+      const c = elm("div", "card"); const via = poVia(p);
+      c.innerHTML = `<div class="card-h"><h3>Owner payouts</h3></div><div class="card-b" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label class="fld" style="margin:0"><span>Paid through</span><select id="poVia"><option value="nickel" ${via === "nickel" ? "selected" : ""}>Nickel (sent from the console)</option><option value="magicdoor" ${via === "magicdoor" ? "selected" : ""}>MagicDoor</option></select></label>
+        <span class="muted" style="font-size:12.5px">${p.payVia ? "Set here" : "From the income report"} · <a href="#" id="poGo">Owner payouts →</a></span></div>`;
+      $("#view").appendChild(c);
+      c.querySelector("#poVia").onchange = e => { snapshot(); p.payVia = e.target.value; commit(); render(); };
+      c.querySelector("#poGo").onclick = e => { e.preventDefault(); go("payouts"); };
+    }catch(e){}
+    return r;
   };
 }
