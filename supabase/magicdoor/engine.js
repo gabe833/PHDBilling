@@ -309,7 +309,9 @@ const PMCore = (function(){
     // month's: the part MagicDoor charged the PM fee on is rent, the rest other income (a pet fee, say)
     // money MagicDoor held over from last month without taking its PM fee on it (it came in after that month's payout)
     const unfeed = st.prevIn != null && rate > 0 && rule.type !== "flat" ? Math.max(0, cents(st.prevIn) - Math.round(cents(st.prevFees || 0) * 100 / rate)) : 0;
-    const late = st.left > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
+    // only when last month was actually paid out: a month MagicDoor didn't pay out (held, paused) carries its whole
+    // balance forward, and that balance is still last month's money (120 / 27 Smith, October held)
+    const late = st.left > 0 && st.prevDist > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
     const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);

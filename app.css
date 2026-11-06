@@ -2412,3 +2412,18 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .rv-tbl td.act .btn{opacity:1;height:30px;padding:0 10px;font-size:12.3px}
 .rv-tbl td.act .btn + .btn{margin-left:6px}
 .rv-msg{width:100%;font:inherit;font-size:13.3px;line-height:1.55;border:1px solid var(--line);border-radius:10px;padding:12px}
+
+/* units inside one rental + rental income owed */
+.pm-units{margin:4px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2, transparent)}
+.pm-unit-t{width:100%;border-collapse:collapse;font-size:13px}
+.pm-unit-t th{font-weight:600;color:var(--muted);text-align:left;padding:4px 6px;font-size:12px}
+.pm-unit-t td{padding:5px 6px;border-top:1px solid var(--line);vertical-align:top}
+.pm-unit-t .r{text-align:right;white-space:nowrap}
+.pm-unit-t .sub{font-size:11.5px;color:var(--muted)}
+.pm-unit-t tr.sub-l td{color:var(--muted)}
+.pm-unit-t tbody.totals td{font-weight:600;border-top:2px solid var(--line)}
+.pm-unit-warn{color:var(--gold);margin:8px 0 0}
+.pm-owed-p{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.pm-owed-h{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.pm-owed-tot{display:flex;justify-content:space-between;align-items:center;font-size:15px;padding:10px 4px 0;border-top:2px solid var(--line);margin-top:6px}
+@media (max-width:640px){.pm-owed-h b.num{margin-left:0!important}}

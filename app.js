@@ -4238,7 +4238,9 @@ const PMCore = (function(){
     // month's: the part MagicDoor charged the PM fee on is rent, the rest other income (a pet fee, say)
     // money MagicDoor held over from last month without taking its PM fee on it (it came in after that month's payout)
     const unfeed = st.prevIn != null && rate > 0 && rule.type !== "flat" ? Math.max(0, cents(st.prevIn) - Math.round(cents(st.prevFees || 0) * 100 / rate)) : 0;
-    const late = st.left > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
+    // only when last month was actually paid out: a month MagicDoor didn't pay out (held, paused) carries its whole
+    // balance forward, and that balance is still last month's money (120 / 27 Smith, October held)
+    const late = st.left > 0 && st.prevDist > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
     const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
@@ -4825,6 +4827,7 @@ function pmRowSheet(m, pid, focus){
       <div class="sheet-b">
         ${ro ? `<div class="pm-banner">${row.locked ? `Imported from the workbook — numbers are shown exactly as recorded.${row.wbStatus ? " Sheet: " + esc(row.wbStatus) + "." : ""}${row.wbNotes ? " " + esc(row.wbNotes) + "." : ""}${!closed ? ` <button class="btn sm" id="rwUnlock" style="margin-left:6px">Unlock to edit</button>` : " Reopen the month to edit."}` : "This month is closed. Reopen the month to edit."}</div>` : ""}
         ${c.flags.length ? `<div class="pm-flags">${c.flags.map(x => `<div class="${x.level}">${esc(x.text)}</div>`).join("")}</div>` : ""}
+        ${typeof pmUnitTableHTML === "function" ? pmUnitTableHTML(prop, m, row) : ""}
         <div class="f2">${num("rentDue","Rent due")}${num("rentReceived","Rent received")}</div>
         <div class="f2">${num("leasingFee","Leasing fee","Taken from the owner")}${num("otherIncome","Other owner income","Paid to the owner, e.g. utility credit")}</div>
         <div class="sectl">Collected for PHD</div>
@@ -17126,4 +17129,110 @@ function pgRecover(){
 {
   const nm0 = navMoney;
   navMoney = function(n, mk){ nm0.apply(this, arguments); try{ const R = S.recov; if(S.ui.mode === "pm" && R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){} };
+}
+
+/* ---------- units inside one rental (120 Smith A & B) and what an owner is still owed ----------
+   A console property can stand for a whole MagicDoor building with several units. The month row stays one row (that's
+   how MagicDoor pays the owner), but every place that shows the month breaks the rent down unit by unit. */
+function pmUnitLines(p, m){
+  const x = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null;
+  if(!x || !x.whole || !x.property || !(x.units || []).length || x.units.length < 2) return [];
+  const leases = (S.md.leases || []).filter(l => l.propertyId === x.property.id && !l.draft);
+  const rule = p.feeRule || {}, rate = rule.type === "flat" ? 0 : Number(rule.rate || 0);
+  return x.units.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, {numeric:true})).map(u => {
+    const gs = leases.filter(l => l.unitId === u.id).map(l => ({l, g:(l.months || {})[m]})).filter(y => y.g);
+    let rentC = 0, credC = 0, paidC = 0;
+    gs.forEach(({g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived); });
+    const cur = gs.find(y => !y.l.ended) || gs[0];
+    return {unit:u.name || "Unit", tenant:cur ? mdTenants(cur.l) : "", rentC, creditsC:credC, paidC, feeC:Math.round(paidC * rate / 100), rate};
+  });
+}
+/* split the month's PM fee across the units: the rate on each unit's rent when it adds up; when MagicDoor charged
+   the fee on only some units, those units (the rest flagged as missed); otherwise in proportion to rent collected */
+function pmUnitFees(U, feeC){
+  const sum = U.reduce((a, u) => a + u.feeC, 0), paid = U.reduce((a, u) => a + u.paidC, 0);
+  if(Math.abs(feeC - sum) <= 100) return {fees:U.map(u => u.feeC), missed:[], how:"rate"};
+  for(let mask = 1; mask < (1 << U.length) - 1; mask++){
+    const on = U.map((u, i) => !!(mask & (1 << i))), sub = U.reduce((a, u, i) => a + (on[i] ? u.feeC : 0), 0);
+    if(Math.abs(feeC - sub) <= 100) return {fees:U.map((u, i) => on[i] ? u.feeC : 0), missed:U.filter((u, i) => !on[i] && u.feeC > 0), how:"some"};
+  }
+  let left = feeC; const fees = U.map((u, i) => { const f = i === U.length - 1 ? left : Math.round(paid ? feeC * u.paidC / paid : feeC / U.length); left -= f; return f; });
+  return {fees, missed:[], how:"split", rate:paid ? Math.round(feeC * 10000 / paid) / 100 : 0};
+}
+function pmUnitTableHTML(p, m, row){
+  const U = pmUnitLines(p, m); if(!U.length) return "";
+  const c = row ? pmCalc(row, p) : null, paidSum = U.reduce((a, u) => a + u.paidC, 0);
+  const A = pmUnitFees(U, c ? c.pmFeeC : U.reduce((a, u) => a + u.feeC, 0)), feeSum = A.fees.reduce((a, f) => a + f, 0);
+  const feeNote = pmUnitFeeNote(A, U, row);
+  return `<div class="pm-units"><div class="label">By unit · ${monthLabel(m)}</div>
+    <table class="pm-unit-t"><thead><tr><th>Unit</th><th class="r">Rent</th><th class="r">Collected</th><th class="r">PM fee${A.how === "split" ? ` (${A.rate}%)` : U[0].rate ? ` (${U[0].rate}%)` : ""}</th></tr></thead><tbody>
+    ${U.map(u => `<tr><td><b>${esc(u.unit)}</b>${u.tenant ? `<div class="sub">${esc(u.tenant)}</div>` : ""}</td><td class="r num">${usd(u.rentC)}${u.creditsC ? `<div class="sub">credit −${usd(u.creditsC)}</div>` : ""}</td><td class="r num"${u.paidC < u.rentC - u.creditsC ? ' style="color:var(--red)"' : ""}>${usd(u.paidC)}</td><td class="r num">${usd(A.fees[U.indexOf(u)])}${A.missed.includes(u) ? `<div class="sub" style="color:var(--red)">not charged · ${usd(u.feeC)}</div>` : ""}</td></tr>`).join("")}
+    </tbody><tbody class="totals"><tr><td>Both units</td><td class="r num">${usd(U.reduce((a, u) => a + u.rentC, 0))}</td><td class="r num">${usd(paidSum)}</td><td class="r num">${usd(feeSum)}</td></tr></tbody></table>${feeNote}</div>`;
+}
+
+function pmUnitFeeNote(A, U, row){
+  const pend = row && !has(row.pmFee);
+  if(A.how === "some") return `<p class="help pm-unit-warn">The PM fee charged (${usd(A.fees.reduce((a, f) => a + f, 0))}) only covers ${U.filter(u => !A.missed.includes(u)).map(u => esc(u.unit)).join(", ")} — no fee was taken on ${A.missed.map(u => `${esc(u.unit)} (${usd(u.feeC)} at ${u.rate}%)`).join(", ")}. The owner payout is ${usd(A.missed.reduce((a, u) => a + u.feeC, 0))} higher than it should be unless that unit is fee-free.</p>`;
+  if(A.how === "split") return `<p class="help pm-unit-warn">${pend ? "Not charged yet — worked out" : "Charged"} at ${A.rate}% of rent collected; the fee rule here says ${U[0].rate}%.${pend ? "" : " Fix the fee rule on the property if MagicDoor's rate is the right one."}</p>`;
+  return pend ? `<p class="help">PM fee not charged in MagicDoor yet — worked out from the ${U[0].rate}% fee rule.</p>` : "";
+}
+/* has this month's owner payout gone out? "paid" · "sched" · "held" · "owed" · "none" */
+function pmPayoutState(p, m, row){
+  row = row || pmRow(m, p.id);
+  if(!row || row.deleted || row.detailOnly) return {k:"none"};
+  const c = pmCalc(row, p);
+  if(row.paidOut) return {k:row.paidOut.scheduled || row.paidOut.pending ? "sched" : "paid", date:row.paidOut.date, how:row.paidOut.method || "", c};
+  const x = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null;
+  const st = x && x.property ? PMCore.mdStmt(S.md, x.property.id, m) : null;
+  const hold = typeof finHoldFor === "function" ? finHoldFor(p.id, m) : null;
+  if(st && st.distTotal > 0 && !(st.end > 0.5) && !hold) return {k:"paid", date:((st.dists || [])[0] || {}).d || "", how:"MagicDoor", c};
+  if(hold) return {k:"held", hold, c};
+  // MagicDoor still holding owner money at the end of the month = not paid out, whatever the workbook says
+  if(st && st.end > 0.5 && !(st.distTotal > 0)) return {k:c.payoutC > 0 ? "owed" : "none", c};
+  if(row.locked) return {k:"paid", date:"", how:"closed", c};
+  return {k:c.recv > 0 && c.payoutC > 0 ? "owed" : "none", c};
+}
+function pmOwedTo(o){
+  const out = [], cur = thisMonth();
+  ownerPmProps(o).forEach(p => {
+    let m = p.firstMonth && p.firstMonth > "2026-01" ? p.firstMonth : PMCore.monthAdd(cur, -6);
+    for(; m <= cur; m = PMCore.monthAdd(m, 1)){
+      const row = pmRow(m, p.id); if(!row) continue;
+      const s = pmPayoutState(p, m, row);
+      if(["owed", "held", "sched"].includes(s.k)) out.push({p, m, row, s, due:`${m}-${String(pmSettings().payoutDay || 15).padStart(2, "0")}`});
+    }
+  });
+  return out.sort((a, b) => a.m.localeCompare(b.m) || a.p.name.localeCompare(b.p.name));
+}
+function pmOwedCardHTML(o){
+  const L = pmOwedTo(o); if(!L.length) return "";
+  const tot = L.reduce((a, x) => a + x.s.c.payoutC, 0), today = todayISO();
+  const months = [...new Set(L.map(x => x.m))];
+  const tag = x => x.s.k === "held" ? `<span class="tag red">Held · ${esc(x.s.hold.title || "hold")}</span>` : x.s.k === "sched" ? `<span class="tag gold">Scheduled ${esc(fdateS(x.s.date))}</span>` : x.due < today ? `<span class="tag red">Past due · was due ${esc(fdateS(x.due))}</span>` : `<span class="tag gold">Due ${esc(fdateS(x.due))}</span>`;
+  const line = (l, v, cls) => `<tr class="${cls || ""}"><td>${l}</td><td class="r num">${v}</td></tr>`;
+  return `<div class="card pm-owed"><div class="card-h"><h3>Rental income owed to ${esc(ownerLabel(o))}</h3><b class="num" style="margin-left:auto">${usd(tot)}</b></div><div class="card-b">
+    <p class="muted" style="margin-top:0">Owner payouts not sent yet · ${months.map(monthLabel).join(", ")}. Each property's units are listed separately; the payout is per property, the way MagicDoor pays it.</p>
+    ${L.map(x => { const c = x.s.c, U = pmUnitLines(x.p, x.m), r = x.row, A = U.length ? pmUnitFees(U, c.pmFeeC) : null;
+      const bills = (r.repairItems || []).map(it => line(`${esc(it.vendor || "Repair")} — ${esc(it.memo || "")}`, "−" + usd(cents(it.amount)))).join("");
+      return `<div class="pm-owed-p"><div class="pm-owed-h"><b>${esc(x.p.name)} · ${monthLabel(x.m)}</b>${tag(x)}<b class="num" style="margin-left:auto">${usd(c.payoutC)}</b></div>
+        <table class="pm-unit-t"><tbody>
+        ${U.length ? U.map(u => line(`Rent · ${esc(u.unit)}${u.tenant ? ` <span class="sub" style="display:inline">${esc(u.tenant)}</span>` : ""}${u.paidC < u.rentC - u.creditsC ? ` <span class="tag red">${usd(u.rentC - u.creditsC - u.paidC)} unpaid</span>` : ""}`, usd(u.paidC))).join("") : line("Rent collected", usd(c.recv))}
+        ${U.length && Math.abs(U.reduce((a, u) => a + u.paidC, 0) - c.recv) > 100 ? line(`<span class="muted">Rent on the month row</span>`, usd(c.recv)) : ""}
+        ${c.otherC ? line("Other owner income", usd(c.otherC)) : ""}
+        ${U.length ? U.map((u, i) => line(`PM fee · ${esc(u.unit)} (${A.how === "split" ? A.rate : u.rate}%)${A.missed.includes(u) ? ` <span class="tag red">not charged · ${usd(u.feeC)}</span>` : ""}`, "−" + usd(A.fees[i]), "sub-l")).join("") : c.pmFeeC ? line("PM fee", "−" + usd(c.pmFeeC)) : ""}
+        ${c.leasingC ? line("Leasing fee", "−" + usd(c.leasingC)) : ""}${bills}${c.adminC ? line("Admin fee on repairs", "−" + usd(c.adminC)) : ""}
+        ${c.adjC ? line("Adjustments", (c.adjC < 0 ? "−" : "") + usd(Math.abs(c.adjC))) : ""}
+        </tbody><tbody class="totals">${line("Owner payout", usd(c.payoutC))}</tbody></table>${A ? pmUnitFeeNote(A, U, r) : ""}</div>`; }).join("")}
+    <div class="pm-owed-tot"><span>Total owed</span><b class="num">${usd(tot)}</b></div></div></div>`;
+}
+{ const od0 = pgOwnerDetail;
+  pgOwnerDetail = function(o){
+    od0.apply(this, arguments);
+    try{
+      if(S.ui.mode !== "pm" || !o) return;
+      const h = pmOwedCardHTML(o); if(!h) return;
+      const v = $("#view"), d = elm("div"); d.innerHTML = h; d.style.marginBottom = "16px";
+      const grid = v.querySelector(".owner-grid"); grid ? v.insertBefore(d, grid) : v.appendChild(d);
+    }catch(e){ console.warn("owed card", e); }
+  };
 }
