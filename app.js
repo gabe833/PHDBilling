@@ -17453,24 +17453,24 @@ function billMoveToProject(id){
    One email per owner (an owner with two properties gets one email with the total), written from the
    template below, sent through the billing@ Gmail script the project invoices already use. Each send is
    recorded on the item (it.mail) and marks the owner as told. */
-const RV_MAIL_TPL = {subject:"October owner distribution — duplicate payment",
+const RV_MAIL_TPL = {v:2, subject:"Your October owner distribution — duplicate payment",
   body:`Hi {first},
 
-I hope you're doing well!
+I hope you're doing well.
 
-We recently identified an issue with our payment processor that resulted in a duplicate payment of {amount} being issued for your October owner distribution.
+We're reaching out regarding an issue with your October owner distribution for {properties}.
 
-We apologize for the confusion and any inconvenience this may cause.
+Due to a payment processing issue, you received two payments of {amount} for your October distribution instead of one, resulting in an overpayment of {amount}.
 
-To resolve the duplicate payment, we are considering applying the additional amount toward your upcoming owner distributions rather than requiring you to return the funds directly. This would mean that future distributions may be reduced or temporarily withheld until the duplicate amount has been accounted for.
+We apologize for the inconvenience and confusion this has caused.
 
-We are still finalizing the details and will confirm any adjustments with you before they are made.
+To resolve this, our proposed approach is to apply the duplicate amount toward your upcoming owner distributions, beginning in November. This would reduce or temporarily withhold future distributions until the overpayment has been fully accounted for, rather than requiring you to send the funds back separately.
 
-In the meantime, we kindly ask that you keep the additional funds available until the next steps are confirmed.
+We would like to confirm this arrangement with you before processing the adjustment. Please reply by Monday, November 9, to acknowledge the duplicate payment and let us know if you agree to the proposed approach.
 
-We appreciate your patience and understanding as we work through this.
+If you would prefer to return the duplicate payment directly, please let us know so we can coordinate the repayment.
 
-Thank you,`};
+Thank you for your understanding and cooperation as we work to resolve this.`};
 function rvMailGroups(){
   const R = rvState(), g = new Map();
   R.items.forEach(it => { const k = it.ownerId || "x:" + it.id; if(!g.has(k)) g.set(k, {key:k, o:it.ownerId ? ownerById(it.ownerId) : null, owner:it.owner, items:[]}); g.get(k).items.push(it); });
@@ -17482,12 +17482,12 @@ function rvMailGroups(){
 }
 function rvMailFill(t, g){
   const amt = usd(g.totalC), props = g.props.length === 1 ? g.props[0] : g.props.slice(0, -1).join(", ") + " and " + g.props[g.props.length - 1];
-  return String(t || "").replace(/\{first\}|\[Owner Name\]/gi, g.first).replace(/\$?\{amount\}|\$\[Amount\]|\[Amount\]/gi, amt).replace(/\{propert(y|ies)\}/gi, props).replace(/\{owner\}/gi, ownerLabel(g.o) || g.owner || "");
+  return String(t || "").replace(/\{first\}|\[Owner Name\]/gi, g.first).replace(/\$?\{amount\}|\$\[Amount\]|\[Amount\]/gi, amt).replace(/\{propert(y|ies)\}|\[Property Address\]/gi, props).replace(/\{owner\}/gi, ownerLabel(g.o) || g.owner || "");
 }
 const rvMailHtml = text => String(text || "").split(/\n{2,}/).map(p => `<p style="margin:0 0 12px">${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
 function rvMailSheet(){
   const R = rvState();
-  R.mailTpl = R.mailTpl || {};
+  if(!R.mailTpl || R.mailTpl.v !== RV_MAIL_TPL.v) R.mailTpl = {};             // a newer default draft replaces an older saved one
   const tpl = {subject:R.mailTpl.subject || RV_MAIL_TPL.subject, body:R.mailTpl.body || RV_MAIL_TPL.body};
   const conn = typeof bmConn === "function" ? bmConn() : null;
   let G = rvMailGroups();
@@ -17521,7 +17521,7 @@ function rvMailSheet(){
         <button class="btn primary" id="rmSend"${!conn || !ready.length || busy ? " disabled" : ""}>${busy ? "Sending…" : `Send ${ready.length} email${ready.length === 1 ? "" : "s"}`}</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     const keepTpl = () => { tpl.subject = $("#rmS").value; tpl.body = $("#rmB").value; };
-    $("#rmS").onchange = $("#rmB").onchange = () => { keepTpl(); snapshot(); R.mailTpl = {subject:tpl.subject, body:tpl.body}; commit(); };
+    $("#rmS").onchange = $("#rmB").onchange = () => { keepTpl(); snapshot(); R.mailTpl = {v:RV_MAIL_TPL.v, subject:tpl.subject, body:tpl.body}; commit(); };
     sh.querySelectorAll("[data-rmk]").forEach(i => i.onchange = () => { keepTpl(); i.checked ? pick.add(i.dataset.rmk) : pick.delete(i.dataset.rmk); draw(); });
     sh.querySelectorAll("[data-rmp]").forEach(a => a.onclick = e => { e.preventDefault(); keepTpl(); open = open === a.dataset.rmp ? "" : a.dataset.rmp; draw(); });
     sh.querySelectorAll("[data-rme]").forEach(i => i.onchange = () => {
@@ -17531,7 +17531,7 @@ function rvMailSheet(){
       snapshot(); g.o.email = v; commit(); toast(`Saved ${v} on ${ownerLabel(g.o)}`); draw();
     });
     const go2 = async send => {
-      keepTpl(); snapshot(); R.mailTpl = {subject:tpl.subject, body:tpl.body}; commit();
+      keepTpl(); snapshot(); R.mailTpl = {v:RV_MAIL_TPL.v, subject:tpl.subject, body:tpl.body}; commit();
       const list = rvMailGroups().filter(g => pick.has(g.key) && g.to);
       if(!list.length) return;
       if(send && !confirm(`Send ${list.length} email${list.length === 1 ? "" : "s"} from ${(conn && conn.mailbox) || "billing@"} now?\n\n${list.map(g => `· ${ownerLabel(g.o) || g.owner} — ${usd(g.totalC)} → ${g.to}`).join("\n")}`)) return;
