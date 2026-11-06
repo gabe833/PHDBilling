@@ -2444,3 +2444,14 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .cfm{background:var(--card, #fff);color:var(--ink, #1A2322);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.25);max-width:460px;width:100%;padding:18px 18px 14px}
 .cfm p{margin:0 0 16px;white-space:pre-wrap;font-size:14px;line-height:1.45}
 .cfm-b{display:flex;justify-content:flex-end;gap:8px}
+
+/* email the owners (duplicate payouts) */
+.rm-list{display:flex;flex-direction:column;gap:8px}
+.rm-r{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.rm-r.on{border-color:color-mix(in srgb, var(--acc, #1D5C57) 45%, var(--line))}
+.rm-h{display:flex;align-items:center;gap:10px;cursor:pointer}
+.rm-n{display:flex;flex-direction:column;flex:1;min-width:0}
+.rm-n .muted{font-size:12px}
+.rm-m{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 0 26px;font-size:12.5px}
+.rm-m a{margin-left:auto}
+.rm-pv{margin:8px 0 2px 26px;padding:10px 12px;border-radius:8px;background:var(--panel2, rgba(0,0,0,.03));font-size:13px;line-height:1.45}

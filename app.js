@@ -17448,3 +17448,123 @@ function billMoveToProject(id){
     return r;
   };
 })();
+
+/* ---------- Duplicate payouts → email the owners from billing@ ----------
+   One email per owner (an owner with two properties gets one email with the total), written from the
+   template below, sent through the billing@ Gmail script the project invoices already use. Each send is
+   recorded on the item (it.mail) and marks the owner as told. */
+const RV_MAIL_TPL = {subject:"October owner distribution — duplicate payment",
+  body:`Hi {first},
+
+I hope you're doing well!
+
+We recently identified an issue with our payment processor that resulted in a duplicate payment of {amount} being issued for your October owner distribution.
+
+We apologize for the confusion and any inconvenience this may cause.
+
+To resolve the duplicate payment, we are considering applying the additional amount toward your upcoming owner distributions rather than requiring you to return the funds directly. This would mean that future distributions may be reduced or temporarily withheld until the duplicate amount has been accounted for.
+
+We are still finalizing the details and will confirm any adjustments with you before they are made.
+
+In the meantime, we kindly ask that you keep the additional funds available until the next steps are confirmed.
+
+We appreciate your patience and understanding as we work through this.
+
+Thank you,`};
+function rvMailGroups(){
+  const R = rvState(), g = new Map();
+  R.items.forEach(it => { const k = it.ownerId || "x:" + it.id; if(!g.has(k)) g.set(k, {key:k, o:it.ownerId ? ownerById(it.ownerId) : null, owner:it.owner, items:[]}); g.get(k).items.push(it); });
+  return [...g.values()].map(x => {
+    const totalC = x.items.reduce((a, it) => a + it.amountC, 0), list = x.o ? stmtToList(x.o).filter(stmtEmailOk) : [];
+    const mail = x.items.map(it => it.mail).filter(Boolean).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null;
+    return Object.assign(x, {totalC, to:list.join(", "), cc:x.o ? stmtCcList(x.o).join(", ") : "", first:stmtFirstName(x.o) || String(x.owner || "").split(/\s+/)[0] || "there", props:x.items.map(it => it.prop), mail});
+  });
+}
+function rvMailFill(t, g){
+  const amt = usd(g.totalC), props = g.props.length === 1 ? g.props[0] : g.props.slice(0, -1).join(", ") + " and " + g.props[g.props.length - 1];
+  return String(t || "").replace(/\{first\}|\[Owner Name\]/gi, g.first).replace(/\$?\{amount\}|\$\[Amount\]|\[Amount\]/gi, amt).replace(/\{propert(y|ies)\}/gi, props).replace(/\{owner\}/gi, ownerLabel(g.o) || g.owner || "");
+}
+const rvMailHtml = text => String(text || "").split(/\n{2,}/).map(p => `<p style="margin:0 0 12px">${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
+function rvMailSheet(){
+  const R = rvState();
+  R.mailTpl = R.mailTpl || {};
+  const tpl = {subject:R.mailTpl.subject || RV_MAIL_TPL.subject, body:R.mailTpl.body || RV_MAIL_TPL.body};
+  const conn = typeof bmConn === "function" ? bmConn() : null;
+  let G = rvMailGroups();
+  const pick = new Set(G.filter(g => !g.mail || !g.mail.sent).map(g => g.key));
+  let open = "", busy = false;
+  const sh = $("#sheet");
+  const draw = msg => {
+    G = rvMailGroups();
+    const ready = G.filter(g => pick.has(g.key) && g.to), noMail = G.filter(g => pick.has(g.key) && !g.to);
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Email the owners</h3><div class="muted" style="font-size:12.5px;margin-top:3px">From ${esc((conn && conn.mailbox) || "billing@phdproperties.realestate")} · one email per owner, with their own amount</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${conn ? "" : `<div class="pm-flags"><div class="warn">billing@ isn't connected on this computer. Connect it from any project invoice → Email owner, then come back.</div></div>`}
+        ${msg ? `<div class="pm-banner">${msg}</div>` : ""}
+        <label class="fld"><span>Subject</span><input type="text" id="rmS" value="${esc(tpl.subject)}"></label>
+        <label class="fld"><span>Email</span><textarea id="rmB" rows="14" style="font-family:inherit;line-height:1.45">${esc(tpl.body)}</textarea>
+          <span class="help"><b>{first}</b> becomes the owner's first name, <b>{amount}</b> their duplicate amount (both properties added up for an owner with two), <b>{properties}</b> the addresses. billing@'s Gmail signature goes under “Thank you,”.</span></label>
+        <div class="sectl">Owners · ${G.length}</div>
+        <div class="rm-list">${G.map(g => `<div class="rm-r${pick.has(g.key) ? " on" : ""}">
+          <label class="rm-h"><input type="checkbox" data-rmk="${esc(g.key)}"${pick.has(g.key) ? " checked" : ""}${busy ? " disabled" : ""}>
+            <span class="rm-n"><b>${esc(ownerLabel(g.o) || g.owner || "")}</b><span class="muted">${g.props.map(esc).join(" · ")}</span></span>
+            <span class="num">${usd(g.totalC)}</span></label>
+          <div class="rm-m">${g.to ? `<span>${esc(g.to)}${g.cc ? ` <span class="muted">cc ${esc(g.cc)}</span>` : ""}</span>` : `<input type="email" data-rme="${esc(g.key)}" placeholder="No email on file — add one" style="max-width:260px">`}
+            ${g.mail ? `<span class="tag ${g.mail.sent ? "green" : "acc"}">${g.mail.sent ? "Sent " + esc(fdateS(String(g.mail.at).slice(0, 10))) : "Draft in Gmail"}</span>` : ""}
+            <a href="#" data-rmp="${esc(g.key)}">${open === g.key ? "Hide" : "Preview"}</a></div>
+          ${open === g.key ? `<div class="rm-pv"><div class="muted" style="font-size:12px">Subject: ${esc(rvMailFill(tpl.subject, g))}</div>${rvMailHtml(rvMailFill(tpl.body, g))}</div>` : ""}
+        </div>`).join("")}</div>
+      </div>
+      <div class="sheet-f"><span class="muted" style="flex:1;font-size:12.5px">${ready.length} to send${noMail.length ? ` · ${noMail.length} need an email first` : ""}</span>
+        <button class="btn" id="shCancel">Close</button>
+        <button class="btn" id="rmDraft"${!conn || !ready.length || busy ? " disabled" : ""}>Save as Gmail drafts</button>
+        <button class="btn primary" id="rmSend"${!conn || !ready.length || busy ? " disabled" : ""}>${busy ? "Sending…" : `Send ${ready.length} email${ready.length === 1 ? "" : "s"}`}</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const keepTpl = () => { tpl.subject = $("#rmS").value; tpl.body = $("#rmB").value; };
+    $("#rmS").onchange = $("#rmB").onchange = () => { keepTpl(); snapshot(); R.mailTpl = {subject:tpl.subject, body:tpl.body}; commit(); };
+    sh.querySelectorAll("[data-rmk]").forEach(i => i.onchange = () => { keepTpl(); i.checked ? pick.add(i.dataset.rmk) : pick.delete(i.dataset.rmk); draw(); });
+    sh.querySelectorAll("[data-rmp]").forEach(a => a.onclick = e => { e.preventDefault(); keepTpl(); open = open === a.dataset.rmp ? "" : a.dataset.rmp; draw(); });
+    sh.querySelectorAll("[data-rme]").forEach(i => i.onchange = () => {
+      const g = G.find(x => x.key === i.dataset.rme), v = i.value.trim(); keepTpl();
+      if(!g || !g.o) return toast("This payout has no owner on file");
+      if(!stmtEmailOk(v)) return toast("That doesn't look like an email address");
+      snapshot(); g.o.email = v; commit(); toast(`Saved ${v} on ${ownerLabel(g.o)}`); draw();
+    });
+    const go2 = async send => {
+      keepTpl(); snapshot(); R.mailTpl = {subject:tpl.subject, body:tpl.body}; commit();
+      const list = rvMailGroups().filter(g => pick.has(g.key) && g.to);
+      if(!list.length) return;
+      if(send && !confirm(`Send ${list.length} email${list.length === 1 ? "" : "s"} from ${(conn && conn.mailbox) || "billing@"} now?\n\n${list.map(g => `· ${ownerLabel(g.o) || g.owner} — ${usd(g.totalC)} → ${g.to}`).join("\n")}`)) return;
+      busy = true; draw();
+      const ok = [], bad = [];
+      for(const g of list){
+        const subject = rvMailFill(tpl.subject, g), text = rvMailFill(tpl.body, g);
+        try{
+          const r = await bmCall({action:send ? "send" : "draft", to:g.to, cc:g.cc, subject, html:rvMailHtml(text), text});
+          snapshot();
+          g.items.forEach(it => { it.mail = {at:new Date().toISOString(), by:billWho(), to:g.to, subject, sent:!!r.sent, draftId:r.draftId || "", threadId:r.threadId || ""}; if(r.sent && !it.contacted) it.contacted = todayISO(); });
+          actLog("finance", `Duplicate payout email ${r.sent ? "sent" : "saved as a draft"} to ${ownerLabel(g.o) || g.owner} (${g.to}) · ${usd(g.totalC)}`, {side:"pm"});
+          commit(); ok.push(g); pick.delete(g.key);
+        }catch(e){ bad.push(`${ownerLabel(g.o) || g.owner}: ${e.message}`); }
+      }
+      busy = false;
+      draw(`${ok.length ? `${send ? "Sent" : "Saved as drafts in billing@'s Gmail"}: ${ok.map(g => esc(ownerLabel(g.o) || g.owner)).join(", ")}.` : ""}${bad.length ? `<br><span style="color:var(--red)">Didn't go: ${bad.map(esc).join("; ")}</span>` : ""}`);
+      if(S.ui.view === "recover") render();
+    };
+    $("#rmDraft").onclick = () => go2(false);
+    $("#rmSend").onclick = () => go2(true);
+  };
+  draw(); openPanel();
+}
+{ const rv0 = pgRecover;
+  pgRecover = function(){
+    rv0.apply(this, arguments);
+    try{
+      const G = rvMailGroups(); if(!G.length) return;
+      const n = G.filter(g => !g.mail || !g.mail.sent).length;
+      actions([[n ? `Email owners (${n})` : "Email owners", rvMailSheet, n ? "primary" : ""]]);
+      // show the email on each row
+      document.querySelectorAll("tr[data-rv]").forEach(tr => { const it = rvState().items.find(x => x.id === tr.dataset.rv); if(it && it.mail){ const s = tr.querySelector(".item-s"); if(s) s.insertAdjacentHTML("beforeend", ` · <span class="tag ${it.mail.sent ? "green" : "acc"}" title="${esc(it.mail.to)}">${it.mail.sent ? "emailed " + esc(fdateS(String(it.mail.at).slice(0, 10))) : "draft in Gmail"}</span>`); } });
+    }catch(e){ console.warn("rv mail", e); }
+  };
+}
