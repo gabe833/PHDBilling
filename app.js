@@ -3989,7 +3989,8 @@ const PMCore = (function(){
     const adminC = has(row.adminFee) ? cents(row.adminFee) : itemsFeeC;
     const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
     const ruleFeeC = rule.type === "flat" ? (recv > 0 ? cents(rule.amount) : 0) : Math.round(recv * Number(rule.rate || 0) / 100);
-    const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : ruleFeeC;
+    // a PHD fee credit (fee waived on a unit to make up for something) lowers the fee until MagicDoor charges its own
+    const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : Math.max(0, ruleFeeC - nz(row.feeCredit));
     const leasingC = nz(row.leasingFee), otherC = nz(row.otherIncome);
     const adjC = (row.adjustments || []).reduce((a, x) => a + cents(x.amount), 0);
     const calcC = recv - repairsC - adminC - pmFeeC - leasingC + otherC + adjC;
@@ -5435,7 +5436,7 @@ function pmStatementHTML(m, ids, groupsList){
         </tbody>
         <tbody class="totals">
           ${c.adminC ? `<tr><td></td><td colspan="2">Admin fee on repairs</td><td class="r">−${usd(c.adminC)}</td></tr>` : ""}
-          ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td></td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("")
+          ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td></td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("") + (UN.credit || []).map(x => `<tr><td></td><td colspan="2">${esc(x.label)}<br><span class="sub">${esc(x.why)}</span></td><td class="r">${usd(x.c)}</td></tr>`).join("")
             : `<tr><td></td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>`)(pmStmtUnits(p, m, c))}
           ${c.leasingC ? `<tr><td></td><td colspan="2">Leasing fee</td><td class="r">−${usd(c.leasingC)}</td></tr>` : ""}
           <tr class="tot"><td></td><td colspan="2">Owner payout · ${esc(p.name)}</td><td class="r">${usd(c.payoutC)}</td></tr>
@@ -7037,10 +7038,16 @@ function pmStmtUnits(p, m, c){
   const paid = U.reduce((a, u) => a + u.paidC, 0); if(Math.abs(paid - c.recv) > 100) return null;
   const rent = U.map(u => ({label:stmtUnitName(u.unit), c:u.paidC, dueC:u.rentC - u.creditsC}));
   rent[rent.length - 1].c += c.recv - paid;                                 // cents of rounding land on the last unit
+  const FC = typeof fcMonth === "function" ? fcMonth(p, m) : [], fcC = FC.reduce((a, x) => a + x.usedC, 0), gross = U.reduce((a, u) => a + u.feeC, 0);
+  if(FC.length && Math.abs(gross - fcC - c.pmFeeC) <= 100){
+    const fee = U.map(u => ({label:stmtUnitName(u.unit), c:u.feeC, rate:u.rate})).filter(x => x.c);
+    fee[fee.length - 1].c += c.pmFeeC + fcC - gross;                    // rounding
+    return {rent, fee, credit:FC.map(x => ({label:x.label, c:x.usedC, why:x.why}))};
+  }
   const A = pmUnitFees(U, c.pmFeeC), fees = A.fees.slice();
   const big = fees.indexOf(Math.max(...fees)); if(big >= 0) fees[big] += c.pmFeeC - fees.reduce((a, f) => a + f, 0);
   const fee = U.map((u, i) => ({label:stmtUnitName(u.unit), c:fees[i], rate:A.how === "split" ? A.rate : u.rate})).filter(x => x.c);
-  return {rent, fee};
+  return {rent, fee, credit:[]};
 }
 
 /* The statement as a PDF-safe page: plain tables and system fonts, so Google's converter lays it out exactly. */
@@ -7060,6 +7067,7 @@ function pmStatementPdfHTML(m, pid, opts){
     .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
   const fees = [c.adminC ? line("", `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
     UN && UN.fee.length ? UN.fee.map(u => line("", `Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}`, "", neg(u.c), "fee")).join("") : line("", `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
+    UN && UN.credit && UN.credit.length ? UN.credit.map(x => line("", `${esc(x.label)}<br><span class="m">${esc(x.why)}</span>`, "", usd(x.c), "fee")).join("") : "",
     c.leasingC ? line("", "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
   const owe = c.payoutC < 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
@@ -17190,18 +17198,26 @@ function pmUnitFees(U, feeC){
   let left = feeC; const fees = U.map((u, i) => { const f = i === U.length - 1 ? left : Math.round(paid ? feeC * u.paidC / paid : feeC / U.length); left -= f; return f; });
   return {fees, missed:[], how:"split", rate:paid ? Math.round(feeC * 10000 / paid) / 100 : 0};
 }
+// pmUnitFees, but a PHD fee credit that explains the gap shows as the full fee + the credit
+function pmUnitFeesP(p, m, U, feeC){
+  const FC = typeof fcMonth === "function" ? fcMonth(p, m) : [], fcC = FC.reduce((a, x) => a + x.usedC, 0), gross = U.reduce((a, u) => a + u.feeC, 0);
+  if(FC.length && Math.abs(gross - fcC - feeC) <= 100) return {fees:U.map(u => u.feeC), missed:[], how:"credit", credits:FC};
+  return Object.assign(pmUnitFees(U, feeC), {credits:[]});
+}
 function pmUnitTableHTML(p, m, row){
   const U = pmUnitLines(p, m); if(!U.length) return "";
   const c = row ? pmCalc(row, p) : null, paidSum = U.reduce((a, u) => a + u.paidC, 0);
-  const A = pmUnitFees(U, c ? c.pmFeeC : U.reduce((a, u) => a + u.feeC, 0)), feeSum = A.fees.reduce((a, f) => a + f, 0);
+  const A = pmUnitFeesP(p, m, U, c ? c.pmFeeC : U.reduce((a, u) => a + u.feeC, 0)), feeSum = A.fees.reduce((a, f) => a + f, 0);
   const feeNote = pmUnitFeeNote(A, U, row);
   return `<div class="pm-units"><div class="label">By unit · ${monthLabel(m)}</div>
     <table class="pm-unit-t"><thead><tr><th>Unit</th><th class="r">Rent</th><th class="r">Collected</th><th class="r">PM fee${A.how === "split" ? ` (${A.rate}%)` : U[0].rate ? ` (${U[0].rate}%)` : ""}</th></tr></thead><tbody>
     ${U.map(u => `<tr><td><b>${esc(u.unit)}</b>${u.tenant ? `<div class="sub">${esc(u.tenant)}</div>` : ""}</td><td class="r num">${usd(u.rentC)}${u.creditsC ? `<div class="sub">credit −${usd(u.creditsC)}</div>` : ""}</td><td class="r num"${u.paidC < u.rentC - u.creditsC ? ' style="color:var(--red)"' : ""}>${usd(u.paidC)}</td><td class="r num">${usd(A.fees[U.indexOf(u)])}${A.missed.includes(u) ? `<div class="sub" style="color:var(--red)">not charged · ${usd(u.feeC)}</div>` : ""}</td></tr>`).join("")}
-    </tbody><tbody class="totals"><tr><td>Both units</td><td class="r num">${usd(U.reduce((a, u) => a + u.rentC, 0))}</td><td class="r num">${usd(paidSum)}</td><td class="r num">${usd(feeSum)}</td></tr></tbody></table>${feeNote}</div>`;
+    ${A.credits.map(x => `<tr><td colspan="3"><b>${esc(x.label)}</b><div class="sub">${esc(x.why)}${x.planned ? " · MagicDoor hasn't charged this month's fee yet" : ""}</div></td><td class="r num" style="color:var(--green)">+${usd(x.usedC)}</td></tr>`).join("")}
+    </tbody><tbody class="totals"><tr><td>Both units</td><td class="r num">${usd(U.reduce((a, u) => a + u.rentC, 0))}</td><td class="r num">${usd(paidSum)}</td><td class="r num">${usd(feeSum - A.credits.reduce((a, x) => a + x.usedC, 0))}</td></tr></tbody></table>${feeNote}</div>`;
 }
 
 function pmUnitFeeNote(A, U, row){
+  if(A.how === "credit") return "";
   const pend = row && !has(row.pmFee);
   if(A.how === "some") return `<p class="help pm-unit-warn">The PM fee charged (${usd(A.fees.reduce((a, f) => a + f, 0))}) only covers ${U.filter(u => !A.missed.includes(u)).map(u => esc(u.unit)).join(", ")} — no fee was taken on ${A.missed.map(u => `${esc(u.unit)} (${usd(u.feeC)} at ${u.rate}%)`).join(", ")}. The owner payout is ${usd(A.missed.reduce((a, u) => a + u.feeC, 0))} higher than it should be unless that unit is fee-free.</p>`;
   if(A.how === "split") return `<p class="help pm-unit-warn">${pend ? "Not charged yet — worked out" : "Charged"} at ${A.rate}% of rent collected; the fee rule here says ${U[0].rate}%.${pend ? "" : " Fix the fee rule on the property if MagicDoor's rate is the right one."}</p>`;
@@ -17243,7 +17259,7 @@ function pmOwedCardHTML(o){
   const line = (l, v, cls) => `<tr class="${cls || ""}"><td>${l}</td><td class="r num">${v}</td></tr>`;
   return `<div class="card pm-owed"><div class="card-h"><h3>Rental income owed to ${esc(ownerLabel(o))}</h3><b class="num" style="margin-left:auto">${usd(tot)}</b></div><div class="card-b">
     <p class="muted" style="margin-top:0">Owner payouts not sent yet · ${months.map(monthLabel).join(", ")}. Each property's units are listed separately; the payout is per property, the way MagicDoor pays it.</p>
-    ${L.map(x => { const c = x.s.c, U = pmUnitLines(x.p, x.m), r = x.row, A = U.length ? pmUnitFees(U, c.pmFeeC) : null;
+    ${L.map(x => { const c = x.s.c, U = pmUnitLines(x.p, x.m), r = x.row, A = U.length ? pmUnitFeesP(x.p, x.m, U, c.pmFeeC) : null;
       const bills = (r.repairItems || []).map(it => line(`${esc(it.vendor || "Repair")} — ${esc(it.memo || "")}`, "−" + usd(cents(it.amount)))).join("");
       return `<div class="pm-owed-p"><div class="pm-owed-h"><b>${esc(x.p.name)} · ${monthLabel(x.m)}</b>${tag(x)}<b class="num" style="margin-left:auto">${usd(c.payoutC)}</b></div>
         <table class="pm-unit-t"><tbody>
@@ -17251,6 +17267,7 @@ function pmOwedCardHTML(o){
         ${U.length && Math.abs(U.reduce((a, u) => a + u.paidC, 0) - c.recv) > 100 ? line(`<span class="muted">Rent on the month row</span>`, usd(c.recv)) : ""}
         ${c.otherC ? line("Other owner income", usd(c.otherC)) : ""}
         ${U.length ? U.map((u, i) => line(`PM fee · ${esc(u.unit)} (${A.how === "split" ? A.rate : u.rate}%)${A.missed.includes(u) ? ` <span class="tag red">not charged · ${usd(u.feeC)}</span>` : ""}`, "−" + usd(A.fees[i]), "sub-l")).join("") : c.pmFeeC ? line("PM fee", "−" + usd(c.pmFeeC)) : ""}
+        ${A ? A.credits.map(f => line(`${esc(f.label)} <span class="sub" style="display:inline">${esc(f.why)}</span>`, "+" + usd(f.usedC))).join("") : ""}
         ${c.leasingC ? line("Leasing fee", "−" + usd(c.leasingC)) : ""}${bills}${c.adminC ? line("Admin fee on repairs", "−" + usd(c.adminC)) : ""}
         ${c.adjC ? line("Adjustments", (c.adjC < 0 ? "−" : "") + usd(Math.abs(c.adjC))) : ""}
         </tbody><tbody class="totals">${line("Owner payout", usd(c.payoutC))}</tbody></table>${A ? pmUnitFeeNote(A, U, r) : ""}</div>`; }).join("")}
@@ -17576,5 +17593,118 @@ function rvMailSheet(){
       // show the email on each row
       document.querySelectorAll("tr[data-rv]").forEach(tr => { const it = rvState().items.find(x => x.id === tr.dataset.rv); if(it && it.mail){ const s = tr.querySelector(".item-s"); if(s) s.insertAdjacentHTML("beforeend", ` · <span class="tag ${it.mail.sent ? "green" : "acc"}" title="${esc(it.mail.to)}">${it.mail.sent ? "emailed " + esc(fdateS(String(it.mail.at).slice(0, 10))) : "draft in Gmail"}</span>`); } });
     }catch(e){ console.warn("rv mail", e); }
+  };
+}
+
+/* ---------- PHD fee credits ----------
+   When PHD owes an owner something (27 Smith: the $871.68 overage on Unit A's credit, 09/01/2026), it's paid back by
+   not charging the PM fee on that unit until the amount is used up. Kept on the rental: p.feeCredits =
+   [{id, unit (MagicDoor unit name), totalC, reason, date, start (first month), by, at}].
+   Each month's use is worked out from the numbers, never typed:
+     · MagicDoor already charged the month's fee → what it left off that unit is the credit used
+     · not charged yet → the credit planned for the month lowers the console's fee (row.feeCredit), so the payout is right
+   Statements show the unit's full fee and the credit as its own line, so the owner sees both. */
+function fcList(p){ return (p && Array.isArray(p.feeCredits) ? p.feeCredits : []).filter(c => c && !c.deleted && c.totalC > 0); }
+function fcUnitOf(U, c){ const k = String(c.unit || "").toLowerCase().trim(); return U.find(u => String(u.unit).toLowerCase().trim() === k) || U.find(u => k && String(u.unit).toLowerCase().startsWith(k.split(/\s*[-–—]\s*/)[0] + " ")) || null; }
+// month by month: {m: [{c, unit, usedC, planned}]}, and per credit {usedC, plannedC, leftC}
+function fcLedger(p){
+  const out = {months:{}, credits:{}}, cur = pmCurrentMonth(), pool = {};
+  // what MagicDoor left off the month's fee: the rate on every unit's rent, less what it charged
+  const missing = (m, row, U) => { if(!(m in pool)) pool[m] = Math.max(0, U.reduce((a, u) => a + u.feeC, 0) - cents(row.pmFee)); return pool[m]; };
+  fcList(p).forEach(cr => {
+    let left = cr.totalC, usedC = 0, plannedC = 0;
+    for(let m = cr.start || cur; m <= cur && left > 0; m = PMCore.monthAdd(m, 1)){
+      const row = pmRow(m, p.id); if(!row || row.deleted || row.detailOnly) continue;
+      const U = pmUnitLines(p, m), u = fcUnitOf(U, cr); if(!u || !u.feeC) continue;
+      let take = 0, planned = false;
+      if(PMCore.has(row.pmFee)){ take = Math.min(left, u.feeC, missing(m, row, U)); pool[m] -= take; }
+      else { take = Math.min(left, u.feeC); planned = true; }
+      if(!take) continue;
+      left -= take; planned ? plannedC += take : usedC += take;
+      (out.months[m] = out.months[m] || []).push({cr, unit:u.unit, usedC:take, planned});
+    }
+    out.credits[cr.id] = {usedC, plannedC, leftC:left};
+  });
+  return out;
+}
+// open months not charged in MagicDoor yet: the fee here leaves out the credited unit (row.feeCredit, dollars)
+function fcApply(){
+  let n = 0;
+  pmState().properties.forEach(p => {
+    const rowsWith = Object.values(pmState().rows).filter(r => r.propertyId === p.id && PMCore.has(r.feeCredit));
+    const L = fcList(p).length ? fcLedger(p) : {months:{}};
+    const want = {};
+    Object.entries(L.months).forEach(([m, xs]) => { const s = xs.filter(x => x.planned).reduce((a, x) => a + x.usedC, 0); if(s) want[m] = s / 100; });
+    const touch = r => { pmTouch(r); n++; };
+    rowsWith.forEach(r => { if(!(r.month in want) && !r.locked && !r.paidOut) { delete r.feeCredit; touch(r); } });
+    Object.entries(want).forEach(([m, v]) => { const r = pmRow(m, p.id); if(!r || r.locked || r.paidOut || (pmState().meta[m] || {}).closed) return; if(cents(r.feeCredit) !== cents(v)){ r.feeCredit = v; touch(r); } });
+  });
+  return n;
+}
+let FC_SIG = "";
+{ const fcR0 = render;
+  render = function(){
+    const r = fcR0.apply(this, arguments);
+    try{
+      const ps = pmState().properties.filter(p => fcList(p).length);
+      if(ps.length && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+        const sig = ps.map(p => cloudCanon(p.feeCredits) + Object.values(pmState().rows).filter(x => x.propertyId === p.id).map(x => x.month + "|" + (x.pmFee ?? "") + "|" + (x.feeCredit ?? "") + (x.locked ? "l" : "")).join(",")).join(";") + (S.md && S.md.syncedAt || "");
+        if(sig !== FC_SIG){ FC_SIG = sig; setTimeout(() => { snapshot(); if(fcApply()) commit(); }, 450); }
+      }
+    }catch(e){}
+    return r;
+  };
+}
+// the credit lines for one month (statement, owed card, unit table)
+function fcMonth(p, m){
+  if(!fcList(p).length) return [];
+  const L = fcLedger(p);
+  return (L.months[m] || []).map(x => {
+    const through = Object.entries(L.months).filter(([mm]) => mm <= m).reduce((a, [, xs]) => a + xs.filter(y => y.cr.id === x.cr.id).reduce((b, y) => b + y.usedC, 0), 0), left = x.cr.totalC - through;
+    return Object.assign({}, x, {label:`Management fee credit · ${stmtUnitName(x.unit)}`, why:`${x.cr.reason || "Credit"}${x.cr.date ? " (" + docShort(x.cr.date) + ")" : ""} · ${usd(through)} of ${usd(x.cr.totalC)} applied${left > 0 ? `, ${usd(left)} left` : " — fully applied"}`});
+  });
+}
+// the rental's page: its fee credits, what's been used, and a way to add one
+function fcCardHTML(p){
+  const list = fcList(p), L = list.length ? fcLedger(p) : {credits:{}, months:{}};
+  const U = typeof pmUnitLines === "function" ? pmUnitLines(p, pmCurrentMonth()) : [];
+  return `<div class="card-h"><h3>Fee credits</h3><button class="btn sm" id="fcAdd" style="margin-left:auto">Add a fee credit</button></div><div class="card-b">
+    ${list.length ? list.map(cr => { const k = L.credits[cr.id] || {usedC:0, plannedC:0, leftC:cr.totalC};
+      const ms = Object.entries(L.months).filter(([, xs]) => xs.some(x => x.cr.id === cr.id)).sort().map(([m, xs]) => { const x = xs.find(y => y.cr.id === cr.id); return `${monthLabel(m)} ${usd(x.usedC)}${x.planned ? " (planned)" : ""}`; });
+      return `<div class="fc-r"><div><b>${usd(cr.totalC)} · ${esc(stmtUnitName(cr.unit))}</b><div class="muted">${esc(cr.reason || "")}${cr.date ? " · " + esc(fdateS(cr.date)) : ""} · from ${esc(monthLabel(cr.start))}</div>
+        <div class="muted">${ms.length ? ms.join(" · ") : "Nothing applied yet"}</div></div>
+        <div class="fc-n"><span class="num">${usd(k.leftC)}</span><span class="muted">left</span></div><button class="btn sm ghost" data-fcdel="${esc(cr.id)}">Remove</button></div>`; }).join("")
+      : `<p class="muted" style="margin:0;font-size:13px">When PHD owes the owner something, it can be paid back by not charging the management fee on a unit until it's used up. The statement shows the full fee and the credit, month by month.</p>`}
+    </div>`;
+}
+function fcSheet(p){
+  const U = pmUnitLines(p, pmCurrentMonth()), sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Add a fee credit</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p.name)}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      <div class="f2"><label class="fld"><span>Amount PHD owes the owner</span><input type="number" step="0.01" min="0" id="fcAmt"></label>
+        <label class="fld"><span>Unit</span>${U.length ? `<select id="fcUnit">${U.map(u => `<option>${esc(u.unit)}</option>`).join("")}</select>` : `<input type="text" id="fcUnit" placeholder="e.g. A - Front">`}</label></div>
+      <label class="fld"><span>Why</span><input type="text" id="fcWhy" placeholder="e.g. Overage for credit"></label>
+      <div class="f2"><label class="fld"><span>Date</span><input type="date" id="fcDate" value="${todayISO()}"></label>
+        <label class="fld"><span>First month to apply</span><input type="month" id="fcStart" value="${pmCurrentMonth()}"></label></div>
+      <p class="help">The management fee on that unit isn't charged until this amount is used up. If MagicDoor already left it off a month, that month counts.</p></div>
+    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="fcSave">Add credit</button></div>`;
+  $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+  $("#fcSave").onclick = () => {
+    const amt = Math.round(Math.abs(Number($("#fcAmt").value)) * 100); if(!amt) return toast("Enter the amount");
+    snapshot(); p.feeCredits = (p.feeCredits || []).concat([{id:"fc_" + uid(), unit:$("#fcUnit").value.trim(), totalC:amt, reason:$("#fcWhy").value.trim(), date:$("#fcDate").value, start:$("#fcStart").value || pmCurrentMonth(), by:billWho(), at:new Date().toISOString()}]);
+    fcApply(); actLog("rentals", `Fee credit of ${usd(amt)} added on ${p.name}`, {pid:p.id}); commit(); closeSheet(); render(); toast("Fee credit added", true);
+  };
+  openPanel();
+}
+{ const pp1 = pgPmProperty;
+  pgPmProperty = function(){
+    const r = pp1.apply(this, arguments);
+    try{
+      const p = pmProp(S.ui.pmPropId); if(!p) return r;
+      const c = elm("div", "card fc-card"); c.innerHTML = fcCardHTML(p); $("#view").appendChild(c);
+      c.querySelector("#fcAdd").onclick = () => fcSheet(p);
+      c.querySelectorAll("[data-fcdel]").forEach(b => b.onclick = () => { if(!confirm("Remove this fee credit? Months already paid out keep their numbers.")) return; snapshot(); p.feeCredits = (p.feeCredits || []).filter(x => x.id !== b.dataset.fcdel); fcApply(); commit(); render(); });
+    }catch(e){ console.warn("fee credits", e); }
+    return r;
   };
 }

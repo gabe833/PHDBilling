@@ -2455,3 +2455,10 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .rm-m{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 0 26px;font-size:12.5px}
 .rm-m a{margin-left:auto}
 .rm-pv{margin:8px 0 2px 26px;padding:10px 12px;border-radius:8px;background:var(--panel2, rgba(0,0,0,.03));font-size:13px;line-height:1.45}
+
+/* fee credits on a rental */
+.fc-r{display:flex;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.fc-r:first-child{border-top:0}
+.fc-r > div:first-child{flex:1;min-width:0}
+.fc-r .muted{font-size:12.5px}
+.fc-n{display:flex;flex-direction:column;align-items:flex-end}

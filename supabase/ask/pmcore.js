@@ -48,7 +48,8 @@ const PMCore = (function(){
     const adminC = has(row.adminFee) ? cents(row.adminFee) : itemsFeeC;
     const rule = (prop && prop.feeRule) || {type:"pct", rate:10};
     const ruleFeeC = rule.type === "flat" ? (recv > 0 ? cents(rule.amount) : 0) : Math.round(recv * Number(rule.rate || 0) / 100);
-    const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : ruleFeeC;
+    // a PHD fee credit (fee waived on a unit to make up for something) lowers the fee until MagicDoor charges its own
+    const pmFeeC = has(row.pmFee) ? cents(row.pmFee) : Math.max(0, ruleFeeC - nz(row.feeCredit));
     const leasingC = nz(row.leasingFee), otherC = nz(row.otherIncome);
     const adjC = (row.adjustments || []).reduce((a, x) => a + cents(x.amount), 0);
     const calcC = recv - repairsC - adminC - pmFeeC - leasingC + otherC + adjC;
