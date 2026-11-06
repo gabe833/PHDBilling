@@ -17281,6 +17281,9 @@ function pmOwedCardHTML(o){
       const h = pmOwedCardHTML(o); if(!h) return;
       const v = $("#view"), d = elm("div"); d.innerHTML = h; d.style.marginBottom = "16px";
       const grid = v.querySelector(".owner-grid"); grid ? v.insertBefore(d, grid) : v.appendChild(d);
+      const hd = d.querySelector(".card-h"), bt = elm("button", "btn sm", "Download PDF");
+      bt.style.marginLeft = "12px"; bt.onclick = () => printDoc(pmOwedDocHTML(o));
+      if(hd) hd.appendChild(bt);
     }catch(e){ console.warn("owed card", e); }
   };
 }
@@ -17707,4 +17710,28 @@ function fcSheet(p){
     }catch(e){ console.warn("fee credits", e); }
     return r;
   };
+}
+
+/* the "Rental income owed" box as its own page — print → Save as PDF */
+function pmOwedDocHTML(o){
+  const h = pmOwedCardHTML(o);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Rental income owed — ${esc(ownerLabel(o))}</title><style>
+    @page{size:letter;margin:0.55in}
+    body{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:#1A2322;font-size:12.5px;margin:0}
+    .brand{font-size:11px;letter-spacing:.12em;color:#1D5C57;font-weight:700}
+    .top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #1D5C57;padding-bottom:10px;margin-bottom:14px}
+    .top h1{font-size:22px;font-weight:500;margin:4px 0 0}
+    .card-h{display:flex;align-items:center;font-size:15px}.card-h h3{margin:0;font-size:15px}.card-h .btn{display:none}
+    .muted{color:#5F6B69}.num{font-variant-numeric:tabular-nums}
+    .pm-owed-p{border:1px solid #DCE2E0;border-radius:8px;padding:8px 10px;margin:10px 0;break-inside:avoid;page-break-inside:avoid}
+    .pm-owed-h{display:flex;gap:10px;align-items:center;margin-bottom:4px}
+    .tag{font-size:10.5px;padding:2px 7px;border-radius:999px;background:#F3E3E1;color:#9B2C22}.tag.gold{background:#F6EDD8;color:#8A6412}
+    .pm-unit-t{width:100%;border-collapse:collapse}.pm-unit-t td{padding:4px 6px;border-top:1px solid #EEF1F0}
+    .pm-unit-t .r{text-align:right;white-space:nowrap}.pm-unit-t .sub{font-size:10.5px;color:#5F6B69}
+    .pm-unit-t tr.sub-l td{color:#5F6B69}.pm-unit-t tbody.totals td{font-weight:700;border-top:2px solid #DCE2E0}
+    .help,.pm-unit-warn{font-size:11px;color:#8A6412;margin:6px 0 0}
+    .pm-owed-tot{display:flex;justify-content:space-between;font-size:15px;padding-top:10px;border-top:2px solid #1A2322;margin-top:8px}
+  </style></head><body>
+    <div class="top"><div><div class="brand">PHD PROPERTY MANAGEMENT</div><h1>Rental income owed</h1></div><div class="muted">Prepared ${esc(new Date().toLocaleDateString("en-US", {month:"long", day:"numeric", year:"numeric"}))}</div></div>
+    ${h}</body></html>`;
 }
