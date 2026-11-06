@@ -1351,8 +1351,9 @@ function pgSettings(){
   v.appendChild(g);
 
   setTimeout(() => {
+    if(S.ui.view !== "settings" || !$("#sArchive")) return;      // the page changed before this ran
     const ul = $("#unitList");
-    p.units.forEach((u,i) => {
+    if(ul) p.units.forEach((u,i) => {
       const r = elm("div","split-r");
       r.innerHTML = `<input type="text" value="${esc(u.name)}" style="flex:1"><button class="btn sm danger">Remove</button>`;
       r.querySelector("input").onchange = e => { snapshot(); u.name = e.target.value; commit(); };
@@ -1424,7 +1425,9 @@ function pgSettings(){
     };
 
     const ad = $("#autoDesc"), ab = $("#sAuto"), ao = $("#sAutoOff");
-    if(!AutoFile.supported()){
+    // the hosted console takes the Autosave card off this page — without it, skip straight to the buttons below
+    if(!ad || !ab || !ao){}
+    else if(!AutoFile.supported()){
       ad.textContent = "This browser keeps everything in its own storage. Autosaving to a file needs Chrome or Edge — until then, download a backup after each session.";
       ab.textContent = "Not available here"; ab.disabled = true;
     } else if(AutoFile.state === "on"){
@@ -1437,17 +1440,21 @@ function pgSettings(){
       ad.textContent = "Choose a .json file once and every change writes straight to it — no account, no server. One file holds every property.";
       ab.textContent = "Choose a file";
     }
-    ab.onclick = () => (AutoFile.state === "needs" ? AutoFile.regrant() : AutoFile.connect()).then(render);
-    ao.onclick = () => AutoFile.disconnect().then(render);
+    if(ab) ab.onclick = () => (AutoFile.state === "needs" ? AutoFile.regrant() : AutoFile.connect()).then(render);
+    if(ao) ao.onclick = () => AutoFile.disconnect().then(render);
     $("#sCsv").onclick = exportTxnCsv;
-    $("#sArchive").onclick = () => { snapshot(); P().archived = !P().archived; commit(); toast(P().archived?"Archived":"Unarchived"); };
+    $("#sArchive").onclick = () => {
+      const p = P(); snapshot(); p.archived = !p.archived; commit();
+      if(p.archived){ toast(`${p.name} archived — open it any time from the property menu → Archived`, true); go("portfolio"); }
+      else { toast(`${p.name} is back in the portfolio`, true); render(); }
+    };
     $("#sDelete").onclick = () => {
       if(S.properties.length <= 1) return toast("Keep at least one property");
       if(!confirm(`Delete ${P().name} and all ${P().transactions.length} of its transactions? This can be undone with Ctrl+Z until you reload.`)) return;
       snapshot();
       S.properties = S.properties.filter(x => x.id !== S.activeId);
       S.activeId = S.properties[0].id; S.ui.view = "portfolio";
-      commit(); toast("Property deleted");
+      commit(); toast("Property deleted", true); render();
     };
   },0);
 }
@@ -17399,3 +17406,45 @@ function billMoveToProject(id){
     }catch(e){ console.warn("move to project", e); }
   };
 }
+
+
+/* ---------- when the browser blocks confirm() ----------
+   Chrome stops showing confirm boxes for a page after "Don't allow this page to create more dialogs" is ticked
+   once (and some embedded browsers never show them): confirm() then answers "no" instantly and the button
+   seems dead. If it comes back "no" faster than a person could read it, ask here instead and, on yes, click
+   the same button again with the answer already given. */
+(function(){
+  const native = window.confirm.bind(window), pass = new Map();
+  let lastEl = null, lastAt = 0;
+  document.addEventListener("click", e => { lastEl = e.target && e.target.closest ? e.target.closest("button, a, [data-x], input, label") || e.target : null; lastAt = Date.now(); }, true);
+  document.addEventListener("change", e => { lastEl = e.target; lastAt = Date.now(); }, true);
+  function ask(msg, onYes){
+    const old = document.getElementById("cfmBox"); if(old) old.remove();
+    const box = document.createElement("div"); box.id = "cfmBox"; box.className = "cfm-scrim";
+    box.innerHTML = `<div class="cfm" role="alertdialog" aria-modal="true"><p></p><div class="cfm-b"><button class="btn" data-c="no">Cancel</button><button class="btn primary" data-c="yes">OK</button></div></div>`;
+    box.querySelector("p").textContent = String(msg == null ? "" : msg);
+    document.body.appendChild(box);
+    const close = () => box.remove();
+    box.querySelector('[data-c="no"]').onclick = close;
+    box.querySelector('[data-c="yes"]').onclick = () => { close(); onYes(); };
+    box.onkeydown = e => { if(e.key === "Escape") close(); if(e.key === "Enter"){ close(); onYes(); } };
+    box.querySelector('[data-c="yes"]').focus();
+  }
+  window.confirm = function(msg){
+    const k = String(msg);
+    if(pass.has(k)){ pass.delete(k); return true; }
+    const t0 = performance.now(); let r = false;
+    try{ r = native(msg); }catch(e){ r = false; }
+    const blocked = !r && performance.now() - t0 < 40;
+    if(blocked){
+      const el = lastEl, recent = Date.now() - lastAt < 1500;
+      if(el && recent && document.contains(el)) ask(msg, () => {
+        pass.set(k, true); setTimeout(() => pass.delete(k), 3000);
+        if(el.matches && el.matches("input[type=checkbox], input[type=radio]")){ el.checked = !el.checked; el.dispatchEvent(new Event("change", {bubbles:true})); }
+        else if(el.matches && el.matches("input, select, textarea")) el.dispatchEvent(new Event("change", {bubbles:true}));
+        else el.click();
+      });
+    }
+    return r;
+  };
+})();
