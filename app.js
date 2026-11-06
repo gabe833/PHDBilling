@@ -17919,9 +17919,10 @@ function poRows(m){
   return out.sort((a, b) => ownerLabel(a.o).localeCompare(ownerLabel(b.o)) || a.p.name.localeCompare(b.p.name, undefined, {numeric:true}));
 }
 async function poLoadPlan(ownerIds, force){
-  if(PO.loading || (!force && PO.plan && Date.now() - PO.at < 120000 && ownerIds.every(id => PO.plan.owners && id in PO.plan.owners))) return PO.plan;
+  if(PO.loading || (!force && PO.plan && (PO.plan.error ? Date.now() - PO.at < 15000 : Date.now() - PO.at < 120000 && ownerIds.every(id => PO.plan.owners && id in PO.plan.owners)))) return PO.plan;
   PO.loading = true;
-  try{ PO.plan = await payCall("nk.payoutPlan", {ownerIds}, {noSave:true}); PO.at = Date.now(); }catch(e){ PO.plan = {error:e.message}; }
+  try{ PO.plan = await payCall("nk.payoutPlan", {ownerIds}, {noSave:true}); }catch(e){ PO.plan = {error:e.message}; }
+  PO.at = Date.now();
   PO.loading = false; return PO.plan;
 }
 // who a property's payout goes to: a payee picked for that property, else the Nickel payee named after the property
@@ -17964,7 +17965,7 @@ function pgPayouts(){
   });
   const held = rows.filter(x => x.k === "held"), done = rows.filter(x => x.k === "paid" || x.k === "sched");
   const ownerIds = [...new Set(ready.filter(x => !x.split).map(x => x.o && x.o.id).filter(Boolean))];
-  if(nickelOn() && ownerIds.length) poLoadPlan(ownerIds).then(pl => { if(pl && S.ui.view === "payouts" && !v._po){ v._po = 1; render(); } });
+  if(nickelOn() && ownerIds.length) poLoadPlan(ownerIds).then(pl => { if(pl && S.ui.view === "payouts" && PO.shown !== PO.at){ PO.shown = PO.at; render(); } });
   const plan = PO.plan || {};
   const payee = x => x.o ? poPayeeFor(x) : {id:""};
   const okToSend = x => x.split ? x.amountC > 0 && !x.waiting.length && x.shares.every(sh => sh.amountC <= 0 || ((poNv(sh.vendorId) || {}).payout || []).length)
@@ -17987,10 +17988,12 @@ function pgPayouts(){
       ${when === "date" ? `<label class="fld"><span>Arrives on</span><input type="date" id="poD" min="${minDate}" value="${date}"></label>` : ""}
       <label class="fld"><span>Pay from</span><select id="poF">${accts.map(x => `<option value="${esc(x.id)}" ${acct && x.id === acct.id ? "selected" : ""}>${esc(x.label)}</option>`).join("") || `<option value="">${nickelOn() ? (plan.error ? "Couldn't reach Nickel" : "Loading accounts…") : "Nickel isn't connected"}</option>`}</select></label>
     </div>
+    ${plan.error ? `<div class="pm-flags" style="padding:8px 16px 0"><div class="warn">Couldn't reach Nickel: ${esc(plan.error)} · <a href="#" id="poRetry">Try again</a></div></div>` : ""}
     <p class="help po-note">${when === "asap"
       ? "Goes out today. Nickel sends it by ACH and uses its fastest delivery the owner's bank supports — often the same day. Nickel doesn't let the console choose instant delivery; that's decided in Nickel."
       : `Lands on ${esc(fdateS(date))}. Nickel holds the money and starts the ACH early enough to arrive that day${date < poBusinessDays(today, 3) ? " — this is soon, so it may start today" : ""}.`}</p>`;
   v.appendChild(top);
+  const rt = top.querySelector("#poRetry"); if(rt) rt.onclick = async e => { e.preventDefault(); await poLoadPlan(ownerIds, true); render(); };
   top.querySelector("#poM").onchange = e => { S.ui.poMonth = e.target.value; S.ui.poSel = {}; persistUi(); render(); };
   top.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { S.ui.poWhen = b.dataset.w; if(b.dataset.w === "date" && !S.ui.poDate) S.ui.poDate = date; persistUi(); render(); });
   const di = top.querySelector("#poD"); if(di) di.onchange = () => { S.ui.poDate = di.value; persistUi(); render(); };
