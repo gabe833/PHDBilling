@@ -5415,15 +5415,17 @@ function pmStatementHTML(m, ids, groupsList){
       return `<h3 class="unit">${esc(p.name)}</h3>
         <table class="zebra"><thead><tr><th style="width:92px">Date</th><th>Description</th><th style="width:150px">Vendor</th><th class="r" style="width:110px">Amount</th></tr></thead>
         <tbody>
-          <tr><td class="dt"></td><td>Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="sub">of ${usd(cents(row.rentDue))} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(c.recv)}</td></tr>
-          ${items.map(it => { const L = stmtLine(it); return `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(L.title)}${L.detail ? `<br><span class="sub">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}">invoice</a>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`; }).join("")}
+          ${(UN => UN ? UN.rent.map(u => `<tr><td class="dt"></td><td>Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="sub">of ${usd(u.dueC)} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(u.c)}</td></tr>`).join("")
+            : `<tr><td class="dt"></td><td>Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="sub">of ${usd(cents(row.rentDue))} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(c.recv)}</td></tr>`)(pmStmtUnits(p, m, c))}
+          ${items.map(it => { const L = stmtLine(it); return `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(L.title)}${L.detail ? `<br><span class="sub">${esc(L.detail)}</span>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`; }).join("")}
           ${!items.length && c.repairsC ? `<tr><td class="dt"></td><td>Repairs</td><td class="vn"></td><td class="r">−${usd(c.repairsC)}</td></tr>` : ""}
           ${c.otherC ? `<tr><td class="dt"></td><td>Other income</td><td class="vn"></td><td class="r">${usd(c.otherC)}</td></tr>` : ""}
           ${(row.adjustments || []).map(a => `<tr><td class="dt"></td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
         </tbody>
         <tbody class="totals">
           ${c.adminC ? `<tr><td></td><td colspan="2">Admin fee on repairs</td><td class="r">−${usd(c.adminC)}</td></tr>` : ""}
-          <tr><td></td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>
+          ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td></td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("")
+            : `<tr><td></td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>`)(pmStmtUnits(p, m, c))}
           ${c.leasingC ? `<tr><td></td><td colspan="2">Leasing fee</td><td class="r">−${usd(c.leasingC)}</td></tr>` : ""}
           <tr class="tot"><td></td><td colspan="2">Owner payout · ${esc(p.name)}</td><td class="r">${usd(c.payoutC)}</td></tr>
         </tbody></table>`;
@@ -7015,6 +7017,21 @@ function stmtCandidates(m){
   }).sort((a, b) => a.p.name.localeCompare(b.p.name, undefined, {numeric:true}));
 }
 
+/* rent and PM fee unit by unit, for a building with several units on one property (120 Smith A & B).
+   null when there's one unit, or MagicDoor's unit figures don't add up to the month's rent (then one line, as before). */
+const stmtUnitName = n => { const x = String(n || "").match(/^\s*([A-Za-z0-9]{1,4})\s*[-–—:]\s*(.+)$/); return x ? `Unit ${x[1]} (${x[2].trim()})` : /^unit\b/i.test(n || "") ? n : `Unit ${n}`; };
+function pmStmtUnits(p, m, c){
+  if(typeof pmUnitLines !== "function") return null;
+  const U = pmUnitLines(p, m); if(U.length < 2) return null;
+  const paid = U.reduce((a, u) => a + u.paidC, 0); if(Math.abs(paid - c.recv) > 100) return null;
+  const rent = U.map(u => ({label:stmtUnitName(u.unit), c:u.paidC, dueC:u.rentC - u.creditsC}));
+  rent[rent.length - 1].c += c.recv - paid;                                 // cents of rounding land on the last unit
+  const A = pmUnitFees(U, c.pmFeeC), fees = A.fees.slice();
+  const big = fees.indexOf(Math.max(...fees)); if(big >= 0) fees[big] += c.pmFeeC - fees.reduce((a, f) => a + f, 0);
+  const fee = U.map((u, i) => ({label:stmtUnitName(u.unit), c:fees[i], rate:A.how === "split" ? A.rate : u.rate})).filter(x => x.c);
+  return {rent, fee};
+}
+
 /* The statement as a PDF-safe page: plain tables and system fonts, so Google's converter lays it out exactly. */
 function pmStatementPdfHTML(m, pid, opts){
   opts = opts || {};
@@ -7023,13 +7040,15 @@ function pmStatementPdfHTML(m, pid, opts){
   const d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
   const neg = x => "−" + usd(Math.abs(x));
   const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;
-  const lines = [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))]
-    .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${L.link ? ` <a href="${esc(L.link)}" style="color:#1D5C57">invoice</a>` : L.mdFile && opts.attach ? ` <span class="m">· invoice attached</span>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
+  const UN = pmStmtUnits(p, m, c);
+  const lines = (UN ? UN.rent.map(u => line("", `Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="m">(${usd(u.dueC)} due)</span>` : ""}`, "", usd(u.c)))
+      : [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))])
+    .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${(L.link || L.mdFile) && opts.attach ? ` <span class="m">· invoice attached</span>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
     .concat(!items.length && c.repairsC ? [line("", "Repairs", "", neg(c.repairsC))] : [])
     .concat(c.otherC ? [line("", "Other income", "", usd(c.otherC))] : [])
     .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
   const fees = [c.adminC ? line("", `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
-    line("", `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
+    UN && UN.fee.length ? UN.fee.map(u => line("", `Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}`, "", neg(u.c), "fee")).join("") : line("", `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
     c.leasingC ? line("", "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
   const owe = c.payoutC < 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
@@ -7439,6 +7458,7 @@ function pgPmStatements(){
   $("#pgSub").textContent = `${monthLabel(m)} · ${meta.closed ? "month closed" : "month still open"} · sent from ${(stmtConn() || {}).mailbox || "pm@phdproperties.realestate"}`;
   const nReady = cands.filter(x => !x.why && !x.done).length;
   actions([["Print all", () => { const g = {}; cands.forEach(x => { const k = x.p.ownerId || "p:" + x.p.id; (g[k] = g[k] || []).push(x.p.id); }); printDoc(pmStatementHTML(m, null, Object.values(g))); }],
+           ["Download PDF…", () => stmtBulkSheet({months:[m]})],
            [nReady ? `Email statements (${nReady})` : "Email statements", () => pmStatementMailSheet(m), "primary"]]);
   const v = $("#view");
 
@@ -17234,5 +17254,72 @@ function pmOwedCardHTML(o){
       const v = $("#view"), d = elm("div"); d.innerHTML = h; d.style.marginBottom = "16px";
       const grid = v.querySelector(".owner-grid"); grid ? v.insertBefore(d, grid) : v.appendChild(d);
     }catch(e){ console.warn("owed card", e); }
+  };
+}
+
+
+/* ---------- several statements as one PDF: pick months and properties ----------
+   Each property-month is its own page (the same page that's emailed), in property order then month order.
+   The browser's print dialog saves it — choose "Save as PDF". */
+function stmtBulkHTML(pairs){
+  const docs = pairs.map(([m, pid]) => pmStatementPdfHTML(m, pid));
+  if(!docs.length) return "";
+  const style = (docs[0].match(/<style>[\s\S]*?<\/style>/) || [""])[0];
+  const body = h => (h.match(/<body>([\s\S]*)<\/body>/) || ["", h])[1];
+  const title = pairs.length === 1 ? "Owner Statement" : `Owner Statements (${pairs.length})`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>${style}<style>.stp{break-after:page;page-break-after:always}.stp:last-child{break-after:auto;page-break-after:auto}</style></head><body>
+    ${docs.map(h => `<div class="stp">${body(h)}</div>`).join("")}</body></html>`;
+}
+function stmtBulkSheet(pre){
+  pre = pre || {};
+  const P2 = pmState(), cur = pmCurrentMonth();
+  const months = [...new Set(pmMonths().filter(mm => mm <= cur && pmMonthRows(mm).some(x => !x.row.detailOnly)))].sort().reverse();
+  const props = P2.properties.filter(p => !p.deleted).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const byOwner = {}; props.forEach(p => { const k = p.ownerId || ""; (byOwner[k] = byOwner[k] || []).push(p); });
+  const owners = Object.keys(byOwner).sort((a, b) => (a ? ownerLabel(ownerById(a)) || "~" : "~~").localeCompare(b ? ownerLabel(ownerById(b)) || "~" : "~~"));
+  const selM = new Set(pre.months && pre.months.length ? pre.months : months.slice(0, 1));
+  const selP = new Set(pre.props || []);
+  let q = "";
+  const pairs = () => props.filter(p => selP.has(p.id)).flatMap(p => [...selM].sort().map(m => [m, p.id]))
+    .filter(([m, pid]) => { const r = pmRow(m, pid); return r && !r.deleted && !r.detailOnly; });
+  const sh = $("#sheet");
+  const draw = () => {
+    const n = pairs().length, skipped = selP.size * selM.size - n;
+    const ql = q.toLowerCase();
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Download statements</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Pick months and properties — one PDF, one page per property per month</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        <div class="sectl">Months <a href="#" id="bmAll" style="font-weight:400;margin-left:8px">${selM.size === months.length ? "Clear" : "All"}</a></div>
+        <div class="bk-months">${months.map(mm => `<label class="bk-chip${selM.has(mm) ? " on" : ""}"><input type="checkbox" data-bm="${mm}"${selM.has(mm) ? " checked" : ""}> ${esc(monthLabel(mm))}</label>`).join("")}</div>
+        <div class="sectl" style="display:flex;align-items:center;gap:8px">Properties <a href="#" id="bpAll" style="font-weight:400">${selP.size === props.length ? "Clear" : "All"}</a>
+          <input type="text" id="bpQ" placeholder="Search owner or property…" value="${esc(q)}" style="margin-left:auto;max-width:240px"></div>
+        <div class="bk-owners">${owners.map(k => { const ps = byOwner[k].filter(p => !ql || `${p.name} ${k ? ownerLabel(ownerById(k)) : ""}`.toLowerCase().includes(ql)); if(!ps.length) return "";
+          const all = ps.every(p => selP.has(p.id));
+          return `<div class="bk-o"><label class="bk-oh"><input type="checkbox" data-bo="${esc(k)}"${all ? " checked" : ""}> <b>${esc(k ? ownerLabel(ownerById(k)) || "Owner" : "No owner on file")}</b></label>
+            <div class="bk-ps">${ps.map(p => `<label><input type="checkbox" data-bp="${p.id}"${selP.has(p.id) ? " checked" : ""}> ${esc(p.name)}${typeof pmUnitLines === "function" && pmUnitLines(p, [...selM][0] || cur).length > 1 ? ` <span class="muted">· ${pmUnitLines(p, [...selM][0] || cur).length} units</span>` : ""}</label>`).join("")}</div></div>`; }).join("")}</div>
+      </div>
+      <div class="sheet-f"><span class="muted" style="flex:1;font-size:12.5px">${n ? `${n} page${n === 1 ? "" : "s"}` : "Pick at least one month and property"}${skipped > 0 && n ? ` · ${skipped} with no statement that month skipped` : ""}</span>
+        <button class="btn" id="shCancel">Close</button><button class="btn primary" id="bkGo"${n ? "" : " disabled"}>Download PDF</button></div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    sh.querySelectorAll("[data-bm]").forEach(i => i.onchange = () => { i.checked ? selM.add(i.dataset.bm) : selM.delete(i.dataset.bm); draw(); });
+    sh.querySelectorAll("[data-bp]").forEach(i => i.onchange = () => { i.checked ? selP.add(i.dataset.bp) : selP.delete(i.dataset.bp); draw(); });
+    sh.querySelectorAll("[data-bo]").forEach(i => i.onchange = () => { byOwner[i.dataset.bo].filter(p => !ql || `${p.name} ${i.dataset.bo ? ownerLabel(ownerById(i.dataset.bo)) : ""}`.toLowerCase().includes(ql)).forEach(p => i.checked ? selP.add(p.id) : selP.delete(p.id)); draw(); });
+    $("#bmAll").onclick = e => { e.preventDefault(); if(selM.size === months.length) selM.clear(); else months.forEach(mm => selM.add(mm)); draw(); };
+    $("#bpAll").onclick = e => { e.preventDefault(); if(selP.size === props.length) selP.clear(); else props.forEach(p => selP.add(p.id)); draw(); };
+    const qi = $("#bpQ"); qi.oninput = () => { q = qi.value; const pos = qi.selectionStart; draw(); const j = $("#bpQ"); j.focus(); j.setSelectionRange(pos, pos); };
+    $("#bkGo").onclick = () => { const ps = pairs(); if(!ps.length) return; printDoc(stmtBulkHTML(ps)); toast(`${ps.length} statement page${ps.length === 1 ? "" : "s"} — choose “Save as PDF” in the print window`); };
+  };
+  draw(); openPanel();
+}
+// the owner's page (Property management side): their statements, any months, as one PDF
+{ const od1 = pgOwnerDetail;
+  pgOwnerDetail = function(o){
+    od1.apply(this, arguments);
+    try{
+      if(S.ui.mode !== "pm" || !o || !ownerPmProps(o).length) return;
+      const bar = $("#pgActions"); if(!bar) return;
+      const owed = typeof pmOwedTo === "function" ? [...new Set(pmOwedTo(o).map(x => x.m))] : [];
+      const b = elm("button", "btn", "Statements PDF"); b.onclick = () => stmtBulkSheet({props:ownerPmProps(o).map(p => p.id), months:owed});
+      bar.insertBefore(b, bar.firstChild);
+    }catch(e){ console.warn("owner statements pdf", e); }
   };
 }

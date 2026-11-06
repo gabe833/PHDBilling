@@ -2427,3 +2427,14 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .pm-owed-h{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
 .pm-owed-tot{display:flex;justify-content:space-between;align-items:center;font-size:15px;padding:10px 4px 0;border-top:2px solid var(--line);margin-top:6px}
 @media (max-width:640px){.pm-owed-h b.num{margin-left:0!important}}
+
+/* download several statements */
+.bk-months{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.bk-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;font-size:13px;cursor:pointer}
+.bk-chip.on{border-color:var(--acc, #1D5C57);background:color-mix(in srgb, var(--acc, #1D5C57) 10%, transparent)}
+.bk-chip input{margin:0}
+.bk-owners{display:flex;flex-direction:column;gap:8px}
+.bk-o{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.bk-oh{display:flex;align-items:center;gap:8px;cursor:pointer}
+.bk-ps{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 12px;margin:6px 0 0 24px;font-size:13px}
+.bk-ps label{display:flex;align-items:center;gap:6px;cursor:pointer}
