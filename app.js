@@ -4853,11 +4853,13 @@ function mdItemState(it){
 }
 // a console-only item MagicDoor seems to have already: the same vendor and amount on this rental's MagicDoor property,
 // on a MagicDoor bill another month's row already charged. Adding it again would charge the owner twice.
+// "B&D Heating & Air" and "B and D Heating and Air" are one vendor (for warnings only; the sync matches strictly)
+function mdVendorLoose(v){ return String(v || "").toLowerCase().replace(/&/g, " and ").replace(/\b(llc|llp|inc|co|corp|the)\b/g, "").replace(/[^a-z0-9]/g, ""); }
 function mdItemTwin(it, prop){
   if(mdItemState(it) !== "missing" || !prop || typeof mdReady !== "function" || !mdReady()) return null;
   const x = mdFor(prop.id); if(!x || !x.property) return null;
-  const since = PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -4), vk = mdVendorKey(it.vendor);
-  for(const b of (S.md.bills || [])){ if(!b.date || b.date.slice(0, 7) < since || mdVendorKey(b.vendor) !== vk) continue;
+  const since = PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -4), vk = mdVendorLoose(it.vendor);
+  for(const b of (S.md.bills || [])){ if(!b.date || b.date.slice(0, 7) < since || mdVendorLoose(b.vendor) !== vk) continue;
     const li = (b.lines || []).find(l => l.propertyId === x.property.id && cents(l.amount) === cents(it.amount)); if(!li) continue;
     const on = Object.values(pmState().rows).find(r => !r.deleted && (r.repairItems || []).some(i => i !== it && i.mdLine === li.id));
     if(on) return {bill:b, month:on.month, prop:pmProp(on.propertyId)};
@@ -4940,7 +4942,7 @@ async function mdCreateUI(host, it, prop, done){
     const vid = host.querySelector("[data-mv]").value, acct = host.querySelector("[data-ma]").value, vn = host.querySelector("[data-mv]").selectedOptions[0].textContent;
     if(!vid) return;
     // a bill MagicDoor already has (same vendor and amount on this property, last 4 months) — don't make a second one
-    const dup = (S.md.bills || []).find(bb => mdVendorKey(bb.vendor) === mdVendorKey(vn) && bb.date >= PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -3) && (bb.lines || []).some(l => l.propertyId === x.property.id && cents(l.amount) === cents(it.amount)));
+    const dup = (S.md.bills || []).find(bb => mdVendorLoose(bb.vendor) === mdVendorLoose(vn) && bb.date >= PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -3) && (bb.lines || []).some(l => l.propertyId === x.property.id && cents(l.amount) === cents(it.amount)));
     if(dup && !confirm(`MagicDoor already has a ${dup.vendor} bill for ${usd(cents(it.amount))} on this property (${fdateS(dup.date)}). Make another one anyway?`)) return;
     if(!confirm(`Create in MagicDoor:\n\n${vn} · ${usd(cents(it.amount))} · ${acct}\n${it.memo || ""}\n${x.property.name}${feeC ? `\n\n+ 10% admin fee ${usd(feeC)} (PHD Property Management)` : ""}\n\nNothing is paid.`)) return;
     go.disabled = true; go.textContent = "Creating…";
