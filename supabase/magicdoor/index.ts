@@ -117,11 +117,11 @@ async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
   const add = (arr: unknown) => ((arr as Obj[]) || []).forEach((v) => { if (S(v.id) && nameOf(v)) seen.set(S(v.id), nameOf(v)); });
   const words = S(name).replace(/&/g, " ").split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, "").length >= 2);
   // MagicDoor's full vendor list (a vendor just added has no bills yet): the first address that answers is remembered
-  for (const base of vendorBase ? [vendorBase] : ["/company-app/vendors", "/company-app/vendors/list", "/company-app/companies/vendors", "/company-app/vendors/search", "/vendors"]) {
+  for (const base of vendorBase ? [vendorBase] : ["/company-app/vendors?page=1&pageSize=100", "/company-app/maintenance/vendors", "/company-app/vendors/all", "/company-app/vendors/vendors", "/company-app/vendor", "/company-app/vendors/companies", "/company-app/maintenance/vendor-list", "/company-app/vendors/1394504751755976704"]) {
     try {
       const r = await mdGet(base); vendorSrc[base] = r.status;
       if (r.status === 200) { const b = r.body as Obj; const arr = b?.items || b?.vendors || (Array.isArray(b) ? b : null);
-        if (arr) { vendorBase = base; try { add(await listAll(base)); } catch { add(arr); } break; } }
+        if (arr) { vendorBase = base; try { add(await listAll(base)); } catch { add(arr); } break; } else vendorSrc[base] = "200 " + Object.keys(b || {}).slice(0, 8).join(","); }
     } catch (e) { vendorSrc[base] = String(e).slice(0, 80); }
   }
   const k = vkey(name);
