@@ -116,14 +116,18 @@ async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
   const seen = new Map<string, string>();
   const add = (arr: unknown) => ((arr as Obj[]) || []).forEach((v) => { if (S(v.id) && nameOf(v)) seen.set(S(v.id), nameOf(v)); });
   const words = S(name).replace(/&/g, " ").split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, "").length >= 2);
-  // MagicDoor's full vendor list (a vendor just added has no bills yet): the first address that answers is remembered
-  for (const base of vendorBase ? [vendorBase] : ["/company-app/vendors?page=1&pageSize=100", "/company-app/maintenance/vendors", "/company-app/vendors/all", "/company-app/vendors/vendors", "/company-app/vendor", "/company-app/vendors/companies", "/company-app/maintenance/vendor-list", "/company-app/vendors/1394504751755976704"]) {
-    try {
-      const r = await mdGet(base); vendorSrc[base] = r.status;
-      if (r.status === 200) { const b = r.body as Obj; const arr = b?.items || b?.vendors || (Array.isArray(b) ? b : null);
-        if (arr) { vendorBase = base; try { add(await listAll(base)); } catch { add(arr); } break; } else vendorSrc[base] = "200 " + Object.keys(b || {}).slice(0, 8).join(","); }
-    } catch (e) { vendorSrc[base] = String(e).slice(0, 80); }
-  }
+  // MagicDoor's full vendor list (a vendor just added has no bills yet). The read key can't see it; the write key
+  // (full access) can — read it with that, a page at a time
+  try {
+    const t = await mdWriteToken();
+    for (let page = 1; page <= 20; page++) {
+      const r = await fetch(`${API}/company-app/vendors?page=${page}&pageSize=100`, { headers: { Authorization: "Bearer " + t, Accept: "application/json" }, signal: AbortSignal.timeout(20000) });
+      vendorSrc["vendors(write key)"] = r.status; if (!r.ok) break;
+      const b = await r.json() as Obj, arr = (b?.items || b?.vendors || (Array.isArray(b) ? b : [])) as Obj[];
+      add(arr); vendorSrc.vendorCount = seen.size;
+      if (!arr.length || page >= Number(b?.totalPages || 1)) break;
+    }
+  } catch (e) { vendorSrc["vendors(write key)"] = String(e).slice(0, 80); }
   const k = vkey(name);
   if (!k || ![...seen.values()].some((n) => vkey(n) === k || vkey(n).startsWith(k.slice(0, 8)) || k.startsWith(vkey(n).slice(0, 8))) || ![...seen.values()].some((n) => /^phd property management$/i.test(n))) {
     if (!billVendors || Date.now() - billVendors.at > 2 * 60e3) {
