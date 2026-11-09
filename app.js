@@ -4012,8 +4012,23 @@ const PMCore = (function(){
     if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere
-    if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1)
-      flags.push({level:"warn", text:`Doesn't match MagicDoor's owner statement: MagicDoor says ${usd(cents(row.mdNet))}, the console works out ${usd(calcC)} (${usd(Math.abs(calcC - cents(row.mdNet)))} ${calcC > cents(row.mdNet) ? "more" : "less"})`});
+    // Some differences are expected and say so instead of warning: the PM fee MagicDoor only charges around the payout,
+    // bills entered here that aren't in MagicDoor yet, the console's own adjustments (late rent moved between months,
+    // a double payout being won back, credits by hand), and bills MagicDoor still lists unpaid that an earlier payout
+    // already took off (row.mdCarried, kept by the sync)
+    if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1){
+      const mdC = cents(row.mdNet);
+      const ownAdjC = (row.adjustments || []).filter(a => !a.md).reduce((t, a) => t + cents(a.amount), 0);
+      const notMdC = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount)).reduce((a, it) => a + cents(it.amount) + itemFee(it, prop), 0);
+      const feeLaterC = !(row.md && has(row.md.pmFee)) && !has(row.pmFee) ? pmFeeC : 0, carriedC = nz(row.mdCarried);
+      const gap = calcC - ownAdjC + notMdC + feeLaterC - (mdC + carriedC);
+      const why = [feeLaterC ? `MagicDoor hasn't charged the ${usd(feeLaterC)} PM fee yet (it does around the payout)` : "",
+        notMdC ? `${usd(notMdC)} of bills here aren't in MagicDoor yet` : "",
+        ownAdjC ? `${usd(Math.abs(ownAdjC))} of adjustments made here` : "",
+        carriedC ? `${usd(carriedC)} of bills MagicDoor still lists that an earlier payout already took off` : ""].filter(Boolean);
+      if(Math.abs(gap) <= 1) flags.push({level:"info", text:`MagicDoor's statement says ${usd(mdC)} for now — ${why.join("; ")}. The ${usd(calcC)} here is right.`});
+      else flags.push({level:"warn", text:`Doesn't match MagicDoor's owner statement: MagicDoor says ${usd(mdC)}, the console works out ${usd(calcC)} (${usd(Math.abs(gap))} ${gap > 0 ? "more" : "less"} than MagicDoor${why.length ? ", after allowing for: " + why.join("; ") : ""})`});
+    }
     const mdFee = row.md && has(row.md.pmFee) && cents(row.md.pmFee) === cents(row.pmFee);
     if(has(row.pmFee) && !mdFee && !row.locked && Math.abs(cents(row.pmFee) - ruleFeeC) > 1) flags.push({level:"info", text:`PM fee set by hand (${usd(cents(row.pmFee))}; rule gives ${usd(ruleFeeC)})`});
     const [y, mo] = String(row.month).split("-").map(Number);
@@ -6207,9 +6222,9 @@ function mdProjectMatch(p, li, b, used){
    late fees, applications) once they're paid. A field MagicDoor filled before is kept in step; one a person
    typed is never changed — a difference is listed for you to look at instead. */
 function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee", reimbursement:"reimbursement (PHD)",
-  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout"}; }
+  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout", mdCarried:"MagicDoor bills carried over"}; }
 // keys MagicDoor owns outright (checks and MagicDoor-only lines): always kept in step, never "typed by hand"
-function mdOwned(k){ return k === "mdNet" || k === "mdAdj"; }
+function mdOwned(k){ return k === "mdNet" || k === "mdAdj" || k === "mdCarried"; }
 function mdExactWant(g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
@@ -6265,6 +6280,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
     const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
     return L.filter(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
   const newBills = fresh("bills"), newAdmin = fresh("admin").reduce((a, b) => a + cents(b.a), 0) / 100;
+  const carriedC = ["bills", "admin"].reduce((t, k) => t + (st[k] || []).reduce((a, b) => a + cents(b.a), 0) - fresh(k).reduce((a, b) => a + cents(b.a), 0), 0);
   const own = (newBills.reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
   const adminOver = Math.abs(cents(own) - cents(newAdmin)) > Math.max(newBills.length, 5);   // a few cents of rounding is fine
   return Object.assign({}, led, {
@@ -6273,6 +6289,8 @@ function mdStmtWant(p, rr, mpId, mm, g){
     leasingFee:x.leasing > 0 || (rr.md && PMCore.has(rr.md.leasingFee)) ? x.leasing : null,
     adminFee:adminOver ? newAdmin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
     mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
+    // bills and admin fees still unpaid in MagicDoor that last month's row already charged (for the MagicDoor check)
+    mdCarried:carriedC ? carriedC / 100 : (PMCore.has(rr.mdCarried) ? 0 : null),
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
 function mdExactMonths(p, L, curM, out, mpId, mdPid){
@@ -6313,7 +6331,7 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       if(mdOwned(k)){
         const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") : "";   // key order changes in storage
         const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
-        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet"});
+        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried"});
         return;
       }
       if(v === "clear"){ if(PMCore.has(rr[k]) && PMCore.has(was[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
