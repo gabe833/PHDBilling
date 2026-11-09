@@ -18023,6 +18023,7 @@ function pgPayouts(){
   const held = rows.filter(x => x.k === "held"), done = rows.filter(x => x.k === "paid" || x.k === "sched");
   const ownerIds = [...new Set(ready.filter(x => !x.split).map(x => x.o && x.o.id).filter(Boolean))];
   if(nickelOn() && ownerIds.length) poLoadPlan(ownerIds).then(pl => { if(pl && S.ui.view === "payouts" && PO.shown !== PO.at){ PO.shown = PO.at; render(); } });
+  if(!nickelOn()) payStatusThenRedraw("payouts");   // opened straight after sign-in: find out Nickel is connected, then redraw
   const plan = PO.plan || {};
   const payee = x => x.o ? poPayeeFor(x) : {id:""};
   const okToSend = x => x.split ? x.amountC > 0 && !x.waiting.length && x.shares.every(sh => sh.amountC <= 0 || ((poNv(sh.vendorId) || {}).payout || []).length)
