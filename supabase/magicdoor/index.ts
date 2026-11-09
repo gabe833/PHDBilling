@@ -183,12 +183,14 @@ async function billAdd(body: Obj, who: string) {
   // the unit only when several rentals share one MagicDoor property; the admin fee bill never carries one (as PHD enters them)
   const line = (aid: string, desc: string, amt: number, unit = unitId) => { const l: Obj = { chartOfAccountId: aid, propertyId, description: desc, amount: amt }; if (unit) l.unitId = unit; return l; };
   const made: Obj = { vendor: vendor.name };
-  made.bill = await mdPostBill({ vendorId, billDate, dueDate, memo, companyBill: false, lineItems: [line(acct.id, memo, amount)] });
+  // MagicDoor wants the property (or unit) on the bill itself as well as on each line
+  const where = (unit = unitId): Obj => unit ? { propertyId, unitId: unit } : { propertyId };
+  made.bill = await mdPostBill({ vendorId, billDate, dueDate, memo, companyBill: false, ...where(), lineItems: [line(acct.id, memo, amount)] });
   if (fee > 0) {
     const phd = vendors.find((v) => /^phd property management$/i.test(v.name)), feeAcct = accounts.find((a) => /^10% admin fee$/i.test(bare(a.name)));
     if (phd && feeAcct) {
       const fm = `10% Admin Fee - ${memo}`.slice(0, 500);
-      try { made.fee = await mdPostBill({ vendorId: phd.id, billDate, dueDate, memo: fm, companyBill: false, lineItems: [line(feeAcct.id, fm, fee, "")] }); }
+      try { made.fee = await mdPostBill({ vendorId: phd.id, billDate, dueDate, memo: fm, companyBill: false, ...where(""), lineItems: [line(feeAcct.id, fm, fee, "")] }); }
       catch (e) { made.feeError = String((e as Error).message || e); }
     } else made.feeError = "MagicDoor has no PHD Property Management vendor or 10% Admin Fee account — add the admin fee there by hand";
   }
