@@ -4888,7 +4888,9 @@ function mdAccountGuess(it){ const t = `${it.vendor || ""} ${it.memo || ""}`; re
 async function mdCreateUI(host, it, prop, done){
   const x = typeof mdFor === "function" && mdReady() ? mdFor(prop.id) : null;
   if(!x || !x.property){ host.innerHTML = `<p class="help" style="color:var(--red)">This rental isn't linked to a MagicDoor property, so the bill can't be made there.</p>`; return; }
-  const unitId = x.unit ? x.unit.id : ((x.units || [])[0] || {}).id || "";
+  // MagicDoor only gets a unit when several rentals here share one MagicDoor property (1635 Memminger #A and #B)
+  const shared = typeof mdx === "function" && mdx() && (mdx().linkedPerMdProp[x.property.id] || 0) > 1;
+  const unitId = shared && x.unit ? x.unit.id : "";
   host.innerHTML = `<div class="mdc"><span class="mdc-wait">Finding ${esc(it.vendor || "the vendor")} in MagicDoor…</span></div>`;
   let pv;
   try{ const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billPreview", vendor:it.vendor || ""}}); if(error) throw new Error(error.message); if(data && data.error) throw new Error(data.error); pv = data; }
@@ -4896,7 +4898,7 @@ async function mdCreateUI(host, it, prop, done){
   if(!pv.writeKey){ host.innerHTML = `<p class="help">The MagicDoor write key isn't set up, so enter it by hand with the details above.</p>`; return; }
   const b = it.billId && typeof billList === "function" ? billList().find(z => z.id === it.billId) : null;
   const feeC = itemFeeC(it, prop), acctGuess = mdAccountGuess(it);
-  const accts = [...new Set(["Repairs", "Landscaping", "Others"].concat(pv.accounts || []))];
+  const accts = [...new Set(["Repairs", "Landscaping", "Others"].concat((pv.accounts || []).map(a => String(a).replace(/^\d+\s*-\s*/, ""))))];
   const vOpts = pv.vendor ? [pv.vendor] : (pv.near || []);
   host.innerHTML = `<div class="mdc">
       <label class="fld"><span>MagicDoor vendor</span><select data-mv>${vOpts.length ? "" : `<option value="">Not in MagicDoor — add the vendor there first</option>`}${vOpts.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")}</select>

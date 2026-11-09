@@ -157,16 +157,19 @@ async function billAdd(body: Obj, who: string) {
   const billDate = D(body.billDate) || new Date().toISOString().slice(0, 10), dueDate = D(body.dueDate) || billDate;
   const [vendors, accounts] = await Promise.all([mdVendors(), mdAccounts()]);
   const vendor = vendors.find((v) => v.id === vendorId); if (!vendor) throw new Error("That vendor isn't in MagicDoor");
-  const acct = accounts.find((a) => a.name.toLowerCase() === S(body.account || "Repairs").toLowerCase()); if (!acct) throw new Error(`MagicDoor has no "${S(body.account)}" account`);
+  // MagicDoor shows accounts with their number ("610000 - Repairs", "690000 - Others"): match either way
+  const bare = (n: string) => S(n).toLowerCase().replace(/^\d+\s*-\s*/, "").trim();
+  const acct = accounts.find((a) => bare(a.name) === bare(S(body.account || "Repairs"))); if (!acct) throw new Error(`MagicDoor has no "${S(body.account)}" account`);
   const memo = S(body.memo).slice(0, 500) || "Repair";
-  const line = (aid: string, desc: string, amt: number) => { const l: Obj = { chartOfAccountId: aid, propertyId, description: desc, amount: amt }; if (unitId) l.unitId = unitId; return l; };
+  // the unit only when several rentals share one MagicDoor property; the admin fee bill never carries one (as PHD enters them)
+  const line = (aid: string, desc: string, amt: number, unit = unitId) => { const l: Obj = { chartOfAccountId: aid, propertyId, description: desc, amount: amt }; if (unit) l.unitId = unit; return l; };
   const made: Obj = { vendor: vendor.name };
   made.bill = await mdPostBill({ vendorId, billDate, dueDate, memo, companyBill: false, lineItems: [line(acct.id, memo, amount)] });
   if (fee > 0) {
-    const phd = vendors.find((v) => /^phd property management$/i.test(v.name)), feeAcct = accounts.find((a) => /^10% admin fee$/i.test(a.name));
+    const phd = vendors.find((v) => /^phd property management$/i.test(v.name)), feeAcct = accounts.find((a) => /^10% admin fee$/i.test(bare(a.name)));
     if (phd && feeAcct) {
       const fm = `10% Admin Fee - ${memo}`.slice(0, 500);
-      try { made.fee = await mdPostBill({ vendorId: phd.id, billDate, dueDate, memo: fm, companyBill: false, lineItems: [line(feeAcct.id, fm, fee)] }); }
+      try { made.fee = await mdPostBill({ vendorId: phd.id, billDate, dueDate, memo: fm, companyBill: false, lineItems: [line(feeAcct.id, fm, fee, "")] }); }
       catch (e) { made.feeError = String((e as Error).message || e); }
     } else made.feeError = "MagicDoor has no PHD Property Management vendor or 10% Admin Fee account — add the admin fee there by hand";
   }
