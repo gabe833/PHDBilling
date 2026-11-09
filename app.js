@@ -4675,7 +4675,7 @@ function pgPmMonth(){
         <div class="item-s">${own ? esc(own) + " · " : ""}${feeRuleText(prop.feeRule)} fee${(row.payments || []).length ? ` · ${row.payments.length} payment${row.payments.length === 1 ? "" : "s"}` : ""}${!closed && m === todayISO().slice(0, 7) && mdReady() ? mdMonthTag(prop) : ""}</div></td>
       ${cell(c.dueC)}
       <td class="r">${locked ? `<span class="num">${c.recv ? usd(c.recv) : "—"}</span>` : `<input class="pm-in num" type="number" step="0.01" data-recv="${prop.id}" value="${has(row.rentReceived) ? row.rentReceived : ""}" placeholder="${c.dueC ? (c.dueC / 100).toFixed(2) : "0.00"}">`}</td>
-      <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}</td>
+      <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}${(() => { const n = (row.repairItems || []).filter(it => mdItemState(it) === "missing").length; return n ? `<div class="sub-n"><span class="tag red md-miss" title="Entered in the console only — open the month to add ${n === 1 ? "it" : "them"} to MagicDoor">${n} not in MD</span></div>` : ""; })()}</td>
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
       <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled || row.paidOut.pending ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.pending ? "Pending in Nickel since " + esc(row.paidOut.date) + " — not delivered yet" : row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled || row.paidOut.pending ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
@@ -4837,6 +4837,63 @@ function pmCloseMonth(m, close){
   if(close) setTimeout(() => stmtAutoOnClose(m), 600);   // owner statement drafts in Gmail
 }
 
+/* ---------------- bills here that MagicDoor doesn't have ----------------
+   A repair on an owner's month that came from the console (receipt inbox, the Bills page, typed in) rather than from
+   MagicDoor isn't on MagicDoor's owner statement until someone enters it there, so each one is labelled.
+   Writing to MagicDoor isn't connected yet (it needs a MagicDoor key with write access): "Add to MagicDoor" shows
+   exactly what to enter and lets you mark it entered. The next sync then finds the MagicDoor bill and links it, and
+   the label goes away. When the write key arrives, mdAddBill() is the one place to make the button do it for you. */
+function mdItemState(it){
+  if(!it || !(cents(it.amount) > 0)) return null;
+  if(it.mdLine || it.mdBill) return "in";
+  return it.mdAdded ? "added" : "missing";
+}
+function mdItemTag(it, short){
+  const s = mdItemState(it);
+  if(s === "missing") return `<span class="tag red md-miss" title="Entered in the console only — MagicDoor's owner statement doesn't include it yet">${short ? "Not in MD" : "Not in MagicDoor"}</span>`;
+  if(s === "added") return `<span class="tag gold md-added" title="${esc(`Marked as entered in MagicDoor${it.mdAdded.at ? " on " + fdateS(String(it.mdAdded.at).slice(0, 10)) : ""}${it.mdAdded.by ? " by " + it.mdAdded.by : ""} — the next sync links it`)}">${short ? "Entered in MD" : "Entered in MagicDoor · waiting to match"}</span>`;
+  return "";
+}
+function mdFindBillItem(billId){
+  for(const r of Object.values(pmState().rows)){ if(r.deleted) continue; const it = (r.repairItems || []).find(i => i.billId === billId); if(it) return {row:r, it}; }
+  return null;
+}
+// what to type into MagicDoor's "Add a bill" for one item
+function mdAddBlockHTML(it, prop){
+  const x = typeof mdFor === "function" && mdReady() ? mdFor(prop.id) : null;
+  const mdProp = x && x.property ? x.property.name + (x.unit && x.unit.name && !/^home$/i.test(x.unit.name) ? " · " + x.unit.name : "") : prop.name;
+  const b = it.billId && typeof billList === "function" ? billList().find(z => z.id === it.billId) : null;
+  const feeC = itemFeeC(it, prop), paid = b && b.status === "paid" && b.pay;
+  const link = it.link || (b && b.receipt && b.receipt.url) || "";
+  const f = (l, v, copy) => `<div class="mda-f"><span>${l}</span><b>${esc(v || "—")}</b>${copy !== false && v ? `<button class="btn sm ghost" type="button" data-copy="${esc(v)}">Copy</button>` : ""}</div>`;
+  return `<div class="mda">
+    <div class="mda-h">In MagicDoor: Accounting → Payables → <b>Add a bill</b></div>
+    ${f("Vendor", it.vendor)}${f("Property", mdProp)}${f("Bill date", it.date ? fdateS(it.date) + " " + it.date.slice(0, 4) : "", false)}
+    ${f("Due date", b && b.due ? fdateS(b.due) + " " + b.due.slice(0, 4) : it.date ? fdateS(it.date) + " " + it.date.slice(0, 4) : "", false)}
+    ${f("Chart of account", "Repairs", false)}${f("Amount", (cents(it.amount) / 100).toFixed(2))}${f("Memo", it.memo)}
+    ${feeC ? f("Second line", `PHD Property Management · 10% Admin Fee - ${it.memo || "repair"} · $${(feeC / 100).toFixed(2)}`, false) : ""}
+    ${link ? `<div class="mda-f"><span>Invoice</span><a href="${esc(link)}" target="_blank" rel="noopener">Open to upload it</a></div>` : ""}
+    ${paid ? `<p class="help" style="margin:8px 0 0">Already paid ${b.pay.date ? "on " + esc(fdateS(b.pay.date)) : ""}${b.pay.method ? " · " + esc(b.pay.method) : ""} — record the payment in MagicDoor too, so it doesn't show as owed.</p>`
+      : `<p class="help" style="margin:8px 0 0">Not paid yet — leave it unpaid in MagicDoor${b && b.nickel && b.nickel.billId ? " (it's also waiting in Nickel)" : ""}.</p>`}
+  </div>`;
+}
+function mdWireCopy(root){
+  root.querySelectorAll("[data-copy]").forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation();
+    try{ navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200); }); }catch(err){ toast("Couldn't copy — select the text instead"); } });
+}
+const mdAddedStamp = () => ({at:new Date().toISOString(), by:(typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || ""});
+// "Add to MagicDoor" from anywhere outside the month sheet (the Bills page): one item, its details, mark it entered
+function mdAddBill(row, it){
+  const prop = pmProp(row.propertyId); if(!prop) return;
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Add to MagicDoor</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(it.vendor || "Bill")} · ${usd(cents(it.amount))} · ${esc(prop.name)} · comes off the ${monthLabel(row.month)} payout</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b"><p class="help" style="margin-top:0">The console can't write to MagicDoor yet, so enter this bill there by hand. Once you mark it entered, the next MagicDoor sync matches it to this one — it won't be added twice.</p>${mdAddBlockHTML(it, prop)}</div>
+    <div class="sheet-f"><button class="btn ghost" id="mdaCancel">Not now</button><button class="btn primary" id="mdaDone" style="margin-left:auto">I've entered it in MagicDoor</button></div>`;
+  mdWireCopy(sh);
+  $("#shClose").onclick = $("#mdaCancel").onclick = closeSheet;
+  $("#mdaDone").onclick = () => { snapshot(); it.mdAdded = mdAddedStamp(); if(typeof pmTouch === "function") pmTouch(row); commit(); closeSheet(); toast("Marked as entered in MagicDoor — the next sync links it", true); };
+  openPanel();
+}
 /* ---------------- one property, one month ---------------- */
 function pmRowSheet(m, pid, focus){
   const prop = pmProp(pid); if(!prop) return;
@@ -4846,6 +4903,7 @@ function pmRowSheet(m, pid, focus){
   const sh = $("#sheet");
   const kept = [];          // MagicDoor bills taken off this statement in this sheet (saved with the row)
   let ask = -1;             // which MagicDoor item is asking "why off the statement?"
+  let mdOpen = -1;          // which console-only item is showing what to enter in MagicDoor
   const keptList = () => typeof mdLinks === "function" ? Object.entries(mdLinks().skip || {}).filter(([, x]) => x && !x.keep && x.pid === pid && x.month === m) : [];
   const SKIP_WHY = {project:"Project expense — billed on the project invoice", other:"Not the owner's cost"};
   const num = (k, label, help) => `<label class="fld"><span>${label}</span><input type="number" step="0.01" data-k="${k}" value="${has(row[k]) ? row[k] : ""}" ${ro ? "disabled" : ""}>${help ? `<span class="help">${help}</span>` : ""}</label>`;
@@ -4874,6 +4932,9 @@ function pmRowSheet(m, pid, focus){
               <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
             <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}" title="${it.mdLine ? "Take this MagicDoor bill off the statement" : "Remove"}">✕</button>`}</div>
             ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
+            ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${ro ? "" : mdItemState(it) === "missing"
+              ? `<button class="btn sm" type="button" data-mdadd="${i}">${mdOpen === i ? "Hide" : "Add to MagicDoor"}</button>` : `<button class="btn sm ghost" type="button" data-mdundo="${i}">Not entered after all</button>`}</div>` : ""}
+            ${mdOpen === i && mdItemState(it) === "missing" ? `<div class="pm-item-mda">${mdAddBlockHTML(it, prop)}<div class="mda-go"><button class="btn sm primary" type="button" data-mddone="${i}">I've entered it in MagicDoor</button><span class="muted">Saves with this month</span></div></div>` : ""}
             ${it.mdLine && ask === i ? `<div class="pm-ask"><span>Keep this MagicDoor bill off the owner statement?</span><button class="btn sm primary" data-why="project">Project expense</button><button class="btn sm" data-why="other">Not the owner's cost</button><button class="btn sm ghost" data-why="">Cancel</button></div>` : ""}
             ${ro ? "" : `<input type="url" class="pm-link" data-ik="link" value="${esc(it.link || "")}" placeholder="Receipt link (optional)">`}
           </div>`).join("") || `<p class="muted" style="font-size:12.5px;margin:0">No repairs this month.</p>`}</div>
@@ -4945,6 +5006,10 @@ function pmRowSheet(m, pid, focus){
       if(del) del.onclick = () => {
         if(row.repairItems[i] && row.repairItems[i].mdLine){ ask = ask === i ? -1 : i; return draw(); }
         row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; draw(); };
+      const mda = el.querySelector("[data-mdadd]"); if(mda) mda.onclick = () => { mdOpen = mdOpen === i ? -1 : i; draw(); };
+      const mdd = el.querySelector("[data-mddone]"); if(mdd) mdd.onclick = () => { row.repairItems[i].mdAdded = mdAddedStamp(); mdOpen = -1; draw(); };
+      const mdu = el.querySelector("[data-mdundo]"); if(mdu) mdu.onclick = () => { delete row.repairItems[i].mdAdded; draw(); };
+      mdWireCopy(el);
       el.querySelectorAll("[data-why]").forEach(b => b.onclick = () => {
         ask = -1;
         if(b.dataset.why){ kept.push({it:row.repairItems[i], why:b.dataset.why}); row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; }
@@ -6426,7 +6491,7 @@ function mdPlan(){
         if(it.source === "MagicDoor" && PMCore.mdStmt(S.md, m.property.id, mm)){
           const paidMap = PMCore.mdBillMonths(S.md, m.property.id), want = (paidMap && paidMap.get(it.mdLine)) || String(f.b.date || "").slice(0, 7);
           if(want && want !== mm){ const other = pmRow(want, p.id);
-            if(other && other !== rr && !other.locked && !other.detailOnly && !((pmState().meta[want] || {}).closed)) out.moves.push({p, from:rr, to:other, it, li:f.li});
+            if(other && other !== rr && !rr.paidOut && !other.locked && !other.detailOnly && !((pmState().meta[want] || {}).closed)) out.moves.push({p, from:rr, to:other, it, li:f.li});
             else out.misplaced.push({p, row:rr, it, want});
             return; }
         }
@@ -6441,6 +6506,7 @@ function mdPlan(){
       const oldBill = it => it.mdBill || mdBillOfLine(it.mdLine);
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
+      const twinned = new Set();
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
         // a shared MagicDoor property: only this unit's bills — the unit picked here, else the unit MagicDoor puts it on
         if(shared && (pick[li.id] ? pick[li.id] !== p.id : !(li.unitId && m.unit && m.unit.id === li.unitId))) return;
@@ -6448,15 +6514,23 @@ function mdPlan(){
         const there = onProp.get(li.id);
         if(there){
           // on another month here: MagicDoor's owner statement paid it this month, so it moves (only between open months)
-          if(li.paidIn === mm && there.row !== rr && openRow(there.row)) out.moves.push({p, from:there.row, to:rr, it:there.it, li});
+          // (never out of a month whose payout already went out: the owner has been charged for it there)
+          if(li.paidIn === mm && there.row !== rr && openRow(there.row) && !there.row.paidOut && there.it.source === "MagicDoor") out.moves.push({p, from:there.row, to:rr, it:there.it, li});
           return;
         }
         const pm = SK[li.id] ? null : mdProjectMatch(p, li, (mdLineById(li.id) || {}).b, usedTx);
         if(pm){ out.skips.push({p, row:rr, it:null, why:"project", auto:true, pj:pm.pj, t:pm.t, li, b:(mdLineById(li.id) || {}).b}); return; }
         const o = orphans.find(i => !claimed.has(i) && oldBill(i) === li.billId) || orphans.find(i => !claimed.has(i) && !i.mdBill && same(i, li));
         if(o){ claimed.add(o); out.relinks.push({p, row:rr, it:o, li, memo:mdMemoSynced(o, [li.memo]) ? li.memo : null}); return; }
-        // already typed in by hand (same amount)? link it instead of adding a second copy
-        const twin = (rr.repairItems || []).find(i => !i.mdLine && cents(i.amount) === cents(li.amount));
+        // already typed in by hand (same amount)? link it instead of adding a second copy. A bill entered here first and
+        // then in MagicDoor (marked "entered in MagicDoor", or the same vendor) can sit on a nearby month: link that too
+        const free = i => !i.mdLine && !i.mdBill && !twinned.has(i) && cents(i.amount) === cents(li.amount);
+        let twin = (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
+        if(!twin){
+          const near = Object.values(pmState().rows).filter(r0 => r0.propertyId === p.id && r0 !== rr && !r0.deleted && openRow(r0) && r0.month >= PMCore.monthAdd(mm, -2) && r0.month <= PMCore.monthAdd(mm, 1));
+          for(const r0 of near){ twin = (r0.repairItems || []).find(i => free(i) && (i.mdAdded || mdVendorKey(i.vendor) === mdVendorKey(li.vendor))); if(twin) break; }
+        }
+        if(twin) twinned.add(twin);
         out.bills.push({p, row:rr, li, twin});
       });
       // already added a second time under the new line id (before this fix): fold the copy back into the original
@@ -6696,7 +6770,7 @@ function mdApply(opts){
     lines.push({prop:p.name, pid:p.id, what:`${it.vendor || "bill"} ${usd(cents(it.amount))} moved from ${monthLabel(from.month)} to ${monthLabel(to.month)} — paid then, per MagicDoor's owner statement`});
   });
   plan.bills.forEach(({p, row, li, twin}) => {
-    if(twin){ twin.mdLine = li.id; twin.mdBill = li.billId; if(!twin.vendor) twin.vendor = li.vendor; return; }
+    if(twin){ twin.mdLine = li.id; twin.mdBill = li.billId; delete twin.mdAdded; if(!twin.vendor) twin.vendor = li.vendor; return; }
     row.repairItems = row.repairItems || [];
     const memo = li.memo || li.account || "MagicDoor bill";
     row.repairItems.push({id:uid(), date:li.date, vendor:li.vendor || "", memo, mdMemo:memo, amount:li.amount, feeMode:"auto", mdLine:li.id, mdBill:li.billId, source:"MagicDoor"});
@@ -8017,9 +8091,11 @@ function pgPmBills(){
         <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
-        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${(() => { const f = !b.movedTo && mdFindBillItem(b.id); if(!f) return ""; const st2 = mdItemState(f.it);
+          return st2 === "missing" ? ` ${mdItemTag(f.it, true)} <button class="btn sm md-addb" type="button" data-nos data-mdaddb="${esc(b.id)}">Add to MagicDoor</button>` : st2 === "added" ? ` ${mdItemTag(f.it, true)}` : ""; })()}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
         <td class="bl-o">${billOwnerTag(b)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-nos]")) return; billSheet(tr.dataset.b); });
+  t.querySelectorAll("[data-mdaddb]").forEach(bt => bt.onclick = e => { e.stopPropagation(); const f = mdFindBillItem(bt.dataset.mdaddb); if(f) mdAddBill(f.row, f.it); });
   t.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => { sel[c.dataset.sel] = c.checked; render(); });
   const all2 = t.querySelector("#blAll"); if(all2){ all2.checked = list.every(b => sel[b.id]); all2.onchange = () => { list.forEach(b => sel[b.id] = all2.checked); render(); }; }
   const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);

@@ -2494,3 +2494,17 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .po-sh{display:flex;gap:10px;justify-content:space-between;max-width:440px}
 .sp-r{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
 .sp-r select:first-child{flex:1;min-width:220px}
+
+/* ---------- console bills MagicDoor doesn't have yet ---------- */
+.pm-item-md{grid-column:1 / -1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
+.pm-item-mda{grid-column:1 / -1}
+.mda{background:var(--panel-2);border:1px solid var(--line-2);border-radius:10px;padding:10px 12px;margin-top:6px}
+.mda-h{font-size:12.5px;color:var(--muted);margin-bottom:6px}
+.mda-f{display:grid;grid-template-columns:120px minmax(0,1fr) auto;gap:10px;align-items:center;padding:5px 0;border-top:1px solid var(--line-2);font-size:13px}
+.mda-f:first-of-type{border-top:0}
+.mda-f span{color:var(--muted);font-size:12.5px}
+.mda-f b{font-weight:550;overflow-wrap:anywhere}
+.mda-f .btn{padding:3px 9px;font-size:12px}
+.mda-go{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px}
+.md-addb{padding:2px 8px!important;font-size:11.5px!important;margin-left:4px}
+.tag.md-miss{white-space:nowrap}

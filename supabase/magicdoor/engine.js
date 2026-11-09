@@ -780,7 +780,7 @@ function mdPlan(){
         if(it.source === "MagicDoor" && PMCore.mdStmt(S.md, m.property.id, mm)){
           const paidMap = PMCore.mdBillMonths(S.md, m.property.id), want = (paidMap && paidMap.get(it.mdLine)) || String(f.b.date || "").slice(0, 7);
           if(want && want !== mm){ const other = pmRow(want, p.id);
-            if(other && other !== rr && !other.locked && !other.detailOnly && !((pmState().meta[want] || {}).closed)) out.moves.push({p, from:rr, to:other, it, li:f.li});
+            if(other && other !== rr && !rr.paidOut && !other.locked && !other.detailOnly && !((pmState().meta[want] || {}).closed)) out.moves.push({p, from:rr, to:other, it, li:f.li});
             else out.misplaced.push({p, row:rr, it, want});
             return; }
         }
@@ -795,6 +795,7 @@ function mdPlan(){
       const oldBill = it => it.mdBill || mdBillOfLine(it.mdLine);
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
+      const twinned = new Set();
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
         // a shared MagicDoor property: only this unit's bills — the unit picked here, else the unit MagicDoor puts it on
         if(shared && (pick[li.id] ? pick[li.id] !== p.id : !(li.unitId && m.unit && m.unit.id === li.unitId))) return;
@@ -802,15 +803,23 @@ function mdPlan(){
         const there = onProp.get(li.id);
         if(there){
           // on another month here: MagicDoor's owner statement paid it this month, so it moves (only between open months)
-          if(li.paidIn === mm && there.row !== rr && openRow(there.row)) out.moves.push({p, from:there.row, to:rr, it:there.it, li});
+          // (never out of a month whose payout already went out: the owner has been charged for it there)
+          if(li.paidIn === mm && there.row !== rr && openRow(there.row) && !there.row.paidOut && there.it.source === "MagicDoor") out.moves.push({p, from:there.row, to:rr, it:there.it, li});
           return;
         }
         const pm = SK[li.id] ? null : mdProjectMatch(p, li, (mdLineById(li.id) || {}).b, usedTx);
         if(pm){ out.skips.push({p, row:rr, it:null, why:"project", auto:true, pj:pm.pj, t:pm.t, li, b:(mdLineById(li.id) || {}).b}); return; }
         const o = orphans.find(i => !claimed.has(i) && oldBill(i) === li.billId) || orphans.find(i => !claimed.has(i) && !i.mdBill && same(i, li));
         if(o){ claimed.add(o); out.relinks.push({p, row:rr, it:o, li, memo:mdMemoSynced(o, [li.memo]) ? li.memo : null}); return; }
-        // already typed in by hand (same amount)? link it instead of adding a second copy
-        const twin = (rr.repairItems || []).find(i => !i.mdLine && cents(i.amount) === cents(li.amount));
+        // already typed in by hand (same amount)? link it instead of adding a second copy. A bill entered here first and
+        // then in MagicDoor (marked "entered in MagicDoor", or the same vendor) can sit on a nearby month: link that too
+        const free = i => !i.mdLine && !i.mdBill && !twinned.has(i) && cents(i.amount) === cents(li.amount);
+        let twin = (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
+        if(!twin){
+          const near = Object.values(pmState().rows).filter(r0 => r0.propertyId === p.id && r0 !== rr && !r0.deleted && openRow(r0) && r0.month >= PMCore.monthAdd(mm, -2) && r0.month <= PMCore.monthAdd(mm, 1));
+          for(const r0 of near){ twin = (r0.repairItems || []).find(i => free(i) && (i.mdAdded || mdVendorKey(i.vendor) === mdVendorKey(li.vendor))); if(twin) break; }
+        }
+        if(twin) twinned.add(twin);
         out.bills.push({p, row:rr, li, twin});
       });
       // already added a second time under the new line id (before this fix): fold the copy back into the original
@@ -1019,7 +1028,7 @@ function mdApply(opts){
     lines.push({prop:p.name, pid:p.id, what:`${it.vendor || "bill"} ${usd(cents(it.amount))} moved from ${monthLabel(from.month)} to ${monthLabel(to.month)} — paid then, per MagicDoor's owner statement`});
   });
   plan.bills.forEach(({p, row, li, twin}) => {
-    if(twin){ twin.mdLine = li.id; twin.mdBill = li.billId; if(!twin.vendor) twin.vendor = li.vendor; return; }
+    if(twin){ twin.mdLine = li.id; twin.mdBill = li.billId; delete twin.mdAdded; if(!twin.vendor) twin.vendor = li.vendor; return; }
     row.repairItems = row.repairItems || [];
     const memo = li.memo || li.account || "MagicDoor bill";
     row.repairItems.push({id:uid(), date:li.date, vendor:li.vendor || "", memo, mdMemo:memo, amount:li.amount, feeMode:"auto", mdLine:li.id, mdBill:li.billId, source:"MagicDoor"});
