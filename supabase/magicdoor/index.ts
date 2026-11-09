@@ -177,7 +177,7 @@ function cleanBill(x: Obj, vendors: Record<string, string>, accounts: Record<str
     vendor: vendors[S(x.vendorId)] || "", memo: S(x.memo).slice(0, 200), total: N(x.totalAmount), owed: N(x.dueAmount),
     // who entered it in MagicDoor (a staff id, resolved to a name from MagicDoor's team list when it's available) and when
     by: S(((x.creator || {}) as Obj).propertyManagerId || ((x.creator || {}) as Obj).id), byType: S(((x.creator || {}) as Obj).type), bySource: S(((x.creator || {}) as Obj).source).slice(0, 40), created: S(x.created).slice(0, 19),
-    lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || "" })),
+    lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), unitId: S(li.unitId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || "" })),
   };
 }
 function cleanDistribution(x: Obj) {

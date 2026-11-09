@@ -269,7 +269,7 @@ const PMCore = (function(){
     (md.bills || []).forEach(b => { if(b.company || !b.date) return;
       (b.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !mdIsRepairLine(li, b)) return;
         const m = (paid && paid.get(li.id)) || b.date.slice(0, 7); if(m !== month) return;
-        out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed, paidIn:paid && paid.get(li.id) || null}); }); });
+        out.push({id:li.id, billId:b.id, unitId:li.unitId || "", date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed, paidIn:paid && paid.get(li.id) || null}); }); });
     return out;
   }
   // which month an owner payout is for. PHD pays the owner mid-month for that month; a payout in the first days of a
@@ -341,6 +341,7 @@ const PMCore = (function(){
     const out = [];
     Object.entries(units).forEach(([mpId, pids]) => months.forEach(m => mdBillLines(md, mpId, m).forEach(li => {
       if(pick[li.id] || on.has(String(li.id)) || /admin\s*fee/i.test(String(li.memo || "") + " " + String(li.account || ""))) return;
+      if(li.unitId && pids.some(pid => (mdx.byProp[pid] || {}).unit && mdx.byProp[pid].unit.id === li.unitId)) return;   // MagicDoor says which unit
       out.push(Object.assign({mdPropId:mpId, month:m, units:pids}, li));
     })));
     return out;

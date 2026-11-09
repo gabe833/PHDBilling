@@ -270,7 +270,7 @@ const PMCore = (function(){
     (md.bills || []).forEach(b => { if(b.company || !b.date) return;
       (b.lines || []).forEach(li => { if(li.propertyId !== mdPropId || !mdIsRepairLine(li, b)) return;
         const m = (paid && paid.get(li.id)) || b.date.slice(0, 7); if(m !== month) return;
-        out.push({id:li.id, billId:b.id, date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed, paidIn:paid && paid.get(li.id) || null}); }); });
+        out.push({id:li.id, billId:b.id, unitId:li.unitId || "", date:b.date, vendor:b.vendor, memo:mdLineMemo(li, b), amount:li.amount, account:li.account, owed:b.owed, paidIn:paid && paid.get(li.id) || null}); }); });
     return out;
   }
   // which month an owner payout is for. PHD pays the owner mid-month for that month; a payout in the first days of a
@@ -342,6 +342,7 @@ const PMCore = (function(){
     const out = [];
     Object.entries(units).forEach(([mpId, pids]) => months.forEach(m => mdBillLines(md, mpId, m).forEach(li => {
       if(pick[li.id] || on.has(String(li.id)) || /admin\s*fee/i.test(String(li.memo || "") + " " + String(li.account || ""))) return;
+      if(li.unitId && pids.some(pid => (mdx.byProp[pid] || {}).unit && mdx.byProp[pid].unit.id === li.unitId)) return;   // MagicDoor says which unit
       out.push(Object.assign({mdPropId:mpId, month:m, units:pids}, li));
     })));
     return out;
@@ -777,7 +778,8 @@ function mdPlan(){
       const claimed = new Set();
       const have = new Set(items.map(i => i.mdLine).filter(Boolean));
       PMCore.mdBillLines(S.md, m.property.id, mm).forEach(li => {
-        if(shared && pick[li.id] !== p.id) return;      // a shared MagicDoor property: only the bills picked for this unit
+        // a shared MagicDoor property: only this unit's bills — the unit picked here, else the unit MagicDoor puts it on
+        if(shared && (pick[li.id] ? pick[li.id] !== p.id : !(li.unitId && m.unit && m.unit.id === li.unitId))) return;
         if(have.has(li.id) || (SK[li.id] && !SK[li.id].keep)) return;
         const there = onProp.get(li.id);
         if(there){
