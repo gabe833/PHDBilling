@@ -107,14 +107,28 @@ async function billSchema(step: string) {
 // "10% Admin Fee" account. Nothing is paid. Only a person on the team list can do it, one bill at a time, after
 // seeing exactly what will be made (billPreview), and every bill made is written to the activity log.
 const vkey = (v: unknown) => S(v).toLowerCase().replace(/&/g, "and").replace(/\b(llc|llp|ltd|inc|co|corp|company|the)\b/g, "").replace(/[^a-z0-9]/g, "");
-// vendors: MagicDoor's vendor search, by the first word of the name (HONK → "HONK mobile", Bactronix → "Bactronix of the Grand")
+// vendors: MagicDoor's vendor search when it answers; otherwise every vendor on MagicDoor's bills (the list the sync
+// reads — every vendor PHD has billed), kept for 10 minutes
+let billVendors: { at: number; list: { id: string; name: string }[] } | null = null;
+const vendorSrc: Obj = {};
 async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
   const seen = new Map<string, string>();
+  const add = (arr: unknown) => ((arr as Obj[]) || []).forEach((v) => { if (S(v.id) && nameOf(v)) seen.set(S(v.id), nameOf(v)); });
   const words = S(name).replace(/&/g, " ").split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, "").length >= 2);
-  for (const q of [...new Set([words[0], words.slice(0, 2).join(" ")].filter(Boolean))]) {
-    try { const r = await mdGet(`/company-app/vendors?search=${encodeURIComponent(q)}&pageSize=100`); (((r.body as Obj)?.items as Obj[]) || []).forEach((v) => { if (S(v.id)) seen.set(S(v.id), nameOf(v)); }); } catch { /* next */ }
+  for (const q of [...new Set([words[0], "PHD Property Management"].filter(Boolean))]) {
+    for (const path of [`/company-app/vendors?search=${encodeURIComponent(q)}&pageSize=100`, `/company-app/vendors?name=${encodeURIComponent(q)}&pageSize=100`]) {
+      try { const r = await mdGet(path); vendorSrc[path.split("?")[0] + "?" + path.split("?")[1].split("=")[0]] = r.status; const b = r.body as Obj; add(b?.items || b?.vendors || (Array.isArray(b) ? b : [])); if (seen.size) break; } catch (e) { vendorSrc[path] = String(e).slice(0, 80); }
+    }
   }
-  try { const r = await mdGet(`/company-app/vendors?search=${encodeURIComponent("PHD Property Management")}&pageSize=20`); (((r.body as Obj)?.items as Obj[]) || []).forEach((v) => { if (S(v.id)) seen.set(S(v.id), nameOf(v)); }); } catch { /* below */ }
+  const k = vkey(name);
+  if (!k || ![...seen.values()].some((n) => vkey(n) === k || vkey(n).startsWith(k.slice(0, 8)) || k.startsWith(vkey(n).slice(0, 8))) || ![...seen.values()].some((n) => /^phd property management$/i.test(n))) {
+    if (!billVendors || Date.now() - billVendors.at > 10 * 60e3) {
+      const m = new Map<string, string>();
+      await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => { if (S(v.id)) m.set(S(v.id), nameOf(v)); }));
+      billVendors = { at: Date.now(), list: [...m].map(([id, nm]) => ({ id, name: nm })) };
+    }
+    billVendors.list.forEach((v) => seen.set(v.id, v.name)); vendorSrc.bills = billVendors.list.length;
+  }
   return [...seen].map(([id, nm]) => ({ id, name: nm })).filter((v) => v.name);
 }
 // expense accounts only: MagicDoor has two "Others" (490000 is income, 690000 is the expense one bills use)
@@ -133,7 +147,7 @@ async function billPreview(body: Obj) {
   const [vendors, accounts] = await Promise.all([mdVendors(S(body.vendor)), mdAccounts()]);
   const m = vendorMatch(vendors, S(body.vendor));
   const phd = vendors.find((v) => /^phd property management$/i.test(v.name)) || null;
-  return { vendor: m.hit, near: m.near, phdVendor: phd, accounts: accounts.map((a) => a.name).filter((n) => /repair|landscap|other|maint|clean|util|pest|appliance|hvac|plumb|electric|supplies/i.test(n)).slice(0, 30), writeKey: !!(Deno.env.get("MAGICDOOR_WRITE_KEY") || "").trim() };
+  return { vendor: m.hit, near: m.near, phdVendor: phd, accounts: accounts.map((a) => a.name).filter((n) => /repair|landscap|other|maint|clean|util|pest|appliance|hvac|plumb|electric|supplies/i.test(n)).slice(0, 30), src: vendorSrc, writeKey: !!(Deno.env.get("MAGICDOOR_WRITE_KEY") || "").trim() };
 }
 async function whoAmI(req: Request): Promise<string> {
   try { const r = await fetch(Deno.env.get("SUPABASE_URL")! + "/auth/v1/user", { headers: { apikey: Deno.env.get("SUPABASE_ANON_KEY") || "", Authorization: req.headers.get("authorization") || "" } }); const u = await r.json(); return S(u.email); } catch { return ""; }
