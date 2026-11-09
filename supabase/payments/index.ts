@@ -452,6 +452,9 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     await updateDoc("shared", "accounting", (a) => { a.ownerAsked = { ...(a.ownerAsked || {}), [o.id]: new Date().toISOString() }; });
     return { ok: true };
   }
+  // the bill number for a property's payout: street words dropped and the unit kept, so "#A" and "#B" never share a number
+  // (the same short form the office uses and the Nickel sync reads back: "1635 Memminger Avenue #A" → 1635MEMMINGERA)
+  const refName = (n: unknown) => alnum(S(n).split(",")[0].replace(STREET_WORDS, " ")).slice(0, 20);
   if (op === "payout.send") {
     if (!(await payers()).includes(by)) throw new Error("You're not on the payments list, so you can't send money.");
     const from = S(body.payFrom), pf = await payFrom(); if (!pf.some((m) => m.id === from)) throw new Error("Pick the account to pay from");
@@ -486,9 +489,10 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
         const amt = Math.round(Number(x.amountC) || 0); if (!(amt > 0)) continue;
         const nv = nvs.find((y) => y.id === S(x.vendorId)); if (!nv) { bad = "A payee isn't in Nickel"; break; }
         const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(x.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { bad = `${nv.name} has no bank account on file in Nickel`; break; }
-        const base = it.splits ? `OWN-${month}-${alnum(it.groupKey || ps[0].name).slice(0, 8)}` : `OWN-${month}-${alnum(ps[0].name).slice(0, 16)}`;
+        const base = it.splits ? `OWN-${month}-${alnum(it.groupKey || ps[0].name).slice(0, 8)}` : `OWN-${month}-${refName(ps[0].name)}`;
         recips.push({ nv, pm, amt, ref: it.splits ? `${base}-${alnum(x.key || nv.name).slice(0, 10)}` : base });
       }
+      if (!bad && recips.some((x) => units.some((u) => u.recips.some((y: Obj) => y.ref === x.ref)) || recips.filter((y) => y.ref === x.ref).length > 1)) bad = "Two payouts would share one Nickel bill number — send them separately";
       if (bad) { say(bad); continue; }
       units.push({ month, pids, amounts, ps, totC, recips });
     }

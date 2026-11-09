@@ -570,14 +570,21 @@ function mdStmtWant(p, rr, mpId, mm, g){
   }
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
+  // bills and admin fees MagicDoor carries over unpaid from last month's statement were already charged on last month's
+  // row: only what's new on this statement counts (131 Bogard's $537.50 of September admin fees, charged in October)
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
-  const own = ((st.bills || []).reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
-  const adminOver = Math.abs(cents(own) - cents(x.admin)) > (st.bills || []).length;   // a cent of rounding per bill is fine
+  const pm0 = PMCore.monthAdd(mm, -1), st0 = PMCore.mdStmt(S.md, mpId, pm0), row0 = pmRow(pm0, p.id);
+  const fresh = k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
+    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
+    return L.filter(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+  const newBills = fresh("bills"), newAdmin = fresh("admin").reduce((a, b) => a + cents(b.a), 0) / 100;
+  const own = (newBills.reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
+  const adminOver = Math.abs(cents(own) - cents(newAdmin)) > Math.max(newBills.length, 5);   // a few cents of rounding is fine
   return Object.assign({}, led, {
     rentReceived:x.recv > 0 || PMCore.has(rr.rentReceived) ? rent : null, otherIncome:other > 0 ? other : (PMCore.has(rr.otherIncome) && rr.md && PMCore.has(rr.md.otherIncome) ? 0 : null),
     pmFee:x.pmFee > 0 || (rr.md && PMCore.has(rr.md.pmFee)) ? x.pmFee : null,
     leasingFee:x.leasing > 0 || (rr.md && PMCore.has(rr.md.leasingFee)) ? x.leasing : null,
-    adminFee:adminOver ? x.admin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
+    adminFee:adminOver ? newAdmin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
     mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
@@ -592,6 +599,17 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
     if(!mpId && mm === curM && g0 && !pmRow(pm0, p.id) && st0 && !(st0.distTotal > 0) && st0.end > 0){
       const w0 = mdExactWant(g0), r2 = n => Math.round((Number(n) || 0) * 100) / 100;
       if(w0.rentReceived > 0 || w0.otherIncome > 0) want = Object.assign({}, want, {rentReceived:r2((want.rentReceived || 0) + (w0.rentReceived || 0)), otherIncome:r2((want.otherIncome || 0) + (w0.otherIncome || 0)) || null});
+    }
+    // a unit's rent paid early, at the end of last month (1639 Memminger #B paid November on Oct 31): what last month's
+    // payments came to above last month's own charges, and last month's row didn't count, is this month's rent.
+    // (Single-unit rentals get this from MagicDoor's owner statement; units sharing one MagicDoor property don't.)
+    else if(!mpId && g && g0){
+      const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100, rr0 = pmRow(pm0, p.id);
+      const over = r2(n(g0.paid) - (n(g0.filters) + n(g0.lateFee) + n(g0.applications) + n(g0.rent) - n(g0.credits) + n(g0.other) + n(g0.phd)));
+      const counted = rr0 && !rr0.deleted ? r2(n(rr0.rentReceived) + n(rr0.otherIncome) - (n(g0.rent) - n(g0.credits) + n(g0.other))) : 0;
+      const short = r2(Math.max(0, n(g.rent) - n(g.credits) - n(want.rentReceived)));
+      const add = r2(Math.min(over - Math.max(0, counted), short));
+      if(add > 0.5) want = Object.assign({}, want, {rentReceived:r2(n(want.rentReceived) + add)});
     }
     const was = rr.md || {};
     Object.keys(mdExactLabels()).forEach(k => {

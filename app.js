@@ -6256,14 +6256,21 @@ function mdStmtWant(p, rr, mpId, mm, g){
   }
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
+  // bills and admin fees MagicDoor carries over unpaid from last month's statement were already charged on last month's
+  // row: only what's new on this statement counts (131 Bogard's $537.50 of September admin fees, charged in October)
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
-  const own = ((st.bills || []).reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
-  const adminOver = Math.abs(cents(own) - cents(x.admin)) > (st.bills || []).length;   // a cent of rounding per bill is fine
+  const pm0 = PMCore.monthAdd(mm, -1), st0 = PMCore.mdStmt(S.md, mpId, pm0), row0 = pmRow(pm0, p.id);
+  const fresh = k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
+    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
+    return L.filter(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+  const newBills = fresh("bills"), newAdmin = fresh("admin").reduce((a, b) => a + cents(b.a), 0) / 100;
+  const own = (newBills.reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
+  const adminOver = Math.abs(cents(own) - cents(newAdmin)) > Math.max(newBills.length, 5);   // a few cents of rounding is fine
   return Object.assign({}, led, {
     rentReceived:x.recv > 0 || PMCore.has(rr.rentReceived) ? rent : null, otherIncome:other > 0 ? other : (PMCore.has(rr.otherIncome) && rr.md && PMCore.has(rr.md.otherIncome) ? 0 : null),
     pmFee:x.pmFee > 0 || (rr.md && PMCore.has(rr.md.pmFee)) ? x.pmFee : null,
     leasingFee:x.leasing > 0 || (rr.md && PMCore.has(rr.md.leasingFee)) ? x.leasing : null,
-    adminFee:adminOver ? x.admin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
+    adminFee:adminOver ? newAdmin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
     mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
@@ -6285,6 +6292,17 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
     if(!mpId && mm === curM && g0 && !pmRow(pm0, p.id) && st0 && !(st0.distTotal > 0) && st0.end > 0){
       const w0 = mdExactWant(g0), r2 = n => Math.round((Number(n) || 0) * 100) / 100;
       if(w0.rentReceived > 0 || w0.otherIncome > 0) want = Object.assign({}, want, {rentReceived:r2((want.rentReceived || 0) + (w0.rentReceived || 0)), otherIncome:r2((want.otherIncome || 0) + (w0.otherIncome || 0)) || null});
+    }
+    // a unit's rent paid early, at the end of last month (1639 Memminger #B paid November on Oct 31): what last month's
+    // payments came to above last month's own charges, and last month's row didn't count, is this month's rent.
+    // (Single-unit rentals get this from MagicDoor's owner statement; units sharing one MagicDoor property don't.)
+    else if(!mpId && g && g0){
+      const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100, rr0 = pmRow(pm0, p.id);
+      const over = r2(n(g0.paid) - (n(g0.filters) + n(g0.lateFee) + n(g0.applications) + n(g0.rent) - n(g0.credits) + n(g0.other) + n(g0.phd)));
+      const counted = rr0 && !rr0.deleted ? r2(n(rr0.rentReceived) + n(rr0.otherIncome) - (n(g0.rent) - n(g0.credits) + n(g0.other))) : 0;
+      const short = r2(Math.max(0, n(g.rent) - n(g.credits) - n(want.rentReceived)));
+      const add = r2(Math.min(over - Math.max(0, counted), short));
+      if(add > 0.5) want = Object.assign({}, want, {rentReceived:r2(n(want.rentReceived) + add)});
     }
     const was = rr.md || {};
     Object.keys(mdExactLabels()).forEach(k => {
@@ -15142,6 +15160,17 @@ function rcReviews(m, write){
 const rcPayDue = m => m + "-" + String(Math.min(Number(pmSettings().payoutDay) || 15, Number(PMCore.endOfMonth(m).slice(8, 10)))).padStart(2, "0");
 
 /* one property, one month: the four checks */
+// bills and admin fees on a month's MagicDoor statement that were already on last month's statement (unpaid, carried
+// over) — last month's row already charged them, so this month's MagicDoor figure is lower by that much
+function rcCarried(prop, m){
+  const x = typeof mdReady === "function" && mdReady() ? mdFor(prop.id) : null; if(!x || !x.property) return {c:0, n:0};
+  const st = PMCore.mdStmt(S.md, x.property.id, m), pm0 = PMCore.monthAdd(m, -1), st0 = PMCore.mdStmt(S.md, x.property.id, pm0), row0 = pmRow(pm0, prop.id);
+  if(!st || !st0 || !row0 || row0.deleted) return {c:0, n:0};
+  let c = 0, n = 0;
+  ["bills", "admin"].forEach(k => { const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
+    (st[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, q = seen.get(key) || 0; if(q){ seen.set(key, q - 1); c += cents(a.a); if(k === "bills") n++; } }); });
+  return {c, n};
+}
 function rcRow(m, row, prop, ledger){
   const c = pmCalc(row, prop), today = todayISO(), over = m < today.slice(0, 7), st = {};
   // an open month before its payout day is still filling in: rent that hasn't all come in, and bills the console has
@@ -15164,8 +15193,16 @@ function rcRow(m, row, prop, ledger){
     // MagicDoor's statement covers the whole month: rent the console moved to next month (collected after the payout,
     // or still owed by the tenant) is still in MagicDoor's figure, so add it back before comparing
     const heldC = (row.adjustments || []).filter(a => a.lateRent === "out").reduce((t, a) => t - cents(a.amount), 0);
-    const mdC = cents(row.mdNet), d = c.calcC + heldC - mdC;
-    st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)} — the same once the ${usd(heldC)} collected after the payout is added back`.replace(/ once the \$0\.00 collected after the payout is added back$/, "")}
+    // and the console's own entries MagicDoor never sees: an earlier month's rent collected late (already on MagicDoor's
+    // earlier statement), a double payout being won back, and bills and admin fees MagicDoor carries over unpaid from
+    // last month's statement that last month's payout already took off
+    const adjs = row.adjustments || [];
+    const lateInC = adjs.filter(a => String(a.lateRent || "").startsWith("in")).reduce((t, a) => t + cents(a.amount), 0);
+    const recovC = adjs.filter(a => a.recov).reduce((t, a) => t - cents(a.amount), 0);
+    const carry = rcCarried(prop, m), mdC = cents(row.mdNet), d = c.calcC + heldC - lateInC + recovC - (mdC + carry.c);
+    const known = [heldC ? `${usd(heldC)} collected after the payout` : "", lateInC ? `${usd(lateInC)} of last month's rent collected late` : "", recovC ? `${usd(recovC)} being won back from a double payout` : "",
+      carry.c ? `${usd(carry.c)} of bills and admin fees last month's payout already took off (${carry.n} carried over unpaid in MagicDoor)` : ""].filter(Boolean);
+    st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)}${known.length ? " — the same once you allow for " + known.join(", ") : ""}`}
       : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
     // the usual reason: bills entered here (receipt inbox, Bills page) that aren't in MagicDoor yet
     // and the management fee, which MagicDoor only charges around the payout (the 14th)
