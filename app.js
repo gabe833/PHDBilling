@@ -4882,17 +4882,68 @@ function mdWireCopy(root){
     try{ navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200); }); }catch(err){ toast("Couldn't copy — select the text instead"); } });
 }
 const mdAddedStamp = () => ({at:new Date().toISOString(), by:(typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || ""});
-// "Add to MagicDoor" from anywhere outside the month sheet (the Bills page): one item, its details, mark it entered
+// make the bill in MagicDoor (with the write key): find the MagicDoor vendor, pick the account, confirm, create.
+// host is where the controls go; done(result) runs once MagicDoor has the bill.
+function mdAccountGuess(it){ const t = `${it.vendor || ""} ${it.memo || ""}`; return /park|honk|toll|mileage/i.test(t) ? "Others" : /lawn|mow|landscap|tree|yard/i.test(t) ? "Landscaping" : "Repairs"; }
+async function mdCreateUI(host, it, prop, done){
+  const x = typeof mdFor === "function" && mdReady() ? mdFor(prop.id) : null;
+  if(!x || !x.property){ host.innerHTML = `<p class="help" style="color:var(--red)">This rental isn't linked to a MagicDoor property, so the bill can't be made there.</p>`; return; }
+  const unitId = x.unit ? x.unit.id : ((x.units || [])[0] || {}).id || "";
+  host.innerHTML = `<div class="mdc"><span class="mdc-wait">Finding ${esc(it.vendor || "the vendor")} in MagicDoor…</span></div>`;
+  let pv;
+  try{ const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billPreview", vendor:it.vendor || ""}}); if(error) throw new Error(error.message); if(data && data.error) throw new Error(data.error); pv = data; }
+  catch(e){ host.innerHTML = `<p class="help" style="color:var(--red)">Couldn't reach MagicDoor: ${esc(e.message)}</p>`; return; }
+  if(!pv.writeKey){ host.innerHTML = `<p class="help">The MagicDoor write key isn't set up, so enter it by hand with the details above.</p>`; return; }
+  const b = it.billId && typeof billList === "function" ? billList().find(z => z.id === it.billId) : null;
+  const feeC = itemFeeC(it, prop), acctGuess = mdAccountGuess(it);
+  const accts = [...new Set(["Repairs", "Landscaping", "Others"].concat(pv.accounts || []))];
+  const vOpts = pv.vendor ? [pv.vendor] : (pv.near || []);
+  host.innerHTML = `<div class="mdc">
+      <label class="fld"><span>MagicDoor vendor</span><select data-mv>${vOpts.length ? "" : `<option value="">Not in MagicDoor — add the vendor there first</option>`}${vOpts.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")}</select>
+        ${pv.vendor ? `<span class="help">Matched “${esc(it.vendor)}”</span>` : vOpts.length ? `<span class="help" style="color:var(--gold)">No exact match for “${esc(it.vendor)}” — check this is the right vendor</span>` : ""}</label>
+      <label class="fld"><span>Account</span><select data-ma>${accts.map(a => `<option ${a === acctGuess ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
+      <p class="help" style="margin:4px 0 8px">Makes ${feeC ? "two bills" : "one bill"} in MagicDoor: <b>${esc(it.vendor || "")} ${usd(cents(it.amount))}</b>${feeC ? ` and the <b>${usd(feeC)}</b> 10% admin fee from PHD Property Management` : ""}, dated ${esc(fdateS(it.date || todayISO()))}, on ${esc(x.property.name)}${x.unit && !/^home$/i.test(x.unit.name || "") ? " · " + esc(x.unit.name) : ""}. Nothing is paid${b && b.status === "paid" ? " — this one was already paid, so record the payment in MagicDoor afterwards" : ""}.</p>
+      <button class="btn primary sm" type="button" data-mgo ${vOpts.length ? "" : "disabled"}>Create in MagicDoor</button></div>`;
+  const go = host.querySelector("[data-mgo]");
+  go.onclick = async () => {
+    const vid = host.querySelector("[data-mv]").value, acct = host.querySelector("[data-ma]").value, vn = host.querySelector("[data-mv]").selectedOptions[0].textContent;
+    if(!vid) return;
+    // a bill MagicDoor already has (same vendor and amount on this property, last 4 months) — don't make a second one
+    const dup = (S.md.bills || []).find(bb => mdVendorKey(bb.vendor) === mdVendorKey(vn) && bb.date >= PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -3) && (bb.lines || []).some(l => l.propertyId === x.property.id && cents(l.amount) === cents(it.amount)));
+    if(dup && !confirm(`MagicDoor already has a ${dup.vendor} bill for ${usd(cents(it.amount))} on this property (${fdateS(dup.date)}). Make another one anyway?`)) return;
+    if(!confirm(`Create in MagicDoor:\n\n${vn} · ${usd(cents(it.amount))} · ${acct}\n${it.memo || ""}\n${x.property.name}${feeC ? `\n\n+ 10% admin fee ${usd(feeC)} (PHD Property Management)` : ""}\n\nNothing is paid.`)) return;
+    go.disabled = true; go.textContent = "Creating…";
+    try{
+      const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billAdd", confirm:true, vendorId:vid, propertyId:x.property.id, unitId, account:acct,
+        amount:it.amount, adminFee:feeC / 100, memo:it.memo || "", billDate:it.date || todayISO(), dueDate:(b && b.due) || it.date || todayISO(), consoleRef:{pid:prop.id, item:it.id || "", bill:it.billId || ""}}});
+      if(error) throw new Error(error.message); if(!data || data.error || !data.ok) throw new Error((data && data.error) || "MagicDoor didn't confirm the bill");
+      done(data);
+    }catch(e){ go.disabled = false; go.textContent = "Create in MagicDoor"; toast(e.message); }
+  };
+}
+// link the console's item to the bill just made (the live record, not just an open draft), so the sync never adds it twice
+function mdLinkMade(it, res){
+  const bill = res.bill || {}, at = mdAddedStamp();
+  const apply = t => { if(!t) return; if(bill.id) t.mdBill = bill.id; if((bill.lines || [])[0]) t.mdLine = bill.lines[0]; t.mdAdded = Object.assign(at, {auto:true, billId:bill.id || ""}); };
+  apply(it);
+  let live = null; Object.values(pmState().rows).some(r => { const f = (r.repairItems || []).find(i => i === it || (it.id && i.id === it.id)); if(f){ live = {r, f}; return true; } return false; });
+  if(live && live.f !== it){ snapshot(); apply(live.f); if(typeof pmTouch === "function") pmTouch(live.r); commit(); }
+  else if(live){ snapshot(); if(typeof pmTouch === "function") pmTouch(live.r); commit(); }
+  if(typeof actLog === "function") actLog("bill", `Added to MagicDoor: ${it.vendor || "bill"} ${usd(cents(it.amount))}${res.fee ? " + admin fee" : ""}`, {side:"pm"});
+  toast(`In MagicDoor now${res.feeError ? " — but the admin fee wasn't added: " + res.feeError : res.fee ? " (with the admin fee)" : ""}`, true);
+}
+// "Add to MagicDoor" from the Bills page: one item, made in MagicDoor (or entered by hand and marked)
 function mdAddBill(row, it){
   const prop = pmProp(row.propertyId); if(!prop) return;
   const sh = $("#sheet");
   sh.innerHTML = `<div class="sheet-h"><div><h3>Add to MagicDoor</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc(it.vendor || "Bill")} · ${usd(cents(it.amount))} · ${esc(prop.name)} · comes off the ${monthLabel(row.month)} payout</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b"><p class="help" style="margin-top:0">The console can't write to MagicDoor yet, so enter this bill there by hand. Once you mark it entered, the next MagicDoor sync matches it to this one — it won't be added twice.</p>${mdAddBlockHTML(it, prop)}</div>
-    <div class="sheet-f"><button class="btn ghost" id="mdaCancel">Not now</button><button class="btn primary" id="mdaDone" style="margin-left:auto">I've entered it in MagicDoor</button></div>`;
+    <div class="sheet-b"><div id="mdcHost"></div><details class="mda-hand"><summary>Or enter it by hand</summary>${mdAddBlockHTML(it, prop)}<button class="btn sm" id="mdaDone" style="margin-top:8px">I've entered it in MagicDoor</button></details></div>
+    <div class="sheet-f"><button class="btn ghost" id="mdaCancel">Close</button></div>`;
   mdWireCopy(sh);
   $("#shClose").onclick = $("#mdaCancel").onclick = closeSheet;
   $("#mdaDone").onclick = () => { snapshot(); it.mdAdded = mdAddedStamp(); if(typeof pmTouch === "function") pmTouch(row); commit(); closeSheet(); toast("Marked as entered in MagicDoor — the next sync links it", true); };
   openPanel();
+  mdCreateUI($("#mdcHost"), it, prop, res => { mdLinkMade(it, res); closeSheet(); render(); });
 }
 /* ---------------- one property, one month ---------------- */
 function pmRowSheet(m, pid, focus){
@@ -4934,7 +4985,7 @@ function pmRowSheet(m, pid, focus){
             ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
             ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${ro ? "" : mdItemState(it) === "missing"
               ? `<button class="btn sm" type="button" data-mdadd="${i}">${mdOpen === i ? "Hide" : "Add to MagicDoor"}</button>` : `<button class="btn sm ghost" type="button" data-mdundo="${i}">Not entered after all</button>`}</div>` : ""}
-            ${mdOpen === i && mdItemState(it) === "missing" ? `<div class="pm-item-mda">${mdAddBlockHTML(it, prop)}<div class="mda-go"><button class="btn sm primary" type="button" data-mddone="${i}">I've entered it in MagicDoor</button><span class="muted">Saves with this month</span></div></div>` : ""}
+            ${mdOpen === i && mdItemState(it) === "missing" ? `<div class="pm-item-mda"><div class="mdc-host" data-mdc="${i}"></div><details class="mda-hand"><summary>Or enter it by hand</summary>${mdAddBlockHTML(it, prop)}<div class="mda-go"><button class="btn sm" type="button" data-mddone="${i}">I've entered it in MagicDoor</button><span class="muted">Saves with this month</span></div></details></div>` : ""}
             ${it.mdLine && ask === i ? `<div class="pm-ask"><span>Keep this MagicDoor bill off the owner statement?</span><button class="btn sm primary" data-why="project">Project expense</button><button class="btn sm" data-why="other">Not the owner's cost</button><button class="btn sm ghost" data-why="">Cancel</button></div>` : ""}
             ${ro ? "" : `<input type="url" class="pm-link" data-ik="link" value="${esc(it.link || "")}" placeholder="Receipt link (optional)">`}
           </div>`).join("") || `<p class="muted" style="font-size:12.5px;margin:0">No repairs this month.</p>`}</div>
@@ -5010,6 +5061,7 @@ function pmRowSheet(m, pid, focus){
       const mdd = el.querySelector("[data-mddone]"); if(mdd) mdd.onclick = () => { row.repairItems[i].mdAdded = mdAddedStamp(); mdOpen = -1; draw(); };
       const mdu = el.querySelector("[data-mdundo]"); if(mdu) mdu.onclick = () => { delete row.repairItems[i].mdAdded; draw(); };
       mdWireCopy(el);
+      const mdc = el.querySelector("[data-mdc]"); if(mdc) mdCreateUI(mdc, row.repairItems[i], prop, res => { mdLinkMade(row.repairItems[i], res); mdOpen = -1; draw(); });
       el.querySelectorAll("[data-why]").forEach(b => b.onclick = () => {
         ask = -1;
         if(b.dataset.why){ kept.push({it:row.repairItems[i], why:b.dataset.why}); row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; }
@@ -6525,7 +6577,10 @@ function mdPlan(){
         // already typed in by hand (same amount)? link it instead of adding a second copy. A bill entered here first and
         // then in MagicDoor (marked "entered in MagicDoor", or the same vendor) can sit on a nearby month: link that too
         const free = i => !i.mdLine && !i.mdBill && !twinned.has(i) && cents(i.amount) === cents(li.amount);
-        let twin = (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
+        // made from here with "Add to MagicDoor": it already knows its MagicDoor bill
+        let twin = null;
+        for(const r0 of Object.values(pmState().rows)){ if(r0.propertyId !== p.id || r0.deleted) continue; twin = (r0.repairItems || []).find(i => !i.mdLine && i.mdBill === li.billId && !twinned.has(i)); if(twin) break; }
+        twin = twin || (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
         if(!twin){
           const near = Object.values(pmState().rows).filter(r0 => r0.propertyId === p.id && r0 !== rr && !r0.deleted && openRow(r0) && r0.month >= PMCore.monthAdd(mm, -2) && r0.month <= PMCore.monthAdd(mm, 1));
           for(const r0 of near){ twin = (r0.repairItems || []).find(i => free(i) && (i.mdAdded || mdVendorKey(i.vendor) === mdVendorKey(li.vendor))); if(twin) break; }

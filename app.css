@@ -2508,3 +2508,7 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .mda-go{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px}
 .md-addb{padding:2px 8px!important;font-size:11.5px!important;margin-left:4px}
 .tag.md-miss{white-space:nowrap}
+.mdc{background:var(--accent-soft);border:1px solid var(--accent-line,#C4DEDA);border-radius:10px;padding:10px 12px;margin-top:6px}
+.mdc .fld{display:block;margin:0 0 8px}.mdc .fld select{width:100%}
+.mdc-wait{font-size:12.5px;color:var(--muted)}
+.mda-hand{margin-top:8px;font-size:12.5px}.mda-hand summary{cursor:pointer;color:var(--muted)}

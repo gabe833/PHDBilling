@@ -814,7 +814,10 @@ function mdPlan(){
         // already typed in by hand (same amount)? link it instead of adding a second copy. A bill entered here first and
         // then in MagicDoor (marked "entered in MagicDoor", or the same vendor) can sit on a nearby month: link that too
         const free = i => !i.mdLine && !i.mdBill && !twinned.has(i) && cents(i.amount) === cents(li.amount);
-        let twin = (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
+        // made from here with "Add to MagicDoor": it already knows its MagicDoor bill
+        let twin = null;
+        for(const r0 of Object.values(pmState().rows)){ if(r0.propertyId !== p.id || r0.deleted) continue; twin = (r0.repairItems || []).find(i => !i.mdLine && i.mdBill === li.billId && !twinned.has(i)); if(twin) break; }
+        twin = twin || (rr.repairItems || []).find(i => free(i) && i.mdAdded) || (rr.repairItems || []).find(free);
         if(!twin){
           const near = Object.values(pmState().rows).filter(r0 => r0.propertyId === p.id && r0 !== rr && !r0.deleted && openRow(r0) && r0.month >= PMCore.monthAdd(mm, -2) && r0.month <= PMCore.monthAdd(mm, 1));
           for(const r0 of near){ twin = (r0.repairItems || []).find(i => free(i) && (i.mdAdded || mdVendorKey(i.vendor) === mdVendorKey(li.vendor))); if(twin) break; }
