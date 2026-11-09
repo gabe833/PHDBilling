@@ -107,18 +107,20 @@ async function billSchema(step: string) {
 // "10% Admin Fee" account. Nothing is paid. Only a person on the team list can do it, one bill at a time, after
 // seeing exactly what will be made (billPreview), and every bill made is written to the activity log.
 const vkey = (v: unknown) => S(v).toLowerCase().replace(/&/g, "and").replace(/\b(llc|llp|ltd|inc|co|corp|company|the)\b/g, "").replace(/[^a-z0-9]/g, "");
-let vendorCache: { at: number; list: { id: string; name: string }[] } | null = null;
-async function mdVendors(): Promise<{ id: string; name: string }[]> {
-  if (vendorCache && Date.now() - vendorCache.at < 5 * 60e3) return vendorCache.list;
+// vendors: MagicDoor's vendor search, by the first word of the name (HONK → "HONK mobile", Bactronix → "Bactronix of the Grand")
+async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
   const seen = new Map<string, string>();
-  try { (await listAll("/company-app/vendors")).forEach((v) => { if (S(v.id)) seen.set(S(v.id), nameOf(v)); }); } catch { /* fall back to the vendors bills name */ }
-  if (!seen.size) { const r = await mdGet("/company-app/vendors/bills"); (((r.body as Obj)?.vendors as Obj[]) || []).forEach((v) => seen.set(S(v.id), nameOf(v))); }
-  vendorCache = { at: Date.now(), list: [...seen].map(([id, name]) => ({ id, name })).filter((v) => v.name) };
-  return vendorCache.list;
+  const words = S(name).replace(/&/g, " ").split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, "").length >= 2);
+  for (const q of [...new Set([words[0], words.slice(0, 2).join(" ")].filter(Boolean))]) {
+    try { const r = await mdGet(`/company-app/vendors?search=${encodeURIComponent(q)}&pageSize=100`); (((r.body as Obj)?.items as Obj[]) || []).forEach((v) => { if (S(v.id)) seen.set(S(v.id), nameOf(v)); }); } catch { /* next */ }
+  }
+  try { const r = await mdGet(`/company-app/vendors?search=${encodeURIComponent("PHD Property Management")}&pageSize=20`); (((r.body as Obj)?.items as Obj[]) || []).forEach((v) => { if (S(v.id)) seen.set(S(v.id), nameOf(v)); }); } catch { /* below */ }
+  return [...seen].map(([id, nm]) => ({ id, name: nm })).filter((v) => v.name);
 }
+// expense accounts only: MagicDoor has two "Others" (490000 is income, 690000 is the expense one bills use)
 async function mdAccounts(): Promise<{ id: string; name: string }[]> {
   const r = await mdGet("/company-app/chart-of-accounts");
-  return r.status === 200 && Array.isArray(r.body) ? (r.body as Obj[]).map((a) => ({ id: S(a.id), name: S(a.name) })) : [];
+  return r.status === 200 && Array.isArray(r.body) ? (r.body as Obj[]).filter((a) => S(a.type).toLowerCase() === "expense").map((a) => ({ id: S(a.id), name: S(a.name) })) : [];
 }
 function vendorMatch(list: { id: string; name: string }[], name: string) {
   const k = vkey(name); if (!k) return { hit: null, near: [] as { id: string; name: string }[] };
@@ -128,7 +130,7 @@ function vendorMatch(list: { id: string; name: string }[], name: string) {
   return { hit: null, near: exact.length ? exact : near };
 }
 async function billPreview(body: Obj) {
-  const [vendors, accounts] = await Promise.all([mdVendors(), mdAccounts()]);
+  const [vendors, accounts] = await Promise.all([mdVendors(S(body.vendor)), mdAccounts()]);
   const m = vendorMatch(vendors, S(body.vendor));
   const phd = vendors.find((v) => /^phd property management$/i.test(v.name)) || null;
   return { vendor: m.hit, near: m.near, phdVendor: phd, accounts: accounts.map((a) => a.name).filter((n) => /repair|landscap|other|maint|clean|util|pest|appliance|hvac|plumb|electric|supplies/i.test(n)).slice(0, 30), writeKey: !!(Deno.env.get("MAGICDOOR_WRITE_KEY") || "").trim() };
@@ -155,7 +157,7 @@ async function billAdd(body: Obj, who: string) {
   const propertyId = S(body.propertyId), unitId = S(body.unitId), vendorId = S(body.vendorId);
   if (!/^\d+$/.test(propertyId) || !/^\d+$/.test(vendorId) || (unitId && !/^\d+$/.test(unitId))) throw new Error("Missing the MagicDoor property or vendor");
   const billDate = D(body.billDate) || new Date().toISOString().slice(0, 10), dueDate = D(body.dueDate) || billDate;
-  const [vendors, accounts] = await Promise.all([mdVendors(), mdAccounts()]);
+  const [vendors, accounts] = await Promise.all([mdVendors(S(body.vendorName)), mdAccounts()]);
   const vendor = vendors.find((v) => v.id === vendorId); if (!vendor) throw new Error("That vendor isn't in MagicDoor");
   // MagicDoor shows accounts with their number ("610000 - Repairs", "690000 - Others"): match either way
   const bare = (n: string) => S(n).toLowerCase().replace(/^\d+\s*-\s*/, "").trim();

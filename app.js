@@ -4916,7 +4916,7 @@ async function mdCreateUI(host, it, prop, done){
     if(!confirm(`Create in MagicDoor:\n\n${vn} · ${usd(cents(it.amount))} · ${acct}\n${it.memo || ""}\n${x.property.name}${feeC ? `\n\n+ 10% admin fee ${usd(feeC)} (PHD Property Management)` : ""}\n\nNothing is paid.`)) return;
     go.disabled = true; go.textContent = "Creating…";
     try{
-      const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billAdd", confirm:true, vendorId:vid, propertyId:x.property.id, unitId, account:acct,
+      const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billAdd", confirm:true, vendorId:vid, vendorName:vn, propertyId:x.property.id, unitId, account:acct,
         amount:it.amount, adminFee:feeC / 100, memo:it.memo || "", billDate:it.date || todayISO(), dueDate:(b && b.due) || it.date || todayISO(), consoleRef:{pid:prop.id, item:it.id || "", bill:it.billId || ""}}});
       if(error) throw new Error(error.message); if(!data || data.error || !data.ok) throw new Error((data && data.error) || "MagicDoor didn't confirm the bill");
       done(data);
