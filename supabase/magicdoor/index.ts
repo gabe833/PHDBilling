@@ -140,7 +140,10 @@ function vendorMatch(list: { id: string; name: string }[], name: string) {
   const k = vkey(name); if (!k) return { hit: null, near: [] as { id: string; name: string }[] };
   const exact = list.filter((v) => vkey(v.name) === k);
   if (exact.length === 1) return { hit: exact[0], near: [] };
-  const near = list.filter((v) => { const x = vkey(v.name); return x && (x.startsWith(k.slice(0, 8)) || k.startsWith(x.slice(0, 8))); }).slice(0, 8);
+  // close names: same start ("Bactronix of the Grand Strand" / "Bactronix of the Grand"), or the same last name ("Jay" / "Jaye Buchholz")
+  const toks = (n: string) => S(n).toLowerCase().replace(/&/g, " ").split(/[^a-z0-9]+/).filter((t) => t.length >= 4 && !/^(llc|llp|inc|corp|company|the|and|services?)$/.test(t));
+  const mine = toks(name);
+  const near = list.filter((v) => { const x = vkey(v.name), t = toks(v.name); return x && (x.startsWith(k.slice(0, 8)) || k.startsWith(x.slice(0, 8)) || (t.length && mine.length && t[t.length - 1] === mine[mine.length - 1])); }).slice(0, 8);
   return { hit: null, near: exact.length ? exact : near };
 }
 async function billPreview(body: Obj) {
