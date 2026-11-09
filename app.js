@@ -4885,6 +4885,8 @@ const mdAddedStamp = () => ({at:new Date().toISOString(), by:(typeof Cloud !== "
 // make the bill in MagicDoor (with the write key): find the MagicDoor vendor, pick the account, confirm, create.
 // host is where the controls go; done(result) runs once MagicDoor has the bill.
 function mdAccountGuess(it){ const t = `${it.vendor || ""} ${it.memo || ""}`; return /park|honk|toll|mileage/i.test(t) ? "Others" : /lawn|mow|landscap|tree|yard/i.test(t) ? "Landscaping" : "Repairs"; }
+// the reason an edge function gave, not just "non-2xx status"
+async function fnErr(error){ let m = error && error.message || "Something went wrong"; try{ const j = await error.context.json(); if(j && j.error) m = j.error; }catch(e){} return new Error(m); }
 async function mdCreateUI(host, it, prop, done){
   const x = typeof mdFor === "function" && mdReady() ? mdFor(prop.id) : null;
   if(!x || !x.property){ host.innerHTML = `<p class="help" style="color:var(--red)">This rental isn't linked to a MagicDoor property, so the bill can't be made there.</p>`; return; }
@@ -4893,7 +4895,7 @@ async function mdCreateUI(host, it, prop, done){
   const unitId = shared && x.unit ? x.unit.id : "";
   host.innerHTML = `<div class="mdc"><span class="mdc-wait">Finding ${esc(it.vendor || "the vendor")} in MagicDoor…</span></div>`;
   let pv;
-  try{ const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billPreview", vendor:it.vendor || ""}}); if(error) throw new Error(error.message); if(data && data.error) throw new Error(data.error); pv = data; }
+  try{ const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billPreview", vendor:it.vendor || ""}}); if(error) throw await fnErr(error); if(data && data.error) throw new Error(data.error); pv = data; }
   catch(e){ host.innerHTML = `<p class="help" style="color:var(--red)">Couldn't reach MagicDoor: ${esc(e.message)}</p>`; return; }
   if(!pv.writeKey){ host.innerHTML = `<p class="help">The MagicDoor write key isn't set up, so enter it by hand with the details above.</p>`; return; }
   const b = it.billId && typeof billList === "function" ? billList().find(z => z.id === it.billId) : null;
@@ -4918,7 +4920,7 @@ async function mdCreateUI(host, it, prop, done){
     try{
       const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billAdd", confirm:true, vendorId:vid, vendorName:vn, propertyId:x.property.id, unitId, account:acct,
         amount:it.amount, adminFee:feeC / 100, memo:it.memo || "", billDate:it.date || todayISO(), dueDate:(b && b.due) || it.date || todayISO(), consoleRef:{pid:prop.id, item:it.id || "", bill:it.billId || ""}}});
-      if(error) throw new Error(error.message); if(!data || data.error || !data.ok) throw new Error((data && data.error) || "MagicDoor didn't confirm the bill");
+      if(error) throw await fnErr(error); if(!data || data.error || !data.ok) throw new Error((data && data.error) || "MagicDoor didn't confirm the bill");
       done(data);
     }catch(e){ go.disabled = false; go.textContent = "Create in MagicDoor"; toast(e.message); }
   };
