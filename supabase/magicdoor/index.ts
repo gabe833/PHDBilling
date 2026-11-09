@@ -110,19 +110,23 @@ const vkey = (v: unknown) => S(v).toLowerCase().replace(/&/g, "and").replace(/\b
 // vendors: MagicDoor's vendor search when it answers; otherwise every vendor on MagicDoor's bills (the list the sync
 // reads — every vendor PHD has billed), kept for 10 minutes
 let billVendors: { at: number; list: { id: string; name: string }[] } | null = null;
+let vendorBase = "";
 const vendorSrc: Obj = {};
 async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
   const seen = new Map<string, string>();
   const add = (arr: unknown) => ((arr as Obj[]) || []).forEach((v) => { if (S(v.id) && nameOf(v)) seen.set(S(v.id), nameOf(v)); });
   const words = S(name).replace(/&/g, " ").split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, "").length >= 2);
-  for (const q of [...new Set([words[0], "PHD Property Management"].filter(Boolean))]) {
-    for (const path of [`/company-app/vendors?search=${encodeURIComponent(q)}&pageSize=100`, `/company-app/vendors?name=${encodeURIComponent(q)}&pageSize=100`]) {
-      try { const r = await mdGet(path); vendorSrc[path.split("?")[0] + "?" + path.split("?")[1].split("=")[0]] = r.status; const b = r.body as Obj; add(b?.items || b?.vendors || (Array.isArray(b) ? b : [])); if (seen.size) break; } catch (e) { vendorSrc[path] = String(e).slice(0, 80); }
-    }
+  // MagicDoor's full vendor list (a vendor just added has no bills yet): the first address that answers is remembered
+  for (const base of vendorBase ? [vendorBase] : ["/company-app/vendors", "/company-app/vendors/list", "/company-app/companies/vendors", "/company-app/vendors/search", "/vendors"]) {
+    try {
+      const r = await mdGet(base); vendorSrc[base] = r.status;
+      if (r.status === 200) { const b = r.body as Obj; const arr = b?.items || b?.vendors || (Array.isArray(b) ? b : null);
+        if (arr) { vendorBase = base; try { add(await listAll(base)); } catch { add(arr); } break; } }
+    } catch (e) { vendorSrc[base] = String(e).slice(0, 80); }
   }
   const k = vkey(name);
   if (!k || ![...seen.values()].some((n) => vkey(n) === k || vkey(n).startsWith(k.slice(0, 8)) || k.startsWith(vkey(n).slice(0, 8))) || ![...seen.values()].some((n) => /^phd property management$/i.test(n))) {
-    if (!billVendors || Date.now() - billVendors.at > 10 * 60e3) {
+    if (!billVendors || Date.now() - billVendors.at > 2 * 60e3) {
       const m = new Map<string, string>();
       await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => { if (S(v.id)) m.set(S(v.id), nameOf(v)); }));
       billVendors = { at: Date.now(), list: [...m].map(([id, nm]) => ({ id, name: nm })) };
