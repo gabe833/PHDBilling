@@ -15,6 +15,7 @@
 //   discover  field-name report, no values                (Team members)
 //   probe     field-name report for more addresses        (Team members)
 //   billFile  one bill's attached file (vendor invoice)   (Team members) {billId, fileId}
+//   billSchema  how MagicDoor wants a new bill (no bill is made) (Team members)
 //
 // Secrets (Edge Functions → Secrets):  MAGICDOOR_API_KEY
 // Supabase provides SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY.
@@ -56,6 +57,46 @@ async function mdToken(): Promise<string> {
   token = d.accessToken;
   tokenUntil = Date.now() + Math.max(60, Number(d.expiresIn || 900) - 60) * 1000;
   return token;
+}
+// ---------- the write key: only for "Add to MagicDoor" (one bill at a time, confirmed by a person) ----------
+let wtoken = "", wtokenUntil = 0;
+async function mdWriteToken(): Promise<string> {
+  if (wtoken && Date.now() < wtokenUntil) return wtoken;
+  const key = (Deno.env.get("MAGICDOOR_WRITE_KEY") || "").trim();
+  if (!key) throw new Error("MAGICDOOR_WRITE_KEY is not set in Edge Functions → Secrets");
+  const r = await fetch(AUTH_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }), signal: AbortSignal.timeout(20000) });
+  if (r.status === 401) throw new Error("MagicDoor rejected the write key (401)");
+  if (!r.ok) throw new Error(`MagicDoor sign-in (write key) failed: ${r.status}`);
+  const d = await r.json(); if (!d.accessToken) throw new Error("MagicDoor sign-in returned no token");
+  wtoken = d.accessToken; wtokenUntil = Date.now() + Math.max(60, Number(d.expiresIn || 900) - 60) * 1000;
+  return wtoken;
+}
+// how MagicDoor wants a new vendor bill: its API description if it publishes one; otherwise the validation message
+// an empty request gets back (an empty request can't create anything). Nothing here is saved.
+async function billSchema(step: string) {
+  const out: Obj = { at: new Date().toISOString() };
+  if (step !== "post") {
+    const t = await mdToken();
+    for (const p of ["/swagger/v1/swagger.json", "/swagger/swagger.json", "/openapi.json", "/swagger.json", "/api-docs", "/company-app/swagger.json", "/v3/api-docs"]) {
+      try {
+        const r = await fetch(API + p, { headers: { Authorization: "Bearer " + t, Accept: "application/json" }, signal: AbortSignal.timeout(20000) });
+        const txt = await r.text(); let j: Obj | null = null; try { j = JSON.parse(txt); } catch { /* not JSON */ }
+        if (r.ok && j && (j.paths || j.openapi || j.swagger)) {
+          const paths = (j.paths || {}) as Obj, hits: Obj = {};
+          Object.keys(paths).filter((k) => /bill/i.test(k)).forEach((k) => { hits[k] = paths[k]; });
+          const comps = ((j.components || {}) as Obj).schemas as Obj || (j.definitions as Obj) || {}, want: Obj = {};
+          Object.keys(comps).filter((k) => /bill|lineitem|line_item/i.test(k)).slice(0, 25).forEach((k) => { want[k] = comps[k]; });
+          out.spec = { at: p, paths: hits, schemas: want }; return out;
+        }
+        out[p] = r.status;
+      } catch (e) { out[p] = "failed: " + scrub(String(e)); }
+    }
+    return out;
+  }
+  const t = await mdWriteToken(); out.writeKey = "ok";
+  const r = await fetch(API + "/company-app/vendors/bills", { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json", Accept: "application/json" }, body: "{}", signal: AbortSignal.timeout(20000) });
+  out.status = r.status; out.error = (await r.text()).replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "(email)").slice(0, 3000);
+  return out;
 }
 const ACCOUNTING = "https://accounting.magicdoor.com/company-portal";   // owner statements and other reports live here
 async function mdGet(path: string, base = API): Promise<{ status: number; body: unknown; text: string }> {
@@ -686,6 +727,7 @@ Deno.serve(async (req) => {
     }
     if (mode === "probe") return json({ at: new Date().toISOString(), endpoints: await probe(MORE) });
     if (mode === "billFile") return json(await billFile(S(body.billId), S(body.fileId)));
+    if (mode === "billSchema") return json(await billSchema(S(body.step)));
     return json({ error: "Unknown mode" }, 400);
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 502);
