@@ -16,7 +16,7 @@
   "use strict";
   const KEY = "phd.ux";
   const LS = {get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }, set(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }};
-  const DEFAULT_ON = false;   // until the new look has been checked page by page
+  const DEFAULT_ON = true;    // the switch at the foot of the menu goes back to the classic layout
   const on = () => { const v = LS.get(KEY); return v ? v === "new" : DEFAULT_ON; };
   const root = document.documentElement;
   const reduce = () => window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -191,6 +191,7 @@
     const held = cards.find(c => /^Held/.test((qs(c, "h3") || {}).textContent || "")), done = cards.find(c => /^Paid or scheduled/.test((qs(c, "h3") || {}).textContent || ""));
     const nHeld = held ? qsa(held, "tbody tr").length : 0, nDone = done ? qsa(done, "tbody tr").length : 0;
 
+    const pf = qs(top, "#poF"); if(pf && /Loading/i.test(pf.textContent)) pf.classList.add("ux-skel");
     const side = h("aside", "ux-batch-side");
     const s1 = h("div", "ux-panel ux-settings", `<div class="ux-panel-h">${ic("send")}<b>Batch settings</b></div>`);
     top.classList.add("ux-flat"); s1.appendChild(top);

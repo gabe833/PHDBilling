@@ -402,3 +402,11 @@ html.ux2 #view.ux-enter .ux-chart-hero .pm-bar:nth-child(n){animation-delay:calc
 
 /* owners: three across */
 html.ux2 .ux-dir-grid.ow-cards{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+
+/* ---------- menu and table headers: sentence case, a smoother active item ---------- */
+html.ux2 .nav-head{text-transform:none!important;letter-spacing:0!important;font-size:11.5px;font-weight:600}
+html.ux2 table.tbl thead th{text-transform:none;letter-spacing:0}
+html.ux2 .nav button{transition:background-color .18s var(--ux-ease),color .15s,box-shadow .2s var(--ux-ease)}
+html.ux2 .nav button[aria-current="true"]{animation:uxNav .28s var(--ux-ease)}
+@keyframes uxNav{from{background-color:transparent}}
+html.ux2 select.ux-skel{min-height:34px}
