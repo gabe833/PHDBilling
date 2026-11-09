@@ -2512,3 +2512,11 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .mdc .fld{display:block;margin:0 0 8px}.mdc .fld select{width:100%}
 .mdc-wait{font-size:12.5px;color:var(--muted)}
 .mda-hand{margin-top:8px;font-size:12.5px}.mda-hand summary{cursor:pointer;color:var(--muted)}
+.bl-md{white-space:nowrap}
+.md-ok{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}
+.md-ok .ic{width:13px;height:13px;color:var(--green,#2B7A4B)}
+.md-addb{display:inline-flex!important;align-items:center;gap:4px;margin-left:0!important}
+.md-addb .ic{width:12px;height:12px}
+.tag.md-twin{white-space:nowrap;cursor:help}
+.up-tbl .up-late{white-space:nowrap}
+.up-tbl td:nth-child(4){white-space:nowrap}

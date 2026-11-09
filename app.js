@@ -4485,7 +4485,10 @@ const monthShort = m => { const [y, mm] = String(m).split("-").map(Number); retu
 const monthAdd = (m, n) => { const [y, mm] = m.split("-").map(Number); const d = new Date(y, mm - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
 const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
 const pmMonths = () => [...new Set(Object.values(pmState().rows).map(r => r.month))].sort();
-const pmLastPaidMonth = () => { const cl = pmMonths().filter(m => (pmState().meta[m] || {}).closed); if(cl.length) return cl[cl.length - 1]; const ms = pmMonths().filter(m => Object.values(pmState().rows).some(r => r.month === m && has(r.rentReceived) && Number(r.rentReceived) > 0)); return ms[ms.length - 1]; };
+// the latest month whose owner payouts have gone out: closed, or (still open) with most of its payouts marked sent
+const pmLastPaidMonth = () => { const cl = pmMonths().filter(m => { if((pmState().meta[m] || {}).closed) return true;
+    const rs = Object.values(pmState().rows).filter(r => r.month === m && !r.deleted && !r.detailOnly); const sent = rs.filter(r => r.paidOut).length; return sent >= 3 && sent * 2 >= rs.length; });
+  if(cl.length) return cl[cl.length - 1]; const ms = pmMonths().filter(m => Object.values(pmState().rows).some(r => r.month === m && has(r.rentReceived) && Number(r.rentReceived) > 0)); return ms[ms.length - 1]; };
 const pmLiveProps = () => pmState().properties.filter(p => p.status !== "inactive" && !p.deleted);
 const nz = v => v == null || v === "" ? 0 : cents(v);
 const has = v => v != null && v !== "";
@@ -4848,6 +4851,30 @@ function mdItemState(it){
   if(it.mdLine || it.mdBill) return "in";
   return it.mdAdded ? "added" : "missing";
 }
+// a console-only item MagicDoor seems to have already: the same vendor and amount on this rental's MagicDoor property,
+// on a MagicDoor bill another month's row already charged. Adding it again would charge the owner twice.
+function mdItemTwin(it, prop){
+  if(mdItemState(it) !== "missing" || !prop || typeof mdReady !== "function" || !mdReady()) return null;
+  const x = mdFor(prop.id); if(!x || !x.property) return null;
+  const since = PMCore.monthAdd((it.date || todayISO()).slice(0, 7), -4), vk = mdVendorKey(it.vendor);
+  for(const b of (S.md.bills || [])){ if(!b.date || b.date.slice(0, 7) < since || mdVendorKey(b.vendor) !== vk) continue;
+    const li = (b.lines || []).find(l => l.propertyId === x.property.id && cents(l.amount) === cents(it.amount)); if(!li) continue;
+    const on = Object.values(pmState().rows).find(r => !r.deleted && (r.repairItems || []).some(i => i !== it && i.mdLine === li.id));
+    if(on) return {bill:b, month:on.month, prop:pmProp(on.propertyId)};
+  }
+  return null;
+}
+function mdTwinTag(tw){ return `<span class="tag gold md-twin" title="${esc(`MagicDoor already has a ${tw.bill.vendor} bill for this amount (${fdateS(tw.bill.date)}), and it was charged on ${tw.prop ? tw.prop.name + "'s " : "the "}${monthLabel(tw.month)} payout. If this is the same bill, remove this one so the owner isn't charged twice.`)}">Charged twice? Also on ${esc(monthShort(tw.month))}</span>`; }
+// the MagicDoor column on the Bills page
+function mdBillCell(b){
+  if(b.movedTo) return `<span class="muted" title="On a project invoice — not a MagicDoor bill">—</span>`;
+  const f = mdFindBillItem(b.id); if(!f) return `<span class="muted">—</span>`;
+  const st = mdItemState(f.it);
+  if(st === "in") return `<span class="md-ok" title="This bill is in MagicDoor">${icon("check")} In MagicDoor</span>`;
+  if(st === "added") return mdItemTag(f.it, true);
+  const tw = mdItemTwin(f.it, pmProp(f.row.propertyId));
+  return tw ? mdTwinTag(tw) : `<button class="btn sm md-addb" type="button" data-nos data-mdaddb="${esc(b.id)}" title="Not in MagicDoor yet — create it there">${icon("plus")} Add to MagicDoor</button>`;
+}
 function mdItemTag(it, short){
   const s = mdItemState(it);
   if(s === "missing") return `<span class="tag red md-miss" title="Entered in the console only — MagicDoor's owner statement doesn't include it yet">${short ? "Not in MD" : "Not in MagicDoor"}</span>`;
@@ -4987,7 +5014,7 @@ function pmRowSheet(m, pid, focus){
               <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
             <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}" title="${it.mdLine ? "Take this MagicDoor bill off the statement" : "Remove"}">✕</button>`}</div>
             ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
-            ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${ro ? "" : mdItemState(it) === "missing"
+            ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${(() => { const tw = mdItemTwin(it, prop); return tw ? mdTwinTag(tw) : ""; })()}${ro ? "" : mdItemState(it) === "missing"
               ? `<button class="btn sm" type="button" data-mdadd="${i}">${mdOpen === i ? "Hide" : "Add to MagicDoor"}</button>` : `<button class="btn sm ghost" type="button" data-mdundo="${i}">Not entered after all</button>`}</div>` : ""}
             ${mdOpen === i && mdItemState(it) === "missing" ? `<div class="pm-item-mda"><div class="mdc-host" data-mdc="${i}"></div><details class="mda-hand"><summary>Or enter it by hand</summary>${mdAddBlockHTML(it, prop)}<div class="mda-go"><button class="btn sm" type="button" data-mddone="${i}">I've entered it in MagicDoor</button><span class="muted">Saves with this month</span></div></details></div>` : ""}
             ${it.mdLine && ask === i ? `<div class="pm-ask"><span>Keep this MagicDoor bill off the owner statement?</span><button class="btn sm primary" data-why="project">Project expense</button><button class="btn sm" data-why="other">Not the owner's cost</button><button class="btn sm ghost" data-why="">Cancel</button></div>` : ""}
@@ -6378,6 +6405,18 @@ function mdStmtCap(x, g, st){
   const cut = r2(Math.min(x.recv - cap, st.pre));   // only money carried in from last month can be the double count
   return Object.assign({}, x, {recv:cap, net:r2(x.net - cut), heldOver:cut});
 }
+// Which bills and admin fees on a month's MagicDoor statement are new this month. MagicDoor keeps listing an unpaid
+// bill on every statement until it's paid, so one that was already on last month's statement was charged on last
+// month's row — unless this month's row is the one holding it (a bill entered here and added to MagicDoor afterwards
+// shows up on both statements at once).
+function mdStmtFresh(st, st0, row0, rr, prop){
+  const held = (rr && rr.repairItems || []).filter(i => (i.mdLine || i.mdBill) && cents(i.amount));
+  return k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
+    const mine = new Map(); held.forEach(i => { const a = k === "bills" ? cents(i.amount) : PMCore.itemFee(i, prop); if(a) mine.set(a, (mine.get(a) || 0) + 1); });
+    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
+    return L.filter(a => { const c = cents(a.a), q = mine.get(c) || 0; if(q){ mine.set(c, q - 1); return true; }
+      const key = a.d + "|" + c + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+}
 function mdStmtWant(p, rr, mpId, mm, g){
   const st = PMCore.mdStmt(S.md, mpId, mm); let x = PMCore.mdStmtMonth(st, p); if(!x) return null;
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -6397,9 +6436,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
   // row: only what's new on this statement counts (131 Bogard's $537.50 of September admin fees, charged in October)
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
   const pm0 = PMCore.monthAdd(mm, -1), st0 = PMCore.mdStmt(S.md, mpId, pm0), row0 = pmRow(pm0, p.id);
-  const fresh = k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
-    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
-    return L.filter(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+  const fresh = mdStmtFresh(st, st0, row0, rr, p);
   const newBills = fresh("bills"), newAdmin = fresh("admin").reduce((a, b) => a + cents(b.a), 0) / 100;
   const carriedC = ["bills", "admin"].reduce((t, k) => t + (st[k] || []).reduce((a, b) => a + cents(b.a), 0) - fresh(k).reduce((a, b) => a + cents(b.a), 0), 0);
   const own = (newBills.reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;
@@ -8144,14 +8181,14 @@ function pgPmBills(){
   if(!list.length){ card.innerHTML = `<div class="empty"><b>${f === "open" ? "No bills waiting" : "Nothing here"}</b><p>${f === "open" ? "Add one above, or drop the vendor's invoice anywhere on this page." : "Try another filter."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl bl-tbl");
   const canSel = f === "open" || f === "due";
-  t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>Owner</th><th></th></tr></thead>
+  t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>MagicDoor</th><th>Owner</th><th></th></tr></thead>
     <tbody>${list.map(b => { const p = pmProp(b.propertyId), st = billStatus(b);
       return `<tr data-b="${b.id}">${canSel ? `<td class="nw" data-nos><input type="checkbox" data-sel="${b.id}" ${sel[b.id] ? "checked" : ""}></td>` : ""}
         <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
-        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${(() => { const f = !b.movedTo && mdFindBillItem(b.id); if(!f) return ""; const st2 = mdItemState(f.it);
-          return st2 === "missing" ? ` ${mdItemTag(f.it, true)} <button class="btn sm md-addb" type="button" data-nos data-mdaddb="${esc(b.id)}">Add to MagicDoor</button>` : st2 === "added" ? ` ${mdItemTag(f.it, true)}` : ""; })()}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
+        <td class="bl-md">${mdBillCell(b)}</td>
         <td class="bl-o">${billOwnerTag(b)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-nos]")) return; billSheet(tr.dataset.b); });
   t.querySelectorAll("[data-mdaddb]").forEach(bt => bt.onclick = e => { e.stopPropagation(); const f = mdFindBillItem(bt.dataset.mdaddb); if(f) mdAddBill(f.row, f.it); });
@@ -8597,7 +8634,7 @@ function pgPmVendors(){
   if(missing.length){ snapshot(); missing.forEach(vendorEnsure); commit(); }
   if(nkImportVendors()){ nkMatchAt = 0; setTimeout(render, 0); return; }   // new ones are drawn (and linked) on the next pass
   const allV = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
-  const used = new Set(billList().map(b => b.vendorId)), vq = (S.ui.vnQ || "").toLowerCase(), vf = S.ui.vnF || "all";
+  const used = new Set(billList().map(b => b.vendorId)), vq = (S.ui.vnQ || "").toLowerCase(), vf = S.ui.vnF || (used.size ? "used" : "all");   // opens on the vendors you actually bill, not all 750 in Nickel
   const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id]];
   const vs = allV.filter((VF.find(f => f[0] === vf) || VF[0])[2]).filter(x => !vq || `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(vq));
   $("#pgSub").textContent = `${allV.length} vendor${allV.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
@@ -15321,10 +15358,8 @@ function rcCarried(prop, m){
   const x = typeof mdReady === "function" && mdReady() ? mdFor(prop.id) : null; if(!x || !x.property) return {c:0, n:0};
   const st = PMCore.mdStmt(S.md, x.property.id, m), pm0 = PMCore.monthAdd(m, -1), st0 = PMCore.mdStmt(S.md, x.property.id, pm0), row0 = pmRow(pm0, prop.id);
   if(!st || !st0 || !row0 || row0.deleted) return {c:0, n:0};
-  let c = 0, n = 0;
-  ["bills", "admin"].forEach(k => { const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
-    (st[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, q = seen.get(key) || 0; if(q){ seen.set(key, q - 1); c += cents(a.a); if(k === "bills") n++; } }); });
-  return {c, n};
+  const fresh = mdStmtFresh(st, st0, row0, pmRow(m, prop.id), prop), sum = L => L.reduce((a, b) => a + cents(b.a), 0);
+  return {c:sum(st.bills || []) + sum(st.admin || []) - sum(fresh("bills")) - sum(fresh("admin")), n:(st.bills || []).length - fresh("bills").length};
 }
 function rcRow(m, row, prop, ledger){
   const c = pmCalc(row, prop), today = todayISO(), over = m < today.slice(0, 7), st = {};

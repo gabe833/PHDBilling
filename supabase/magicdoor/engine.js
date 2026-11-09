@@ -571,6 +571,18 @@ function mdStmtCap(x, g, st){
   const cut = r2(Math.min(x.recv - cap, st.pre));   // only money carried in from last month can be the double count
   return Object.assign({}, x, {recv:cap, net:r2(x.net - cut), heldOver:cut});
 }
+// Which bills and admin fees on a month's MagicDoor statement are new this month. MagicDoor keeps listing an unpaid
+// bill on every statement until it's paid, so one that was already on last month's statement was charged on last
+// month's row — unless this month's row is the one holding it (a bill entered here and added to MagicDoor afterwards
+// shows up on both statements at once).
+function mdStmtFresh(st, st0, row0, rr, prop){
+  const held = (rr && rr.repairItems || []).filter(i => (i.mdLine || i.mdBill) && cents(i.amount));
+  return k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
+    const mine = new Map(); held.forEach(i => { const a = k === "bills" ? cents(i.amount) : PMCore.itemFee(i, prop); if(a) mine.set(a, (mine.get(a) || 0) + 1); });
+    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
+    return L.filter(a => { const c = cents(a.a), q = mine.get(c) || 0; if(q){ mine.set(c, q - 1); return true; }
+      const key = a.d + "|" + c + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+}
 function mdStmtWant(p, rr, mpId, mm, g){
   const st = PMCore.mdStmt(S.md, mpId, mm); let x = PMCore.mdStmtMonth(st, p); if(!x) return null;
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -590,9 +602,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
   // row: only what's new on this statement counts (131 Bogard's $537.50 of September admin fees, charged in October)
   const rate = Number(p.adminRate != null ? p.adminRate : 10);
   const pm0 = PMCore.monthAdd(mm, -1), st0 = PMCore.mdStmt(S.md, mpId, pm0), row0 = pmRow(pm0, p.id);
-  const fresh = k => { const L = st[k] || []; if(!st0 || !row0 || row0.deleted) return L;
-    const seen = new Map(); (st0[k] || []).forEach(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t; seen.set(key, (seen.get(key) || 0) + 1); });
-    return L.filter(a => { const key = a.d + "|" + cents(a.a) + "|" + a.t, n = seen.get(key) || 0; if(n){ seen.set(key, n - 1); return false; } return true; }); };
+  const fresh = mdStmtFresh(st, st0, row0, rr, p);
   const newBills = fresh("bills"), newAdmin = fresh("admin").reduce((a, b) => a + cents(b.a), 0) / 100;
   const carriedC = ["bills", "admin"].reduce((t, k) => t + (st[k] || []).reduce((a, b) => a + cents(b.a), 0) - fresh(k).reduce((a, b) => a + cents(b.a), 0), 0);
   const own = (newBills.reduce((a, b) => a + Math.round(cents(b.a) * rate / 100), 0)) / 100;

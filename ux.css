@@ -410,3 +410,8 @@ html.ux2 .nav button{transition:background-color .18s var(--ux-ease),color .15s,
 html.ux2 .nav button[aria-current="true"]{animation:uxNav .28s var(--ux-ease)}
 @keyframes uxNav{from{background-color:transparent}}
 html.ux2 select.ux-skel{min-height:34px}
+
+html.ux2 .ux-jump{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;font-size:12.5px;font-weight:550;background:var(--t-wait-s);color:var(--t-wait);border:1px solid var(--t-wait-l);white-space:nowrap;transition:background-color .15s}
+html.ux2 .ux-jump:hover{background:#F6E8C8}
+html.ux2 .ux-jump:focus-visible{outline:2px solid var(--accent-2);outline-offset:1px}
+html.ux2 .ux-jump .ic{width:13px;height:13px}

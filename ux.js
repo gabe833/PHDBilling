@@ -226,6 +226,7 @@
   PAGES.pmRecon = V => {
     const grid = qs(V, ":scope > .rc-grid"); if(!grid) return;
     const topb = qs(V, ":scope > .rc-top"), hero = qs(V, ":scope > .rc-hero"), bar = qs(V, ":scope > .sc-bar");
+    try{ const cur = pmCurrentMonth(), sel = topb && qs(topb, "select"), at = sel && sel.value; if(at && at !== cur && [...sel.options].some(o => o.value === cur)){ const j = h("button", "ux-jump", `Go to ${E(mLabel(cur))} ${ic("arrow")}`); j.type = "button"; j.onclick = () => { sel.value = cur; sel.dispatchEvent(new Event("change", {bubbles:true})); }; topb.appendChild(j); } }catch(e){}
     const band = h("div", "ux-inv-band"); if(topb) band.appendChild(topb); if(hero){ hero.classList.add("ux-compact"); band.appendChild(hero); }
     const groups = [["is-issue", "Doesn't match", "warn", "alert", false, "Open one to see each check and what to fix"],
                     ["is-waiting", "Waiting", "wait", "clock", true, "Rent or a payout still on its way — nothing wrong yet"],
@@ -338,6 +339,8 @@
     qsa(out, "[data-sf]").forEach(b => { const map = {todo:"Not sent", draft:"Drafts", sent:"Sent", blocked:"Need an email"}, sb = segBtn(bar, map[b.dataset.sf]);
       if(sb && sb.classList.contains("on")) b.classList.add("is-on"); b.onclick = () => sb && sb.click(); });
     hero.replaceWith(out);
+    // looking at an older month: say so, with one click back to this month
+    try{ const cur = pmCurrentMonth(), at = stMonth(); if(at !== cur && bar && !qs(bar, ".ux-jump")){ const j = h("button", "ux-jump", `Showing ${E(mLabel(at))} · go to ${E(mLabel(cur))} ${ic("arrow")}`); j.type = "button"; j.onclick = () => { S.ui.stMonth = cur; persistUi(); render(); }; const sel = qs(bar, "select"); sel ? sel.after(j) : bar.prepend(j); } }catch(e){}
     const tb = qs(V, ".st-tbl tbody"), trs = tb ? qsa(tb, ":scope > tr") : [];
     trs.forEach(tr => { const t = qs(tr, ".tag"), cls = t ? t.className : "";
       tr.dataset.uxg = /green/.test(cls) ? "sent" : /gold/.test(cls) ? "draft" : /red/.test(cls) ? "blocked" : "todo";
