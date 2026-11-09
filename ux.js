@@ -110,7 +110,7 @@
   PAGES.pmMonth = V => {
     const m = S.ui.pmMonth || (typeof pmCurrentMonth === "function" ? pmCurrentMonth() : "");
     const meta = (pmState().meta || {})[m] || {}, R = pmMonthRoll(m);
-    const rows = pmMonthRows(m).filter(x => !x.row.detailOnly);
+    const rows = pmMonthRows(m).filter(x => !x.row.detailOnly).map(x => ({p:x.prop, row:x.row}));
     if(!rows.length) return;
     const hero = qs(V, ":scope > .pf-hero"), bar = qs(V, ":scope > .sc-bar"), tbl = qs(V, ":scope > .card .pm-tbl");
     const tcard = tbl && tbl.closest(".card"), grid2 = qs(V, ":scope > .pm-grid2");
@@ -436,5 +436,6 @@
   }
   document.addEventListener("DOMContentLoaded", () => { mountSwitch(); });
   mountSwitch();
+  window.UX = {PAGES, section, enhanceSheet, on};
   try{ after(); }catch(e){}
 })();
