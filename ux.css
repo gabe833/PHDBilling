@@ -133,9 +133,9 @@ html.ux2 #view.ux-enter .pm-meter i,html.ux2 #view.ux-enter .ux-step-bar i,html.
 html.ux2 .pm-meter i,html.ux2 .ux-step-bar i,html.ux2 .ux-stack i{transform-origin:left center}
 html.ux2 .sheet{transition:transform .34s var(--ux-ease),visibility 0s .34s,box-shadow .3s}
 html.ux2 .sheet.on{transition:transform .38s var(--ux-ease),visibility 0s}
-html.ux2 .sheet.on .sheet-b > *{animation:uxIn .34s var(--ux-ease) both}
-html.ux2 .sheet.on .sheet-b > *:nth-child(2){animation-delay:.03s} html.ux2 .sheet.on .sheet-b > *:nth-child(3){animation-delay:.06s}
-html.ux2 .sheet.on .sheet-b > *:nth-child(4){animation-delay:.09s} html.ux2 .sheet.on .sheet-b > *:nth-child(n+5){animation-delay:.12s}
+html.ux2 .sheet.on.ux-fresh .sheet-b > *{animation:uxIn .34s var(--ux-ease) both}
+html.ux2 .sheet.on.ux-fresh .sheet-b > *:nth-child(2){animation-delay:.03s} html.ux2 .sheet.on.ux-fresh .sheet-b > *:nth-child(3){animation-delay:.06s}
+html.ux2 .sheet.on.ux-fresh .sheet-b > *:nth-child(4){animation-delay:.09s} html.ux2 .sheet.on.ux-fresh .sheet-b > *:nth-child(n+5){animation-delay:.12s}
 html.ux2 .toast{transition:transform .32s var(--ux-spring),opacity .2s}
 html.ux2 .pm-card,html.ux2 .ow-card,html.ux2 .rc-card{transition:transform .22s var(--ux-ease),box-shadow .22s var(--ux-ease)}
 html.ux2 .pm-card:hover,html.ux2 .ow-card:hover,html.ux2 .rc-card:hover{transform:translateY(-2px);box-shadow:var(--e2)}

@@ -461,7 +461,11 @@
 
   const sheet = document.getElementById("sheet");
   if(sheet && "MutationObserver" in window){
-    new MutationObserver(() => { if(sheet.classList.contains("on")) enhanceSheet(sheet); }).observe(sheet, {attributes:true, attributeFilter:["class"], childList:true});
+    let wasOn = false;
+    new MutationObserver(() => { const isOn = sheet.classList.contains("on");
+      // the panel's contents ease in when it opens — not again every time it redraws while you type
+      if(isOn && !wasOn){ sheet.classList.add("ux-fresh"); setTimeout(() => sheet.classList.remove("ux-fresh"), 600); }
+      wasOn = isOn; if(isOn) enhanceSheet(sheet); }).observe(sheet, {attributes:true, attributeFilter:["class"], childList:true});
   }
   document.addEventListener("DOMContentLoaded", () => { mountSwitch(); });
   mountSwitch();
