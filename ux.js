@@ -129,7 +129,7 @@
     const pct = R.dueC ? Math.min(100, Math.round(R.recv / R.dueC * 100)) : 0;
     const steps = [
       {k:"rent", t:"Collect rent", s:`${pct}% · ${money(R.recv)} of ${money(R.dueC)}`, done:R.dueC > 0 && R.recv >= R.dueC, p:pct},
-      {k:"review", t:"Review exceptions", s:warn.length ? `${warn.length} to look at` : "Nothing flagged", done:!warn.filter(x => x.hard).length, p:rows.length ? Math.round((rows.length - warn.length) / rows.length * 100) : 100},
+      {k:"review", t:"Review exceptions", s:warn.length ? [warn.filter(x => x.hard).length ? `${warn.filter(x => x.hard).length} to fix` : "", warn.filter(x => !x.hard).length ? `${warn.filter(x => !x.hard).length} rent not in` : ""].filter(Boolean).join(" · ") : "Nothing flagged", done:!warn.filter(x => x.hard).length, p:rows.length ? Math.round((rows.length - warn.length) / rows.length * 100) : 100},
       {k:"pay", t:"Send owner payouts", s:payTot ? `${paidN} of ${payTot} sent${st.held ? ` · ${st.held} held` : ""}` : "None due", done:payTot > 0 && !st.owed, p:payTot ? Math.round(paidN / payTot * 100) : 0},
       {k:"stmt", t:"Email statements", s:stm.n ? `${stm.sent} of ${stm.n} sent` : "None yet", done:stm.n > 0 && stm.sent >= stm.n, p:stm.n ? Math.round(stm.sent / stm.n * 100) : 0},
       {k:"close", t:"Close the month", s:meta.closed ? "Closed" : "Open", done:!!meta.closed, p:meta.closed ? 100 : 0}];
@@ -150,15 +150,17 @@
     hero.classList.add("ux-ledger");
     const sumSec = h("div", "ux-month-top"); sumSec.append(flow, hero);
 
-    // exceptions queue
+    // exceptions queue: what needs fixing, and rent that simply hasn't come in yet
     let queue = null;
     if(warn.length){
-      const list = h("div", "ux-q-list", warn.slice(0, 12).map(x => `<button class="ux-q-i ${x.hard ? "t-warn" : "t-wait"}" data-pid="${E(x.p.id)}" type="button">
+      const fix = warn.filter(x => x.hard), late = warn.filter(x => !x.hard);
+      const col = (list, t, tone, max) => !list.length ? "" : `<div class="ux-q-col t-${tone}"><h4><i></i>${t} · ${list.length}</h4><div class="ux-q-list">${list.slice(0, max).map(x => `<button class="ux-q-i t-${tone}" data-pid="${E(x.p.id)}" type="button">
           <span class="ux-q-dot"></span><span class="ux-q-t"><b>${E(x.p.name)}</b><span>${E(x.why)}</span></span>
-          <span class="ux-q-v num">${money(x.c.payoutC)}</span>${ic("arrow", "ux-q-go")}</button>`).join("") + (warn.length > 12 ? `<div class="ux-q-more">+${warn.length - 12} more — use the “Needs a look” filter below</div>` : ""));
-      qsa(list, "[data-pid]").forEach(b => b.onclick = () => pmRowSheet(m, b.dataset.pid));
-      queue = section({key:"mc.queue." + m, title:"Needs a look before payouts", count:warn.length, tone:"warn", icon:"alert", cls:"ux-queue", nodes:[list],
-        note:"Open one to fix it; it leaves this list when it adds up"});
+          <span class="ux-q-v num">${money(x.c.payoutC)}</span>${ic("arrow", "ux-q-go")}</button>`).join("")}${list.length > max ? `<div class="ux-q-more">+${list.length - max} more in the table below</div>` : ""}</div></div>`;
+      const cols = h("div", "ux-q-cols", col(fix, "Needs a fix", "warn", 8) + col(late, "Rent not in yet", "wait", 8));
+      qsa(cols, "[data-pid]").forEach(b => b.onclick = () => pmRowSheet(m, b.dataset.pid));
+      queue = section({key:"mc.queue." + m, title:"Before payouts go out", count:warn.length, tone:fix.length ? "warn" : "wait", icon:"alert", cls:"ux-queue", nodes:[cols],
+        note:"Open a rental to fix it — it drops off this list once it adds up"});
     }
 
     // rows: colour each by where it stands
@@ -201,6 +203,9 @@
         ${nMd ? `<span class="t-md"><b>${nMd}</b>MagicDoor</span>` : ""}
         ${nDone ? `<span class="t-done"><b>${nDone}</b>already sent</span>` : ""}</div>`);
     bar.classList.add("ux-tray-bar"); s2.appendChild(bar);
+    const sp = bar.firstElementChild, nb = sp && qsa(sp, "b");
+    if(nb && nb.length >= 2){ const when = (sp.textContent.split("·").pop() || "").trim();
+      sp.innerHTML = `<small>${E(nb[0].textContent)} payout${nb[0].textContent === "1" ? "" : "s"} selected</small><b class="num">${E(nb[1].textContent)}</b><small>Lands ${E(when.replace(/^arrives /, "on "))}</small>`; sp.classList.add("ux-tray-sum"); }
     s2.appendChild(h("p", "ux-tray-note", `${ic("lock")} Nickel asks you to confirm each batch of up to 25 before any money moves.`));
     side.append(s2, s1);
 
@@ -222,8 +227,8 @@
     const topb = qs(V, ":scope > .rc-top"), hero = qs(V, ":scope > .rc-hero"), bar = qs(V, ":scope > .sc-bar");
     const band = h("div", "ux-inv-band"); if(topb) band.appendChild(topb); if(hero){ hero.classList.add("ux-compact"); band.appendChild(hero); }
     const groups = [["is-issue", "Doesn't match", "warn", "alert", false, "Open one to see each check and what to fix"],
-                    ["is-wait", "Waiting", "wait", "clock", false, "Rent or a payout still on its way"],
-                    ["is-explained", "Explained", "info", "list", true, "Different from MagicDoor for a reason someone recorded"],
+                    ["is-waiting", "Waiting", "wait", "clock", true, "Rent or a payout still on its way — nothing wrong yet"],
+                    ["is-reviewed", "Explained", "info", "list", true, "Different, and someone recorded why"],
                     ["is-matched", "Matches", "done", "check", true, "All four checks agree"]];
     const cards = qsa(grid, ":scope > .rc-card");
     const secs = [];
@@ -279,7 +284,7 @@
       if(rest.length){ const g = h("div", "pm-cards ux-lane"); rest.forEach(c => g.appendChild(c)); secs.push(section({key:"home.lane.other", title:"Other", count:rest.length, nodes:[g]})); }
       if(secs.length){ gridEl.replaceWith(...secs); }
     }
-    if(board) board.classList.add("ux-board");
+    if(board){ board.classList.add("ux-board"); board.before(h("div", "ux-divider", `${ic("home")}<b>Properties</b><span>Grouped by where this month's rent stands</span>`)); }
     V.classList.add("ux-arch-cmd");
   };
 
@@ -332,8 +337,20 @@
     qsa(out, "[data-sf]").forEach(b => { const map = {todo:"Not sent", draft:"Drafts", sent:"Sent", blocked:"Need an email"}, sb = segBtn(bar, map[b.dataset.sf]);
       if(sb && sb.classList.contains("on")) b.classList.add("is-on"); b.onclick = () => sb && sb.click(); });
     hero.replaceWith(out);
-    qsa(V, ".st-tbl tbody tr").forEach(tr => { const t = qs(tr, ".tag"), cls = t ? t.className : "";
-      tr.classList.add("ux-row", /green/.test(cls) ? "r-done" : /gold/.test(cls) ? "r-short" : /red/.test(cls) ? "r-warn" : "r-ready"); });
+    const tb = qs(V, ".st-tbl tbody"), trs = tb ? qsa(tb, ":scope > tr") : [];
+    trs.forEach(tr => { const t = qs(tr, ".tag"), cls = t ? t.className : "";
+      tr.dataset.uxg = /green/.test(cls) ? "sent" : /gold/.test(cls) ? "draft" : /red/.test(cls) ? "blocked" : "todo";
+      tr.classList.add("ux-row", {sent:"r-done", draft:"r-short", blocked:"r-warn", todo:"r-ready"}[tr.dataset.uxg]); });
+    // with every status showing, group the rows: what needs fixing, what to send, drafts, then what's done
+    const allOn = (segBtn(bar, "All") || {}).classList && segBtn(bar, "All").classList.contains("on");
+    if(tb && allOn && trs.length > 1){
+      const cols = (qs(V, ".st-tbl thead tr") || {children:[]}).children.length || 5;
+      [["blocked", "Need an email — fix these before sending", "t-warn"], ["todo", "Ready to send", "t-ready"], ["draft", "Drafts waiting in Gmail", "t-wait"], ["sent", "Sent", "t-done"]].forEach(([k, l, t]) => {
+        const mine = trs.filter(tr => tr.dataset.uxg === k); if(!mine.length) return;
+        const g = h("tr", "ux-grp " + t, `<td colspan="${cols}"><i></i>${E(l)} <span>${mine.length}</span></td>`);
+        tb.appendChild(g); mine.forEach(tr => tb.appendChild(tr));
+      });
+    }
     V.classList.add("ux-arch-out");
   };
 
@@ -373,7 +390,13 @@
     if(!chart) return;
     chart.classList.add("ux-chart-hero");
     if(hero){ hero.classList.add("ux-ribbon", "ux-ribbon-sm"); chart.after(hero); }
-    if(now){ now.classList.add("ux-compare"); }
+    if(now){ now.classList.add("ux-compare");
+      const ms = qsa(now, ".inc-m"), val = el => { const t = el && qs(el, ".inc-v, .pf-v, b.num, .num"); const x = t ? Number(t.textContent.replace(/[^\d.-]/g, "")) : NaN; return x; };
+      if(ms.length === 2){ const a = val(ms[0]), b = val(ms[1]);
+        if(isFinite(a) && isFinite(b) && b){ const d = (a - b) / Math.abs(b) * 100, up = d >= 0;
+          const chip = h("span", "ux-delta " + (up ? "up" : "down"), `${up ? "▲" : "▼"} ${Math.abs(d).toFixed(1)}% vs last month`);
+          const hd = qs(ms[0], ".inc-h") || ms[0], a2 = qs(hd, "a"); a2 ? hd.insertBefore(chip, a2) : hd.appendChild(chip); } } }
+    const bars = qsa(chart, ".pm-bar"); if(bars.length) bars[bars.length - 1].classList.add("ux-bar-now");
     // the current month's row stands out in the table
     const t = qs(V, ":scope > .card .tbl"); if(t){ const r = qs(t, "tbody tr"); if(r) r.classList.add("ux-current"); t.closest(".card").classList.add("ux-report-tbl");
       const hd = h("div", "ux-divider", `${ic("list")}<b>Every month</b><span>Click a month to open its close</span>`); t.closest(".card").before(hd); }
@@ -390,6 +413,11 @@
     b.dataset.ux = "1";
     const heads = qsa(b, ":scope > .sectl");
     if(heads.length < 2) return;
+    // the fields before the first header get a group of their own
+    const lead = []; for(let n = b.firstChild; n && n !== heads[0]; n = n.nextSibling) lead.push(n);
+    const leadFields = lead.filter(n => n.nodeType === 1 && (n.matches("input,select,textarea,.fld,.f2,.f3,label") || n.querySelector("input,select,textarea")));
+    if(leadFields.length){ const g = h("div", "ux-sheet-g"), t = h("div", "sectl", /rent due/i.test(b.textContent.slice(0, 600)) ? "Rent and income" : "Details");
+      leadFields[0].before(g); g.appendChild(t); let n = leadFields[0]; const end = heads[0]; while(n && n !== end){ const nx = n.nextSibling; g.appendChild(n); n = nx; } }
     // everything before the first header stays as the lead; each header and what follows it becomes one group
     heads.forEach(hd => {
       const g = h("div", "ux-sheet-g"); hd.before(g);
