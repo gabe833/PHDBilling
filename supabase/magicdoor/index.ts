@@ -426,8 +426,11 @@ function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) 
       if (py.cash) pays.push(py);
       continue;
     }
-    if (type !== "charge" && type !== "lateFee") continue;
-    const kind = type === "lateFee" || /late/i.test(acct) ? "late"
+    // anything else that adds to what the tenant owes is a charge too — a "transfer" moving paid money over to the
+    // security deposit takes that money back off the rent side, so it has to be counted
+    if (type !== "charge" && type !== "lateFee" && !(N(e.amount) > 0)) continue;
+    const kind = type === "transfer" || /deposit/i.test(S(e.description)) && type !== "charge" ? "xfer"
+      : type === "lateFee" || /late/i.test(acct) ? "late"
       : B(e.companyCharge) ? (/filter|hvac|applic/i.test(acct + " " + S(e.description)) ? "fees" : "phd")
       : (S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other");
     const ch: Ch = { id: S(e.id), month: day.slice(0, 7), kind, left: C(e.amount) };

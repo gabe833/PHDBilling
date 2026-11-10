@@ -19276,7 +19276,7 @@ function rpRows(){
   });
   return out.sort((a, b) => b.date.localeCompare(a.date) || a.where.localeCompare(b.where, undefined, {numeric:true}));
 }
-const RP_TYPE = {rent:"rent", fees:"filter / app fee", late:"late fee", other:"other charge", phd:"PHD charge", credit:"paid ahead (credit)"};
+const RP_TYPE = {rent:"rent", fees:"filter / app fee", late:"late fee", other:"other charge", phd:"PHD charge", xfer:"moved to security deposit", credit:"paid ahead (credit)"};
 function rpLabel(a){
   if(a.type === "credit") return "Paid ahead — tenant credit";
   const mo = a.month === "before" ? "earlier balance" : monthLabel(a.month);
