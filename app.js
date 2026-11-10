@@ -19185,8 +19185,9 @@ function exqCard(m){
       const v = $("#view"), m = S.ui.pmMonth || (typeof pmCurrentMonth === "function" ? pmCurrentMonth() : thisMonth());
       if(!pmState().properties.length || !v) return;
       const c = exqCard(m);
-      const anchor = v.querySelector(".pm-steps, .mc-steps, .card");
-      if(anchor && anchor.nextSibling) v.insertBefore(c, anchor.nextSibling); else v.appendChild(c);
+      v.appendChild(c);
+      // the new look rearranges the page after it's drawn: sit right under the month's summary, above the to-do list
+      setTimeout(() => { const top = v.querySelector(".ux-month-top"); if(top && c.isConnected && top.nextSibling !== c) v.insertBefore(c, top.nextSibling); }, 0);
     }catch(e){ console.error("Expense check:", e); }
   };
   // Reconcile too
