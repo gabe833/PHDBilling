@@ -1157,7 +1157,9 @@ async function ownerPayouts(): Promise<number> {
     const was = cur.paidOut || null;
     if (was && !["MagicDoor", "Nickel"].includes(S(was.by))) return;                                        // marked by a person: theirs
     if (!rec && !(was && was.by === "Nickel" && billIds.includes(S(was.nickelBillId) || S((was.group || {}).ids?.[0])))) return;
-    if (rec && was && JSON.stringify(was) === JSON.stringify(rec)) return;
+    // (the database hands keys back in its own order, so compare in a fixed order — otherwise every row is rewritten every hour)
+    const canon = (v: unknown): string => Array.isArray(v) ? "[" + v.map(canon).join(",") + "]" : v && typeof v === "object" ? "{" + Object.keys(v as Obj).sort().map((k) => JSON.stringify(k) + ":" + canon((v as Obj)[k])).join(",") + "}" : JSON.stringify(v ?? null);
+    if (rec && was && canon(was) === canon(rec)) return;
     await updateDoc("pm_row", rowId, (r) => { if (rec) r.paidOut = rec; else delete r.paidOut; r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync"; });
     changed++;
   };

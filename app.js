@@ -16881,7 +16881,7 @@ async function ibScriptCheck(){
    finance log, and (for the team tab) every saved change in the database.
    ===================================================================== */
 const actState = () => (S.activity = S.activity || {});
-const ACT_SRC = {inbox:"Receipt inbox", bills:"Bills & payments", nickel:"Nickel", qb:"QuickBooks", rentals:"Rentals", projects:"Projects", sync:"MagicDoor & workbook", finance:"Money", team:"Team edits"};
+const ACT_SRC = {inbox:"Receipt inbox", bills:"Bills & payments", nickel:"Nickel", qb:"QuickBooks", rentals:"Rentals", projects:"Projects", sync:"MagicDoor & workbook", finance:"Money", team:"Changes by people"};
 function actMonthDoc(m){ const k = "activity:" + m, A = actState(); return A[k] = A[k] || {month:m, log:[]}; }
 function actLog(src, what, ref){
   try{
@@ -16965,14 +16965,124 @@ function actEntries(){
   try{ (finState().log || []).forEach((e, i) => { if(!/^Created in Nickel automatically|^Receipt approved automatically/.test(e.what)) out.push({id:"fin" + e.at + i, at:e.at, by:e.by, src:"finance", what:e.what}); }); }catch(e){}
   return out.sort((a, b) => String(b.at).localeCompare(String(a.at)));
 }
-const ACTV = {team:null, teamAt:0};
-async function actTeamLoad(){
-  if(!(typeof Cloud !== "undefined" && Cloud.sb) || Date.now() - ACTV.teamAt < 60000) return;
-  ACTV.teamAt = Date.now();
+/* ---- what each person changed, field by field ----
+   Every save is kept in the database's audit log. team_activity() (a database function) returns each person's saves
+   with what differs from the version before; the code below turns that into plain lines:
+   "Rent received $2,200.00 → $2,300.00", "Added repair: Lowes $51.76 — Refrigerator water filter". */
+const ACTV = {team:null, teamAt:0, more:true, busy:false, open:{}};
+const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
+const ACT_MONEY = /amount|rent|fee|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
+const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"Other owner income", pmFee:"PM fee", leasingFee:"Leasing fee", adminFee:"Admin fee on repairs", feeCredit:"Fee credit",
+  lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",
+  rent:"Monthly rent", ownerId:"Owner", feeRule:"PM fee rule", "feeRule.rate":"PM fee rate", "feeRule.type":"PM fee type", adminRate:"Admin fee rate", status:"Status", name:"Name", address:"Address", leaseStart:"Lease start", leaseEnd:"Lease end",
+  skipClose:"Left out of month close", vendor:"Vendor", amount:"Amount", date:"Date", due:"Due date", memo:"Memo", desc:"Description", category:"Category", propertyId:"Property", "deduct.month":"Comes off the payout for", "deduct.pid":"Payout it comes off",
+  deduct:"Comes off a payout", closed:"Month closed", email:"Email", phone:"Phone", payNote:"How to pay", billNo:"Bill number", unit:"Unit", link:"Invoice link", feeMode:"Admin fee", tenant:"Tenant", payee:"Payee", movedTo:"Moved to a project"};
+const ACT_LIST = {repairItems:"repair", adjustments:"adjustment", transactions:"expense", invoices:"invoice", feeCredits:"fee credit", items:"item", owners:"owner", units:"unit", recurring:"recurring charge", notes:"note", docs:"document", people:"person", entries:"entry", vendors:"vendor", holds:"hold", transfers:"transfer", lines:"line", splits:"split payout", payments:"payment"};
+function actKeyLabel(path){
+  if(ACT_LBL[path]) return ACT_LBL[path];
+  const last = path.split(".").pop(); if(ACT_LBL[last] && path.split(".").length <= 2) return ACT_LBL[last] + (path.includes(".") ? ` (${actWords(path.split(".")[0])})` : "");
+  return path.split(".").map(actWords).join(" › ");
+}
+function actWords(k){ if(/^[a-z0-9_]{8,}$/i.test(k) && /\d/.test(k)) return "…" + k.slice(-4); const t = String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase(); return t.charAt(0).toUpperCase() + t.slice(1); }
+function actVal(v, key){
+  if(v == null || v === "") return "empty";
+  if(typeof v === "boolean") return v ? "yes" : "no";
+  if(typeof v === "number") return ACT_MONEY.test(key || "") && !/rate|pct|percent|count|days|order|year/i.test(key || "") ? (/C$/.test(key || "") && Number.isInteger(v) ? usd(v) : usd(cents(v))) : String(v);
+  if(typeof v === "string"){
+    if(/^\d{4}-\d{2}-\d{2}T/.test(v)) return fdateS(v.slice(0, 10)) + " " + new Date(v).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+    if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return fdateS(v);
+    if(/^\d{4}-\d{2}$/.test(v)) return monthLabel(v);
+    if(/^pm_[a-z0-9]+$/i.test(v) && pmProp(v)) return pmProp(v).name;
+    if(/ownerId$/.test(key || "")){ const o = (S.owners || []).find(x => x.id === v); if(o) return ownerLabel(o) || o.name || v; }
+    if(/^https?:\/\//.test(v)) return "a link";
+    return v.length > 90 ? v.slice(0, 90) + "…" : v;
+  }
+  if(Array.isArray(v)) return v.length ? v.map(x => actVal(x, key)).join(", ") : "none";
+  if(typeof v === "object"){
+    if("_n" in v) return `${v._n} item${v._n === 1 ? "" : "s"}`;
+    if("_keys" in v) return "details";
+    const parts = Object.entries(v).filter(([k, x]) => !ACT_SKIP.test(k) && x != null && x !== "" && typeof x !== "object").slice(0, 5).map(([k, x]) => `${actWords(k).toLowerCase()} ${actVal(x, k)}`);
+    return parts.join(", ") || "details";
+  }
+  return String(v);
+}
+// one list entry in a few words: "Lowes $51.76 — Refrigerator water filter"
+function actThing(v){
+  if(!v || typeof v !== "object") return actVal(v);
+  const who = v.vendor || v.name || v.title || v.payee || v.tenant || v.unit || v.who || "";
+  const amt = v.amount != null ? usd(cents(v.amount)) : v.amountC != null ? usd(v.amountC) : v.totalC != null ? usd(v.totalC) : v.total != null ? usd(cents(v.total)) : "";
+  const what = v.memo || v.desc || v.note || v.reason || v.what || v.text || v.no || "";
+  const when = v.date && /^\d{4}-\d{2}-\d{2}/.test(v.date) ? fdateS(String(v.date).slice(0, 10)) : "";
+  return [[who, amt].filter(Boolean).join(" "), String(what).slice(0, 110), when].filter(Boolean).join(" — ") || actVal(v);
+}
+// a diff from the database → lines [{k (for merging), t (text), o, n}]
+function actLines(kind, diff, pre){
+  const out = [];
+  (diff || []).forEach(c => {
+    const path = (pre ? pre + "." : "") + (c.p || ""), last = path.split(".").pop();
+    if(path.split(".").some(seg => ACT_SKIP.test(seg))) return;
+    if(c.op){
+      const noun = ACT_LIST[last] || (last ? actWords(last).toLowerCase().replace(/s$/, "") : "entry"), auto = c.v && c.v.auto ? " (worked out by the console)" : "", id = (c.v && c.v.id) || JSON.stringify(c.v).slice(0, 60);
+      if(c.op === "add") out.push({k:path + "#" + id, op:"add", t:`Added ${noun}: ${actThing(c.v)}${auto}`});
+      else if(c.op === "del") out.push({k:path + "#" + id, op:"del", t:`Removed ${noun}: ${actThing(c.v)}`});
+      else { const inner = actLines(kind, c.d, "").map(x => x.t.replace(/^./, m => m.toLowerCase())); if(inner.length) out.push({k:path + "#" + id + "~", t:`Changed ${noun} ${actThing(c.v)}: ${inner.join("; ")}`}); }
+      return;
+    }
+    const L = actKeyLabel(path), has = v => !(v == null || v === "" || (Array.isArray(v) && !v.length));
+    if(!has(c.o) && !has(c.n)) return;
+    // the ones worth their own wording
+    if(kind === "pm_row" && path === "paidOut"){ out.push({k:path, o:c.o, n:c.n, t:has(c.n) ? `Marked the owner payout sent: ${c.n.amount != null ? usd(cents(c.n.amount)) : ""}${c.n.date ? " on " + fdateS(c.n.date) : ""}${c.n.method ? " · " + c.n.method : ""}${c.n.ref ? " · " + c.n.ref : ""}` : "Un-marked the owner payout (no longer shown as sent)"}); return; }
+    if(kind === "pm_row" && path === "locked"){ out.push({k:path, o:c.o, n:c.n, t:c.n ? "Locked the month's figures" : "Unlocked the month's figures"}); return; }
+    if(kind === "pm_meta" && last === "closed"){ out.push({k:path, o:c.o, n:c.n, t:c.n ? "Closed the month" : "Reopened the month"}); return; }
+    if(kind === "pm_bill" && path === "status"){ out.push({k:path, o:c.o, n:c.n, t:`Bill status: ${actVal(c.o)} → ${actVal(c.n)}`}); return; }
+    if(kind === "pm_bill" && path === "pay"){ out.push({k:path, o:c.o, n:c.n, t:has(c.n) ? `Recorded payment: ${[c.n.method, c.n.date && fdateS(c.n.date), c.n.ref].filter(Boolean).join(" · ")}` : "Removed the recorded payment"}); return; }
+    out.push({k:path, o:c.o, n:c.n, L, key:last, t:!has(c.o) ? `${L} set to ${actVal(c.n, last)}` : !has(c.n) ? `${L} cleared (was ${actVal(c.o, last)})` : `${L}: ${actVal(c.o, last)} → ${actVal(c.n, last)}`});
+  });
+  return out;
+}
+function actTeamHead(r){
+  const d = r.doc || {}, name = typeof cloudLabel === "function" ? cloudLabel(r.kind, r.doc_id, d) : r.doc_id;
+  if(r.kind === "md_bill") return {verb:"Added to MagicDoor", what:`${d.vendor || "a bill"} ${d.amount != null ? usd(cents(d.amount)) : ""}${d.memo ? " — " + d.memo : ""}${d.fee ? ` (+ ${usd(cents(d.fee))} admin fee)` : ""}`};
+  if(r.kind === "pm_bill"){ const p = pmProp(d.propertyId); return {verb:r.action === "INSERT" || r.first ? "Added a bill" : r.action === "DELETE" ? "Deleted a bill" : "Changed a bill", what:`${d.vendor || "Vendor"} ${d.amount != null ? usd(cents(d.amount)) : ""}${p ? " · " + p.name : ""}${d.memo ? " — " + d.memo : ""}`}; }
+  return {verb:r.action === "INSERT" ? "Added" : r.action === "DELETE" ? "Deleted" : "Changed", what:name};
+}
+// several saves of the same thing by the same person within a few minutes read as one entry; a value changed and
+// changed back cancels out
+function actTeamBuild(rows){
+  const out = [];
+  rows.forEach(r => {
+    const lines = r.first || r.action === "INSERT" || r.action === "DELETE" ? [] : actLines(r.kind, r.diff, "");
+    if(!r.first && r.action === "UPDATE" && !lines.length) return;        // a save that changed nothing a person would see
+    if(r.first && r.action === "UPDATE" && r.kind !== "md_bill") return;   // no earlier version to compare with
+    const head = actTeamHead(r), prev = out[out.length - 1];
+    if(prev && prev.by === r.actor && prev.docKey === r.kind + "/" + r.doc_id && prev.verb === head.verb && Math.abs(new Date(prev.firstAt) - new Date(r.at)) < 10 * 60e3){
+      // rows come newest first: r is the earlier save
+      lines.forEach(l => { const j = prev.lines.findIndex(x => x.k === l.k);
+        if(j < 0) prev.lines.push(l);
+        else if(l.op && prev.lines[j].op && l.op !== prev.lines[j].op) prev.lines.splice(j, 1);                       // added then removed
+        else if("o" in l && "n" in prev.lines[j]){ const m2 = prev.lines[j]; if(JSON.stringify(l.o ?? null) === JSON.stringify(m2.n ?? null)) prev.lines.splice(j, 1);
+          else if(m2.L) m2.t = `${m2.L}: ${actVal(l.o, m2.key)} → ${actVal(m2.n, m2.key)}`, m2.o = l.o; } });
+      prev.firstAt = r.at; prev.saves++;
+      return;
+    }
+    out.push({id:"au" + r.id, at:r.at, firstAt:r.at, by:r.actor, src:"team", side:actDocSide(r.kind, r.doc_id), kind:r.kind, docKey:r.kind + "/" + r.doc_id, verb:head.verb, what:`${head.verb}${head.verb.includes(" ") && !head.what ? "" : " " + head.what}`, lines, saves:1,
+      ref:r.kind === "pm_row" ? {pid:r.doc_id.split("|")[1], side:"pm"} : r.kind === "pm_property" ? {pid:r.doc_id, side:"pm"} : r.kind === "pj_property" ? {pid:r.doc_id, side:"projects"} : r.kind === "pm_bill" && r.action !== "DELETE" ? {bill:r.doc_id} : null});
+  });
+  return out.filter(e => e.lines.length || e.verb !== "Changed");
+}
+async function actTeamLoad(more){
+  if(!(typeof Cloud !== "undefined" && Cloud.sb) || ACTV.busy) return;
+  if(!more && Date.now() - ACTV.teamAt < 60000) return;
+  ACTV.busy = true; ACTV.teamAt = Date.now();
   try{
-    const {data} = await Cloud.sb.from("audit_log").select("at,actor,kind,doc_id,action").order("at", {ascending:false}).limit(300);
-    ACTV.team = (data || []).filter(r => r.actor).map((r, i) => ({id:"au" + i + r.at, at:r.at, by:r.actor, src:"team", side:actDocSide(r.kind, r.doc_id), what:`${r.action === "INSERT" ? "Added" : r.action === "DELETE" ? "Deleted" : "Changed"} ${typeof cloudLabel === "function" ? cloudLabel(r.kind, r.doc_id, null) : r.doc_id}`}));
-  }catch(e){ ACTV.team = []; }
+    const before = more && ACTV.raw && ACTV.raw.length ? ACTV.raw[ACTV.raw.length - 1].at : null;
+    const {data, error} = await Cloud.sb.rpc("team_activity", {lim:300, before});
+    if(error) throw error;
+    ACTV.raw = more ? (ACTV.raw || []).concat(data || []) : (data || []);
+    ACTV.more = (data || []).length >= 300;
+    ACTV.team = actTeamBuild(ACTV.raw); ACTV.err = "";
+  }catch(e){ ACTV.err = (e && e.message) || "Couldn't load the change history"; if(!ACTV.team) ACTV.team = []; }
+  ACTV.busy = false;
   if(S.ui.view === "activity") render();
 }
 /* which side an entry belongs to: "pm", "projects", or "" (both — e.g. a dismissed receipt) */
@@ -16994,38 +17104,50 @@ function actSide(e){
   return "";
 }
 const ACT_SRC_SIDE = {rentals:"pm", sync:"pm", finance:"pm", projects:"projects"};
+function actWhoName(by){ return by === "Automatic" || /sync$|^Workbook$|^MagicDoor|^Nickel|^QuickBooks/i.test(by || "") ? (by || "Automatic") : (typeof cloudWhoSafe === "function" ? cloudWhoSafe(by) : (by || "")); }
+const actIsAuto = by => !by || by === "Automatic" || /sync$|^Workbook$|^MagicDoor|^Nickel|^QuickBooks|^This browser$/i.test(by);
 function pgActivity(){
   const side = sideNow();
   $("#pgCrumb").textContent = sideName(side); $("#pgTitle").textContent = "Activity log";
-  const F0 = S.ui.actF || "all", F = ACT_SRC_SIDE[F0] && ACT_SRC_SIDE[F0] !== side ? "all" : F0, q = String(S.ui.actQ || "").toLowerCase();
-  if(F === "team") actTeamLoad();
-  const all = (F === "team" ? (ACTV.team || []) : actEntries()).filter(e => { const s2 = actSide(e); return !s2 || s2 === side; });
-  const list = all.filter(e => (F === "all" || F === "team" || e.src === F) && (!q || (e.what + " " + (e.by || "")).toLowerCase().includes(q)));
-  $("#pgSub").textContent = `${list.length} entr${list.length === 1 ? "y" : "ies"}${F !== "all" ? " · " + ACT_SRC[F] : ""}`;
+  const F0 = S.ui.actF || "all", F = ACT_SRC_SIDE[F0] && ACT_SRC_SIDE[F0] !== side ? "all" : F0, q = String(S.ui.actQ || "").toLowerCase(), W = S.ui.actW || "";
+  if(F === "team" || F === "all") actTeamLoad();
+  const team = (ACTV.team || []);
+  const pool = F === "team" ? team : F === "all" ? actEntries().concat(team).sort((a, b) => String(b.at).localeCompare(String(a.at))) : actEntries();
+  const all = pool.filter(e => { const s2 = actSide(e); return !s2 || s2 === side; });
+  const people = [...new Set(all.map(e => e.by).filter(b => !actIsAuto(b)))].sort();
+  const text = e => (e.what + " " + (e.by || "") + " " + (e.lines || []).map(l => l.t).join(" ")).toLowerCase();
+  const list = all.filter(e => (F === "all" || F === "team" || e.src === F) && (!W || (W === "auto" ? actIsAuto(e.by) : W === "people" ? !actIsAuto(e.by) : e.by === W)) && (!q || text(e).includes(q)));
+  $("#pgSub").textContent = `${list.length} entr${list.length === 1 ? "y" : "ies"}${F !== "all" ? " · " + ACT_SRC[F] : ""}${W ? " · " + (W === "auto" ? "automatic only" : W === "people" ? "people only" : actWhoName(W)) : ""}`;
   actions([]);
   const v = $("#view");
   const bar = elm("div", "act-bar");
   bar.innerHTML = `<div class="sc-seg act-seg">${[["all", "Everything"], ...Object.entries(ACT_SRC).filter(([k]) => !ACT_SRC_SIDE[k] || ACT_SRC_SIDE[k] === side)].map(([k, l]) => `<button data-af="${k}" class="${F === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+    <select class="act-who" aria-label="Who did it"><option value="">Everyone</option><option value="people" ${W === "people" ? "selected" : ""}>People only</option>${people.map(p => `<option value="${esc(p)}" ${W === p ? "selected" : ""}>${esc(actWhoName(p))}</option>`).join("")}<option value="auto" ${W === "auto" ? "selected" : ""}>Automatic only</option></select>
     <input type="search" class="act-q" placeholder="Search — vendor, property, amount, person" value="${esc(S.ui.actQ || "")}">`;
   v.appendChild(bar);
   bar.querySelectorAll("[data-af]").forEach(b => b.onclick = () => { S.ui.actF = b.dataset.af; persistUi(); render(); });
+  bar.querySelector(".act-who").onchange = e => { S.ui.actW = e.target.value; persistUi(); render(); };
   const qi = bar.querySelector(".act-q"); qi.oninput = () => { S.ui.actQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = document.querySelector(".act-q"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
+  if(ACTV.err && (F === "team" || F === "all")) v.appendChild(elm("div", "pm-banner", `Couldn't load what each person changed: ${esc(ACTV.err)}`));
   if(F === "team" && ACTV.team == null){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
-  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here yet</b><p class="muted">Approvals, bills, payments, syncs and automatic actions on the ${esc(sideName(side).toLowerCase())} side show up here as they happen.</p></div>`)); return; }
+  if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here${q || W ? " for this filter" : " yet"}</b><p class="muted">Approvals, bills, payments, syncs, automatic actions and every change a person saves on the ${esc(sideName(side).toLowerCase())} side show up here as they happen.</p></div>`)); return; }
   const card = elm("div", "card act-card"); let day = "", html = "";
   list.slice(0, 600).forEach(e => {
-    const d = String(e.at).slice(0, 10);
-    if(d !== day){ day = d; html += `<div class="act-day">${esc(d === todayISO() ? "Today" : fdateS(d))}</div>`; }
-    const who = e.by === "Automatic" || /sync$|^Workbook$|^MagicDoor/i.test(e.by || "") ? `<span class="act-auto">${esc(e.by === "Automatic" ? "Automatic" : e.by)}</span>` : esc(typeof cloudWhoSafe === "function" ? cloudWhoSafe(e.by) : (e.by || ""));
-    const ref = e.ref || {};
-    html += `<div class="act-r"><span class="act-t">${esc(new Date(e.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))}</span><span class="act-s act-${esc(e.src)}">${esc(ACT_SRC[e.src] || e.src)}</span>
-      <span class="act-w">${esc(e.what)}</span><span class="act-by">${who}</span>
+    const d = new Date(e.at), dk = isNaN(d) ? String(e.at).slice(0, 10) : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if(dk !== day){ day = dk; html += `<div class="act-day">${esc(dk === todayISO() ? "Today" : fdateS(dk))}</div>`; }
+    const who = actIsAuto(e.by) ? `<span class="act-auto">${esc(actWhoName(e.by))}</span>` : `<b class="act-person">${esc(actWhoName(e.by))}</b>`;
+    const ref = e.ref || {}, L = e.lines || [], open = !!ACTV.open[e.id], show = open ? L : L.slice(0, 3);
+    html += `<div class="act-r${L.length ? " has-d" : ""}"><span class="act-t">${esc(d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}))}</span><span class="act-s act-${esc(e.src)}">${esc(ACT_SRC[e.src] || e.src)}</span>
+      <span class="act-w">${esc(e.what)}${L.length ? `<ul class="act-d">${show.map(l => `<li>${esc(l.t)}</li>`).join("")}${L.length > 3 ? `<li class="act-more"><a href="#" data-amore="${esc(e.id)}">${open ? "Show less" : `+ ${L.length - 3} more change${L.length - 3 === 1 ? "" : "s"}`}</a></li>` : ""}</ul>` : ""}</span><span class="act-by">${who}</span>
       <span class="act-l">${ref.file ? `<a href="${esc(ref.file)}" target="_blank" rel="noopener">Receipt</a>` : ""}${ref.pid ? `<a href="#" data-ap="${esc(ref.pid)}" data-as="${esc(ref.side || "")}">Open</a>` : ""}${ref.bill ? `<a href="#" data-ab="${esc(ref.bill)}">Bill</a>` : ""}</span></div>`;
   });
-  card.innerHTML = html + (list.length > 600 ? `<p class="help" style="padding:10px 16px">Showing the newest 600 — search to find older ones.</p>` : "");
+  card.innerHTML = html + (list.length > 600 ? `<p class="help" style="padding:10px 16px">Showing the newest 600 — search to find older ones.</p>` : "")
+    + ((F === "team" || F === "all") && ACTV.more && ACTV.team ? `<div class="act-older"><button class="btn sm" id="actOlder" ${ACTV.busy ? "disabled" : ""}>${ACTV.busy ? "Loading…" : "Load older changes by people"}</button></div>` : "");
   v.appendChild(card);
   card.querySelectorAll("[data-ap]").forEach(a => a.onclick = ev => { ev.preventDefault(); if(a.dataset.as === "pm" || pmProp(a.dataset.ap)) pmOpenProperty(a.dataset.ap); else go("txns", a.dataset.ap); });
   card.querySelectorAll("[data-ab]").forEach(a => a.onclick = ev => { ev.preventDefault(); go("pmBills"); setTimeout(() => billSheet(a.dataset.ab), 30); });
+  card.querySelectorAll("[data-amore]").forEach(a => a.onclick = ev => { ev.preventDefault(); ACTV.open[a.dataset.amore] = !ACTV.open[a.dataset.amore]; const y = window.scrollY; render(); window.scrollTo(0, y); });
+  const older = card.querySelector("#actOlder"); if(older) older.onclick = () => { actTeamLoad(true); render(); };
 }
 
 /* =====================================================================
@@ -17852,14 +17974,15 @@ function fcList(p){ return (p && Array.isArray(p.feeCredits) ? p.feeCredits : []
 function fcUnitOf(U, c){ const k = String(c.unit || "").toLowerCase().trim(); return U.find(u => String(u.unit).toLowerCase().trim() === k) || U.find(u => k && String(u.unit).toLowerCase().startsWith(k.split(/\s*[-–—]\s*/)[0] + " ")) || null; }
 // month by month: {m: [{c, unit, usedC, planned}]}, and per credit {usedC, plannedC, leftC}
 function fcLedger(p){
-  const out = {months:{}, credits:{}}, cur = pmCurrentMonth(), pool = {};
+  const out = {months:{}, credits:{}, unknown:{}}, cur = pmCurrentMonth(), pool = {};
   // what MagicDoor left off the month's fee: the rate on every unit's rent, less what it charged
   const missing = (m, row, U) => { if(!(m in pool)) pool[m] = Math.max(0, U.reduce((a, u) => a + u.feeC, 0) - cents(row.pmFee)); return pool[m]; };
   fcList(p).forEach(cr => {
     let left = cr.totalC, usedC = 0, plannedC = 0;
     for(let m = cr.start || cur; m <= cur && left > 0; m = PMCore.monthAdd(m, 1)){
       const row = pmRow(m, p.id); if(!row || row.deleted || row.detailOnly) continue;
-      const U = pmUnitLines(p, m), u = fcUnitOf(U, cr); if(!u || !u.feeC) continue;
+      const U = pmUnitLines(p, m), u = fcUnitOf(U, cr); if(!u){ out.unknown[m] = true; continue; }   // can't tell here (MagicDoor's units not loaded in this browser)
+      if(!u.feeC) continue;
       let take = 0, planned = false;
       if(PMCore.has(row.pmFee)){ take = Math.min(left, u.feeC, missing(m, row, U)); pool[m] -= take; }
       else { take = Math.min(left, u.feeC); planned = true; }
@@ -17872,16 +17995,20 @@ function fcLedger(p){
   return out;
 }
 // open months not charged in MagicDoor yet: the fee here leaves out the credited unit (row.feeCredit, dollars)
+// Two people's browsers must never disagree about this, or they overwrite each other all day (27 Smith's credit
+// flipped on and off 77 times): a browser that can't work a month out — MagicDoor not loaded, unit not found —
+// leaves that month exactly as it is.
 function fcApply(){
   let n = 0;
+  if(typeof mdReady === "function" && !mdReady()) return 0;
   pmState().properties.forEach(p => {
     const rowsWith = Object.values(pmState().rows).filter(r => r.propertyId === p.id && PMCore.has(r.feeCredit));
-    const L = fcList(p).length ? fcLedger(p) : {months:{}};
+    const L = fcList(p).length ? fcLedger(p) : {months:{}, unknown:{}};
     const want = {};
     Object.entries(L.months).forEach(([m, xs]) => { const s = xs.filter(x => x.planned).reduce((a, x) => a + x.usedC, 0); if(s) want[m] = s / 100; });
     const touch = r => { pmTouch(r); n++; };
-    rowsWith.forEach(r => { if(!(r.month in want) && !r.locked && !r.paidOut) { delete r.feeCredit; touch(r); } });
-    Object.entries(want).forEach(([m, v]) => { const r = pmRow(m, p.id); if(!r || r.locked || r.paidOut || (pmState().meta[m] || {}).closed) return; if(cents(r.feeCredit) !== cents(v)){ r.feeCredit = v; touch(r); } });
+    rowsWith.forEach(r => { if(!(r.month in want) && !(L.unknown || {})[r.month] && !r.locked && !r.paidOut) { delete r.feeCredit; touch(r); } });
+    Object.entries(want).forEach(([m, v]) => { const r = pmRow(m, p.id); if(!r || r.locked || r.paidOut || (pmState().meta[m] || {}).closed || (L.unknown || {})[m]) return; if(cents(r.feeCredit) !== cents(v)){ r.feeCredit = v; touch(r); } });
   });
   return n;
 }
