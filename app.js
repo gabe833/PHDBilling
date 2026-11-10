@@ -19122,7 +19122,7 @@ function exqFind(m){
       const twin = earlier.find(x => x.it !== it && x.it.id !== it.id && cents(x.it.amount) === cents(it.amount)
         && !(it.billId && it.billId === x.it.billId) && !(it.mdLine && it.mdLine === x.it.mdLine) && !(it.mdBill && it.mdBill === x.it.mdBill)
         && exqVendor(x.it.vendor) && exqVendor(x.it.vendor) === exqVendor(it.vendor)
-        && (exqDays(x.it.date, it.date) <= 21 || String(x.it.memo || "").trim().toLowerCase() === String(it.memo || "").trim().toLowerCase())
+        && (exqDays(x.it.date, it.date) <= 21 || (exqDays(x.it.date, it.date) <= 45 && String(x.it.memo || "").trim().toLowerCase() === String(it.memo || "").trim().toLowerCase()))
         && (x.row.month < m || mine.indexOf(x.it) < mine.indexOf(it)));
       if(!twin) return;
       const k = "dup:" + [twin.it.id, it.id].sort().join("|"); if(ign[k]) return;
