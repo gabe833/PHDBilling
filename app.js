@@ -5866,13 +5866,15 @@ function pmStatementHTML(m, ids, groupsList){
           ${items.map(it => { const L = stmtLine(it); return `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(L.title)}${L.detail ? `<br><span class="sub">${esc(L.detail)}</span>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`; }).join("")}
           ${!items.length && c.repairsC ? `<tr><td class="dt">${dd(D.admin)}</td><td>Repairs</td><td class="vn"></td><td class="r">−${usd(c.repairsC)}</td></tr>` : ""}
           ${c.otherC ? `<tr><td class="dt">${dd(D.other)}</td><td>Other income</td><td class="vn"></td><td class="r">${usd(c.otherC)}</td></tr>` : ""}
-          ${(row.adjustments || []).map(a => `<tr><td class="dt">${dd(D.adj(a))}</td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
+          ${(row.adjustments || []).filter(a => !a.recov).map(a => `<tr><td class="dt">${dd(D.adj(a))}</td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
         </tbody>
         <tbody class="totals">
           ${c.adminC ? `<tr><td class="dt">${dd(D.admin)}</td><td colspan="2">Admin fee on repairs</td><td class="r">−${usd(c.adminC)}</td></tr>` : ""}
           ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td class="dt">${dd(u.date || D.fee)}</td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("") + (UN.credit || []).map(x => `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">${esc(x.label)}<br><span class="sub">${esc(x.why)}</span></td><td class="r">${usd(x.c)}</td></tr>`).join("")
             : `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>`)(pmStmtUnits(p, m, c))}
           ${c.leasingC ? `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">Leasing fee</td><td class="r">−${usd(c.leasingC)}</td></tr>` : ""}
+          ${(RC => RC.length ? `<tr class="sub"><td></td><td colspan="2"><b>${esc(monthLabel(m))} net proceeds</b></td><td class="r"><b>${usd(c.payoutC + RC.reduce((x, y) => x + y.nowC, 0))}</b></td></tr>` +
+            RC.map(x => `<tr><td class="dt">${dd(pmStmtRecDate(m, row))}</td><td colspan="2">Recovery of the ${esc(x.mo)} overpayment<br><span class="sub">${esc(x.mo)} owner payout ${usd(x.dueC)}, paid twice: ${x.pays.map(y => `${esc(docShort(y.date))} by ${esc(y.by)} ${usd(y.c)}${y.ref ? " (ref " + esc(y.ref) + ")" : ""}`).join("; ")}. Overpaid ${usd(x.overC)}${x.before ? `; ${usd(x.before)} recovered before` : ""}; ${usd(x.nowC)} withheld from these proceeds${x.agreed ? " as agreed" + (x.agreed.date ? " " + esc(docShort(x.agreed.date)) : "") : ""}; ${x.leftC ? usd(x.leftC) + " still to recover" : "fully recovered"}.</span></td><td class="r">−${usd(x.nowC)}</td></tr>`).join("") : "")(pmStmtRecoveries(m, p.id, row))}
           <tr class="tot"><td></td><td colspan="2">Owner payout · ${esc(p.name)}</td><td class="r">${usd(c.payoutC)}</td></tr>
         </tbody></table>`;
     }).join("");
@@ -7537,6 +7539,26 @@ function pmStmtDates(p, m, row){
   const fallback = rent || (today.slice(0, 7) === m ? today : today > endM ? endM : m + "-01");
   return {rent, fee:rent || fallback, admin:reps.length ? reps[reps.length - 1] : fallback, adj:a => String((a && a.date) || "").slice(0, 10) || fallback, other:fallback};
 }
+/* A duplicate-payout recovery on a statement, written out so the owner (and their accountant) can follow it:
+   what the month's payout was, each time it was paid (date, how, reference), how much was overpaid, what this
+   statement takes back, what was taken back before and what is left. Shown after the fees, under this month's
+   net proceeds, never mixed in with the property's income and expenses. */
+function pmStmtRecoveries(m, pid, row){
+  const R = (typeof S !== "undefined" && S.recov && S.recov.items) || [];
+  return (row.adjustments || []).filter(a => a.recov).map(a => {
+    const it = R.find(x => x.id === a.recov); if(!it) return null;
+    const P2 = pmState(); let before = 0;
+    Object.values(P2.rows).forEach(r => { if(r.propertyId !== it.pid || r.month >= m) return; (r.adjustments || []).forEach(x => { if(x.recov === it.id) before -= cents(x.amount); }); });
+    before += typeof rvRepaidC === "function" ? rvRepaidC(it) : 0;
+    const nowC = -cents(a.amount), leftC = Math.max(0, it.amountC - before - nowC);
+    const r0 = P2.rows[it.month + "|" + it.pid];
+    const dueC = r0 && r0.ownerPayout != null && r0.ownerPayout !== "" ? cents(r0.ownerPayout) : it.amountC;
+    const pays = (it.paid || []).map(x => ({date:x.date, by:x.by, ref:x.ref || "", c:cents(x.amount)}));
+    if(r0 && r0.paidOut && r0.paidOut.ref) pays.forEach(x => { if(!x.ref && /nickel/i.test(x.by) && /nickel/i.test(r0.paidOut.by || r0.paidOut.method || "")) x.ref = r0.paidOut.ref; });
+    return {a, it, mo:monthLabel(it.month), dueC, pays, overC:it.amountC, before, nowC, leftC, agreed:it.agreed || null};
+  }).filter(Boolean);
+}
+function pmStmtRecDate(m, row){ const t = todayISO(); return (row.paidOut && row.paidOut.date) || (t.slice(0, 7) >= m ? (t.slice(0, 7) === m ? t : m + "-28") : m + "-01"); }
 function pmStmtUnits(p, m, c){
   if(typeof pmUnitLines !== "function") return null;
   const U = pmUnitLines(p, m); if(U.length < 2) return null;
@@ -7569,11 +7591,22 @@ function pmStatementPdfHTML(m, pid, opts){
     .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${(L.link || L.mdFile) && opts.attach ? ` <span class="m">· invoice attached</span>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
     .concat(!items.length && c.repairsC ? [line(d(D.admin), "Repairs", "", neg(c.repairsC))] : [])
     .concat(c.otherC ? [line(d(D.other), "Other income", "", usd(c.otherC))] : [])
-    .concat((row.adjustments || []).map(a => line(d(D.adj(a)), esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
+    .concat((row.adjustments || []).filter(a => !a.recov).map(a => line(d(D.adj(a)), esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
   const fees = [c.adminC ? line(d(D.admin), `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
     UN && UN.fee.length ? UN.fee.map(u => line(d(u.date || D.fee), `Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}`, "", neg(u.c), "fee")).join("") : line(d(D.fee), `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
     UN && UN.credit && UN.credit.length ? UN.credit.map(x => line(d(D.fee), `${esc(x.label)}<br><span class="m">${esc(x.why)}</span>`, "", usd(x.c), "fee")).join("") : "",
-    c.leasingC ? line(d(D.fee), "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
+    c.leasingC ? line(d(D.fee), "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("") + (RC => !RC.length ? "" :
+    `<tr class="sub"><td></td><td colspan="2">${esc(monthLabel(m))} net proceeds</td><td class="r">${usd(c.payoutC + RC.reduce((x, y) => x + y.nowC, 0))}</td></tr>` +
+    RC.map(x => line(d(pmStmtRecDate(m, row)), `Recovery of the ${esc(x.mo)} overpayment
+      <table class="rec">
+        <tr><td>${esc(x.mo)} owner payout</td><td class="r">${usd(x.dueC)}</td></tr>
+        ${x.pays.map((y, i) => `<tr><td>${i ? "Paid again" : "Paid"} ${esc(docShort(y.date))} · ${esc(y.by)}${y.ref ? ` · ref ${esc(y.ref)}` : ""}</td><td class="r">${usd(y.c)}</td></tr>`).join("")}
+        <tr><td>Overpaid</td><td class="r">${usd(x.overC)}</td></tr>
+        ${x.before ? `<tr><td>Recovered on earlier statements</td><td class="r">−${usd(x.before)}</td></tr>` : ""}
+        <tr><td>Withheld from ${esc(monthLabel(m))} proceeds${x.agreed ? " (as agreed" + (x.agreed.date ? " " + esc(docShort(x.agreed.date)) : "") + ")" : ""}</td><td class="r">−${usd(x.nowC)}</td></tr>
+        <tr class="rl"><td>${x.leftC ? "Still to recover" : "Remaining overpayment"}</td><td class="r">${usd(x.leftC)}</td></tr>
+      </table>
+      <span class="m">Payments sent by ACH can take a few business days to arrive, so both may show in your bank on the same day.</span>`, "", neg(x.nowC), "fee")).join(""))(pmStmtRecoveries(m, pid, row));
   const owe = c.payoutC < 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
   @page{size:letter;margin:0.6in}
@@ -7594,6 +7627,10 @@ function pmStatementPdfHTML(m, pid, opts){
   .ac .dt{width:78px;color:#6B7775;white-space:nowrap} .ac .vn{width:150px;color:#3A4745}
   .ac tr.fee td{color:#3A4745}
   .ac tr.tot td{border-top:2px solid #1A2322;border-bottom:0;font-weight:bold;font-size:11pt;padding-top:9px}
+  .ac tr.sub td{border-top:1px solid #9AA5A3;font-weight:bold}
+  .ac table.rec{width:100%;margin:5px 0 4px;border-collapse:collapse;font-size:9.5pt;color:#3A4745}
+  .ac table.rec td{padding:2px 0;border:0}.ac table.rec td.r{text-align:right;padding-left:12px;white-space:nowrap}
+  .ac table.rec tr.rl td{border-top:1px solid #C9D0CE;font-weight:bold;color:#1A2322}
   .m{color:#6B7775}
   .ft{margin-top:26px;font-size:9pt;color:#6B7775;line-height:1.5}
 </style></head><body>
@@ -17819,16 +17856,19 @@ function pgRecover(){
           ${it.plan === "installment" ? `<div class="rv-sub">$<input type="number" step="50" min="0" data-rvper value="${(Number(it.perMonthC) || 0) / 100 || ""}" placeholder="per month"> a month</div>` : ""}
           ${it.plan === "offset" || it.plan === "installment" ? `<div class="rv-sub">starting <input type="month" data-rvstart value="${esc(it.start || thisMonth())}"></div>` : ""}</td>
         <td class="r num">${usd(got)}${plan ? `<div class="item-s">+ ${usd(plan)} on ${esc(monthLabel(Object.values(pmState().rows).filter(r => r.propertyId === it.pid && (r.adjustments || []).some(a => a.recov === it.id) && !r.paidOut).map(r => r.month).sort()[0] || thisMonth()))}'s statement</div>` : ""}</td><td class="r num"><b${left ? ' style="color:var(--gold)"' : ""}>${left ? usd(left) : it.plan === "forgive" ? "Written off" : "All planned"}</b></td>
-        <td class="act rv-act"><button class="btn sm" data-rvmsg>Owner message</button>${it.plan === "repay" ? `<button class="btn sm" data-rvpay>Record repayment</button>` : ""}<button class="btn sm ghost" data-rvtold>${it.contacted ? "Told ✓" : "Mark told"}</button></td></tr>`; }).join("")}
+        <td class="act rv-act"><button class="btn sm" data-rvmsg>Owner message</button>${it.plan === "repay" ? `<button class="btn sm" data-rvpay>Record repayment</button>` : ""}<button class="btn sm ghost" data-rvtold>${it.contacted ? "Told ✓" : "Mark told"}</button><button class="btn sm ghost" data-rvok title="The owner agreed to the plan — the statement says so">${it.agreed ? "Agreed " + esc(fdateS(it.agreed.date)) + " ✓" : "Owner agreed"}</button></td></tr>`; }).join("")}
     </tbody></table></div>`;
   v.appendChild(card);
-  const save = (it, patch) => { snapshot(); Object.assign(it, patch); rvApply(); actLog("finance", `Duplicate payout · ${it.prop}: ${Object.entries(patch).map(([k, x]) => k === "plan" ? RV_PLANS[x] : k === "perMonthC" ? usd(x) + " a month" : k === "start" ? "starting " + monthLabel(x) : k === "contacted" ? (x ? "owner told" : "not told") : k).join(", ")}`); commit(); render(); };
+  const save = (it, patch) => { snapshot(); Object.assign(it, patch); rvApply(); actLog("finance", `Duplicate payout · ${it.prop}: ${Object.entries(patch).map(([k, x]) => k === "plan" ? RV_PLANS[x] : k === "perMonthC" ? usd(x) + " a month" : k === "start" ? "starting " + monthLabel(x) : k === "contacted" ? (x ? "owner told" : "not told") : k === "agreed" ? (x ? "owner agreed " + x.date + (x.how ? " (" + x.how + ")" : "") : "agreement cleared") : k).join(", ")}`); commit(); render(); };
   card.querySelectorAll("tr[data-rv]").forEach(tr => {
     const it = items.find(x => x.id === tr.dataset.rv); if(!it) return; const q = s => tr.querySelector(s);
     q("[data-rvplan]").onchange = e => save(it, {plan:e.target.value, start:it.start || thisMonth()});
     if(q("[data-rvper]")) q("[data-rvper]").onchange = e => save(it, {perMonthC:Math.round((Number(e.target.value) || 0) * 100)});
     if(q("[data-rvstart]")) q("[data-rvstart]").onchange = e => e.target.value && save(it, {start:e.target.value});
     q("[data-rvtold]").onclick = () => save(it, {contacted:it.contacted ? "" : todayISO()});
+    q("[data-rvok]").onclick = () => { if(it.agreed){ if(confirm("Clear the owner's agreement?")) save(it, {agreed:null}); return; }
+      const dt = prompt("Date the owner agreed (YYYY-MM-DD)", todayISO()); if(!dt || !/^\d{4}-\d{2}-\d{2}$/.test(dt.trim())) return;
+      const how = prompt("How did they agree? (e.g. text to Peter)", "") || ""; save(it, {agreed:{date:dt.trim(), how:how.trim(), by:billWho()}, contacted:it.contacted || dt.trim()}); };
     q("[data-rvp]").onclick = e => { e.preventDefault(); pmOpenProperty(it.pid); };
     q("[data-rvmsg]").onclick = () => { const t = rvMessage(it); ibInfoSheet(`Message to ${it.owner}`, `<p class="muted" style="margin-top:0">Ready to copy. It follows the plan chosen for this owner.</p><textarea class="rv-msg" rows="14">${esc(t)}</textarea>`); const ta = document.querySelector(".rv-msg"); if(ta){ ta.focus(); ta.select(); } };
     if(q("[data-rvpay]")) q("[data-rvpay]").onclick = () => { const a = prompt(`How much did ${it.owner} send back? (left: ${usd(rvLeftC(it))})`, (rvLeftC(it) / 100).toFixed(2)); const c = Math.round((Number(String(a || "").replace(/[$,]/g, "")) || 0) * 100); if(!c) return;
