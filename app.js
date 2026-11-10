@@ -18945,7 +18945,7 @@ function depMonth(m){
   const propName = l => ((S.md.properties || []).find(q => q.id === l.propertyId) || {}).name || unitName(l) || "a MagicDoor rental";
   // 1. everything that settled into Nickel Rental Income this month, and what it paid for
   const B = {cash:0, thisRent:0, lateRent:0, ahead:0, fees:0, phd:0, other:0, payments:0};
-  const days = {}, notOnStatement = new Map();
+  const days = {}, notOnStatement = new Map(), aheadBy = new Map();
   leases.forEach(l => {
     const pays = ((l.months || {})[m] || {}).pays || [];
     pays.forEach(p => { const d = String(p[0]); if(d.slice(0, 7) !== m) return; const c = cents(p[1]); B.cash += c; B.payments++;
@@ -18955,7 +18955,7 @@ function depMonth(m){
     alloc.get(l.id).allocs.forEach(a => {
       if(String(a.date).slice(0, 7) !== m) return;
       if(a.type === "rent") a.month === m ? B.thisRent += a.c : a.month === "before" || a.month < m ? B.lateRent += a.c : B.ahead += a.c;
-      else if(a.type === "credit") B.ahead += a.c;
+      else if(a.type === "credit"){ B.ahead += a.c; const p0 = owner.get(l.id), k = p0 ? p0.id : l.id; const x = aheadBy.get(k) || {where:p0 ? p0.name : propName(l), c:0, list:[]}; x.c += a.c; x.list.push({date:a.date, c:a.c}); aheadBy.set(k, x); }
       else if(a.type === "fees" || a.type === "late") B.fees += a.c; else if(a.type === "phd") B.phd += a.c; else B.other += a.c;
     });
   });
@@ -18974,13 +18974,19 @@ function depMonth(m){
     const cashM = ls.reduce((s, l) => s + Object.values(l.months || {}).reduce((x, g) => x + (g.pays || []).filter(q => String(q[0]).slice(0, 7) === m).reduce((y, q) => y + cents(q[1]), 0), 0), 0);
     const pend = ls.reduce((s, l) => s + cents(((l.months || {})[m] || {}).pending), 0);
     if(!ls.length && !stmtC) return;
-    rows.push({p, row, stmtC, paidC, early, parts, cashM, pend, noRow:!row || row.deleted, linked:ls.length > 0, diff:stmtC - paidC});
+    // MagicDoor's own owner statement for the rental (one MagicDoor property, one rental): when a partial payment could
+    // have gone to the filter fee or the rent first, MagicDoor's statement is what decides it
+    const x = typeof mdFor === "function" ? mdFor(p.id) : null, sib = x && x.property ? props.filter(q => { const y = mdFor(q.id); return y && y.property && y.property.id === x.property.id; }).length : 0;
+    const mdSt = x && x.property && sib === 1 ? (((S.md.stmts || {})[x.property.id] || {})[m] || null) : null;
+    const mdRentC = mdSt ? cents(mdSt.rentIn) : null;
+    const diff = stmtC - paidC, mdOk = diff !== 0 && mdRentC != null && mdRentC === stmtC && Math.abs(diff) <= ls.reduce((a, l) => a + cents(((l.months || {})[m] || {}).filters) + cents(((l.months || {})[m] || {}).applications), 0);
+    rows.push({p, row, stmtC, paidC, early, parts, cashM, pend, noRow:!row || row.deleted, linked:ls.length > 0, diff, mdOk, mdRentC});
   });
   // leases with money this month that no rental in Month close takes
   leases.forEach(l => { if(owner.has(l.id)) return; const c = Object.values(l.months || {}).reduce((x, g) => x + (g.pays || []).filter(q => String(q[0]).slice(0, 7) === m).reduce((y, q) => y + cents(q[1]), 0), 0); if(c) notOnStatement.set(l.id, {name:propName(l), unit:unitName(l), c}); });
   const stmtTotal = rows.reduce((a, r) => a + r.stmtC, 0), paidTotal = rows.reduce((a, r) => a + r.paidC, 0), earlyTotal = rows.reduce((a, r) => a + r.early, 0);
   const pending = leases.map(l => ({l, c:cents(((l.months || {})[m] || {}).pending)})).filter(x => x.c > 0).map(x => ({where:(owner.get(x.l.id) || {}).name || propName(x.l), c:x.c}));
-  return {m, B, days, rows, stmtTotal, paidTotal, earlyTotal, off:rows.filter(r => r.diff), notOnStatement:[...notOnStatement.values()], pending, mdSynced:(S.md || {}).syncedAt || ""};
+  return {m, B, days, rows, stmtTotal, paidTotal, earlyTotal, off:rows.filter(r => r.diff && !r.mdOk), soft:rows.filter(r => r.mdOk), ahead:[...aheadBy.values()], notOnStatement:[...notOnStatement.values()], pending, mdSynced:(S.md || {}).syncedAt || ""};
 }
 function depCard(m){
   const D = depMonth(m), card = elm("div", "card dep-card");
@@ -19012,8 +19018,9 @@ function depCard(m){
           <tr class="dep-tot"><td>Rent received on ${esc(monthLabel(m))} statements</td><td class="r num">${usd(D.stmtTotal)}</td></tr>
           <tr><td>Paid in ${esc(monthLabel(m))} (including late rent for earlier months)</td><td class="r num">${usd(D.paidTotal - D.earlyTotal)}</td></tr>
           <tr><td>Paid early, in ${esc(monthLabel(PMCore.monthAdd(m, -1)))}</td><td class="r num">${usd(D.earlyTotal)}</td></tr>
-          <tr class="dep-chk"><td>${D.stmtTotal === D.paidTotal ? "Statements match the payments ✓" : `Statements are ${usd(Math.abs(D.stmtTotal - D.paidTotal))} ${D.stmtTotal > D.paidTotal ? "over" : "under"} the payments`}</td><td class="r num">${usd(D.paidTotal)}</td></tr>
+          <tr class="dep-chk"><td>${D.stmtTotal === D.paidTotal ? "Statements match the payments ✓" : `Statements are ${usd(Math.abs(D.stmtTotal - D.paidTotal))} ${D.stmtTotal > D.paidTotal ? "over" : "under"} the payments${D.off.length ? "" : " — explained below"}`}</td><td class="r num">${usd(D.paidTotal)}</td></tr>
         </tbody></table>
+        ${D.soft.length ? `<p class="muted" style="font-size:12px;margin:8px 0 0">${D.soft.map(r => `${esc(r.p.name)}: a partial payment of ${usd(r.cashM)} — MagicDoor's owner statement counts ${usd(r.mdRentC)} as rent and leaves the ${usd(Math.abs(r.diff))} filter fee unpaid, so the statement follows it`).join(" · ")}.</p>` : ""}
         ${D.pending.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Still processing, not deposited yet: ${D.pending.map(x => `${esc(x.where)} ${usd(x.c)}`).join(" · ")}</p>` : ""}
       </div>
       <div>
@@ -19029,6 +19036,9 @@ function depCard(m){
         <td class="muted" style="font-size:12px">${r.parts.length ? r.parts.map(x => `${x.date === "before" ? "credit from before" : esc(fdateS(x.date))} ${usd(x.c)}${x.late ? " late rent" : ""}${x.unit ? " (" + esc(x.unit) + ")" : ""}`).join(" · ") : r.linked ? "no payment toward this month's rent" : "not linked to MagicDoor"}</td>
         <td>${!r.noRow && !closed && !(r.row && (r.row.paidOut || r.row.locked)) ? `<button class="btn sm" data-dfix="${r.p.id}" data-dv="${r.paidC}">Use ${usd(r.paidC)}</button>` : ""}</td></tr>`).join("")}
       </tbody></table>` : ""}
+    ${D.ahead.length ? `<h4 class="dep-h4">Paid ahead — sitting as the tenant's credit <span class="muted">${usd(D.ahead.reduce((a, x) => a + x.c, 0))}</span></h4>
+      <div class="dep-ns">${D.ahead.sort((a, b) => b.c - a.c).map(x => `<div><span>${esc(x.where)} <span class="muted">· ${x.list.map(y => esc(fdateS(y.date)) + " " + usd(y.c)).join(", ")}</span></span><b class="num">${usd(x.c)}</b></div>`).join("")}</div>
+      <p class="muted" style="font-size:12px;margin:4px 0 0">Deposited, but more than the tenant owes so far. It counts on the statement of the month it pays for. If it should be this month's rent, the charge is missing in MagicDoor.</p>` : ""}
     ${D.notOnStatement.length ? `<h4 class="dep-h4">Deposited, but on no owner statement <span class="muted">${D.notOnStatement.length}</span></h4>
       <div class="dep-ns">${D.notOnStatement.map(x => `<div><span>${esc(x.name)}${x.unit && x.unit !== x.name ? ` · ${esc(x.unit)}` : ""}</span><b class="num">${usd(x.c)}</b></div>`).join("")}</div>
       <p class="muted" style="font-size:12px;margin:4px 0 0">These leases aren't linked to a rental in Month close. Link them on the MagicDoor page, or this money isn't paid out to anyone.</p>` : ""}`;
