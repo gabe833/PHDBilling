@@ -402,14 +402,22 @@ function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) 
   const charges = new Map<string, Ch>(), open: Ch[] = [], pool: Py[] = [], pays: Py[] = [];
   const evs = ((body.entries as Obj[]) || []).filter((e) => {
     const st = S(e.status).toLowerCase(); return C(e.amount) && !/void|deleted|cancel|reversed|fail|return|declin/.test(st);
-  }).sort((a, b) => { const x = big(a.id), y = big(b.id); return x < y ? -1 : x > y ? 1 : 0; });
+  }).sort((a, b) => {
+    // by the day it happened; on the same day, what was charged before what was paid; then the order MagicDoor created them
+    const da = S(D(a.transactionDate)), db = S(D(b.transactionDate)); if (da !== db) return da < db ? -1 : 1;
+    // (and on the same day a late fee after the other charges — that's the order MagicDoor pays them in)
+    const rank = (e: Obj) => N(e.amount) < 0 ? 2 : S(e.type) === "lateFee" ? 1 : 0;
+    const pa = rank(a), pb = rank(b); if (pa !== pb) return pa - pb;
+    const x = big(a.id), y = big(b.id); return x < y ? -1 : x > y ? 1 : 0;
+  });
   const give = (py: Py, ch: Ch) => {
     const a = Math.min(py.left, ch.left); if (a <= 0) return;
     if (py.cash) py.out.push([ch.month, ch.kind, a]);
     py.left -= a; ch.left -= a;
   };
+  const fill = (py: Py) => { for (const ch of open) { if (!py.left) return; give(py, ch); } };
   const sweep = () => {
-    for (const py of pool) { for (const ch of open) { if (!py.left) break; give(py, ch); } }
+    for (const py of pool) fill(py);
     for (let i = open.length - 1; i >= 0; i--) if (!open[i].left) open.splice(i, 1);
     for (let i = pool.length - 1; i >= 0; i--) if (!pool[i].left) pool.splice(i, 1);
   };
@@ -420,7 +428,7 @@ function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) 
       if (type === "payment" && !(st === "settled" || st === "paid" || st === "completed")) continue;   // still processing
       const py: Py = { id: S(e.id), day, left: C(e.amount), cash: type === "payment", out: [], total: C(e.amount) };
       for (const tid of ((e.targetChargeIds as unknown[]) || []).map(S)) { const ch = charges.get(tid); if (ch) give(py, ch); }
-      for (const ch of open) { if (!py.left) break; give(py, ch); }
+      fill(py);
       for (let i = open.length - 1; i >= 0; i--) if (!open[i].left) open.splice(i, 1);
       if (py.left) pool.push(py);
       if (py.cash) pays.push(py);
@@ -428,8 +436,9 @@ function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) 
     }
     // anything else that adds to what the tenant owes is a charge too — a "transfer" moving paid money over to the
     // security deposit takes that money back off the rent side, so it has to be counted
+    if (type === "return") continue;                       // the returned payment itself is already left out
     if (type !== "charge" && type !== "lateFee" && !(N(e.amount) > 0)) continue;
-    const kind = type === "transfer" || /deposit/i.test(S(e.description)) && type !== "charge" ? "xfer"
+    const kind = type !== "charge" && type !== "lateFee" ? "xfer"
       : type === "lateFee" || /late/i.test(acct) ? "late"
       : B(e.companyCharge) ? (/filter|hvac|applic/i.test(acct + " " + S(e.description)) ? "fees" : "phd")
       : (S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other");
