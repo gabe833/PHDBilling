@@ -35,6 +35,7 @@ function render(){
     pmMonth:  ["Rent", "Month close", ""],
     pmRecon:  ["Rent", "Reconcile", ""],
     pmHome:   ["Rent", "Rent overview", ""],
+    pmPays:   ["Rent · Rent overview", "Rent payments", "Every tenant payment MagicDoor received, and the rent month each one paid for"],
     pmAlerts: ["Property management", "Action center", "Everything that needs a person, most urgent first"],
     pmProperty:["Rent · Properties", "Property", ""],
     pmSettings:["Property management", "Alert rules", "When rent counts as late, payouts as due, leases as ending"],
@@ -61,7 +62,7 @@ function render(){
   $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
   $("#pgActions").innerHTML = "";
   const v = $("#view"); v.innerHTML = "";
-  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, help:pgHelp, payouts:pgPayouts, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
+  (({portfolio:pgPortfolio, reconcile:pgReconcile, overview:pgOverview, txns:pgTxns, scope:pgScope, invoices:pgInvoices, owner:pgOwner, owners:pgOwners, inbox:pgInbox, team:pgTeam, pmMonth:pgPmMonth, pmRecon:pgPmRecon, pmHome:pgPmHome, pmPays:pgPmPays, pmAlerts:pgPmAlerts, pmProperty:pgPmProperty, pmSettings:pgPmSettings, pmMd:pgPmMd, pmProps:pgPmProps, pmDeposits:pgPmDeposits, pmIncome:pgPmIncome, pmBills:pgPmBills, pmInvoices:pgPmInvoices, pmStatements:pgPmStatements, pmVendors:pgPmVendors, pmPaySetup:pgPmPaySetup, payments:pgPayments, unpaid:pgUnpaid, activity:pgActivity, recover:pgRecover, help:pgHelp, payouts:pgPayouts, today:pgToday, charges:pgCharges, inventory:pgInventory, business:pgBusiness, settings:pgSettings, connections:pgConnections, money:pgMoney})[S.ui.view] || pgOverview)();
   chip(); mbarSync();
 }
 function actions(list){
@@ -3506,7 +3507,7 @@ function cmdItems(q){
   const p = P(), out = [];
   const push = (sec, ic, main, sub, amt, run) => out.push({sec, ic, main, sub, amt, run});
   const pages = S.ui.mode === "pm"
-    ? [["pmMonth","Month close","check"],["pmRecon","Reconcile rent & payouts","recon"],["pmProps","Properties","building"],["pmBills","Bills","receipt"],["unpaid","Unpaid bills","receipt"],["pmInvoices","Owner invoices","file"],["pmStatements","Owner statements","mail"],["money","Cash & payouts","card"],["recover","Duplicate payouts","receipt"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
+    ? [["pmMonth","Month close","check"],["pmRecon","Reconcile rent & payouts","recon"],["pmPays","Rent payments","receipt"],["pmProps","Properties","building"],["pmBills","Bills","receipt"],["unpaid","Unpaid bills","receipt"],["pmInvoices","Owner invoices","file"],["pmStatements","Owner statements","mail"],["money","Cash & payouts","card"],["recover","Duplicate payouts","receipt"],["pmDeposits","Deposits","receipt"],["pmIncome","Income","grid"]]
     : [["overview","Overview","home"],["txns","Transactions","list"],["invoices","Invoices","file"],
        ["owner","Owner","user"],["scope","Scope of work","clip"],["settings","Settings","gear"]];
   const acts = [
@@ -12755,8 +12756,8 @@ function sideNow(){ return S.ui && S.ui.mode === "pm" ? "pm" : "projects"; }
 const sideName = k => k === "pm" ? "Property management" : "Projects";
 /* Shared pages show only the side you're on (Projects or Property management); PM_VIEWS are rentals-only. */
 const SHARED_VIEWS = new Set(["owners","inbox","team","payments","today","connections","unpaid","activity","help"]);
-const PM_VIEWS = new Set(["payouts","money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
-const PM_RR = new Set(["pmHome","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
+const PM_VIEWS = new Set(["payouts","money","recover","pmBills","pmInvoices","pmStatements","pmVendors","pmPaySetup","pmHome","pmPays","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);
+const PM_RR = new Set(["pmHome","pmPays","pmAlerts","pmMonth","pmRecon","pmProps","pmProperty","pmDeposits","pmIncome","pmSettings","pmMd"]);   // Rent & reporting
 function setMode(mode){
   S.ui.mode = mode;
   go(mode === "pm" ? (S.ui.pmLastView && PM_VIEWS.has(S.ui.pmLastView) ? S.ui.pmLastView : "pmBills") : (S.ui.pjLastView || "portfolio"));
@@ -12821,6 +12822,7 @@ function renderNavPM(){
   mk("pmMonth", "Month close", "list", `<i class="badge">${monthShort(m)}</i>`);
   { const rm = rcMonth(), nIs = rcIssueCount(rm); mk("pmRecon", "Reconcile", "recon", nIs ? navBadge(nIs, "alert", `${nIs} don't match · ${monthLabel(rm)}`) : null); }
   mk("pmHome", "Rent overview", "home");
+  mk("pmPays", "Rent payments", "receipt");
   mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
   mk("pmDeposits", "Security deposits", "receipt");
   if(mdReady() || (typeof Cloud !== "undefined" && Cloud.ready)){
@@ -18486,6 +18488,7 @@ renderNavPM = function(){
   { const rm = rcMonth(), nIs = rcIssueCount(rm); mk("pmRecon", "Reconcile", "recon", nIs ? navBadge(nIs, "alert", `${nIs} don't match · ${monthLabel(rm)}`) : null); }
   { let inc = null; try{ inc = pmMonthRoll(m).netC; }catch(e){} mk("pmIncome", "PHD income", "chart", inc ? `<i class="badge" title="Net PHD income so far in ${esc(monthLabel(m))}">${usd0(inc)}</i>` : null); }
   mk("pmHome", "Rent overview", "home");
+  mk("pmPays", "Rent payments", "receipt");
 
   head("Owners");
   let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
@@ -18903,18 +18906,18 @@ function depLeaseAlloc(l){
   const apply = () => {
     while(queue.length && pool.length){
       const ch = queue[0], py = pool[0], a = Math.min(ch.left, py.left);
-      if(!py.credit) allocs.push({date:py.date, c:a, month:ch.month, type:ch.type});
+      if(!py.credit) allocs.push({date:py.date, c:a, month:ch.month, type:ch.type, pay:py.pay});
       ch.left -= a; py.left -= a;
       if(!ch.left) queue.shift(); if(!py.left) pool.shift();
     }
   };
   if(opening > 0) queue.push({month:"before", type:"rent", left:opening});
-  else if(opening < 0) pool.push({date:"before", left:-opening});
-  const events = [];
+  else if(opening < 0) pool.push({date:"before", left:-opening, pay:-1});
+  const events = []; let payN = 0;
   ms.forEach(m => {
     const g = M[m];
     events.push({at:m + "-00", kind:"charges", m, g});
-    (g.pays || []).forEach(p => events.push({at:String(p[0]), kind:"pay", c:C(p[1])}));
+    (g.pays || []).forEach(p => events.push({at:String(p[0]), kind:"pay", c:C(p[1]), pay:payN++}));
   });
   events.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : (a.kind === "charges" ? -1 : 1));
   events.forEach(e => {
@@ -18926,10 +18929,10 @@ function depLeaseAlloc(l){
         .forEach(([type, c]) => { if(c > 0) queue.push({month:e.m, type, left:c}); });
       // a credit given to the tenant pays charges too, but no money moves (it isn't rent received)
       if(C(g.credits) > 0) pool.unshift({date:e.m + "-01", left:C(g.credits), credit:true});
-    } else if(e.c > 0) pool.push({date:e.at, left:e.c});
+    } else if(e.c > 0) pool.push({date:e.at, left:e.c, pay:e.pay});
     apply();
   });
-  pool.forEach(py => { if(py.left > 0 && !py.credit) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit"}); });
+  pool.forEach(py => { if(py.left > 0 && !py.credit) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit", pay:py.pay}); });
   return {allocs, pending:C((M[ms[ms.length - 1]] || {}).pending)};
 }
 // which MagicDoor leases a console rental's rent comes from (the same leases Month close reads)
@@ -19196,4 +19199,105 @@ function exqCard(m){
   // Reconcile too
   const pgRc1 = pgPmRecon;
   pgPmRecon = function(){ pgRc1(); try{ const v = $("#view"), d = v.querySelector(".dep-card"); if(d){ const c = exqCard(rcMonth()); v.insertBefore(c, d.nextSibling); } }catch(e){ console.error("Expense check:", e); } };
+}
+
+/* =====================================================================
+   RENT PAYMENTS — every tenant payment MagicDoor received, one row each,
+   in the same order as MagicDoor's Rent Payments report (so the two can be
+   ticked off line by line), with what each payment paid for: the rent month,
+   late rent for an earlier month, rent paid ahead, filter, late and other
+   fees. MagicDoor labels them all "Lease payment"; this works out the month
+   the way MagicDoor applies a payment — oldest charge first.
+   Dates are the day the payment settled (what MagicDoor's report shows as
+   the transaction date for most; an evening payment can land a day later).
+   ===================================================================== */
+const PAYV2 = {};
+function rpRows(){
+  if(typeof mdReady !== "function" || !mdReady()) return [];
+  const owner = new Map(); pmLiveProps().forEach(p => depLeasesFor(p).forEach(l => { if(!owner.has(l.id)) owner.set(l.id, p); }));
+  const unitName = l => l.unitName || ((S.md.units || []).find(u => u.id === l.unitId) || {}).name || "";
+  const mdName = l => ((S.md.properties || []).find(q => q.id === l.propertyId) || {}).name || unitName(l) || "MagicDoor rental";
+  const out = [];
+  (S.md.leases || []).filter(l => !l.draft).forEach(l => {
+    const A = depLeaseAlloc(l).allocs, pays = [];
+    Object.keys(l.months || {}).sort().forEach(m => ((l.months[m] || {}).pays || []).forEach(p => pays.push(p)));
+    // the same order depLeaseAlloc numbered them in (by month, then as listed)
+    pays.forEach((p, i) => {
+      const parts = A.filter(a => a.pay === i);
+      const p0 = owner.get(l.id);
+      out.push({date:String(p[0]).slice(0, 10), c:cents(p[1]), lease:l, prop:p0 || null, where:p0 ? p0.name : mdName(l), unit:unitName(l), tenants:typeof mdTenants === "function" ? String(mdTenants(l) || "") : "", parts});
+    });
+  });
+  return out.sort((a, b) => b.date.localeCompare(a.date) || a.where.localeCompare(b.where, undefined, {numeric:true}));
+}
+const RP_TYPE = {rent:"rent", fees:"filter / app fee", late:"late fee", other:"other charge", phd:"PHD charge", credit:"paid ahead (credit)"};
+function rpLabel(a){
+  if(a.type === "credit") return "Paid ahead — tenant credit";
+  const mo = a.month === "before" ? "earlier balance" : monthLabel(a.month);
+  return a.type === "rent" ? `${mo} rent` : `${RP_TYPE[a.type] || a.type} · ${mo}`;
+}
+function pgPmPays(){
+  $("#pgCrumb").textContent = "Rent · Rent overview"; $("#pgTitle").textContent = "Rent payments";
+  const v = $("#view");
+  if(typeof mdReady !== "function" || !mdReady()){ v.appendChild(elm("div", "card", `<div class="empty"><b>Connect MagicDoor</b><p>Rent payments come from MagicDoor's lease ledgers.</p></div>`)); return; }
+  const all = rpRows();
+  const months = [...new Set(all.map(r => r.date.slice(0, 7)).concat(all.flatMap(r => r.parts.map(a => a.month)).filter(m => /^\d{4}-\d{2}$/.test(m))))].sort().reverse();
+  const by = S.ui.rpBy === "rent" ? "rent" : "paid", m = months.includes(S.ui.rpMonth) ? S.ui.rpMonth : (months.includes(thisMonth()) ? thisMonth() : months[0]);
+  const q = String(S.ui.rpQ || "").toLowerCase(), only = S.ui.rpOnly || "";
+  let list = by === "paid" ? all.filter(r => r.date.slice(0, 7) === m) : all.filter(r => r.parts.some(a => a.type === "rent" && a.month === m));
+  if(q) list = list.filter(r => `${r.where} ${r.unit} ${r.tenants}`.toLowerCase().includes(q));
+  if(only === "early") list = list.filter(r => r.parts.some(a => (a.type === "rent" && a.month > r.date.slice(0, 7)) || a.type === "credit"));
+  if(only === "late") list = list.filter(r => r.parts.some(a => a.type === "rent" && (a.month === "before" || a.month < r.date.slice(0, 7))));
+  if(only === "off") list = list.filter(r => !r.prop);
+  const amt = r => by === "rent" ? r.parts.filter(a => a.type === "rent" && a.month === m).reduce((x, a) => x + a.c, 0) : r.c;
+  const total = list.reduce((x, r) => x + amt(r), 0);
+  actions([["Export CSV", () => {
+    const rows = [["Date settled", "Rental", "Unit", "Tenant", "Payment", "Applied to", ...(by === "rent" ? [monthLabel(m) + " rent from it"] : []), "In Month close"]]
+      .concat(list.map(r => [r.date, r.where, r.unit, r.tenants, (r.c / 100).toFixed(2), r.parts.map(a => rpLabel(a) + " " + (a.c / 100).toFixed(2)).join("; "), ...(by === "rent" ? [(amt(r) / 100).toFixed(2)] : []), r.prop ? "yes" : "no"]));
+    finCsv(`Rent payments ${by === "rent" ? "for" : "received"} ${monthLabel(m)}.csv`, rows);
+  }, "ghost"]]);
+  const bar = elm("div", "card rp-bar");
+  bar.innerHTML = `<div class="rp-ctl">
+      <div class="sc-seg"><button data-by="paid" class="${by === "paid" ? "on" : ""}">Received in</button><button data-by="rent" class="${by === "rent" ? "on" : ""}">Rent for</button></div>
+      <select id="rpM">${months.map(x => `<option value="${x}" ${x === m ? "selected" : ""}>${monthLabel(x)}</option>`).join("")}</select>
+      <select id="rpOnly"><option value="">All payments</option><option value="early" ${only === "early" ? "selected" : ""}>Paid early / ahead</option><option value="late" ${only === "late" ? "selected" : ""}>Late rent for an earlier month</option><option value="off" ${only === "off" ? "selected" : ""}>Not in Month close</option></select>
+      <input type="search" id="rpQ" placeholder="Find a rental or tenant…" value="${esc(S.ui.rpQ || "")}">
+    </div>
+    <div class="rp-sum"><span><b>${list.length}</b> payment${list.length === 1 ? "" : "s"}</span><span class="num"><b>${usd(total)}</b> ${by === "rent" ? esc(monthLabel(m)) + " rent" : "received"}</span>
+      <span class="muted">${by === "paid" ? "Same list and order as MagicDoor's Rent Payments report for the month (settled payments; failed and processing ones aren't money in)." : "Every payment that paid " + esc(monthLabel(m)) + " rent, whenever it was made — this is the rent that counts for the month."}</span></div>`;
+  v.appendChild(bar);
+  bar.querySelectorAll("[data-by]").forEach(b => b.onclick = () => { S.ui.rpBy = b.dataset.by; persistUi(); render(); });
+  bar.querySelector("#rpM").onchange = e => { S.ui.rpMonth = e.target.value; persistUi(); render(); };
+  bar.querySelector("#rpOnly").onchange = e => { S.ui.rpOnly = e.target.value; persistUi(); render(); };
+  const qi = bar.querySelector("#rpQ"); qi.oninput = () => { S.ui.rpQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#rpQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 200); };
+  const card = elm("div", "card");
+  if(!list.length){ card.innerHTML = `<div class="empty"><b>No payments</b><p>Nothing matches for ${esc(monthLabel(m))}.</p></div>`; v.appendChild(card); return; }
+  // grouped by day, like the bank and MagicDoor's report
+  const days = {}; list.forEach(r => (days[r.date] = days[r.date] || []).push(r));
+  const t = elm("table", "tbl rp-tbl");
+  t.innerHTML = `<thead><tr><th>Date</th><th>Rental</th><th>Tenant</th><th class="r">Payment</th><th>Applied to</th>${by === "rent" ? `<th class="r">${esc(monthLabel(m).split(" ")[0])} rent</th>` : ""}</tr></thead><tbody>
+    ${Object.keys(days).sort().reverse().map(d => { const ds = days[d], dt = ds.reduce((x, r) => x + (by === "rent" ? amt(r) : r.c), 0);
+      return `<tr class="rp-day"><td colspan="${by === "rent" ? 3 : 3}"><b>${esc(fdateS(d))}</b> <span class="muted">· ${ds.length} payment${ds.length === 1 ? "" : "s"}</span></td><td class="r num"><b>${by === "rent" ? "" : usd(dt)}</b></td><td></td>${by === "rent" ? `<td class="r num"><b>${usd(dt)}</b></td>` : ""}</tr>` +
+        ds.map(r => `<tr><td class="muted nw">${esc(fdateS(r.date))}</td>
+          <td>${r.prop ? `<a href="#" data-rpp="${r.prop.id}">${esc(r.where)}</a>` : esc(r.where)}${r.unit && r.unit !== r.where && !(r.prop && r.prop.name === r.unit) ? `<div class="muted" style="font-size:11.5px">${esc(r.unit)}</div>` : ""}${r.prop ? "" : ` <span class="tag gold">not in Month close</span>`}</td>
+          <td class="muted">${esc(r.tenants || "")}</td><td class="r num">${usd(r.c)}</td>
+          <td class="rp-ap">${r.parts.length ? r.parts.map(a => `<span class="rp-p ${a.type === "rent" ? (a.month === r.date.slice(0, 7) ? "now" : a.month === "before" || a.month < r.date.slice(0, 7) ? "late" : "early") : a.type === "credit" ? "early" : "fee"}">${esc(rpLabel(a))} <b>${usd(a.c)}</b></span>`).join("") : `<span class="muted">—</span>`}</td>
+          ${by === "rent" ? `<td class="r num">${usd(amt(r))}</td>` : ""}</tr>`).join(""); }).join("")}
+  </tbody><tfoot><tr><td colspan="3"><b>Total</b></td><td class="r num"><b>${by === "rent" ? "" : usd(total)}</b></td><td></td>${by === "rent" ? `<td class="r num"><b>${usd(total)}</b></td>` : ""}</tr></tfoot>`;
+  t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); S.ui.pmPropId = a.dataset.rpp; go("pmProperty", a.dataset.rpp); });
+  const w = elm("div", "tbl-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
+  v.appendChild(elm("p", "muted", `<span style="font-size:12px">"Applied to" is worked out the way MagicDoor applies a payment: to the oldest charge first (fees and rent dated the 1st, late fees after). A payment made before the month's charges post waits as the tenant's credit and pays the next month's rent. Tenant names come from MagicDoor.</span>`));
+}
+{
+  // a way in from Rent overview
+  const pgHome0 = pgPmHome;
+  pgPmHome = function(){
+    pgHome0();
+    setTimeout(() => { try{
+      const v = $("#view"); if(!v || S.ui.view !== "pmHome" || v.querySelector(".rp-link")) return;
+      const b = elm("div", "card rp-link", `<div><b>Rent payments</b><div class="muted" style="font-size:12.5px">Every payment MagicDoor received, with the rent month each one paid for — to match against MagicDoor's Rent Payments report.</div></div><button class="btn sm primary">Open</button>`);
+      b.querySelector("button").onclick = () => go("pmPays");
+      v.insertBefore(b, v.children[1] || null);
+    }catch(e){} }, 0);
+  };
 }
