@@ -24,6 +24,7 @@ const CFG = {
   LABEL_IN:   'Receipts/Inbox',
   LABEL_DONE: 'Receipts/Processed',
   LABEL_SKIP: 'Receipts/Skipped',
+  LABEL_OK:   'In console',               // added to every email whose receipt reached the console's inbox
   ROOT_FOLDER: 'PHD Receipts',
   DROP_FOLDER: '_Drop here',
   UNFILED_FOLDER: '_Unfiled',
@@ -46,6 +47,10 @@ const CFG = {
   },
   ALIAS_ANY_SENDER: true,
   ALIAS_LOOKBACK: '30d',
+  /* Vendors: the console sends every vendor email address it knows (Nickel and the vendor list), and the business
+     domains among them (not gmail.com etc.), each time it connects — a vendor can email billing@ directly.
+     The "Check Gmail" button on the console's Receipt inbox finds anything in the inbox that was missed. */
+  AUDIT_DAYS: 30,
   ALLOWED_DOMAINS: [
     'lowes.com', 'homedepot.com', 'amazon.com', 'costco.com', 'sherwin.com',
     'truevalue.com', 'ferguson.com', 'quickbooks.com', 'intuit.com'
@@ -53,12 +58,12 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 7;   // 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 8;   // 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
   'confidence','reason','line_items','order_no','notes','txn_id','decided_at','error','due_date','side','email_text','pay_status','pay_note',
-  'office_note','bill_to','no_fee','hold','party','pay_account','address_seen'];
+  'office_note','bill_to','no_fee','hold','party','pay_account','address_seen','msg_id','thread_id'];
 
 const MIME_OK = {
   'application/pdf':'document', 'image/jpeg':'image', 'image/png':'image', 'image/gif':'image', 'image/webp':'image'
@@ -68,7 +73,7 @@ const MIME_OK = {
 function setup(){
   const props = PropertiesService.getScriptProperties();
   // labels
-  [CFG.LABEL_IN, CFG.LABEL_DONE, CFG.LABEL_SKIP].forEach(name => GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name));
+  [CFG.LABEL_IN, CFG.LABEL_DONE, CFG.LABEL_SKIP, CFG.LABEL_OK].forEach(name => GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name));
   // folders
   const root = folderByName_(DriveApp.getRootFolder(), CFG.ROOT_FOLDER);
   folderByName_(root, CFG.DROP_FOLDER);
@@ -143,8 +148,13 @@ function processGmail_(budget){
     const q = '{' + al.map(a => 'to:' + a + ' deliveredto:' + a).join(' ') + '} -label:' + CFG.LABEL_DONE.replace(/\//g, '-') + ' -label:' + CFG.LABEL_SKIP.replace(/\//g, '-') + ' -in:sent -in:drafts newer_than:' + CFG.ALIAS_LOOKBACK;
     try{ GmailApp.search(q, 0, 15).forEach(t => { if(!ids.has(t.getId())){ ids.add(t.getId()); threads.push(t); } }); }catch(e){ Logger.log('Alias search failed: ' + e); }
   }
+  // bills and receipts vendors email straight to this inbox (only ones with a document or a bill-like subject)
+  vendorQueries_().forEach(q => {
+    try{ GmailApp.search(q, 0, 10).forEach(t => { if(!ids.has(t.getId())){ ids.add(t.getId()); threads.push(t); } }); }catch(e){ Logger.log('Vendor search failed: ' + e); }
+  });
   for(const th of threads){
     if(used >= budget) break;
+    let inConsole = false;
     for(const msg of th.getMessages()){
       if(used >= budget) break;
       if(msg.isInTrash()) continue;
@@ -153,11 +163,11 @@ function processGmail_(budget){
       const from = String(msg.getFrom() || '');
       const addr = (from.match(/<([^>]+)>/) || [null, from])[1].trim().toLowerCase();
       if(addr === me && !sideOf_(msg) && !labeled.has(th.getId())){ seen.add(msgKey); continue; }   // billing@'s own replies in an alias thread
-      const side = sideOf_(msg);
-      if(!senderAllowed_(addr, me) && !(side && CFG.ALIAS_ANY_SENDER)){
+      const side = sideOf_(msg), forced = forced_(msg.getId());
+      if(!senderAllowed_(addr, me) && !(side && CFG.ALIAS_ANY_SENDER) && !forced){
         // shown in the console (not hidden) so a missing sender is obvious
-        appendRow_({status:'error', source:'email', from:addr, subject:msg.getSubject(), file_hash:msgKey, notes:msg.getId(),
-          error:`Sender ${addr} isn't on the allowed list. Add it to ALLOWED_SENDERS in the script (or forward from ${me}), then press Try reading again.`});
+        appendRow_({status:'error', source:'email', from:addr, subject:msg.getSubject(), file_hash:msgKey, notes:msg.getId(), msg_id:msg.getId(), thread_id:th.getId(),
+          error:`${addr} isn't a vendor the console knows. Add their email to the vendor in the console (or press Import on the Receipt inbox's Check Gmail), then press Try reading again.`});
         seen.add(msgKey);
         continue;
       }
@@ -173,7 +183,8 @@ function processGmail_(budget){
         if(atts.length){
           for(const a of atts){
             if(used >= budget) break;
-            handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText, payTag, officeNote});
+            const r = handleBlob_(a.copyBlob().setName(a.getName()), {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, emailText, payTag, officeNote, msgId:msg.getId(), threadId:th.getId()});
+            if(r === null || (r && (r.status === 'pending' || r.status === 'approved'))) inConsole = true;
             used++;
           }
         } else {
@@ -183,15 +194,18 @@ function processGmail_(budget){
           try{ file = HtmlService.createHtmlOutput(msg.getBody()).getAs('application/pdf'); }
           catch(e){ file = Utilities.newBlob(text, 'text/plain'); }
           file.setName((msg.getSubject() || 'Receipt').replace(/[\\/:*?"<>|]+/g, '-') + (file.getContentType() === 'application/pdf' ? '.pdf' : '.txt'));
-          handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, payTag, officeNote, bodyText:text || '(empty email)'});
+          const r = handleBlob_(file, {source:'email', from:addr, subject:msg.getSubject(), context, seen, side, payTag, officeNote, bodyText:text || '(empty email)', msgId:msg.getId(), threadId:th.getId()});
+          if(r === null || (r && (r.status === 'pending' || r.status === 'approved'))) inConsole = true;
           used++;
         }
       }catch(err){
-        appendRow_({status:'error', source:'email', from:addr, subject:msg.getSubject(), file_hash:msgKey + ':err', notes:msg.getId(),
+        appendRow_({status:'error', source:'email', from:addr, subject:msg.getSubject(), file_hash:msgKey + ':err', notes:msg.getId(), msg_id:msg.getId(), thread_id:th.getId(),
           error:'Could not process this email: ' + String(err && err.message || err).slice(0, 300)});
       }
       seen.add(msgKey);
+      if(forced) unforce_(msg.getId());
     }
+    if(inConsole) labelOk_(th);
     // move the thread along once all its messages are handled
     const allDone = th.getMessages().every(m => seen.has('msg:' + m.getId()));
     if(allDone){ th.removeLabel(inL); th.addLabel(doneL); }
@@ -242,7 +256,7 @@ function handleBlob_(blob, o){
   }
   o.seen.add(hash);
   const row = {id:Utilities.getUuid().slice(0,8), status:'pending', source:o.source, from:o.from || '', subject:o.subject || '', file_hash:hash,
-    side:o.side || '', email_text:String(o.emailText || '').slice(0, 4000)};
+    side:o.side || '', email_text:String(o.emailText || '').slice(0, 4000), msg_id:o.msgId || '', thread_id:o.threadId || ''};
   const kind = MIME_OK[normMime_(blob)] || (o.bodyText ? 'text' : null);
   try{
     if(kind === 'image' && blob.getBytes().length > CFG.MAX_IMAGE_BYTES) throw new Error('Photo is over 5 MB — retake at a lower resolution or send as PDF');
@@ -462,6 +476,7 @@ function doGet(e){
     while(it.hasNext() && out.length < 400){ const f = it.next(); out.push({name:f.getName(), url:f.getUrl()}); }
     return json_({ok:true, root:root.getUrl(), sheet:sheetUrl_(), mailbox:Session.getEffectiveUser().getEmail(), folders:out});
   }
+  if(action === 'audit') return json_(auditGmail_(p.days));
   if(action === 'list'){
     const rows = readRows_().filter(r => r.status === 'pending' || r.status === 'error' || (p.all === '1' && r.status));
     return json_({ok:true, items:rows.map(publicRow_)});
@@ -482,6 +497,14 @@ function doPost(e){
         units:(Array.isArray(p.units) ? p.units : []).slice(0, 40).map(u => ({id:String(u.id).slice(0, 40), name:String(u.name || '').slice(0, 40)}))
       }));
       PropertiesService.getScriptProperties().setProperty('PROPERTIES', JSON.stringify(list));
+      if(b.senders && typeof b.senders === 'object'){
+        const okE = x => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(x), okD = x => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(x);
+        const v = {emails:(b.senders.emails || []).map(x => String(x).toLowerCase().trim()).filter(okE).slice(0, 400),
+                   domains:(b.senders.domains || []).map(x => String(x).toLowerCase().trim()).filter(okD).slice(0, 150)};
+        let txt = JSON.stringify(v); while(txt.length > 8500 && v.emails.length){ v.emails.pop(); txt = JSON.stringify(v); }
+        PropertiesService.getScriptProperties().setProperty('VENDOR_SENDERS', txt);
+        return json_({ok:true, properties:list.length, vendors:v.emails.length, domains:v.domains.length});
+      }
       return json_({ok:true, properties:list.length});
     }
     if(b.action === 'decide'){
@@ -677,6 +700,12 @@ Call the describe_work tool once with one short line (under 110 characters) an o
       const d = String(out && out.description || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 140);
       return json_({ok:true, description:d});
     }
+    if(b.action === 'import'){
+      const n = importMsgs_(b.ids);
+      lock.releaseLock();
+      try{ processInbox(); }catch(e){}
+      return json_({ok:true, queued:n});
+    }
     if(b.action === 'retry'){
       // re-run extraction for an item that errored (e.g. after fixing the API key)
       const sh = sheet_(), data = sh.getDataRange().getValues(), H = data[0], col = k => H.indexOf(k);
@@ -689,6 +718,7 @@ Call the describe_work tool once with one short line (under 110 characters) an o
           p.setProperty('SEEN_MSGS', JSON.stringify(JSON.parse(p.getProperty('SEEN_MSGS') || '[]').filter(x => x !== 'msg:' + mid)));
           sh.getRange(i + 1, col('status') + 1).setValue('rejected');
           sh.getRange(i + 1, col('file_hash') + 1).setValue('retried:' + mid);
+          p.setProperty('FORCE_MSGS', JSON.stringify(Array.from(new Set(forcedList_().concat([mid]))).slice(-100)));
           try{ const th = GmailApp.getMessageById(mid).getThread(); th.addLabel(GmailApp.getUserLabelByName(CFG.LABEL_IN)); }catch(e){}
           lock.releaseLock();
           processInbox();
@@ -813,7 +843,97 @@ function senderAllowed_(addr, me){
   if(addr === me) return true;
   if(CFG.ALLOWED_SENDERS.map(x => x.toLowerCase()).indexOf(addr) >= 0) return true;
   const dom = addr.split('@')[1] || '';
-  return CFG.ALLOWED_DOMAINS.some(d => dom === d || dom.endsWith('.' + d));
+  if(CFG.ALLOWED_DOMAINS.some(d => dom === d || dom.endsWith('.' + d))) return true;
+  // vendors the console knows: their exact address, or their company's own domain
+  const v = vendorSenders_();
+  return v.emails.indexOf(addr) >= 0 || v.domains.some(d => dom === d || dom.endsWith('.' + d));
+}
+function vendorQueries_(){
+  const v = vendorSenders_(), who = v.emails.concat(v.domains.map(d => '@' + d)), out = [];
+  const tail = ' {has:attachment subject:invoice subject:receipt subject:bill subject:statement subject:estimate subject:payment subject:order}' +
+    ' in:inbox -label:' + CFG.LABEL_DONE.replace(/\//g, '-') + ' -label:' + CFG.LABEL_SKIP.replace(/\//g, '-') + ' -label:' + CFG.LABEL_OK.replace(/\s/g, '-') +
+    ' -in:sent -in:drafts newer_than:' + CFG.ALIAS_LOOKBACK;
+  for(let i = 0; i < who.length; i += 40) out.push('from:(' + who.slice(i, i + 40).join(' OR ') + ')' + tail);
+  return out;
+}
+let vendorSenders__ = null;
+function vendorSenders_(){
+  if(vendorSenders__) return vendorSenders__;
+  let v = {};
+  try{ v = JSON.parse(PropertiesService.getScriptProperties().getProperty('VENDOR_SENDERS') || '{}'); }catch(e){}
+  vendorSenders__ = {emails:(v.emails || []).map(x => String(x).toLowerCase()), domains:(v.domains || []).map(x => String(x).toLowerCase())};
+  return vendorSenders__;
+}
+// emails someone chose to import from the console's Check Gmail (read even if the sender isn't a known vendor)
+function forcedList_(){ try{ return JSON.parse(PropertiesService.getScriptProperties().getProperty('FORCE_MSGS') || '[]'); }catch(e){ return []; } }
+function forced_(id){ return forcedList_().indexOf(String(id)) >= 0; }
+function unforce_(id){ PropertiesService.getScriptProperties().setProperty('FORCE_MSGS', JSON.stringify(forcedList_().filter(x => x !== String(id)))); }
+function labelOk_(th){ try{ const l = GmailApp.getUserLabelByName(CFG.LABEL_OK) || GmailApp.createLabel(CFG.LABEL_OK); th.addLabel(l); }catch(e){ Logger.log('Label: ' + e); } }
+
+/* ---------- Check Gmail: everything in the inbox that looks like a bill or receipt, and whether it reached the console ----------
+   in       — it's in the console's inbox (or was approved / turned down there)
+   failed   — the script tried and couldn't read it (or the sender wasn't known); Try again fixes most
+   missing  — looks like a receipt or invoice but was never picked up
+   Receipts that reached the console get the "In console" label as a side effect. */
+const RECEIPT_WORDS_ = /\b(invoice|receipt|bill|billing|statement|payment|paid|order|estimate|quote|work order|amount due|balance due|remit)\b/i;
+function auditGmail_(days){
+  const me = Session.getEffectiveUser().getEmail().toLowerCase();
+  const rows = readRows_(), byMsg = {}, bySubj = {};
+  rows.forEach(r => {
+    const ids = [String(r.msg_id || ''), String(r.notes || '').match(/^[0-9a-f]{12,20}$/) ? String(r.notes) : ''].filter(Boolean);
+    ids.forEach(id => (byMsg[id] = byMsg[id] || []).push(r));
+    if(r.source === 'email' && r.subject) (bySubj[String(r.from).toLowerCase() + '|' + String(r.subject).trim().toLowerCase()] = bySubj[String(r.from).toLowerCase() + '|' + String(r.subject).trim().toLowerCase()] || []).push(r);
+  });
+  const seen = new Set(JSON.parse(PropertiesService.getScriptProperties().getProperty('SEEN_MSGS') || '[]'));
+  const okL = GmailApp.getUserLabelByName(CFG.LABEL_OK) || GmailApp.createLabel(CFG.LABEL_OK);
+  const q = 'in:inbox -in:sent -in:drafts -in:chats newer_than:' + Math.max(1, Math.min(120, Number(days) || CFG.AUDIT_DAYS)) + 'd';
+  const threads = GmailApp.search(q, 0, 150), out = []; let other = 0;
+  threads.forEach(th => {
+    const labels = th.getLabels().map(l => l.getName());
+    let threadIn = false;
+    th.getMessages().forEach(msg => {
+      if(msg.isInTrash() || msg.isDraft()) return;
+      const from = String(msg.getFrom() || ''), addr = (from.match(/<([^>]+)>/) || [null, from])[1].trim().toLowerCase();
+      if(addr === me && !sideOf_(msg)) return;   // billing@'s own replies
+      const id = msg.getId(), subj = msg.getSubject() || '';
+      const atts = msg.getAttachments({includeInlineImages:false, includeAttachments:true}).filter(a => MIME_OK[normMime_(a)] && a.getSize() > 3000);
+      const mine = byMsg[id] || bySubj[addr + '|' + subj.trim().toLowerCase()] || [];
+      const good = mine.filter(r => r.status === 'pending' || r.status === 'approved'), bad = mine.filter(r => r.status === 'error');
+      const turnedDown = mine.filter(r => r.status === 'rejected' && !/^retried:/.test(String(r.file_hash || '')));
+      const looks = atts.length > 0 || RECEIPT_WORDS_.test(subj) || RECEIPT_WORDS_.test(String(msg.getPlainBody() || '').slice(0, 1500));
+      let status;
+      if(good.length) status = 'in';
+      else if(bad.length) status = 'failed';
+      else if(turnedDown.length) status = 'declined';
+      else if(seen.has('msg:' + id) || labels.indexOf(CFG.LABEL_DONE) >= 0) status = looks ? 'skipped' : 'other';
+      else status = looks ? 'missing' : 'other';
+      if(status === 'in') threadIn = true;
+      if(status === 'other'){ other++; return; }
+      out.push({msgId:id, threadId:th.getId(), date:msg.getDate().toISOString(), from:addr, name:from.replace(/<[^>]+>/, '').replace(/"/g, '').trim(), subject:subj.slice(0, 160),
+        attachments:atts.length, status, known:senderAllowed_(addr, me) || !!sideOf_(msg), side:sideOf_(msg),
+        rowId:(good[0] || bad[0] || turnedDown[0] || {}).id || '', error:String((bad[0] || turnedDown[0] || {}).error || '').slice(0, 220),
+        link:'https://mail.google.com/mail/u/0/#all/' + th.getId()});
+    });
+    if(threadIn && labels.indexOf(CFG.LABEL_OK) < 0){ try{ th.addLabel(okL); }catch(e){} }
+  });
+  return {ok:true, days:Number(days) || CFG.AUDIT_DAYS, mailbox:me, items:out, other};
+}
+// import emails from Check Gmail: read them on the next run even if the sender isn't a known vendor
+function importMsgs_(ids){
+  const p = PropertiesService.getScriptProperties(), inL = GmailApp.getUserLabelByName(CFG.LABEL_IN) || GmailApp.createLabel(CFG.LABEL_IN);
+  const want = (ids || []).map(String).filter(x => /^[0-9a-f]{10,24}$/.test(x)).slice(0, 25);
+  const seenNow = JSON.parse(p.getProperty('SEEN_MSGS') || '[]').filter(x => want.indexOf(String(x).replace(/^msg:/, '')) < 0);
+  p.setProperty('SEEN_MSGS', JSON.stringify(seenNow));
+  p.setProperty('FORCE_MSGS', JSON.stringify(Array.from(new Set(forcedList_().concat(want))).slice(-100)));
+  // a failed row for the same email is replaced by the new read
+  const sh = sheet_(), data = sh.getDataRange().getValues(), H = data[0], col = k => H.indexOf(k);
+  for(let i = 1; i < data.length; i++){
+    const mid = String(data[i][col('msg_id')] || data[i][col('notes')] || '');
+    if(want.indexOf(mid) >= 0 && String(data[i][col('status')]) === 'error'){ sh.getRange(i + 1, col('status') + 1).setValue('rejected'); sh.getRange(i + 1, col('file_hash') + 1).setValue('retried:' + mid); }
+  }
+  let n = 0;
+  want.forEach(id => { try{ GmailApp.getMessageById(id).getThread().addLabel(inL); n++; }catch(e){} });
+  return n;
 }
 function normMime_(b){
   let m = String(b.getContentType() || '').toLowerCase();

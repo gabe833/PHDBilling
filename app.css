@@ -561,6 +561,17 @@ tr.ow-tot td{background:var(--panel-2);border-top:1px solid var(--line)}
 .ib-head{display:flex;justify-content:space-between;align-items:center;margin:0 2px 12px;font-size:13.3px}
 .ib-err{padding:14px 18px;margin-bottom:14px;border-left:3px solid var(--red);font-size:13.3px}
 .ib-err span{color:var(--muted)}
+/* Check Gmail panel */
+.iba-sum{display:flex;gap:18px;flex-wrap:wrap;font-size:13.3px;margin:2px 0 14px}.iba-sum .bad b{color:var(--red)}
+.iba-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px}
+.iba-h{margin:16px 0 4px;font-size:13.5px}.iba-s{font-size:12.3px;margin:0 0 6px}
+.iba-r{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}
+.iba-c{display:flex;gap:8px;align-items:flex-start;min-width:0;flex:1}.iba-c input{margin-top:3px}
+.iba-t{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:13px}.iba-t b{overflow-wrap:anywhere}.iba-t .muted{font-size:12px}
+.iba-e{font-size:12px;color:var(--red)}.iba-a{display:flex;gap:6px;flex-shrink:0}
+.iba-in{margin-top:16px;font-size:13px}.iba-in summary{cursor:pointer;color:var(--muted)}
+#ibaDays{font:inherit;font-size:12px;padding:1px 4px}
+@media (max-width:640px){.iba-r{flex-direction:column}.iba-a{align-self:flex-end}}
 .ib-card{margin-bottom:14px}
 .ib-top{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
 .ib-src{display:flex;align-items:center;gap:11px;min-width:0;flex:1}

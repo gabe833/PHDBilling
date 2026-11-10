@@ -3606,11 +3606,93 @@ async function inboxPost(body){
 async function inboxSyncConfig(force){
   const list = live().map(p => ({id:p.id, name:p.name, address:p.address || "", side:"projects", units:p.units.map(u => ({id:u.id, name:u.name}))}))
     .concat(pmLiveProps().map(p => ({id:p.id, name:p.name + " (managed rental)", address:p.address || "", side:"pm", units:[]})));
-  const sig = JSON.stringify(list);
+  const senders = ibVendorSenders();
+  const sig = JSON.stringify([list, senders]);
   let last = ""; try{ last = localStorage.getItem(INBOX_KEY + "-cfg") || ""; }catch(e){}
   if(!force && last === sig) return;
-  await inboxPost({action:"config", properties:list});
+  await inboxPost({action:"config", properties:list, senders});
   try{ localStorage.setItem(INBOX_KEY + "-cfg", sig); }catch(e){}
+}
+
+/* Vendors the receipt inbox accepts mail from: every vendor email the console knows (Nickel vendors and the vendor list),
+   plus the company domains among them (anyone @banddheating.com) — never a free-mail domain like gmail.com, and never our own */
+const IB_FREEMAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|comcast|att|sbcglobal|bellsouth|verizon|proton|protonmail|pm|gmx|mail|zoho|charter|cox|earthlink|windstream|frontier|hughes)\./i;
+const IB_OURS = /(^|\.)phd(properties|billing)?[a-z.-]*\./i;
+function ibVendorSenders(){
+  const em = new Set(), dom = new Set(), ok = x => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(x);
+  const add = x => String(x || "").split(/[,;\s]+/).map(e => e.trim().toLowerCase()).filter(ok).forEach(e => {
+    const d = e.split("@")[1];
+    if(IB_OURS.test(d)) return;
+    em.add(e);
+    if(!IB_FREEMAIL.test(d)) dom.add(d);
+  });
+  try{ nkVendorList().forEach(v => (v.emails || []).concat(v.email || []).forEach(add)); }catch(e){}
+  try{ pmVendors().forEach(v => add(v.email)); }catch(e){}
+  return {emails:[...em].sort(), domains:[...dom].sort()};
+}
+
+/* ---------- Check Gmail: what's sitting in the receipts mailbox and whether it made it here ---------- */
+const IBX = {busy:false, data:null, err:"", days:30, sel:new Set(), sent:new Set()};
+async function ibAuditLoad(){
+  IBX.busy = true; IBX.err = ""; ibAuditDraw();
+  try{
+    await inboxSyncConfig(true).catch(() => {});
+    const j = await inboxGet({action:"audit", days:String(IBX.days)});
+    if(!j || j.ok === false) throw new Error((j && j.error) || "The inbox script didn't answer");
+    IBX.data = j;
+  }catch(e){ IBX.err = /unknown action/i.test(e.message) ? "The receipt inbox script needs updating first (see the note on the Receipt inbox page)." : e.message; }
+  IBX.busy = false; ibAuditDraw();
+}
+function ibAuditOpen(){ IBX.sel = new Set(); openPanel(); ibAuditDraw(); ibAuditLoad(); }
+function ibAuditDraw(){
+  const sh = $("#sheet"); if(!sh) return;
+  const d = IBX.data, items = d ? d.items : [];
+  const grp = k => items.filter(i => i.status === k && !IBX.sent.has(i.msgId));
+  const missing = grp("missing").concat(grp("skipped")), failed = grp("failed"), declined = grp("declined"), inn = items.filter(i => i.status === "in");
+  const when = x => new Date(x).toLocaleDateString([], {month:"short", day:"numeric"});
+  const row = (it, btn) => `<div class="iba-r"><label class="iba-c">${btn === "pick" ? `<input type="checkbox" data-pk="${esc(it.msgId)}" ${IBX.sel.has(it.msgId) ? "checked" : ""}>` : ""}
+      <span class="iba-t"><b>${esc(it.subject || "(no subject)")}</b><span class="muted">${esc(it.name || it.from)}${it.name && it.name !== it.from ? ` &lt;${esc(it.from)}&gt;` : ""} · ${when(it.date)}${it.attachments ? ` · ${it.attachments} attachment${it.attachments > 1 ? "s" : ""}` : " · no attachment"}${it.known ? "" : ` · <span style="color:var(--amber,#b26a00)">not a known vendor</span>`}${it.status === "skipped" ? " · looked at before, nothing taken" : ""}</span>
+      ${it.error ? `<span class="iba-e">${esc(it.error)}</span>` : ""}</span></label>
+      <span class="iba-a"><a class="btn ghost sm" href="${esc(it.link)}" target="_blank" rel="noopener">Open in Gmail</a>
+      ${btn === "retry" ? `<button class="btn sm" data-rt="${esc(it.rowId)}" data-mid="${esc(it.msgId)}">Try again</button>` : btn === "pick" || btn === "import" ? `<button class="btn sm" data-im="${esc(it.msgId)}">Import</button>` : ""}</span></div>`;
+  const sec = (title, sub, list, btn) => list.length ? `<h4 class="iba-h">${title} <span class="muted">${list.length}</span></h4>${sub ? `<p class="muted iba-s">${sub}</p>` : ""}${list.map(i => row(i, btn)).join("")}` : "";
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Check Gmail</h3><div class="muted" style="font-size:12.5px;margin-top:3px">Everything in ${esc((d && d.mailbox) || "the receipts mailbox")} from the last
+      <select id="ibaDays">${[7, 14, 30, 60, 90].map(n => `<option value="${n}" ${IBX.days === n ? "selected" : ""}>${n} days</option>`).join("")}</select> that looks like a bill or receipt, and whether it reached the console</div></div>
+      <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b iba">
+      ${IBX.busy ? `<div class="empty"><b>Checking Gmail…</b><p class="muted">This takes up to a minute.</p></div>` : IBX.err ? `<div class="card ib-err"><b>Couldn't check Gmail.</b> ${esc(IBX.err)}</div>` : !d ? "" : `
+        <div class="iba-sum"><span><b>${inn.length}</b> in the console</span><span class="${missing.length ? "bad" : ""}"><b>${missing.length}</b> missing</span><span class="${failed.length ? "bad" : ""}"><b>${failed.length}</b> failed</span>${declined.length ? `<span><b>${declined.length}</b> turned down</span>` : ""}</div>
+        ${!missing.length && !failed.length ? `<div class="empty" style="padding:18px 0"><b>Nothing missing.</b><p class="muted">Every bill and receipt in the mailbox is in the console, and has the <b>In console</b> label in Gmail.</p></div>` : ""}
+        ${missing.length ? `<div class="iba-bar"><button class="btn sm primary" id="ibaAll">Import ${IBX.sel.size ? `${IBX.sel.size} selected` : `all ${missing.length}`}</button><span class="muted">Imported emails are read like any forwarded receipt and land on the Receipt inbox for review.</span></div>` : ""}
+        ${sec("Missing", "Look like a bill or receipt but never reached the console.", missing, "pick")}
+        ${sec("Failed", "The inbox tried but couldn't read these, or the sender wasn't a known vendor.", failed, "retry")}
+        ${sec("Turned down", "Read, but marked as not a receipt. Import again if that was wrong.", declined, "import")}
+        ${inn.length ? `<details class="iba-in"><summary>${inn.length} already in the console</summary>${inn.map(i => row(i, "")).join("")}</details>` : ""}
+        ${d.other ? `<p class="muted" style="font-size:12px;margin-top:12px">${d.other} other email${d.other === 1 ? "" : "s"} didn't look like bills and were left alone.</p>` : ""}`}
+    </div>`;
+  sh.querySelector("#shClose").onclick = closeSheet;
+  const ds = sh.querySelector("#ibaDays"); if(ds) ds.onchange = () => { IBX.days = Number(ds.value) || 30; ibAuditLoad(); };
+  sh.querySelectorAll("[data-pk]").forEach(c => c.onchange = () => { c.checked ? IBX.sel.add(c.dataset.pk) : IBX.sel.delete(c.dataset.pk); ibAuditDraw(); });
+  const imp = async ids => {
+    ids = ids.filter(Boolean); if(!ids.length) return;
+    try{
+      const j = await inboxPost({action:"import", ids});
+      if(j && j.ok === false) throw new Error(j.error || "Import failed");
+      ids.forEach(x => IBX.sent.add(x)); IBX.sel = new Set();
+      toast(`Importing ${ids.length} email${ids.length > 1 ? "s" : ""} — they'll show on the Receipt inbox in a minute or two`);
+      ibAuditDraw(); setTimeout(() => inboxRefresh(), 4000);
+    }catch(e){ toast(/unknown action/i.test(e.message) ? "Update the receipt inbox script first" : e.message); }
+  };
+  sh.querySelectorAll("[data-im]").forEach(b => b.onclick = () => { b.disabled = true; imp([b.dataset.im]); });
+  const all = sh.querySelector("#ibaAll"); if(all) all.onclick = () => { all.disabled = true; imp(IBX.sel.size ? [...IBX.sel] : missing.map(i => i.msgId)); };
+  sh.querySelectorAll("[data-rt]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try{
+      const j = b.dataset.rt ? await inboxPost({action:"retry", id:b.dataset.rt}) : await inboxPost({action:"import", ids:[b.dataset.mid]});
+      if(j && j.ok === false) throw new Error(j.error || "Didn't work");
+      IBX.sent.add(b.dataset.mid); toast("Reading it again — check the Receipt inbox in a minute"); ibAuditDraw(); setTimeout(() => inboxRefresh(), 4000);
+    }catch(e){ b.disabled = false; toast(e.message); }
+  });
 }
 
 /* Items already approved here but whose "approved" message didn't reach the sheet yet */
@@ -3662,6 +3744,7 @@ function pgInbox(){
   actions([["Disconnect", () => { if(!confirm("Disconnect this browser from the receipt inbox? Receipts keep collecting in Google; you can reconnect any time.")) return; setInboxConn(null); INBOX.items = []; render(); }, "ghost"],
            ["Upload a receipt", () => snapSheet()],
            ["Open sheet", () => inboxGet({action:"ping"}).then(j => j.sheet && window.open(j.sheet, "_blank", "noopener")).catch(e => toast(e.message))],
+           ["Check Gmail", () => ibAuditOpen()],
            [INBOX.loading ? "Checking…" : "Check now", () => inboxRefresh(), "primary"]]);
 
   if(INBOX.err){
@@ -16850,7 +16933,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 7;
+const IB_SCRIPT_NEED = 8;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -16865,7 +16948,7 @@ async function ibScriptCheck(){
     if(!inboxConn()) return;
     ibScriptCheck();
     if(IBV.version != null && IBV.version < IB_SCRIPT_NEED){
-      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (reading the workbook, the pay-from account on bills, checking the address on a receipt) only work with the newer copy.
+      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
         <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
       v.insertBefore(b, v.firstChild);
     }
