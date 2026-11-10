@@ -19279,7 +19279,7 @@ function pgPmPays(){
     ${Object.keys(days).sort().reverse().map(d => { const ds = days[d], dt = ds.reduce((x, r) => x + (by === "rent" ? amt(r) : r.c), 0);
       return `<tr class="rp-day"><td colspan="${by === "rent" ? 3 : 3}"><b>${esc(fdateS(d))}</b> <span class="muted">· ${ds.length} payment${ds.length === 1 ? "" : "s"}</span></td><td class="r num"><b>${by === "rent" ? "" : usd(dt)}</b></td><td></td>${by === "rent" ? `<td class="r num"><b>${usd(dt)}</b></td>` : ""}</tr>` +
         ds.map(r => `<tr><td class="muted nw">${esc(fdateS(r.date))}</td>
-          <td>${r.prop ? `<a href="#" data-rpp="${r.prop.id}">${esc(r.where)}</a>` : esc(r.where)}${r.unit && r.unit !== r.where && !(r.prop && r.prop.name === r.unit) ? `<div class="muted" style="font-size:11.5px">${esc(r.unit)}</div>` : ""}${r.prop ? "" : ` <span class="tag gold">not in Month close</span>`}</td>
+          <td>${r.prop ? `<a href="#" data-rpp="${r.prop.id}">${esc(r.where)}</a>` : esc(r.where)}${r.unit && !/^home$/i.test(r.unit) && r.unit !== r.where && !(r.prop && r.prop.name === r.unit) ? `<div class="muted" style="font-size:11.5px">${esc(r.unit)}</div>` : ""}${r.prop ? "" : ` <span class="tag gold">not in Month close</span>`}</td>
           <td class="muted">${esc(r.tenants || "")}</td><td class="r num">${usd(r.c)}</td>
           <td class="rp-ap">${r.parts.length ? r.parts.map(a => `<span class="rp-p ${a.type === "rent" ? (a.month === r.date.slice(0, 7) ? "now" : a.month === "before" || a.month < r.date.slice(0, 7) ? "late" : "early") : a.type === "credit" ? "early" : "fee"}">${esc(rpLabel(a))} <b>${usd(a.c)}</b></span>`).join("") : `<span class="muted">—</span>`}</td>
           ${by === "rent" ? `<td class="r num">${usd(amt(r))}</td>` : ""}</tr>`).join(""); }).join("")}
