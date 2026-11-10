@@ -3968,6 +3968,9 @@ function inboxPmMonth(){ const open = pmMonths().filter(m => !(pmState().meta[m]
 function inboxPmDupes(p, d, it){
   const c = cents(Number(d.amount) || 0); if(!c) return [];
   const out = [];
+  // a payment confirmation for a bill already entered (paid the day this "receipt" is dated)
+  billList().forEach(b => { if(b.status !== "void" && b.propertyId === p.id && cents(b.amount) === c && b.pay && b.pay.date && d.date && b.pay.date === d.date && exqVendor(b.vendor) === exqVendor(d.vendor))
+    out.push({vendor:(b.vendor || "") + " (paid " + fdateS(b.pay.date) + " — this may be its payment confirmation)", amount:b.amount, date:b.date}); });
   Object.values(pmState().rows).filter(r => r.propertyId === p.id).forEach(r => (r.repairItems || []).forEach(x => {
     if((it.file_url && x.link === it.file_url) || (cents(x.amount) === c && d.date && x.date && Math.abs(new Date(x.date) - new Date(d.date)) <= 14 * 864e5)) out.push({vendor:x.vendor, amount:x.amount, date:x.date || r.month + "-01"});
   }));
