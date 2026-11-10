@@ -16976,7 +16976,7 @@ const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"
   lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",
   rent:"Monthly rent", ownerId:"Owner", feeRule:"PM fee rule", "feeRule.rate":"PM fee rate", "feeRule.type":"PM fee type", adminRate:"Admin fee rate", status:"Status", name:"Name", address:"Address", leaseStart:"Lease start", leaseEnd:"Lease end",
   skipClose:"Left out of month close", vendor:"Vendor", amount:"Amount", date:"Date", due:"Due date", memo:"Memo", desc:"Description", category:"Category", propertyId:"Property", "deduct.month":"Comes off the payout for", "deduct.pid":"Payout it comes off",
-  deduct:"Comes off a payout", closed:"Month closed", email:"Email", phone:"Phone", payNote:"How to pay", billNo:"Bill number", unit:"Unit", link:"Invoice link", feeMode:"Admin fee", tenant:"Tenant", payee:"Payee", movedTo:"Moved to a project"};
+  deduct:"Comes off a payout", closed:"Month closed", email:"Email", phone:"Phone", payNote:"How to pay", billNo:"Bill number", unit:"Unit", link:"Invoice link", feeMode:"Admin fee", tenant:"Tenant", payee:"Payee", movedTo:"Moved to a project", plan:"How it's won back", perMonthC:"Per month", start:"Starting", amountC:"Amount", second:"Second payment", reason:"Reason", totalC:"Total"};
 const ACT_LIST = {repairItems:"repair", adjustments:"adjustment", transactions:"expense", invoices:"invoice", feeCredits:"fee credit", items:"item", owners:"owner", units:"unit", recurring:"recurring charge", notes:"note", docs:"document", people:"person", entries:"entry", vendors:"vendor", holds:"hold", transfers:"transfer", lines:"line", splits:"split payout", payments:"payment"};
 function actKeyLabel(path){
   if(ACT_LBL[path]) return ACT_LBL[path];
@@ -17009,7 +17009,7 @@ function actVal(v, key){
 // one list entry in a few words: "Lowes $51.76 — Refrigerator water filter"
 function actThing(v){
   if(!v || typeof v !== "object") return actVal(v);
-  const who = v.vendor || v.name || v.title || v.payee || v.tenant || v.unit || v.who || "";
+  const who = v.vendor || v.name || v.title || v.payee || v.tenant || v.unit || v.who || (v.pid && pmProp(v.pid) ? pmProp(v.pid).name : "") || (v.propertyId && pmProp(v.propertyId) ? pmProp(v.propertyId).name : "") || "";
   const amt = v.amount != null ? usd(cents(v.amount)) : v.amountC != null ? usd(v.amountC) : v.totalC != null ? usd(v.totalC) : v.total != null ? usd(cents(v.total)) : "";
   const what = v.memo || v.desc || v.note || v.reason || v.what || v.text || v.no || "";
   const when = v.date && /^\d{4}-\d{2}-\d{2}/.test(v.date) ? fdateS(String(v.date).slice(0, 10)) : "";
@@ -17022,7 +17022,7 @@ function actLines(kind, diff, pre){
     const path = (pre ? pre + "." : "") + (c.p || ""), last = path.split(".").pop();
     if(path.split(".").some(seg => ACT_SKIP.test(seg))) return;
     if(c.op){
-      const noun = ACT_LIST[last] || (last ? actWords(last).toLowerCase().replace(/s$/, "") : "entry"), auto = c.v && c.v.auto ? " (worked out by the console)" : "", id = (c.v && c.v.id) || JSON.stringify(c.v).slice(0, 60);
+      const noun = (kind === "shared/recoveries" && last === "items" ? "duplicate payout" : "") || ACT_LIST[last] || (last ? actWords(last).toLowerCase().replace(/s$/, "") : "entry"), auto = c.v && c.v.auto ? " (worked out by the console)" : "", id = (c.v && c.v.id) || JSON.stringify(c.v).slice(0, 60);
       if(c.op === "add") out.push({k:path + "#" + id, op:"add", t:`Added ${noun}: ${actThing(c.v)}${auto}`});
       else if(c.op === "del") out.push({k:path + "#" + id, op:"del", t:`Removed ${noun}: ${actThing(c.v)}`});
       else { const inner = actLines(kind, c.d, "").map(x => x.t.replace(/^./, m => m.toLowerCase())); if(inner.length) out.push({k:path + "#" + id + "~", t:`Changed ${noun} ${actThing(c.v)}: ${inner.join("; ")}`}); }
@@ -17051,7 +17051,7 @@ function actTeamHead(r){
 function actTeamBuild(rows){
   const out = [];
   rows.forEach(r => {
-    const lines = r.first || r.action === "INSERT" || r.action === "DELETE" ? [] : actLines(r.kind, r.diff, "");
+    const lines = r.first || r.action === "INSERT" || r.action === "DELETE" ? [] : actLines(r.kind === "shared" ? "shared/" + r.doc_id : r.kind, r.diff, "");
     if(!r.first && r.action === "UPDATE" && !lines.length) return;        // a save that changed nothing a person would see
     if(r.first && r.action === "UPDATE" && r.kind !== "md_bill") return;   // no earlier version to compare with
     const head = actTeamHead(r), prev = out[out.length - 1];
@@ -17068,7 +17068,21 @@ function actTeamBuild(rows){
     out.push({id:"au" + r.id, at:r.at, firstAt:r.at, by:r.actor, src:"team", side:actDocSide(r.kind, r.doc_id), kind:r.kind, docKey:r.kind + "/" + r.doc_id, verb:head.verb, what:`${head.verb}${head.verb.includes(" ") && !head.what ? "" : " " + head.what}`, lines, saves:1,
       ref:r.kind === "pm_row" ? {pid:r.doc_id.split("|")[1], side:"pm"} : r.kind === "pm_property" ? {pid:r.doc_id, side:"pm"} : r.kind === "pj_property" ? {pid:r.doc_id, side:"projects"} : r.kind === "pm_bill" && r.action !== "DELETE" ? {bill:r.doc_id} : null});
   });
-  return out.filter(e => e.lines.length || e.verb !== "Changed");
+  // the same single field flipping back and forth on one record (two open browsers overwriting each other) is one
+  // entry, not a hundred
+  const res = [];
+  for(let i = 0; i < out.length; i++){
+    const e = out[i], k = e.lines.length === 1 && e.verb === "Changed" ? e.lines[0].k : null; let j = i;
+    if(k) while(j + 1 < out.length && out[j + 1].docKey === e.docKey && out[j + 1].verb === "Changed" && out[j + 1].lines.length === 1 && out[j + 1].lines[0].k === k) j++;
+    if(k && j - i >= 3){
+      const run = out.slice(i, j + 1), names = [...new Set(run.map(x => actWhoName(x.by)))], l0 = e.lines[0];
+      res.push(Object.assign({}, e, {id:e.id + "x" + run.length, by:"Automatic", lines:[
+        {k, t:`${l0.L || "This value"} was switched back and forth ${run.length} times between ${fdateS(String(run[run.length - 1].at).slice(0, 10))} and ${fdateS(String(e.at).slice(0, 10))}, by the console running in ${names.join(" and ")}'s browsers at the same time (not by hand)`},
+        {k:k + "!", t:`It ended as: ${l0.t}`}]}));
+      i = j;
+    } else res.push(e);
+  }
+  return res.filter(e => e.lines.length || e.verb !== "Changed");
 }
 async function actTeamLoad(more){
   if(!(typeof Cloud !== "undefined" && Cloud.sb) || ACTV.busy) return;
