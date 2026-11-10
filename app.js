@@ -19269,13 +19269,18 @@ function pgPmPays(){
     r.parts.forEach(a => {
       if(a.type === "credit"){ o.ahead += a.c; return; }
       if(a.type !== "rent"){ o.other += a.c; return; }
-      if(by === "rent"){ if(a.month === m) o.rent += a.c; else if(a.month > m) o.ahead += a.c; else { o.other += a.c; o.notes.push(`${usd(a.c)} ${mon(a.month)} rent`); } return; }
+      if(by === "rent"){
+        const rm = a.month === "before" ? "0000-00" : a.month, payM = r.date.slice(0, 7), counts = (payM > rm ? payM : rm) === m;
+        if(counts){ o.rent += a.c; if(rm < m) o.notes.push(`${usd(a.c)} late ${mon(a.month)} rent`); }
+        else if(rm > m) o.ahead += a.c; else { o.other += a.c; o.notes.push(`${usd(a.c)} ${mon(a.month)} rent`); }
+        return; }
       if(a.month !== "before" && a.month > pm){ o.ahead += a.c; return; }
       o.rent += a.c; if(a.month !== pm) o.notes.push(`${usd(a.c)} was ${mon(a.month)} rent`);
     });
     return o;
   };
-  let list = by === "paid" ? all.filter(r => r.date.slice(0, 7) === m) : all.filter(r => r.parts.some(a => a.type === "rent" && a.month === m));
+  const countsIn = (r, a) => { const rm = a.month === "before" ? "0000-00" : a.month, pm = r.date.slice(0, 7); return a.type === "rent" && (pm > rm ? pm : rm) === m; };
+  let list = by === "paid" ? all.filter(r => r.date.slice(0, 7) === m) : all.filter(r => r.parts.some(a => countsIn(r, a)));
   if(q) list = list.filter(r => `${r.where} ${r.unit} ${r.tenants}`.toLowerCase().includes(q));
   if(only === "early") list = list.filter(r => split(r).ahead > 0 || r.parts.some(a => a.type === "rent" && a.month > r.date.slice(0, 7)));
   if(only === "late") list = list.filter(r => r.parts.some(a => a.type === "rent" && (a.month === "before" || a.month < r.date.slice(0, 7))));
@@ -19298,11 +19303,26 @@ function pgPmPays(){
     </div>
     <div class="rp-stats">
       <div><span>${by === "rent" ? "Payments" : "Received"}</span><b>${usd(T.pay)}</b><small>${rows.length} payment${rows.length === 1 ? "" : "s"}</small></div>
-      <div><span>${by === "rent" ? esc(monthLabel(m)) + " rent" : "Rent"}</span><b>${usd(T.rent)}</b><small>${by === "rent" ? "counts for the month" : "incl. late rent"}</small></div>
-      <div><span>Filters, fees & other</span><b>${usd(T.other)}</b><small>${by === "rent" ? "incl. other months' rent" : "filters, late fees, PHD charges"}</small></div>
+      <div><span>${by === "rent" ? esc(monthLabel(m)) + " rent" : "Rent"}</span><b>${usd(T.rent)}</b><small>${by === "rent" ? "this month's rent, plus late rent paid this month" : "incl. late rent"}</small></div>
+      <div><span>Filters, fees & other</span><b>${usd(T.other)}</b><small>filters, late fees, PHD charges</small></div>
       <div><span>Paid ahead</span><b>${usd(T.ahead)}</b><small>next month or tenant credit</small></div>
     </div>`;
   v.appendChild(top);
+  if(by === "rent" && !q && !only){
+    // how this page's rent becomes the "Rent received" in Month close, rental by rental
+    try{
+      const D = depMonth(m), stmt = D.stmtTotal, steps = [];
+      D.notOnStatement.forEach(x => steps.push({t:`${x.name}${x.unit && x.unit !== x.name ? " · " + x.unit : ""} — not linked to a rental in Month close`, c:-rows.filter(y => !y.r.prop && y.r.where === x.name).reduce((a, y) => a + y.rent, 0)}));
+      D.rows.filter(r => r.diff).forEach(r => steps.push({t:r.noRow ? `${r.p.name} — not in Month close` : r.mdOk ? `${r.p.name} — MagicDoor counts the whole partial payment as rent (filter fee left unpaid)` : `${r.p.name} — statement ${usd(r.stmtC)}, payments cover ${usd(r.paidC)}`, c:r.diff}));
+      const real = steps.filter(x => x.c), endC = T.rent + real.reduce((a, x) => a + x.c, 0);
+      const box = elm("div", "rp-tie");
+      box.innerHTML = `<div class="rp-tie-h"><b>Matches Month close?</b> ${endC === stmt ? `<span class="rp-ok">Yes — ${usd(stmt)}</span>` : `<span class="rp-bad">Off by ${usd(Math.abs(stmt - endC))}</span>`}</div>
+        <table><tr><td>${esc(monthLabel(m))} rent from these payments</td><td class="r num">${usd(T.rent)}</td></tr>
+        ${real.map(x => `<tr><td>${x.c < 0 ? "Less" : "Plus"}: ${esc(x.t)}</td><td class="r num">${x.c < 0 ? "−" : "+"}${usd(Math.abs(x.c))}</td></tr>`).join("")}
+        <tr class="rp-tie-t"><td>Rent received in Month close</td><td class="r num">${usd(stmt)}</td></tr></table>`;
+      v.appendChild(box);
+    }catch(e){ console.error("Rent payments tie-out:", e); }
+  }
   top.querySelectorAll("[data-by]").forEach(b => b.onclick = () => { S.ui.rpBy = b.dataset.by; persistUi(); render(); });
   top.querySelector("#rpM").onchange = e => { S.ui.rpMonth = e.target.value; persistUi(); render(); };
   top.querySelector("#rpOnly").onchange = e => { S.ui.rpOnly = e.target.value; persistUi(); render(); };
@@ -19327,7 +19347,7 @@ function pgPmPays(){
           <td class="r num ${x.ahead ? "rp-ahead" : ""}">${money(x.ahead)}</td></tr>`).join("")}</tbody>`; }).join("")}
     <tfoot><tr><th colspan="2">Total · ${rows.length} payment${rows.length === 1 ? "" : "s"}</th><th class="r">${usd(T.pay)}</th><th class="r">${usd(T.rent)}</th><th class="r">${usd(T.other)}</th><th class="r">${usd(T.ahead)}</th></tr>
       <tr class="rp-tot2"><td colspan="6"><span>Rent <b>${usd(T.rent)}</b></span><span>+ Filters, fees &amp; other <b>${usd(T.other)}</b></span><span>= <b>${usd(T.rent + T.other)}</b></span>${T.ahead ? `<span class="muted">plus ${usd(T.ahead)} paid ahead</span>` : ""}</td></tr></tfoot>`;
-  t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); go("pmProperty", a.dataset.rpp); });
+  t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); S.ui.pmPropM = m; pmOpenProperty(a.dataset.rpp); });
   const w = elm("div", "rp-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
   v.appendChild(elm("p", "rp-foot", `Which month a payment paid for is worked out the way MagicDoor applies it: oldest charge first. A payment made before the month's rent is charged waits as the tenant's credit and pays the next month. Dates are the day each payment settled.`));
 }
