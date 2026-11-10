@@ -3808,8 +3808,10 @@ function inboxSetup(v){
 }
 
 function inboxCard(it){
+  const d0 = INBOX.draft[it.id] = INBOX.draft[it.id] || inboxDraft(it);
+  if(d0.splitOn && it.status !== "error") return ibSplitCard(it, d0);
   const card = elm("div","card ib-card");
-  const d = INBOX.draft[it.id] = INBOX.draft[it.id] || inboxDraft(it);
+  const d = d0;
   const prop = S.properties.find(p => p.id === d.propId), pmp = prop ? null : pmProp(d.propId);
   if(prop && d.unit !== "split" && !prop.units.some(u => u.id === d.unit)) d.unit = prop.units.length === 1 ? prop.units[0].id : "";
   const conf = {high:"green", medium:"gold", low:"grey"}[it.confidence] || "grey";
@@ -3852,6 +3854,7 @@ function inboxCard(it){
         </div>
         ${pmp && !d.credit ? `<div class="f2"><label class="fld"><span>This is</span><select data-f="pmPaid"><option value="paid" ${d.pmPaid !== "topay" ? "selected" : ""}>A receipt — already paid</option><option value="topay" ${d.pmPaid === "topay" ? "selected" : ""}>A vendor invoice — needs paying</option></select></label>
           <label class="fld"><span>Owner</span><select data-f="pmRec">${Object.entries(BILL_REC).map(([k, l]) => `<option value="${k}" ${(d.pmRec || (pmp.ownerId ? "deduct" : "phd")) === k ? "selected" : ""} ${k !== "phd" && !pmp.ownerId ? "disabled" : ""}>${l}</option>`).join("")}</select></label></div>` : ""}
+        ${!isErr && !d.credit && pmLiveProps().length ? `<div class="ib-splitq">${(it.splits || []).length > 1 ? `<b>This invoice covers ${it.splits.length} addresses.</b> ` : "Covers more than one rental? "}<a href="#" data-x="split">Split it across properties</a></div>` : ""}
         <label class="switchbox"><input type="checkbox" data-f="credit" ${d.credit ? "checked" : ""}> Refund / return — reduces the next open invoice</label>
         ${prop ? `<div class="f2"><label class="fld"><span>Who pays for it ${helpQ("inboxWho")}</span><select data-f="billTo">${Object.entries(IB_BILLTO).map(([k, l]) => `<option value="${k}" ${d.billTo === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           ${d.billTo === "contractor" ? `<label class="fld"><span>Contractor or vendor</span><input type="text" data-f="party" value="${esc(d.party || "")}" placeholder="Who pays it back"></label>` : `<div class="ib-bt muted">${IB_BILLTO_HELP[d.billTo] || ""}</div>`}</div>` : ""}
@@ -3883,6 +3886,7 @@ function inboxCard(it){
   });
   const act = (x, fn) => { const b = card.querySelector(`[data-x="${x}"]`); if(b) b.onclick = fn; };
   act("prev", () => { INBOX.open[it.id] = !INBOX.open[it.id]; card.replaceWith(inboxCard(it)); });
+  const spl = card.querySelector('[data-x="split"]'); if(spl) spl.onclick = e => { e.preventDefault(); d.splitOn = true; if(!(d.parts || []).length) d.parts = ibPartsFrom(it, d); card.replaceWith(inboxCard(it)); };
   act("ok", () => inboxApprove(it, false));
   act("edit", () => inboxApprove(it, true));
   act("reject", () => inboxReject(it));
@@ -3913,6 +3917,8 @@ function inboxDraft(it, propId){
     billTo: {contractor:"contractor", phd:"phd", owner_paid_direct:"direct"}[it.bill_to] || (it.hold ? "hold" : it.no_fee ? "nofee" : "owner"),
     party: it.party || "", pmRec: it.bill_to === "phd" ? "phd" : ""
   };
+  const sp = Array.isArray(it.splits) ? it.splits : [];
+  if(sp.length > 1 && !propId){ d.splitOn = true; d.parts = ibPartsFrom(it); }
   const p = S.properties.find(x => x.id === d.propId);
   if(p && d.unit !== "split" && !p.units.some(u => u.id === d.unit)) d.unit = p.units.length === 1 ? p.units[0].id : "";
   return d;
@@ -3991,6 +3997,143 @@ async function inboxReject(it){
     render(); toast("Dismissed — it stays in Drive and the sheet, marked rejected");
   }catch(e){ toast(e.message); }
 }
+
+/* ---------- one invoice, several rentals (a lawn company billing nine yards on one invoice) ----------
+   Each property gets its own bill for its share; every share keeps the vendor's invoice number, the same document and a
+   link to the others (bill.split), so the shares can be found together and always add back up to the invoice total. */
+function ibPartsFrom(it, d){
+  const sp = Array.isArray(it.splits) ? it.splits : [];
+  const parts = sp.map(x => {
+    const p = (x.property_id && pmProp(x.property_id)) || (typeof pmMatchProperty === "function" ? pmMatchProperty(x.address) : null);
+    return {propId:p && pmProp(p.id) && !p.deleted ? p.id : "", address:x.address || "", amount:Number(x.amount) > 0 ? String(x.amount) : "", memo:x.items || ""};
+  });
+  if(parts.length) return parts;
+  const p0 = d && pmProp(d.propId);
+  return [{propId:p0 ? p0.id : "", address:"", amount:"", memo:""}, {propId:"", address:"", amount:"", memo:""}];
+}
+function ibSplitState(it, d){
+  const totC = cents(Number(d.amount) || Number(it.total) || 0), parts = d.parts || [];
+  const sumC = parts.reduce((a, x) => a + cents(Number(x.amount) || 0), 0);
+  const ok = totC > 0 && parts.length >= 2 && parts.every(x => pmProp(x.propId) && cents(Number(x.amount) || 0) > 0) && sumC === totC && /^\d{4}-\d{2}-\d{2}$/.test(d.date || "");
+  return {totC, sumC, leftC:totC - sumC, ok};
+}
+function ibSplitCard(it, d){
+  const card = elm("div","card ib-card ib-split");
+  const props = pmLiveProps().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
+  const preview = it.file_url ? it.file_url.replace(/\/view(\?.*)?$/, "/preview") : "";
+  const St = ibSplitState(it, d), m = d.pmMonth || inboxPmMonth();
+  const noAmts = (it.splits || []).length > 1 && (it.splits || []).every(x => !(Number(x.amount) > 0));
+  const dupIds = d.parts.map(x => x.propId).filter((x, i, a) => x && a.indexOf(x) !== i);
+  card.innerHTML = `
+    <div class="ib-top">
+      <div class="ib-src">${icon("mail")}<div><b>${esc(it.vendor || it.subject || "Invoice")}${it.order_no ? " · Invoice " + esc(it.order_no) : ""}</b>
+        <span>${esc([it.from || "Email", it.received_at ? fdateS(String(it.received_at).slice(0,10)) : ""].filter(Boolean).join(" · "))}</span></div></div>
+      <span class="tag gold">Split across ${d.parts.length} properties</span>
+      ${it.file_url ? `<a class="btn sm" href="${esc(it.file_url)}" target="_blank" rel="noopener">${icon("file")} Open invoice</a>` : ""}
+      ${preview ? `<button class="btn sm ghost" data-x="prev">${INBOX.open[it.id] ? "Hide preview" : "Preview"}</button>` : ""}
+    </div>
+    ${noAmts ? `<div class="ib-why">${icon("bolt")} The invoice lists ${it.splits.length} service addresses but doesn't say which charge is for which, so the amounts are blank. Fill in each property's share from the invoice (or ask the vendor to put the address on each line).</div>` : ""}
+    <div class="f3 ib-sp-common">
+      <label class="fld"><span>Vendor</span><input type="text" data-c="vendor" value="${esc(d.vendor)}"></label>
+      <label class="fld"><span>Invoice date</span><input type="date" data-c="date" value="${esc(d.date)}"></label>
+      <label class="fld"><span>Invoice total</span><input type="number" step="0.01" min="0" data-c="amount" value="${esc(d.amount)}"></label>
+    </div>
+    <div class="f3 ib-sp-common">
+      <label class="fld"><span>Month</span><select data-c="pmMonth">${[...new Set([inboxPmMonth(), ...pmMonths().slice(-3)])].sort().reverse().map(mm => `<option value="${mm}" ${m === mm ? "selected" : ""}>${monthLabel(mm)}${(pmState().meta[mm] || {}).closed ? " (closed)" : ""}</option>`).join("")}</select></label>
+      <label class="fld"><span>This is</span><select data-c="pmPaid"><option value="paid" ${d.pmPaid !== "topay" ? "selected" : ""}>Already paid</option><option value="topay" ${d.pmPaid === "topay" ? "selected" : ""}>A vendor invoice — needs paying</option></select></label>
+      <label class="fld"><span>What for</span><input type="text" data-c="desc" value="${esc(d.desc)}" placeholder="Lawn care"></label>
+    </div>
+    <table class="tbl ib-sp-tbl"><thead><tr><th>Property</th><th>What for <span class="muted" style="font-weight:400">· optional</span></th><th class="r" style="width:120px">Amount</th><th>Owner</th><th style="width:30px"></th></tr></thead><tbody>
+      ${d.parts.map((x, i) => { const p = pmProp(x.propId);
+        return `<tr><td><select data-p="${i}" data-k="propId"><option value="">${x.address ? esc(x.address) + " — pick…" : "Pick a property…"}</option>${props.map(q => `<option value="${q.id}" ${q.id === x.propId ? "selected" : ""}>${esc(q.name)}</option>`).join("")}</select>${x.address && p && pmAddrKey(x.address) !== pmAddrKey(p.address || p.name) ? `<div class="muted ib-sp-a">on the invoice: ${esc(x.address)}</div>` : ""}${dupIds.includes(x.propId) ? `<div class="ib-sp-a" style="color:var(--gold)">listed twice</div>` : ""}</td>
+          <td><input type="text" data-p="${i}" data-k="memo" value="${esc(x.memo || "")}" placeholder="${esc(d.desc || "Same as above")}"></td>
+          <td class="r"><input type="number" step="0.01" min="0" data-p="${i}" data-k="amount" value="${esc(x.amount)}" class="num" style="text-align:right"></td>
+          <td class="muted" style="font-size:12px">${p ? (p.ownerId ? "Deduct from payout" : "PHD expense (no owner)") : ""}</td>
+          <td><button class="btn ghost sm" data-del="${i}" title="Remove" ${d.parts.length <= 2 ? "disabled" : ""}>✕</button></td></tr>`; }).join("")}
+    </tbody><tfoot><tr><td colspan="2"><button class="btn ghost sm" data-x="add">+ Add a property</button> <button class="btn ghost sm" data-x="even">Split evenly</button></td>
+      <td class="r num"><b>${usd(St.sumC)}</b></td><td colspan="2" class="${St.leftC ? "ib-sp-left" : "ib-sp-done"}">${St.leftC > 0 ? usd(St.leftC) + " left to assign" : St.leftC < 0 ? usd(-St.leftC) + " over the invoice total" : St.totC ? "Adds up to the invoice ✓" : ""}</td></tr></tfoot></table>
+    ${INBOX.open[it.id] && preview ? `<div class="ib-prev"><iframe src="${esc(preview)}" title="Invoice preview" loading="lazy"></iframe></div>` : ""}
+    <div class="ib-foot">
+      <button class="btn sm ghost" data-x="single">One property instead</button>
+      <button class="btn sm ghost danger" data-x="reject">Not billable — dismiss</button>
+      <span style="flex:1"></span>
+      <button class="btn sm primary" data-x="ok" ${St.ok ? "" : "disabled"} title="${St.ok ? "" : "Every line needs a property and an amount, and they must add up to the invoice total"}">Add ${d.parts.length} bills</button>
+    </div>`;
+  const redraw = () => card.replaceWith(inboxCard(it));
+  card.querySelectorAll("[data-c]").forEach(inp => inp.addEventListener(inp.tagName === "SELECT" ? "change" : "change", () => { d[inp.dataset.c] = inp.value; redraw(); }));
+  card.querySelectorAll("[data-p]").forEach(inp => inp.addEventListener("change", () => { d.parts[Number(inp.dataset.p)][inp.dataset.k] = inp.value; redraw(); }));
+  card.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { d.parts.splice(Number(b.dataset.del), 1); redraw(); });
+  const act = (x, fn) => { const b = card.querySelector(`[data-x="${x}"]`); if(b) b.onclick = fn; };
+  act("prev", () => { INBOX.open[it.id] = !INBOX.open[it.id]; redraw(); });
+  act("add", () => { d.parts.push({propId:"", address:"", amount:"", memo:""}); redraw(); });
+  act("even", () => { const n = d.parts.length, tot = St.totC, each = Math.floor(tot / n); d.parts.forEach((x, i) => x.amount = ((i === n - 1 ? tot - each * (n - 1) : each) / 100).toFixed(2)); redraw(); });
+  act("single", () => { d.splitOn = false; redraw(); });
+  act("reject", () => inboxReject(it));
+  act("ok", () => ibSplitApprove(it));
+  return card;
+}
+async function ibSplitApprove(it){
+  const d = INBOX.draft[it.id], St = ibSplitState(it, d); if(!St.ok) return;
+  const m = d.pmMonth || inboxPmMonth(), paid = d.pmPaid !== "topay", gid = "sg_" + uid(), n = d.parts.length;
+  if((pmState().meta[m] || {}).closed && !confirm(`${monthLabel(m)} is closed. Add these bills to it anyway?`)) return;
+  const ext = ((it.file_name || "").match(/\.[a-z0-9]{2,4}$/i) || [".pdf"])[0];
+  const fileName = `${d.date.replace(/-/g, "")} - ${d.vendor || "Invoice"}${it.order_no ? " #" + it.order_no : ""} - ${n} properties` + ext;
+  const made = [];
+  snapshot();
+  d.parts.forEach((x, i) => {
+    const p = pmProp(x.propId);
+    const b = billNew({propertyId:p.id, vendor:d.vendor, amount:Number(x.amount), date:d.date, memo:(x.memo || d.desc || "").trim(), billNo:it.order_no || "",
+      recover:p.ownerId ? "deduct" : "phd", deductMonth:m, receipt:it.file_url ? {url:it.file_url, name:fileName} : null, source:"Receipt inbox", inbox:it.id,
+      payNote:paid ? "" : ibPayNote(it), due:paid ? "" : (it.due_date || d.due || ""), status:paid ? "paid" : "open",
+      pay:paid ? {method:"Card / receipt", date:d.date, ref:"", by:billWho(), at:new Date().toISOString()} : null});
+    if(!paid && ibPayAccount(it)) b.payFrom4 = ibPayAccount(it);
+    b.split = {id:gid, of:St.totC, n, i:i + 1, invoiceNo:it.order_no || "", vendor:d.vendor || ""};
+    billSave(b, true); made.push(b);
+  });
+  const msg = {decision:"approved", txnId:"split:" + gid, propertyName:`${n} properties`, fileName};
+  inboxDone()[it.id] = {txn:msg.txnId, msg};
+  INBOX.items = INBOX.items.filter(x => x.id !== it.id); delete INBOX.draft[it.id];
+  commit();
+  toast(`${n} bills added — ${usd(St.totC)} from ${d.vendor || "the vendor"}${paid ? "" : " · waiting to be paid"}`);
+  try{ await inboxPost(Object.assign({action:"decide", id:it.id}, msg)); delete inboxDone()[it.id]; Store.save(S); }catch(e){}
+  return made;
+}
+
+/* ---------- the shares of one split invoice, together ---------- */
+const billSplitParts = gid => billList().filter(b => b.split && b.split.id === gid);
+function billSplitCheck(gid){
+  const parts = billSplitParts(gid), live = parts.filter(b => b.status !== "void"), of = parts.length ? parts[0].split.of : 0;
+  const sumC = live.reduce((a, b) => a + cents(b.amount), 0);
+  return {parts, live, of, sumC, ok:sumC === of, paid:live.filter(b => b.status === "paid").length, open:live.filter(b => b.status === "open")};
+}
+function billSplitTag(b){
+  if(!b.split) return "";
+  const C = billSplitCheck(b.split.id);
+  return ` · <a href="#" data-nos data-grp="${esc(b.split.id)}" class="bl-grp" title="One invoice split across ${C.live.length} properties">${esc(b.split.invoiceNo ? "Invoice #" + b.split.invoiceNo : "Split invoice")} · ${usd(C.of)} across ${C.live.length}</a>${C.ok ? "" : ` <span class="tag gold" title="The shares add up to ${usd(C.sumC)}, not the invoice total ${usd(C.of)}">shares ≠ total</span>`}`;
+}
+function billSplitSheet(gid){
+  const C = billSplitCheck(gid), sh = $("#sheet"); if(!C.parts.length) return;
+  const s0 = C.parts[0].split;
+  sh.innerHTML = `<div class="sheet-h"><div><h3>${esc(s0.vendor || C.parts[0].vendor)}${s0.invoiceNo ? " · Invoice #" + esc(s0.invoiceNo) : ""}</h3>
+      <div class="muted" style="font-size:12.5px;margin-top:3px">${usd(C.of)} split across ${C.live.length} properties · ${C.paid} of ${C.live.length} paid</div></div>
+      <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+    <div class="sheet-b">
+      ${C.ok ? `<div class="ib-sp-done" style="margin-bottom:10px">The shares add up to the invoice total ✓</div>` : `<div class="pm-banner" style="margin-bottom:10px">The shares add up to <b>${usd(C.sumC)}</b>, but the invoice is <b>${usd(C.of)}</b> — ${C.sumC < C.of ? usd(C.of - C.sumC) + " isn't on any property" : usd(C.sumC - C.of) + " too much is charged"}. Open a share to fix its amount.</div>`}
+      <table class="tbl"><thead><tr><th>Property</th><th>What for</th><th class="r">Amount</th><th>Status</th><th>MagicDoor</th></tr></thead><tbody>
+        ${C.parts.sort((a, b) => (a.split.i || 0) - (b.split.i || 0)).map(b => { const st = billStatus(b), p = pmProp(b.propertyId);
+          return `<tr data-b="${b.id}" style="cursor:pointer${b.status === "void" ? ";opacity:.5" : ""}"><td>${esc(p ? p.name : "—")}</td><td class="muted">${esc(b.memo || "")}</td><td class="r num">${usd(cents(b.amount))}</td><td><span class="tag ${st.cls}">${esc(st.label)}</span></td><td>${typeof mdBillCell === "function" ? mdBillCell(b) : ""}</td></tr>`; }).join("")}
+      </tbody><tfoot><tr><td colspan="2"><b>Total</b></td><td class="r num"><b>${usd(C.sumC)}</b></td><td colspan="2"></td></tr></tfoot></table>
+      ${C.parts[0].receipt && C.parts[0].receipt.url ? `<p style="margin-top:10px"><a class="btn sm" href="${esc(C.parts[0].receipt.url)}" target="_blank" rel="noopener">${icon("file")} Open the invoice</a></p>` : ""}
+    </div>
+    <div class="sheet-f"><span style="flex:1"></span>${C.open.length ? (nickelOn() ? `<button class="btn" id="bgMark">Mark ${C.open.length} paid</button><button class="btn primary" id="bgPay">Pay ${usd(C.open.reduce((a, b) => a + cents(b.amount), 0))} with Nickel</button>` : `<button class="btn primary" id="bgMark">Mark ${C.open.length} paid</button>`) : `<button class="btn" id="shCancel">Close</button>`}</div>`;
+  $("#shClose").onclick = closeSheet; const cc = $("#shCancel"); if(cc) cc.onclick = closeSheet;
+  sh.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("a,button")) return; billSheet(tr.dataset.b); });
+  sh.querySelectorAll("[data-mdaddb]").forEach(bt => bt.onclick = e => { e.stopPropagation(); const f = mdFindBillItem(bt.dataset.mdaddb); if(f) mdAddBill(f.row, f.it); });
+  const mk = $("#bgMark"); if(mk) mk.onclick = () => billManualSheet(C.open.map(b => b.id));
+  const py = $("#bgPay"); if(py) py.onclick = () => billPaySheet(C.open.map(b => b.id));
+  openPanel();
+}
+document.addEventListener("click", e => { const a = e.target.closest && e.target.closest("[data-grp]"); if(!a) return; e.preventDefault(); e.stopPropagation(); billSplitSheet(a.dataset.grp); }, true);
 
 /* light background check so the sidebar badge stays current */
 setInterval(() => { if(inboxConn() && document.visibilityState === "visible" && S.ui.view !== "inbox") inboxRefresh(true); }, 5 * 60 * 1000);
@@ -8296,7 +8439,7 @@ function pgPmBills(){
   t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>MagicDoor</th><th>Owner</th><th></th></tr></thead>
     <tbody>${list.map(b => { const p = pmProp(b.propertyId), st = billStatus(b);
       return `<tr data-b="${b.id}">${canSel ? `<td class="nw" data-nos><input type="checkbox" data-sel="${b.id}" ${sel[b.id] ? "checked" : ""}></td>` : ""}
-        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
+        <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.split ? billSplitTag(b) : b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
         <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
@@ -8317,7 +8460,7 @@ function billSheet(id, preset){
   const lockedOwner = !!(b.invoiceId && invById(b.invoiceId) && invById(b.invoiceId).status !== "draft");
   const draw = () => {
     const p = pmProp(b.propertyId), o = p && ownerById(p.ownerId), st = billStatus(b), feeC = billFeeC(b), inv = b.invoiceId && invById(b.invoiceId);
-    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "New bill" : esc(b.vendor || "Bill")}</h3>${isNew ? "" : `<div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p ? p.name : "")} · <span class="tag ${st.cls}">${esc(st.label)}</span></div>`}</div>
+    sh.innerHTML = `<div class="sheet-h"><div><h3>${isNew ? "New bill" : esc(b.vendor || "Bill")}</h3>${isNew ? "" : `<div class="muted" style="font-size:12.5px;margin-top:3px">${esc(p ? p.name : "")} · <span class="tag ${st.cls}">${esc(st.label)}</span>${b.split ? ` · share ${b.split.i} of ${b.split.n}${billSplitTag(b)}` : ""}</div>`}</div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
         <div class="f2"><label class="fld"><span>Property</span><select data-k="propertyId" ${lockedOwner ? "disabled" : ""}><option value="">Pick one…</option>${props.map(x => `<option value="${x.id}" ${x.id === b.propertyId ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
@@ -16960,7 +17103,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 8;
+const IB_SCRIPT_NEED = 9;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -16975,7 +17118,7 @@ async function ibScriptCheck(){
     if(!inboxConn()) return;
     ibScriptCheck();
     if(IBV.version != null && IBV.version < IB_SCRIPT_NEED){
-      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
+      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (splitting one invoice across properties, vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
         <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
       v.insertBefore(b, v.firstChild);
     }

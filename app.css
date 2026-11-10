@@ -2540,3 +2540,12 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .act-d .act-more a{font-size:12px;color:var(--accent)}
 .act-s.act-team{background:#EEF2F7;color:#3B5876}
 .act-older{padding:14px 18px;text-align:center}
+/* one invoice split across properties */
+.ib-splitq{font-size:12.8px;margin:2px 0 8px;color:var(--muted)}.ib-splitq b{color:var(--ink,inherit)}
+.ib-sp-common{margin-top:10px}
+.ib-sp-tbl{margin-top:10px;width:100%}.ib-sp-tbl td{vertical-align:top;padding:6px 6px}
+.ib-sp-tbl select,.ib-sp-tbl input{width:100%;min-width:0;font:inherit;font-size:13px}
+.ib-sp-a{font-size:11.5px;margin-top:3px}
+.ib-sp-left{color:var(--red);font-size:12.5px;font-weight:600}.ib-sp-done{color:var(--green,#2e7d32);font-size:12.5px;font-weight:600}
+.bl-grp{color:inherit;text-decoration:underline dotted;text-underline-offset:2px}
+@media (max-width:720px){.ib-sp-tbl thead{display:none}.ib-sp-tbl tr{display:grid;grid-template-columns:1fr 110px 30px;gap:4px;border-top:1px solid var(--line)}.ib-sp-tbl td:nth-child(2){grid-column:1/-1;order:5}.ib-sp-tbl td:nth-child(4){display:none}.ib-sp-tbl tfoot tr{grid-template-columns:1fr}}
