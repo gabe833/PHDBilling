@@ -18873,3 +18873,174 @@ function poSplitSheet(id){
   };
   draw(); openPanel();
 }
+
+/* =====================================================================
+   RENT DEPOSITS — ties the rent on the owner statements to the money that
+   actually landed in the Nickel Rental Income account.
+   Every rent payment a tenant makes in MagicDoor settles into Nickel Rental
+   Income; the lease ledgers the console already syncs carry each payment's
+   amount and the day it settled. Here each payment is applied the way
+   MagicDoor applies it — oldest charge first (filters, late and application
+   fees, then rent, then the owner's other charges, then PHD's charges), and a
+   payment made before the charges post waits as the tenant's credit — so every
+   dollar deposited is accounted for: this month's rent, late rent for an
+   earlier month, rent paid ahead, or a charge that isn't rent. The rent the
+   console puts on each statement must equal the rent those payments paid for
+   the month, to the cent; any rental where it doesn't is listed with its
+   payments.
+   ===================================================================== */
+const DEP = {open:{}};
+function depLeaseAlloc(l){
+  const M = l.months || {}, ms = Object.keys(M).sort(); if(!ms.length) return {allocs:[], pending:0};
+  const C = v => Math.round((Number(v) || 0) * 100);
+  // the balance before the first month we have: what's owed now, less what the months we have added to it
+  let net = 0; ms.forEach(m => { const g = M[m]; net += C(g.rent) + C(g.other) + C(g.filters) + C(g.lateFee) + C(g.applications) + C(g.phd) - C(g.credits) - C(g.paid); });
+  const bal = C(l.postedBalance != null ? l.postedBalance : l.balance), opening = bal - net;
+  const queue = [], pool = [], allocs = [];
+  const apply = () => {
+    while(queue.length && pool.length){
+      const ch = queue[0], py = pool[0], a = Math.min(ch.left, py.left);
+      allocs.push({date:py.date, c:a, month:ch.month, type:ch.type});
+      ch.left -= a; py.left -= a;
+      if(!ch.left) queue.shift(); if(!py.left) pool.shift();
+    }
+  };
+  if(opening > 0) queue.push({month:"before", type:"rent", left:opening});
+  else if(opening < 0) pool.push({date:"before", left:-opening});
+  const events = [];
+  ms.forEach(m => {
+    const g = M[m];
+    events.push({at:m + "-00", kind:"charges", m, g});
+    (g.pays || []).forEach(p => events.push({at:String(p[0]), kind:"pay", c:C(p[1])}));
+  });
+  events.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : (a.kind === "charges" ? -1 : 1));
+  events.forEach(e => {
+    if(e.kind === "charges"){
+      const g = e.g, rentC = Math.max(0, C(g.rent) - C(g.credits)), extraCred = Math.max(0, C(g.credits) - C(g.rent));
+      [["fees", C(g.filters) + C(g.lateFee) + C(g.applications)], ["rent", rentC], ["other", Math.max(0, C(g.other) - extraCred)], ["phd", C(g.phd)]]
+        .forEach(([type, c]) => { if(c > 0) queue.push({month:e.m, type, left:c}); });
+    } else if(e.c > 0) pool.push({date:e.at, left:e.c});
+    apply();
+  });
+  pool.forEach(py => { if(py.left > 0) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit"}); });
+  return {allocs, pending:C((M[ms[ms.length - 1]] || {}).pending)};
+}
+// which MagicDoor leases a console rental's rent comes from (the same leases Month close reads)
+function depLeasesFor(p){
+  const x = typeof mdFor === "function" && typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null;
+  if(!x || !x.property) return [];
+  return (S.md.leases || []).filter(l => l.propertyId === x.property.id && !l.draft && (x.whole || !x.unit || l.unitId === x.unit.id));
+}
+function depMonth(m){
+  if(typeof mdReady !== "function" || !mdReady()) return null;
+  const leases = (S.md.leases || []).filter(l => !l.draft);
+  const alloc = new Map(); leases.forEach(l => alloc.set(l.id, depLeaseAlloc(l)));
+  const props = pmLiveProps(), owner = new Map();
+  props.forEach(p => depLeasesFor(p).forEach(l => { if(!owner.has(l.id)) owner.set(l.id, p); }));
+  const unitName = l => l.unitName || ((S.md.units || []).find(u => u.id === l.unitId) || {}).name || "";
+  const propName = l => ((S.md.properties || []).find(q => q.id === l.propertyId) || {}).name || unitName(l) || "a MagicDoor rental";
+  // 1. everything that settled into Nickel Rental Income this month, and what it paid for
+  const B = {cash:0, thisRent:0, lateRent:0, ahead:0, fees:0, phd:0, other:0, payments:0};
+  const days = {}, notOnStatement = new Map();
+  leases.forEach(l => {
+    const pays = ((l.months || {})[m] || {}).pays || [];
+    pays.forEach(p => { const d = String(p[0]); if(d.slice(0, 7) !== m) return; const c = cents(p[1]); B.cash += c; B.payments++;
+      const p0 = owner.get(l.id); (days[d] = days[d] || {c:0, list:[]}).c += c; days[d].list.push({c, where:p0 ? p0.name : propName(l), lease:l, managed:!!p0}); });
+    // pays recorded under an earlier month's row but settling in this month (dates are what count)
+    Object.entries(l.months || {}).forEach(([mm, g]) => { if(mm === m) return; (g.pays || []).forEach(p => { if(String(p[0]).slice(0, 7) === m){ const c = cents(p[1]); B.cash += c; B.payments++; const d = String(p[0]); const p0 = owner.get(l.id); (days[d] = days[d] || {c:0, list:[]}).c += c; days[d].list.push({c, where:p0 ? p0.name : propName(l), lease:l, managed:!!p0}); } }); });
+    alloc.get(l.id).allocs.forEach(a => {
+      if(String(a.date).slice(0, 7) !== m) return;
+      if(a.type === "rent") a.month === m ? B.thisRent += a.c : a.month === "before" || a.month < m ? B.lateRent += a.c : B.ahead += a.c;
+      else if(a.type === "credit") B.ahead += a.c;
+      else if(a.type === "fees") B.fees += a.c; else if(a.type === "phd") B.phd += a.c; else B.other += a.c;
+    });
+  });
+  // 2. each rental: rent on the statement vs. rent the payments paid for this month
+  const rows = [];
+  props.forEach(p => {
+    const row = pmRow(m, p.id), ls = depLeasesFor(p);
+    const stmtC = row && !row.deleted ? cents(row.rentReceived) : 0;
+    let paidC = 0, early = 0; const parts = [];
+    ls.forEach(l => alloc.get(l.id).allocs.forEach(a => { if(a.type !== "rent" || a.month !== m) return; paidC += a.c; if(String(a.date) < m + "-01") early += a.c; parts.push({date:a.date, c:a.c, unit:ls.length > 1 ? unitName(l) : ""}); }));
+    const cashM = ls.reduce((s, l) => s + Object.values(l.months || {}).reduce((x, g) => x + (g.pays || []).filter(q => String(q[0]).slice(0, 7) === m).reduce((y, q) => y + cents(q[1]), 0), 0), 0);
+    const pend = ls.reduce((s, l) => s + cents(((l.months || {})[m] || {}).pending), 0);
+    if(!ls.length && !stmtC) return;
+    rows.push({p, row, stmtC, paidC, early, parts, cashM, pend, noRow:!row || row.deleted, linked:ls.length > 0, diff:stmtC - paidC});
+  });
+  // leases with money this month that no rental in Month close takes
+  leases.forEach(l => { if(owner.has(l.id)) return; const c = Object.values(l.months || {}).reduce((x, g) => x + (g.pays || []).filter(q => String(q[0]).slice(0, 7) === m).reduce((y, q) => y + cents(q[1]), 0), 0); if(c) notOnStatement.set(l.id, {name:propName(l), unit:unitName(l), c}); });
+  const stmtTotal = rows.reduce((a, r) => a + r.stmtC, 0), paidTotal = rows.reduce((a, r) => a + r.paidC, 0), earlyTotal = rows.reduce((a, r) => a + r.early, 0);
+  const pending = leases.map(l => ({l, c:cents(((l.months || {})[m] || {}).pending)})).filter(x => x.c > 0).map(x => ({where:(owner.get(x.l.id) || {}).name || propName(x.l), c:x.c}));
+  return {m, B, days, rows, stmtTotal, paidTotal, earlyTotal, off:rows.filter(r => r.diff), notOnStatement:[...notOnStatement.values()], pending, mdSynced:(S.md || {}).syncedAt || ""};
+}
+function depCard(m){
+  const D = depMonth(m), card = elm("div", "card dep-card");
+  if(!D){ card.innerHTML = `<h3 style="margin:0 0 6px">Rent deposits</h3><p class="muted">Connect MagicDoor to check rent against the Nickel Rental Income deposits.</p>`; return card; }
+  const B = D.B, sum = B.thisRent + B.lateRent + B.ahead + B.fees + B.phd + B.other, ties = sum === B.cash;
+  const open = DEP.open[m] || {};
+  const dayRows = Object.keys(D.days).sort().map(d => { const x = D.days[d];
+    return `<tr class="dep-day" data-day="${d}"><td>${esc(fdateS(d))}</td><td class="r">${x.list.length}</td><td class="r num"><b>${usd(x.c)}</b></td><td class="muted" style="font-size:12px">${open[d] ? "Hide" : "Show"} payments</td></tr>` +
+      (open[d] ? x.list.sort((a, b) => b.c - a.c).map(y => `<tr class="dep-sub"><td colspan="2">${esc(y.where)}${y.managed ? "" : ` <span class="tag gold">not in Month close</span>`}</td><td class="r num">${usd(y.c)}</td><td></td></tr>`).join("") : ""); }).join("");
+  const off = D.off.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  const closed = (pmState().meta[m] || {}).closed;
+  card.innerHTML = `
+    <div class="dep-h"><div><h3>Rent deposits · Nickel Rental Income</h3>
+      <div class="muted" style="font-size:12.5px">Every tenant payment that settled in ${esc(monthLabel(m))}, from MagicDoor's lease ledgers${D.mdSynced ? ` (synced ${esc(new Date(D.mdSynced).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))})` : ""}. Tick the days off against the bank.</div></div>
+      <span class="tag ${D.off.length || D.notOnStatement.length ? "red" : "green"}">${D.off.length || D.notOnStatement.length ? `${D.off.length + D.notOnStatement.length} to fix` : "Statements match the deposits"}</span></div>
+    <div class="dep-grid">
+      <div>
+        <table class="tbl dep-br"><tbody>
+          <tr class="dep-tot"><td>Deposited in ${esc(monthLabel(m))} <span class="muted">· ${B.payments} payments</span></td><td class="r num">${usd(B.cash)}</td></tr>
+          <tr><td>${esc(monthLabel(m))} rent</td><td class="r num">${usd(B.thisRent)}</td></tr>
+          <tr><td>Late rent for earlier months</td><td class="r num">${usd(B.lateRent)}</td></tr>
+          <tr><td>Paid ahead (next month's rent, tenant credit)</td><td class="r num">${usd(B.ahead)}</td></tr>
+          <tr><td>Filters, late and application fees <span class="muted">· PHD</span></td><td class="r num">${usd(B.fees)}</td></tr>
+          <tr><td>PHD charges (utilities, admin)</td><td class="r num">${usd(B.phd)}</td></tr>
+          <tr><td>Owner's other charges</td><td class="r num">${usd(B.other)}</td></tr>
+          <tr class="dep-chk"><td>${ties ? "Adds up to the deposits ✓" : "Doesn't add up — " + usd(B.cash - sum) + " unexplained"}</td><td class="r num">${usd(sum)}</td></tr>
+        </tbody></table>
+        <table class="tbl dep-br" style="margin-top:12px"><tbody>
+          <tr class="dep-tot"><td>Rent received on ${esc(monthLabel(m))} statements</td><td class="r num">${usd(D.stmtTotal)}</td></tr>
+          <tr><td>Paid in ${esc(monthLabel(m))}</td><td class="r num">${usd(D.paidTotal - D.earlyTotal)}</td></tr>
+          <tr><td>Paid early, in ${esc(monthLabel(PMCore.monthAdd(m, -1)))}</td><td class="r num">${usd(D.earlyTotal)}</td></tr>
+          <tr class="dep-chk"><td>${D.stmtTotal === D.paidTotal ? "Statements match the payments ✓" : `Statements are ${usd(Math.abs(D.stmtTotal - D.paidTotal))} ${D.stmtTotal > D.paidTotal ? "over" : "under"} the payments`}</td><td class="r num">${usd(D.paidTotal)}</td></tr>
+        </tbody></table>
+        ${D.pending.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Still processing, not deposited yet: ${D.pending.map(x => `${esc(x.where)} ${usd(x.c)}`).join(" · ")}</p>` : ""}
+      </div>
+      <div>
+        <table class="tbl dep-days"><thead><tr><th>Settled</th><th class="r">Payments</th><th class="r">Deposit</th><th></th></tr></thead><tbody>${dayRows || `<tr><td colspan="4" class="muted">No payments settled yet.</td></tr>`}</tbody>
+          <tfoot><tr><td><b>Total</b></td><td class="r">${B.payments}</td><td class="r num"><b>${usd(B.cash)}</b></td><td></td></tr></tfoot></table>
+        <p class="muted" style="font-size:12px;margin:6px 0 0">Each day's total is what MagicDoor settled that day; card and ACH payments settle together. Security deposits go to the 8191 account and aren't here.</p>
+      </div>
+    </div>
+    ${off.length ? `<h4 class="dep-h4">Rent on the statement doesn't match the payments <span class="muted">${off.length}</span></h4>
+      <table class="tbl dep-off"><thead><tr><th>Rental</th><th class="r">On the statement</th><th class="r">Payments for ${esc(monthLabel(m).split(" ")[0])} rent</th><th class="r">Difference</th><th>Payments</th><th></th></tr></thead><tbody>
+      ${off.map(r => `<tr><td><a href="#" data-dp="${r.p.id}">${esc(r.p.name)}</a>${r.noRow ? ` <span class="tag gold">not in Month close</span>` : ""}${r.pend ? `<div class="muted" style="font-size:11.5px">${usd(r.pend)} still processing</div>` : ""}</td>
+        <td class="r num">${r.noRow ? "—" : usd(r.stmtC)}</td><td class="r num">${usd(r.paidC)}</td><td class="r num ${r.diff > 0 ? "neg" : ""}">${r.diff > 0 ? "+" : "−"}${usd(Math.abs(r.diff))}</td>
+        <td class="muted" style="font-size:12px">${r.parts.length ? r.parts.map(x => `${x.date === "before" ? "credit from before" : esc(fdateS(x.date))} ${usd(x.c)}${x.unit ? " (" + esc(x.unit) + ")" : ""}`).join(" · ") : r.linked ? "no payment toward this month's rent" : "not linked to MagicDoor"}</td>
+        <td>${!r.noRow && !closed && !(r.row && (r.row.paidOut || r.row.locked)) ? `<button class="btn sm" data-dfix="${r.p.id}" data-dv="${r.paidC}">Use ${usd(r.paidC)}</button>` : ""}</td></tr>`).join("")}
+      </tbody></table>` : ""}
+    ${D.notOnStatement.length ? `<h4 class="dep-h4">Deposited, but on no owner statement <span class="muted">${D.notOnStatement.length}</span></h4>
+      <div class="dep-ns">${D.notOnStatement.map(x => `<div><span>${esc(x.name)}${x.unit && x.unit !== x.name ? ` · ${esc(x.unit)}` : ""}</span><b class="num">${usd(x.c)}</b></div>`).join("")}</div>
+      <p class="muted" style="font-size:12px;margin:4px 0 0">These leases aren't linked to a rental in Month close. Link them on the MagicDoor page, or this money isn't paid out to anyone.</p>` : ""}`;
+  card.querySelectorAll("[data-day]").forEach(tr => tr.onclick = () => { DEP.open[m] = Object.assign({}, DEP.open[m], {[tr.dataset.day]:!open[tr.dataset.day]}); const n = depCard(m); card.replaceWith(n); });
+  card.querySelectorAll("[data-dp]").forEach(a => a.onclick = e => { e.preventDefault(); if(typeof pmRowSheet === "function"){ pmRowSheet(m, a.dataset.dp); } });
+  card.querySelectorAll("[data-dfix]").forEach(b => b.onclick = () => {
+    const p = pmProp(b.dataset.dfix), row = pmRow(m, p.id), v = Number(b.dataset.dv) / 100;
+    if(!row || !confirm(`Set ${p.name}'s ${monthLabel(m)} rent received from ${usd(cents(row.rentReceived))} to ${usd(cents(v))}, what MagicDoor's payments paid for this month's rent?`)) return;
+    snapshot(); row.rentReceived = v; pmTouch(row); actLog("pm", `Rent received · ${p.name} · ${monthLabel(m)}: set to ${usd(cents(v))} to match the deposits`); commit(); render();
+  });
+  return card;
+}
+{
+  const pgRc0 = pgPmRecon;
+  pgPmRecon = function(){
+    pgRc0();
+    try{
+      const v = $("#view"), top = v.querySelector(".rc-top"), m = rcMonth();
+      if(!pmState().properties.length) return;
+      const c = depCard(m);
+      if(top && top.nextSibling) v.insertBefore(c, top.nextSibling); else v.appendChild(c);
+    }catch(e){ console.error("Rent deposits:", e); }
+  };
+}
