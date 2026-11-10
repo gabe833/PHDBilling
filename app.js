@@ -2584,13 +2584,15 @@ function downloadPdf(html, fileName){
         for(let i = 0; i < 100 && !w.html2pdf; i++) await new Promise(r => setTimeout(r, 50));
         if(!w.html2pdf) throw new Error("PDF library didn't load");
         try{ await w.document.fonts.ready; }catch(e){}
-        await w.html2pdf().set({
+        // the options are rebuilt inside the frame: the library checks for arrays made in its own window
+        const opts = w.JSON.parse(JSON.stringify({
           margin:[0.6, 0.6, 0.6, 0.6], filename:name,
           image:{type:"jpeg", quality:0.95},
           html2canvas:{scale:2, useCORS:true, backgroundColor:"#ffffff", windowWidth:701},
           jsPDF:{unit:"in", format:"letter", orientation:"portrait"},
           pagebreak:{mode:["css", "legacy"], before:".pgb", avoid:["tr", ".head", ".parties", ".hd"]}
-        }).from(w.document.body).save();
+        }));
+        await w.html2pdf().set(opts).from(w.document.body).save();
         done = true; setTimeout(() => f.remove(), 2000); resolve(true);
       }catch(e){ fail(e); }
     };
