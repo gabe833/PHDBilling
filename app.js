@@ -16970,13 +16970,13 @@ function actEntries(){
    with what differs from the version before; the code below turns that into plain lines:
    "Rent received $2,200.00 → $2,300.00", "Added repair: Lowes $51.76 — Refrigerator water filter". */
 const ACTV = {team:null, teamAt:0, more:true, busy:false, open:{}};
-const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
-const ACT_MONEY = /amount|rent|fee|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
+const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|wbAt|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
+const ACT_MONEY = /amount|rent|fee|filters|reimburs|applications|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
 const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"Other owner income", pmFee:"PM fee", leasingFee:"Leasing fee", adminFee:"Admin fee on repairs", feeCredit:"Fee credit",
   lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",
   rent:"Monthly rent", ownerId:"Owner", feeRule:"PM fee rule", "feeRule.rate":"PM fee rate", "feeRule.type":"PM fee type", adminRate:"Admin fee rate", status:"Status", name:"Name", address:"Address", leaseStart:"Lease start", leaseEnd:"Lease end",
   skipClose:"Left out of month close", vendor:"Vendor", amount:"Amount", date:"Date", due:"Due date", memo:"Memo", desc:"Description", category:"Category", propertyId:"Property", "deduct.month":"Comes off the payout for", "deduct.pid":"Payout it comes off",
-  deduct:"Comes off a payout", closed:"Month closed", email:"Email", phone:"Phone", payNote:"How to pay", billNo:"Bill number", unit:"Unit", link:"Invoice link", feeMode:"Admin fee", tenant:"Tenant", payee:"Payee", movedTo:"Moved to a project", plan:"How it's won back", perMonthC:"Per month", start:"Starting", amountC:"Amount", second:"Second payment", reason:"Reason", totalC:"Total"};
+  deduct:"Comes off a payout", closed:"Month closed", email:"Email", phone:"Phone", payNote:"How to pay", billNo:"Bill number", unit:"Unit", link:"Invoice link", feeMode:"Admin fee", tenant:"Tenant", payee:"Payee", movedTo:"Moved to a project", wbNotes:"Workbook notes", plan:"How it's won back", perMonthC:"Per month", start:"Starting", amountC:"Amount", second:"Second payment", reason:"Reason", totalC:"Total"};
 const ACT_LIST = {repairItems:"repair", adjustments:"adjustment", transactions:"expense", invoices:"invoice", feeCredits:"fee credit", items:"item", owners:"owner", units:"unit", recurring:"recurring charge", notes:"note", docs:"document", people:"person", entries:"entry", vendors:"vendor", holds:"hold", transfers:"transfer", lines:"line", splits:"split payout", payments:"payment"};
 function actKeyLabel(path){
   if(ACT_LBL[path]) return ACT_LBL[path];
