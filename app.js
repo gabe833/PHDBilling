@@ -16970,7 +16970,7 @@ function actEntries(){
    with what differs from the version before; the code below turns that into plain lines:
    "Rent received $2,200.00 → $2,300.00", "Added repair: Lowes $51.76 — Refrigerator water filter". */
 const ACTV = {team:null, teamAt:0, more:true, busy:false, open:{}};
-const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
+const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
 const ACT_MONEY = /amount|rent|fee|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
 const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"Other owner income", pmFee:"PM fee", leasingFee:"Leasing fee", adminFee:"Admin fee on repairs", feeCredit:"Fee credit",
   lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",
@@ -17118,7 +17118,14 @@ function actSide(e){
   return "";
 }
 const ACT_SRC_SIDE = {rentals:"pm", sync:"pm", finance:"pm", projects:"projects"};
-function actWhoName(by){ return by === "Automatic" || /sync$|^Workbook$|^MagicDoor|^Nickel|^QuickBooks/i.test(by || "") ? (by || "Automatic") : (typeof cloudWhoSafe === "function" ? cloudWhoSafe(by) : (by || "")); }
+// a person's name for the log: the team list's name (never "You (another tab)" — the log is read by everyone)
+function actWhoName(by){
+  if(by === "Automatic" || /sync$|^Workbook$|^MagicDoor|^Nickel|^QuickBooks/i.test(by || "")) return by || "Automatic";
+  if(!by) return "Automatic";
+  const st = typeof Cloud !== "undefined" && (Cloud.staff || []).find(x => x.email === by);
+  const nm = (st && st.name) || (/@/.test(by) ? by.split("@")[0].replace(/^./, c => c.toUpperCase()) : by);
+  return typeof Cloud !== "undefined" && by === Cloud.email ? `${nm} (you)` : nm;
+}
 const actIsAuto = by => !by || by === "Automatic" || /sync$|^Workbook$|^MagicDoor|^Nickel|^QuickBooks|^This browser$/i.test(by);
 function pgActivity(){
   const side = sideNow();
