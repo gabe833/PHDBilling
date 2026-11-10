@@ -5194,7 +5194,7 @@ function pmRowSheet(m, pid, focus){
         row.repairItems.push({id:uid(), date:f.b.date, vendor:f.b.vendor || "", memo, mdMemo:memo, amount:f.li.amount, feeMode:"auto", mdLine:id, mdBill:f.b.id, source:"MagicDoor"});
       }
       toast("Put back — save to keep it on this statement"); draw(); });
-    const aa = $("#addAdj"); if(aa) aa.onclick = () => { row.adjustments.push({amount:null, note:""}); draw(); };
+    const aa = $("#addAdj"); if(aa) aa.onclick = () => { row.adjustments.push({amount:null, note:"", date:todayISO()}); draw(); };
     sh.querySelectorAll("[data-aj]").forEach(inp => inp.onchange = () => { const a = row.adjustments[+inp.dataset.aj];
       a[inp.dataset.ak] = inp.dataset.ak === "amount" ? (inp.value === "" ? null : Math.round(Number(inp.value) * 100) / 100) : inp.value; draw(); });
     sh.querySelectorAll("[data-ajdel]").forEach(b => b.onclick = () => { row.adjustments.splice(+b.dataset.ajdel, 1); draw(); });
@@ -5674,22 +5674,22 @@ function pmStatementHTML(m, ids, groupsList){
     const blocks = props.map(p => {
       const row = pmRow(m, p.id); if(!row) return "";
       const c = pmCalc(row, p); totalC += c.payoutC;
-      const items = (row.repairItems || []);
+      const items = (row.repairItems || []), D = pmStmtDates(p, m, row), dd = iso => iso ? docShort(iso) : "";
       return `<h3 class="unit">${esc(p.name)}</h3>
         <table class="zebra"><thead><tr><th style="width:92px">Date</th><th>Description</th><th style="width:150px">Vendor</th><th class="r" style="width:110px">Amount</th></tr></thead>
         <tbody>
-          ${(UN => UN ? UN.rent.map(u => `<tr><td class="dt"></td><td>Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="sub">of ${usd(u.dueC)} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(u.c)}</td></tr>`).join("")
-            : `<tr><td class="dt"></td><td>Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="sub">of ${usd(cents(row.rentDue))} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(c.recv)}</td></tr>`)(pmStmtUnits(p, m, c))}
+          ${(UN => UN ? UN.rent.map(u => `<tr><td class="dt">${dd(u.date || D.rent)}</td><td>Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="sub">of ${usd(u.dueC)} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(u.c)}</td></tr>`).join("")
+            : `<tr><td class="dt">${dd(D.rent)}</td><td>Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="sub">of ${usd(cents(row.rentDue))} due</span>` : ""}</td><td class="vn"></td><td class="r">${usd(c.recv)}</td></tr>`)(pmStmtUnits(p, m, c))}
           ${items.map(it => { const L = stmtLine(it); return `<tr><td class="dt">${it.date ? docShort(it.date) : ""}</td><td>${esc(L.title)}${L.detail ? `<br><span class="sub">${esc(L.detail)}</span>` : ""}</td><td class="vn">${esc(it.vendor || "")}</td><td class="r">−${usd(cents(it.amount))}</td></tr>`; }).join("")}
-          ${!items.length && c.repairsC ? `<tr><td class="dt"></td><td>Repairs</td><td class="vn"></td><td class="r">−${usd(c.repairsC)}</td></tr>` : ""}
-          ${c.otherC ? `<tr><td class="dt"></td><td>Other income</td><td class="vn"></td><td class="r">${usd(c.otherC)}</td></tr>` : ""}
-          ${(row.adjustments || []).map(a => `<tr><td class="dt"></td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
+          ${!items.length && c.repairsC ? `<tr><td class="dt">${dd(D.admin)}</td><td>Repairs</td><td class="vn"></td><td class="r">−${usd(c.repairsC)}</td></tr>` : ""}
+          ${c.otherC ? `<tr><td class="dt">${dd(D.other)}</td><td>Other income</td><td class="vn"></td><td class="r">${usd(c.otherC)}</td></tr>` : ""}
+          ${(row.adjustments || []).map(a => `<tr><td class="dt">${dd(D.adj(a))}</td><td>${esc(a.note || "Adjustment")}</td><td class="vn"></td><td class="r">${cents(a.amount) < 0 ? "−" : ""}${usd(Math.abs(cents(a.amount)))}</td></tr>`).join("")}
         </tbody>
         <tbody class="totals">
-          ${c.adminC ? `<tr><td></td><td colspan="2">Admin fee on repairs</td><td class="r">−${usd(c.adminC)}</td></tr>` : ""}
-          ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td></td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("") + (UN.credit || []).map(x => `<tr><td></td><td colspan="2">${esc(x.label)}<br><span class="sub">${esc(x.why)}</span></td><td class="r">${usd(x.c)}</td></tr>`).join("")
-            : `<tr><td></td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>`)(pmStmtUnits(p, m, c))}
-          ${c.leasingC ? `<tr><td></td><td colspan="2">Leasing fee</td><td class="r">−${usd(c.leasingC)}</td></tr>` : ""}
+          ${c.adminC ? `<tr><td class="dt">${dd(D.admin)}</td><td colspan="2">Admin fee on repairs</td><td class="r">−${usd(c.adminC)}</td></tr>` : ""}
+          ${(UN => UN && UN.fee.length ? UN.fee.map(u => `<tr><td class="dt">${dd(u.date || D.fee)}</td><td colspan="2">Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}</td><td class="r">−${usd(u.c)}</td></tr>`).join("") + (UN.credit || []).map(x => `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">${esc(x.label)}<br><span class="sub">${esc(x.why)}</span></td><td class="r">${usd(x.c)}</td></tr>`).join("")
+            : `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">Property management fee · ${esc(feeRuleText(p.feeRule))}</td><td class="r">−${usd(c.pmFeeC)}</td></tr>`)(pmStmtUnits(p, m, c))}
+          ${c.leasingC ? `<tr><td class="dt">${dd(D.fee)}</td><td colspan="2">Leasing fee</td><td class="r">−${usd(c.leasingC)}</td></tr>` : ""}
           <tr class="tot"><td></td><td colspan="2">Owner payout · ${esc(p.name)}</td><td class="r">${usd(c.payoutC)}</td></tr>
         </tbody></table>`;
     }).join("");
@@ -7327,21 +7327,43 @@ function stmtCandidates(m){
 /* rent and PM fee unit by unit, for a building with several units on one property (120 Smith A & B).
    null when there's one unit, or MagicDoor's unit figures don't add up to the month's rent (then one line, as before). */
 const stmtUnitName = n => { const x = String(n || "").match(/^\s*([A-Za-z0-9]{1,4})\s*[-–—:]\s*(.+)$/); return x ? `Unit ${x[1]} (${x[2].trim()})` : /^unit\b/i.test(n || "") ? n : `Unit ${n}`; };
+/* dates on the statement: rent on the day MagicDoor received it (the last payment that month), fees on the same day
+   (they come out of that rent), an adjustment on the day it was made — so no line is left without a date */
+function pmRentDate(p, m, unitId){
+  try{
+    const x = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null;
+    if(!x || !x.property) return "";
+    const uid0 = unitId || (!x.whole && x.unit ? x.unit.id : "");
+    let last = "";
+    (S.md.leases || []).filter(l => l.propertyId === x.property.id && !l.draft && (!uid0 || l.unitId === uid0)).forEach(l => {
+      const g = (l.months || {})[m];
+      ((g && g.pays) || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d.slice(0, 7) === m && d > last) last = d; });
+    });
+    return last;
+  }catch(e){ return ""; }
+}
+function pmStmtDates(p, m, row){
+  const rent = pmRentDate(p, m);
+  const reps = (row.repairItems || []).map(it => String(it.date || "").slice(0, 10)).filter(Boolean).sort();
+  const today = todayISO(), endM = m + "-" + String(new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate()).padStart(2, "0");
+  const fallback = rent || (today.slice(0, 7) === m ? today : today > endM ? endM : m + "-01");
+  return {rent, fee:rent || fallback, admin:reps.length ? reps[reps.length - 1] : fallback, adj:a => String((a && a.date) || "").slice(0, 10) || fallback, other:fallback};
+}
 function pmStmtUnits(p, m, c){
   if(typeof pmUnitLines !== "function") return null;
   const U = pmUnitLines(p, m); if(U.length < 2) return null;
   const paid = U.reduce((a, u) => a + u.paidC, 0); if(Math.abs(paid - c.recv) > 100) return null;
-  const rent = U.map(u => ({label:stmtUnitName(u.unit), c:u.paidC, dueC:u.rentC - u.creditsC}));
+  const rent = U.map(u => ({label:stmtUnitName(u.unit), c:u.paidC, dueC:u.rentC - u.creditsC, date:u.date || ""}));
   rent[rent.length - 1].c += c.recv - paid;                                 // cents of rounding land on the last unit
   const FC = typeof fcMonth === "function" ? fcMonth(p, m) : [], fcC = FC.reduce((a, x) => a + x.usedC, 0), gross = U.reduce((a, u) => a + u.feeC, 0);
   if(FC.length && Math.abs(gross - fcC - c.pmFeeC) <= 100){
-    const fee = U.map(u => ({label:stmtUnitName(u.unit), c:u.feeC, rate:u.rate})).filter(x => x.c);
+    const fee = U.map(u => ({label:stmtUnitName(u.unit), c:u.feeC, rate:u.rate, date:u.date || ""})).filter(x => x.c);
     fee[fee.length - 1].c += c.pmFeeC + fcC - gross;                    // rounding
     return {rent, fee, credit:FC.map(x => ({label:x.label, c:x.usedC, why:x.why}))};
   }
   const A = pmUnitFees(U, c.pmFeeC), fees = A.fees.slice();
   const big = fees.indexOf(Math.max(...fees)); if(big >= 0) fees[big] += c.pmFeeC - fees.reduce((a, f) => a + f, 0);
-  const fee = U.map((u, i) => ({label:stmtUnitName(u.unit), c:fees[i], rate:A.how === "split" ? A.rate : u.rate})).filter(x => x.c);
+  const fee = U.map((u, i) => ({label:stmtUnitName(u.unit), c:fees[i], rate:A.how === "split" ? A.rate : u.rate, date:u.date || ""})).filter(x => x.c);
   return {rent, fee, credit:[]};
 }
 
@@ -7353,17 +7375,17 @@ function pmStatementPdfHTML(m, pid, opts){
   const d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
   const neg = x => "−" + usd(Math.abs(x));
   const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;
-  const UN = pmStmtUnits(p, m, c);
-  const lines = (UN ? UN.rent.map(u => line("", `Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="m">(${usd(u.dueC)} due)</span>` : ""}`, "", usd(u.c)))
-      : [line("", `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))])
+  const UN = pmStmtUnits(p, m, c), D = pmStmtDates(p, m, row);
+  const lines = (UN ? UN.rent.map(u => line(d(u.date || D.rent), `Rent received · ${esc(u.label)}${u.c < u.dueC - 100 ? ` <span class="m">(${usd(u.dueC)} due)</span>` : ""}`, "", usd(u.c)))
+      : [line(d(D.rent), `Rent received${row.rentDue && cents(row.rentDue) !== c.recv ? ` <span class="m">(${usd(cents(row.rentDue))} due)</span>` : ""}`, "", usd(c.recv))])
     .concat(items.map(it => { const L = stmtLine(it); return line(d(it.date), `${esc(L.title)}${L.detail ? `<br><span class="m">${esc(L.detail)}</span>` : ""}${(L.link || L.mdFile) && opts.attach ? ` <span class="m">· invoice attached</span>` : ""}`, esc(it.vendor || ""), neg(cents(it.amount))); }))
-    .concat(!items.length && c.repairsC ? [line("", "Repairs", "", neg(c.repairsC))] : [])
-    .concat(c.otherC ? [line("", "Other income", "", usd(c.otherC))] : [])
-    .concat((row.adjustments || []).map(a => line("", esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
-  const fees = [c.adminC ? line("", `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
-    UN && UN.fee.length ? UN.fee.map(u => line("", `Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}`, "", neg(u.c), "fee")).join("") : line("", `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
-    UN && UN.credit && UN.credit.length ? UN.credit.map(x => line("", `${esc(x.label)}<br><span class="m">${esc(x.why)}</span>`, "", usd(x.c), "fee")).join("") : "",
-    c.leasingC ? line("", "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
+    .concat(!items.length && c.repairsC ? [line(d(D.admin), "Repairs", "", neg(c.repairsC))] : [])
+    .concat(c.otherC ? [line(d(D.other), "Other income", "", usd(c.otherC))] : [])
+    .concat((row.adjustments || []).map(a => line(d(D.adj(a)), esc(a.note || "Adjustment"), "", (cents(a.amount) < 0 ? "−" : "") + usd(Math.abs(cents(a.amount))))));
+  const fees = [c.adminC ? line(d(D.admin), `Admin fee on repairs (${p.adminRate ?? 10}%)`, "", neg(c.adminC), "fee") : "",
+    UN && UN.fee.length ? UN.fee.map(u => line(d(u.date || D.fee), `Property management fee · ${esc(u.label)}${u.rate ? ` (${u.rate}%)` : ""}`, "", neg(u.c), "fee")).join("") : line(d(D.fee), `Property management fee (${esc(feeRuleText(p.feeRule))})`, "", c.pmFeeC ? neg(c.pmFeeC) : usd(0), "fee"),
+    UN && UN.credit && UN.credit.length ? UN.credit.map(x => line(d(D.fee), `${esc(x.label)}<br><span class="m">${esc(x.why)}</span>`, "", usd(x.c), "fee")).join("") : "",
+    c.leasingC ? line(d(D.fee), "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("");
   const owe = c.payoutC < 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
   @page{size:letter;margin:0.6in}
@@ -17556,7 +17578,7 @@ function rvApply(){
       const note = `Recovering the ${monthLabel(it.month)} payout that was paid twice (${it.second || "duplicate payment"}) — ${usd(Math.min(it.amountC, doneC + wantC))} of ${usd(it.amountC)} recovered`;
       if(wantC > 0){
         if(!(mine && cents(mine.amount) === -wantC && mine.note === note)){
-          r.adjustments = (r.adjustments || []).filter(a => a.recov !== it.id); r.adjustments.push({id:uid(), recov:it.id, amount:-wantC / 100, note, auto:true}); pmTouch(r); n++;
+          r.adjustments = (r.adjustments || []).filter(a => a.recov !== it.id); r.adjustments.push({id:uid(), recov:it.id, amount:-wantC / 100, note, auto:true, date:(mine && mine.date) || todayISO()}); pmTouch(r); n++;
         }
         doneC += wantC;
       } else if(mine){ r.adjustments = r.adjustments.filter(a => a.recov !== it.id); pmTouch(r); n++; }
@@ -17652,10 +17674,11 @@ function pmUnitLines(p, m){
   const rule = p.feeRule || {}, rate = rule.type === "flat" ? 0 : Number(rule.rate || 0);
   return x.units.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, {numeric:true})).map(u => {
     const gs = leases.filter(l => l.unitId === u.id).map(l => ({l, g:(l.months || {})[m]})).filter(y => y.g);
-    let rentC = 0, credC = 0, paidC = 0;
-    gs.forEach(({g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived); });
+    let rentC = 0, credC = 0, paidC = 0, date = "";
+    gs.forEach(({g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived);
+      (g.pays || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d.slice(0, 7) === m && d > date) date = d; }); });
     const cur = gs.find(y => !y.l.ended) || gs[0];
-    return {unit:u.name || "Unit", tenant:cur ? mdTenants(cur.l) : "", rentC, creditsC:credC, paidC, feeC:Math.round(paidC * rate / 100), rate};
+    return {unit:u.name || "Unit", tenant:cur ? mdTenants(cur.l) : "", rentC, creditsC:credC, paidC, feeC:Math.round(paidC * rate / 100), rate, date};
   });
 }
 /* split the month's PM fee across the units: the rate on each unit's rent when it adds up; when MagicDoor charged
