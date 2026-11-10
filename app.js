@@ -6031,6 +6031,8 @@ function wbApply(m, list, lock, deductions){
     r.wbRaw = x.raw || null;
     r.wbStatus = x.status || null; r.wbNotes = x.notes.length ? x.notes.join(" · ") : null;
     r.source = "workbook"; r.wbAt = new Date().toISOString();
+    // what the sheet said, so a later change made in the console can be told apart from the sheet's own figure
+    r.wbVals = {}; WB_MONEY.forEach(k => { r.wbVals[k] = x.keepBase && k in x.keepBase ? x.keepBase[k] : (r[k] == null ? null : r[k]); });
     if(lock) r.locked = true;
     pmTouch(r); n++;
   });
@@ -16807,8 +16809,23 @@ async function wbLiveSync(opts){
         const fromSheet = r && r.source === "workbook";
         if(!fromSheet && x.v.ownerPayout == null) return;                 // not finished on the sheet yet
         if(x.vacant && !Object.keys(x.v).length && !r) return;
+        // a figure someone changed in the console after it came from the sheet stays the console's: the sheet's value is
+        // noted (so the difference shows) but not brought in
+        const base = r && r.wbVals, kept = r && base ? WB_MONEY.filter(k => k in base && wbRowVal(r, k) !== (base[k] == null ? null : cents(base[k])) && wbSheetVal(x, k) !== wbRowVal(r, k)) : [];
+        if(kept.length){
+          const keptNow = {}; kept.forEach(k => { keptNow[k] = {sheet:wbSheetVal(x, k) == null ? null : wbSheetVal(x, k) / 100, console:r[k] == null ? null : r[k]}; });
+          if(JSON.stringify(r.wbKept || {}) !== JSON.stringify(keptNow)){ touch(); r.wbKept = keptNow; pmTouch(r); lines.push({prop:p.name, pid:p.id, what:`${monthLabel(m)}: kept the console's ${kept.map(k => `${lbl[k]} ${r[k] == null ? "—" : usd(cents(r[k]))} (the workbook says ${wbSheetVal(x, k) == null ? "—" : usd(wbSheetVal(x, k))})`).join(", ")}`}); }
+          kept.forEach(k => { x.v[k] = r[k] == null ? undefined : r[k]; if(x.v[k] === undefined) delete x.v[k]; });
+          if(kept.some(k => k === "rentDue" || k === "rentReceived")) x.vacant = false;
+          x.keepBase = {}; kept.forEach(k => x.keepBase[k] = keptNow[k].sheet);
+        } else if(r && r.wbKept){ touch(); delete r.wbKept; pmTouch(r); }
         const diff = WB_MONEY.filter(k => wbSheetVal(x, k) !== wbRowVal(r, k));
         const st = (x.status || null) !== (r ? r.wbStatus || null : null);
+        if(r && !diff.length && fromSheet){
+          // the sheet and the console agree: that's the baseline a later console change is measured against
+          const now = {}; WB_MONEY.forEach(k => now[k] = r[k] == null ? null : r[k]);
+          if(JSON.stringify(r.wbVals || null) !== JSON.stringify(now)){ touch(); r.wbVals = now; if(r.wbKept) delete r.wbKept; }
+        }
         if(r && !diff.length && !st) return;
         touch();
         const was = {}; diff.forEach(k => was[k] = wbRowVal(r, k));
@@ -16825,7 +16842,7 @@ async function wbLiveSync(opts){
     if(lines.length){
       const L = mdLinks(); L.log.unshift({at:new Date().toISOString(), by:"Workbook", lines:lines.slice(0, 120), more:Math.max(0, lines.length - 120)}); L.log = L.log.slice(0, 25);
       commit();
-    }
+    } else if(snap) commit();                 // only the baselines were noted
     WBL.last = {at:new Date().toISOString(), n:lines.length, unmatched, modified:j.modified || meta.modified || ""};
     if(!opts.quiet || lines.length) toast(lines.length ? `Workbook: ${lines.length} change${lines.length === 1 ? "" : "s"} brought in — see MagicDoor → Recent updates` : "Workbook read — everything already matches", true);
     if(unmatched.length && !opts.quiet) toast(`Workbook rows that match no property: ${unmatched.slice(0, 4).join("; ")}${unmatched.length > 4 ? "…" : ""}`);
@@ -17305,7 +17322,7 @@ function actEntries(){
    with what differs from the version before; the code below turns that into plain lines:
    "Rent received $2,200.00 → $2,300.00", "Added repair: Lowes $51.76 — Refrigerator water filter". */
 const ACTV = {team:null, teamAt:0, more:true, busy:false, open:{}};
-const ACT_SKIP = /^(updatedAt|updatedBy|version|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|wbAt|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
+const ACT_SKIP = /^(updatedAt|updatedBy|version|wbVals|wbKept|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|wbAt|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
 const ACT_MONEY = /amount|rent|fee|filters|reimburs|applications|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
 const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"Other owner income", pmFee:"PM fee", leasingFee:"Leasing fee", adminFee:"Admin fee on repairs", feeCredit:"Fee credit",
   lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",
@@ -18897,7 +18914,18 @@ function poSplitSheet(id){
    ===================================================================== */
 const DEP = {open:{}};
 function depLeaseAlloc(l){
-  const M = l.months || {}, ms = Object.keys(M).sort(); if(!ms.length) return {allocs:[], pending:0};
+  const M = l.months || {}, ms = Object.keys(M).sort();
+  // MagicDoor's own record of what each payment paid (synced from the lease ledger) — used whenever it's there
+  if(Array.isArray(l.alloc)){
+    const allocs = [], pays = [];
+    l.alloc.forEach((p, i) => {
+      pays.push([p[0], (Number(p[1]) || 0) / 100]);
+      (p[2] || []).forEach(([month, kind, c]) => allocs.push(kind === "ahead" ? {date:p[0], c, month:"ahead", type:"credit", pay:i}
+        : {date:p[0], c, month:month || "before", type:kind, pay:i}));
+    });
+    return {allocs, pays, exact:true, pending:Math.round((Number((M[ms[ms.length - 1]] || {}).pending) || 0) * 100)};
+  }
+  if(!ms.length) return {allocs:[], pending:0, pays:[]};
   const C = v => Math.round((Number(v) || 0) * 100);
   // the balance before the first month we have: what's owed now, less what the months we have added to it
   let net = 0; ms.forEach(m => { const g = M[m]; net += C(g.rent) + C(g.other) + C(g.filters) + C(g.lateFee) + C(g.applications) + C(g.phd) - C(g.credits) - C(g.paid); });
@@ -18933,7 +18961,8 @@ function depLeaseAlloc(l){
     apply();
   });
   pool.forEach(py => { if(py.left > 0 && !py.credit) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit", pay:py.pay}); });
-  return {allocs, pending:C((M[ms[ms.length - 1]] || {}).pending)};
+  const pays = []; ms.forEach(m => ((M[m] || {}).pays || []).forEach(p => pays.push(p)));
+  return {allocs, pays, exact:false, pending:C((M[ms[ms.length - 1]] || {}).pending)};
 }
 // which MagicDoor leases a console rental's rent comes from (the same leases Month close reads)
 function depLeasesFor(p){
@@ -19237,13 +19266,12 @@ function rpRows(){
   const mdName = l => ((S.md.properties || []).find(q => q.id === l.propertyId) || {}).name || unitName(l) || "MagicDoor rental";
   const out = [];
   (S.md.leases || []).filter(l => !l.draft).forEach(l => {
-    const A = depLeaseAlloc(l).allocs, pays = [];
-    Object.keys(l.months || {}).sort().forEach(m => ((l.months[m] || {}).pays || []).forEach(p => pays.push(p)));
+    const DA = depLeaseAlloc(l), A = DA.allocs, pays = DA.pays || [];
     // the same order depLeaseAlloc numbered them in (by month, then as listed)
     pays.forEach((p, i) => {
       const parts = A.filter(a => a.pay === i);
       const p0 = owner.get(l.id);
-      out.push({date:String(p[0]).slice(0, 10), c:cents(p[1]), lease:l, prop:p0 || null, where:p0 ? p0.name : mdName(l), unit:unitName(l), tenants:typeof mdTenants === "function" ? String(mdTenants(l) || "") : "", parts});
+      out.push({date:String(p[0]).slice(0, 10), c:cents(p[1]), exact:!!DA.exact, lease:l, prop:p0 || null, where:p0 ? p0.name : mdName(l), unit:unitName(l), tenants:typeof mdTenants === "function" ? String(mdTenants(l) || "") : "", parts});
     });
   });
   return out.sort((a, b) => b.date.localeCompare(a.date) || a.where.localeCompare(b.where, undefined, {numeric:true}));
@@ -19350,7 +19378,9 @@ function pgPmPays(){
       <tr class="rp-tot2"><td colspan="6"><span>Rent <b>${usd(T.rent)}</b></span><span>+ Filters, fees &amp; other <b>${usd(T.other)}</b></span><span>= <b>${usd(T.rent + T.other)}</b></span>${T.ahead ? `<span class="muted">plus ${usd(T.ahead)} paid ahead</span>` : ""}</td></tr></tfoot>`;
   t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); S.ui.pmPropM = m; pmOpenProperty(a.dataset.rpp); });
   const w = elm("div", "rp-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
-  v.appendChild(elm("p", "rp-foot", `Which month a payment paid for is worked out the way MagicDoor applies it: oldest charge first. A payment made before the month's rent is charged waits as the tenant's credit and pays the next month. Dates are the day each payment settled.`));
+  { const ex = rows.filter(x => x.r.exact).length;
+    v.appendChild(elm("p", "rp-foot", ex === rows.length ? `What each payment paid for comes from MagicDoor's own lease ledgers — the charges it applied the payment to. A payment made before a month's rent is charged waits as the tenant's credit and pays the rent when it posts. Dates are the day each payment settled.`
+      : `What each payment paid for comes from MagicDoor's lease ledgers (${ex} of ${rows.length} payments); the rest are worked out the way MagicDoor applies payments, oldest charge first, until the next MagicDoor sync. Dates are the day each payment settled.`)); }
 }
 {
   // a way in from Rent overview

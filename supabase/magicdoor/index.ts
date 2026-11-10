@@ -387,6 +387,57 @@ function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string)
   }
   return out;
 }
+// What each payment paid for, the way MagicDoor applied it: a payment the tenant aimed at particular charges
+// (targetChargeIds) pays those first; the rest goes to the oldest open charge, in the order MagicDoor posted them (its
+// ids are time-ordered); money left over waits as the tenant's credit and pays charges as they post. A credit given to
+// the tenant pays charges too, but isn't money in. Worked out over the whole ledger; only payments from "from" on are
+// kept: [settled day, amount, [[charge month, kind, amount], ...]] — kinds: rent, other, fees, phd, late, ahead.
+function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) {
+  const names: Record<string, string> = { ...accounts };
+  ((body.chartOfAccounts as Obj[]) || []).forEach((a) => { names[S(a.id)] = S(a.name); });
+  const big = (x: unknown) => { try { return BigInt(S(x) || "0"); } catch { return 0n; } };
+  const C = (n: unknown) => Math.round(Math.abs(N(n) || 0) * 100);
+  type Ch = { id: string; month: string; kind: string; left: number };
+  type Py = { id: string; day: string; left: number; cash: boolean; out: [string, string, number][]; total: number };
+  const charges = new Map<string, Ch>(), open: Ch[] = [], pool: Py[] = [], pays: Py[] = [];
+  const evs = ((body.entries as Obj[]) || []).filter((e) => {
+    const st = S(e.status).toLowerCase(); return C(e.amount) && !/void|deleted|cancel|reversed|fail|return|declin/.test(st);
+  }).sort((a, b) => { const x = big(a.id), y = big(b.id); return x < y ? -1 : x > y ? 1 : 0; });
+  const give = (py: Py, ch: Ch) => {
+    const a = Math.min(py.left, ch.left); if (a <= 0) return;
+    if (py.cash) py.out.push([ch.month, ch.kind, a]);
+    py.left -= a; ch.left -= a;
+  };
+  const sweep = () => {
+    for (const py of pool) { for (const ch of open) { if (!py.left) break; give(py, ch); } }
+    for (let i = open.length - 1; i >= 0; i--) if (!open[i].left) open.splice(i, 1);
+    for (let i = pool.length - 1; i >= 0; i--) if (!pool[i].left) pool.splice(i, 1);
+  };
+  for (const e of evs) {
+    const type = S(e.type), st = S(e.status).toLowerCase(), day = S(D(e.transactionDate)).slice(0, 10);
+    const acct = names[S(((e.chartOfAccountIds as unknown[]) || [])[0])] || "";
+    if (type === "payment" || type === "credit" || N(e.amount) < 0) {
+      if (type === "payment" && !(st === "settled" || st === "paid" || st === "completed")) continue;   // still processing
+      const py: Py = { id: S(e.id), day, left: C(e.amount), cash: type === "payment", out: [], total: C(e.amount) };
+      for (const tid of ((e.targetChargeIds as unknown[]) || []).map(S)) { const ch = charges.get(tid); if (ch) give(py, ch); }
+      for (const ch of open) { if (!py.left) break; give(py, ch); }
+      for (let i = open.length - 1; i >= 0; i--) if (!open[i].left) open.splice(i, 1);
+      if (py.left) pool.push(py);
+      if (py.cash) pays.push(py);
+      continue;
+    }
+    if (type !== "charge" && type !== "lateFee") continue;
+    const kind = type === "lateFee" || /late/i.test(acct) ? "late"
+      : B(e.companyCharge) ? (/filter|hvac|applic/i.test(acct + " " + S(e.description)) ? "fees" : "phd")
+      : (S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other");
+    const ch: Ch = { id: S(e.id), month: day.slice(0, 7), kind, left: C(e.amount) };
+    charges.set(ch.id, ch); open.push(ch); sweep();
+  }
+  return pays.filter((p) => p.day.slice(0, 7) >= from).map((p) => {
+    const parts = p.out.slice(); if (p.left) parts.push(["", "ahead", p.left]);
+    return [p.day, p.total, parts];
+  });
+}
 // One property's owner statement for one month — MagicDoor's own account of what the owner is paid.
 // Amounts only: tenants' names are never kept (their rent is one total); vendor names and descriptions are.
 //   begin / end    cash held for the owner at the start / end of the month
@@ -521,6 +572,7 @@ async function sync() {
           const r = await mdGet(`/company-app/leases/${encodeURIComponent(S(l.id))}/charges/ledger`);
           if (r.status !== 200) { ledgerFails++; continue; }
           (l as Obj).months = ledgerMonths(r.body as Obj, accounts, ledgerFrom); ledgersRead++;
+          try { (l as Obj).alloc = ledgerAlloc(r.body as Obj, accounts, ledgerFrom); } catch { /* the console falls back to working it out */ }
         } catch { ledgerFails++; }
       }
     };
