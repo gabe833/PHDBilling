@@ -3616,7 +3616,7 @@ async function inboxSyncConfig(force){
 
 /* Vendors the receipt inbox accepts mail from: every vendor email the console knows (Nickel vendors and the vendor list),
    plus the company domains among them (anyone @banddheating.com) — never a free-mail domain like gmail.com, and never our own */
-const IB_FREEMAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|comcast|att|sbcglobal|bellsouth|verizon|proton|protonmail|pm|gmx|mail|zoho|charter|cox|earthlink|windstream|frontier|hughes)\./i;
+const IB_FREEMAIL = /^(gmail|gmai|gmal|gnail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|comcast|att|sbcglobal|bellsouth|verizon|proton|protonmail|pm|gmx|mail|zoho|charter|cox|earthlink|windstream|frontier|hughes)\./i;
 const IB_OURS = /(^|\.)phd(properties|billing)?[a-z.-]*\./i;
 function ibVendorSenders(){
   const em = new Set(), dom = new Set(), ok = x => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(x);
