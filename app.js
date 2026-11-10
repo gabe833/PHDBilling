@@ -6613,7 +6613,7 @@ function mdBillOfLine(lineId){ try{ return /^\d{6,}$/.test(String(lineId || ""))
 function mdBillWho(lineId){
   const f = lineId && mdReady() ? mdLineById(lineId) : null; if(!f || !f.b || !(f.b.by || f.b.created)) return "";
   const st = (S.md.staff || []).find(x => x.id === f.b.by);
-  return `Entered in MagicDoor${f.b.by ? " by " + (st ? st.name : "staff #" + String(f.b.by).slice(-4)) : ""}${f.b.created ? " · " + fdateS(f.b.created) : ""}`;
+  return `Entered in MagicDoor${f.b.by ? " by " + (st ? st.name : "staff #" + String(f.b.by).slice(-4)) : ""}${f.b.created ? " · " + fdateS(String(f.b.created).slice(0, 10)) : ""}`;
 }
 // The project side's properties (the console keeps them in S.properties; the MagicDoor function passes them as S.pj)
 function mdProjects(){ return (S && (S.pj || S.properties)) || []; }
@@ -19062,4 +19062,134 @@ function depCard(m){
       if(top && top.nextSibling) v.insertBefore(c, top.nextSibling); else v.appendChild(c);
     }catch(e){ console.error("Rent deposits:", e); }
   };
+}
+
+/* =====================================================================
+   EXPENSE CHECK — every repair and bill on an open month's statements,
+   checked against the rest of the books so nothing is charged twice.
+   Fixed on its own (logged in the activity log):
+     · the same line twice on one statement (same item, same MagicDoor
+       line or the same bill) — a copy, never a second expense
+   Shown for a decision, with the fix one click away:
+     · a "receipt" that is really the payment confirmation of a bill that
+       was already entered (same vendor and amount, dated the day that bill
+       was paid)
+     · the same expense on two statements of the same rental (same amount
+       and vendor, within three weeks or with the same description)
+   ===================================================================== */
+const EXQ = {sig:""};
+function exqIgnored(){ if(!S.exqIgnore || typeof S.exqIgnore !== "object") S.exqIgnore = {}; return S.exqIgnore; }
+const exqVendor = v => String(v || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w && !/^(llc|inc|co|the|and)$/.test(w))[0] || "";
+const exqDays = (a, b) => a && b ? Math.abs((new Date(a + "T12:00:00") - new Date(b + "T12:00:00")) / 864e5) : 999;
+// 1. copies of one line on one statement
+function exqDedupe(dry){
+  const P2 = pmState(), out = [];
+  Object.values(P2.rows).forEach(r => {
+    if(!r || r.deleted || (P2.meta[r.month] || {}).closed || r.locked || r.paidOut || !(r.repairItems || []).length) return;
+    const seen = new Set(), keep = [];
+    r.repairItems.forEach(it => {
+      const keys = [it.id && "i:" + it.id, it.mdLine && "l:" + it.mdLine, it.billId && "b:" + it.billId].filter(Boolean);
+      if(keys.some(k => seen.has(k))){ out.push({r, it}); return; }
+      keys.forEach(k => seen.add(k)); keep.push(it);
+    });
+    if(!dry && keep.length !== r.repairItems.length) r.repairItems = keep;
+  });
+  return out;
+}
+// 2. what needs a decision, for one month
+function exqFind(m){
+  const P2 = pmState(), ign = exqIgnored(), found = [];
+  const bills = billList().filter(b => b.status !== "void");
+  // a payment confirmation entered as a new bill
+  bills.forEach(b2 => {
+    if(!b2.propertyId || (b2.deduct && b2.deduct.month !== m) || !b2.deduct) return;
+    const twin = bills.find(b1 => b1 !== b2 && b1.propertyId === b2.propertyId && cents(b1.amount) === cents(b2.amount) && b1.pay && b1.pay.date === b2.date
+      && exqVendor(b1.vendor) && exqVendor(b1.vendor) === exqVendor(b2.vendor) && String(b1.date) < String(b2.date));
+    if(!twin) return;
+    const k = "pay:" + b2.id; if(ign[k]) return;
+    found.push({k, kind:"payreceipt", p:pmProp(b2.propertyId), keep:twin, drop:b2,
+      why:`${b2.vendor} ${usd(cents(b2.amount))} on ${fdateS(b2.date)} is the day the ${fdateS(twin.date)} bill for the same ${usd(cents(twin.amount))} was paid${twin.pay && twin.pay.method ? " (" + twin.pay.method + ")" : ""} — it looks like that payment's confirmation, not a second expense.`});
+  });
+  // the same expense on two statements (this month against the last three)
+  const live = pmLiveProps();
+  live.forEach(p => {
+    const r = pmRow(m, p.id); if(!r || r.deleted) return;
+    const mine = r.repairItems || [];
+    const earlier = [];
+    for(let i = 0; i <= 3; i++){ const mm = PMCore.monthAdd(m, -i), rr = pmRow(mm, p.id); if(rr && !rr.deleted) (rr.repairItems || []).forEach(it => earlier.push({it, row:rr})); }
+    mine.forEach(it => {
+      if(!cents(it.amount)) return;
+      const twin = earlier.find(x => x.it !== it && x.it.id !== it.id && cents(x.it.amount) === cents(it.amount)
+        && !(it.billId && it.billId === x.it.billId) && !(it.mdLine && it.mdLine === x.it.mdLine) && !(it.mdBill && it.mdBill === x.it.mdBill)
+        && exqVendor(x.it.vendor) && exqVendor(x.it.vendor) === exqVendor(it.vendor)
+        && (exqDays(x.it.date, it.date) <= 21 || String(x.it.memo || "").trim().toLowerCase() === String(it.memo || "").trim().toLowerCase())
+        && (x.row.month < m || mine.indexOf(x.it) < mine.indexOf(it)));
+      if(!twin) return;
+      const k = "dup:" + [twin.it.id, it.id].sort().join("|"); if(ign[k]) return;
+      if(found.some(f => f.drop && f.drop.id && (f.drop.id === it.billId || f.drop.id === twin.it.billId))) return;   // already explained above
+      found.push({k, kind:"twice", p, row:r, it, twin:twin.it, twinRow:twin.row,
+        why:`${it.vendor || "A bill"} ${usd(cents(it.amount))} "${it.memo || ""}" (${fdateS(it.date || m + "-01")}) is also on the ${monthLabel(twin.row.month)} statement (${fdateS(twin.it.date || twin.row.month + "-01")}${twin.it.memo ? `, "${twin.it.memo}"` : ""}).`});
+    });
+  });
+  return found;
+}
+// take a line off the statement the right way: void its console bill, or drop the item
+function exqRemove(row, it){
+  const b = it.billId && billById(it.billId);
+  if(b){ b.status = "void"; b.voidWhy = "Duplicate (expense check)"; billSave(b, false); return; }
+  row.repairItems = (row.repairItems || []).filter(x => x !== it);
+  if(row.locked){ row.repairs = null; row.adminFee = null; }
+  pmTouch(row);
+}
+function exqCard(m){
+  const F = exqFind(m), card = elm("div", "card exq-card");
+  const closed = (pmState().meta[m] || {}).closed;
+  card.innerHTML = `<div class="dep-h"><div><h3>Expense check</h3><div class="muted" style="font-size:12.5px">Every repair and bill on ${esc(monthLabel(m))}'s statements, checked against the bills and the last three months, so nothing is charged twice. Exact copies are removed on their own.</div></div>
+      <span class="tag ${F.length ? "red" : "green"}">${F.length ? F.length + " to decide" : "No duplicates"}</span></div>
+    ${F.map((f, i) => `<div class="exq-r"><div><b>${esc(f.p ? f.p.name : "")}</b> · ${f.kind === "payreceipt" ? "payment confirmation entered as a bill" : "charged twice?"}<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(f.why)}</div>
+        ${f.drop && (f.drop.receipt || {}).url ? "" : ""}${(f.drop && (pmRow(m, f.drop.propertyId) || {}).repairItems || []).some(x => x.billId === (f.drop || {}).id && x.mdBill) || (f.it && f.it.mdBill) ? `<div class="exq-md">It's also in MagicDoor — after removing it here, delete that bill and its 10% admin fee bill in MagicDoor too.</div>` : ""}</div>
+      <div class="exq-a">${closed ? "" : `<button class="btn sm primary" data-xfix="${i}">${f.kind === "payreceipt" ? "Remove the duplicate" : "Remove the " + monthLabel(m).split(" ")[0] + " one"}</button>`}<button class="btn sm ghost" data-xok="${i}">Not a duplicate</button></div></div>`).join("")}`;
+  card.querySelectorAll("[data-xfix]").forEach(b => b.onclick = () => {
+    const f = F[+b.dataset.xfix]; snapshot();
+    if(f.kind === "payreceipt"){ f.drop.status = "void"; f.drop.voidWhy = "Payment confirmation of " + f.keep.id + " (expense check)"; billSave(f.drop, false); }
+    else exqRemove(f.row, f.it);
+    actLog("pm", `Expense check · ${f.p ? f.p.name : ""}: removed a duplicate ${usd(cents((f.drop || f.it).amount))} ${(f.drop || f.it).vendor || ""} from ${monthLabel(m)}`);
+    commit(); render(); toast("Duplicate removed from the statement");
+  });
+  card.querySelectorAll("[data-xok]").forEach(b => b.onclick = () => { const f = F[+b.dataset.xok]; snapshot(); exqIgnored()[f.k] = {at:todayISO(), by:billWho()}; commit(); render(); });
+  return card;
+}
+{
+  // exact copies come off as soon as they appear
+  if(typeof render === "function"){
+    const exqR0 = render;
+    render = function(){
+      const r = exqR0.apply(this, arguments);
+      try{
+        if(typeof pmState === "function" && pmState().properties.length && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+          const sig = Object.values(pmState().rows).map(x => x.month + x.propertyId + (x.repairItems || []).length).join(",");
+          if(sig !== EXQ.sig){ EXQ.sig = sig; setTimeout(() => {
+            if(!exqDedupe(true).length) return;
+            snapshot(); const gone = exqDedupe();
+            if(gone.length){ gone.forEach(g => { pmTouch(g.r); actLog("pm", `Expense check · ${(pmProp(g.r.propertyId) || {}).name || ""}: removed a copy of ${g.it.vendor || "a bill"} ${usd(cents(g.it.amount))} listed twice on ${monthLabel(g.r.month)}`); }); commit(); toast(`${gone.length} duplicate line${gone.length === 1 ? "" : "s"} removed from the statements`); }
+          }, 500); }
+        }
+      }catch(e){ console.error("Expense check:", e); }
+      return r;
+    };
+  }
+  const pgPm0 = pgPmMonth;
+  pgPmMonth = function(){
+    pgPm0();
+    try{
+      const v = $("#view"), m = S.ui.pmMonth || (typeof pmCurrentMonth === "function" ? pmCurrentMonth() : thisMonth());
+      if(!pmState().properties.length || !v) return;
+      const c = exqCard(m);
+      const anchor = v.querySelector(".pm-steps, .mc-steps, .card");
+      if(anchor && anchor.nextSibling) v.insertBefore(c, anchor.nextSibling); else v.appendChild(c);
+    }catch(e){ console.error("Expense check:", e); }
+  };
+  // Reconcile too
+  const pgRc1 = pgPmRecon;
+  pgPmRecon = function(){ pgRc1(); try{ const v = $("#view"), d = v.querySelector(".dep-card"); if(d){ const c = exqCard(rcMonth()); v.insertBefore(c, d.nextSibling); } }catch(e){ console.error("Expense check:", e); } };
 }
