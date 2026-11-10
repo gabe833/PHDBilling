@@ -19312,7 +19312,8 @@ function pgPmPays(){
     // how this page's rent becomes the "Rent received" in Month close, rental by rental
     try{
       const D = depMonth(m), stmt = D.stmtTotal, steps = [];
-      D.notOnStatement.forEach(x => steps.push({t:`${x.name}${x.unit && x.unit !== x.name ? " · " + x.unit : ""} — not linked to a rental in Month close`, c:-rows.filter(y => !y.r.prop && y.r.where === x.name).reduce((a, y) => a + y.rent, 0)}));
+      const un = {}; rows.filter(y => !y.r.prop && y.rent).forEach(y => { un[y.r.where] = (un[y.r.where] || 0) + y.rent; });
+      Object.entries(un).forEach(([w, c]) => steps.push({t:`${w} — MagicDoor lease not linked to a rental in Month close`, c:-c}));
       D.rows.filter(r => r.diff).forEach(r => steps.push({t:r.noRow ? `${r.p.name} — not in Month close` : r.mdOk ? `${r.p.name} — MagicDoor counts the whole partial payment as rent (filter fee left unpaid)` : `${r.p.name} — statement ${usd(r.stmtC)}, payments cover ${usd(r.paidC)}`, c:r.diff}));
       const real = steps.filter(x => x.c), endC = T.rent + real.reduce((a, x) => a + x.c, 0);
       const box = elm("div", "rp-tie");
