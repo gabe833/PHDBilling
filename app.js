@@ -2563,6 +2563,43 @@ function printDoc(html){
   document.body.appendChild(f);
 }
 
+/* Download a document as a PDF file straight away (no print window). The page is laid out in a hidden frame with its own
+   styles, then drawn into a letter-size PDF there; the library is in vendor/ and only loaded the first time. */
+function pdfName(s){ s = String(s || "Document").replace(/[\\/:*?"<>|%]+/g, "-").replace(/\s+/g, " ").trim(); return /\.pdf$/i.test(s) ? s : s + ".pdf"; }
+function downloadPdf(html, fileName){
+  const name = pdfName(fileName);
+  toast("Making " + name + "…");
+  return new Promise(resolve => {
+    const f = document.createElement("iframe");
+    // the page's own width once the 0.6in margins are taken off a letter sheet
+    f.style.cssText = "position:fixed;left:-10000px;top:0;width:701px;height:1000px;border:0;visibility:hidden";
+    const lib = `<script src="${location.origin}/vendor/html2pdf.bundle.min.js"><\/script>`;
+    let doc = String(html || "").replace(/@page\s*\{[^}]*\}/g, "");
+    doc = /<\/head>/i.test(doc) ? doc.replace(/<\/head>/i, `<style>html,body{margin:0!important;padding:0!important;background:#fff}</style>${lib}</head>`) : lib + doc;
+    let done = false;
+    const fail = e => { if(done) return; done = true; console.error("PDF download:", e); f.remove(); toast("Couldn't make the PDF here — opening print instead (choose Save as PDF)"); printDoc(html); resolve(false); };
+    f.onload = async () => {
+      try{
+        const w = f.contentWindow;
+        for(let i = 0; i < 100 && !w.html2pdf; i++) await new Promise(r => setTimeout(r, 50));
+        if(!w.html2pdf) throw new Error("PDF library didn't load");
+        try{ await w.document.fonts.ready; }catch(e){}
+        await w.html2pdf().set({
+          margin:[0.6, 0.6, 0.6, 0.6], filename:name,
+          image:{type:"jpeg", quality:0.95},
+          html2canvas:{scale:2, useCORS:true, backgroundColor:"#ffffff", windowWidth:701},
+          jsPDF:{unit:"in", format:"letter", orientation:"portrait"},
+          pagebreak:{mode:["css", "legacy"], before:".pgb", avoid:["tr", ".head", ".parties", ".hd"]}
+        }).from(w.document.body).save();
+        done = true; setTimeout(() => f.remove(), 2000); resolve(true);
+      }catch(e){ fail(e); }
+    };
+    setTimeout(() => fail(new Error("timed out")), 30000);
+    f.srcdoc = doc;
+    document.body.appendChild(f);
+  });
+}
+
 /* Letter at 96dpi minus the print margins declared in the report stylesheet. */
 /* letter: 8.5 × 11 in at 96dpi, less the 14mm side and 16/18mm top/bottom margins */
 const PAGE_W = 710, PAGE_H = 927, MIN_ZOOM = 0.62;
@@ -5801,7 +5838,8 @@ function pmStatementSheet(m){
         return `<div class="md-r"><div><b>${esc(o ? ownerLabel(o) : pmProp(ids[0]).name)}</b><span class="muted"> ${o ? ids.map(id => esc(pmProp(id).name)).join(", ") : "no owner on file"}</span></div><span class="num">${usd(total)}</span><button class="btn sm" data-g="${esc(k)}">PDF</button></div>`; }).join("")}</div></div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Close</button><button class="btn" id="stMail">Email as Gmail drafts</button><button class="btn primary" id="stAll">All statements</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
-  sh.querySelectorAll("[data-g]").forEach(b => b.onclick = () => printDoc(pmStatementHTML(m, groups[b.dataset.g])));
+  sh.querySelectorAll("[data-g]").forEach(b => b.onclick = () => { const ids = groups[b.dataset.g], p0 = pmProp(ids[0]), o = p0 && p0.ownerId ? ownerById(p0.ownerId) : null;
+    downloadPdf(pmStatementHTML(m, ids), ids.length === 1 ? stmtFileName(p0, m) : `Owner Statement - ${o ? ownerLabel(o) : p0.name} - ${monthLabel(m)}.pdf`); });
   $("#stAll").onclick = () => printDoc(pmStatementHTML(m, null, Object.values(groups)));
   $("#stMail").onclick = () => pmStatementMailSheet(m);
   openPanel();
@@ -7752,7 +7790,7 @@ function stmtEmailSheet(m, pid){
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${html(body.value)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
   [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
-  $("#sePdf").onclick = e => { e.preventDefault(); printDoc(pmStatementPdfHTML(m, pid, {attach:!!($("#seAttach") && $("#seAttach").checked)})); };
+  $("#sePdf").onclick = e => { e.preventDefault(); downloadPdf(pmStatementPdfHTML(m, pid, {attach:!!($("#seAttach") && $("#seAttach").checked)}), stmtFileName(pmProp(pid), m)); };
   stmtWireLines(sh, x.row);
   const keep = () => {
     snapshot();
@@ -7996,7 +8034,7 @@ function pgPmStatements(){
       <td>${status}</td>
       <td class="st-acts">${x.o ? `<button class="btn sm ghost" data-strc="${x.o.id}" type="button">Recipients</button>` : `<button class="btn sm" data-pp="${x.p.id}" type="button">Add owner</button>`}
         <button class="btn sm" data-pv="${x.p.id}" type="button" ${x.why ? "disabled" : ""}>${st === "sent" ? "View" : "Preview & send"}</button>
-        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Open the statement PDF">PDF</button></td>`;
+        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button></td>`;
     tb.appendChild(tr);
   });
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
@@ -8005,7 +8043,7 @@ function pgPmStatements(){
   t.querySelectorAll("[data-strc]").forEach(b => b.onclick = () => stRecipientsSheet(b.dataset.strc));
   t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
   t.querySelectorAll("[data-pv]").forEach(b => b.onclick = () => stmtEmailSheet(m, b.dataset.pv));
-  t.querySelectorAll("[data-pdf]").forEach(b => b.onclick = () => printDoc(pmStatementPdfHTML(m, b.dataset.pdf)));
+  t.querySelectorAll("[data-pdf]").forEach(b => b.onclick = () => downloadPdf(pmStatementPdfHTML(m, b.dataset.pdf), stmtFileName(pmProp(b.dataset.pdf), m)));
 
   // ask Gmail once a minute which drafts were sent or deleted
   if(stmtConn() && Date.now() - (STP.ref[m] || 0) > 60000){
@@ -8747,7 +8785,7 @@ function invBlock(inv){
   w.appendChild(body);
   body.querySelectorAll("[data-rm]").forEach(bt => bt.onclick = () => { snapshot(); const b = billById(bt.dataset.rm); if(b) b.invoiceId = null; inv.lines = inv.lines.filter(l => l.billId !== bt.dataset.rm); commit(); render(); });
   const due = body.querySelector("#ivDue"); if(due) due.onchange = () => { snapshot(); inv.due = due.value; commit(); };
-  body.querySelector("#ivPdf").onclick = () => printDoc(invHTML(inv));
+  body.querySelector("#ivPdf").onclick = () => downloadPdf(invHTML(inv), `Owner Invoice ${inv.no || ""}`.trim());
   const pd = body.querySelector("#ivPaid"); if(pd) pd.onclick = () => invPaySheet(inv.id);
   const dl = body.querySelector("#ivDel"); if(dl) dl.onclick = () => { if(!confirm(`Delete draft ${inv.no}? Its bills go back to Ready to invoice.`)) return; snapshot(); inv.lines.forEach(l => { const b = billById(l.billId); if(b) b.invoiceId = null; }); delete pmState().invoices[inv.id]; commit(); render(); };
   const vd = body.querySelector("#ivVoid"); if(vd) vd.onclick = async () => {
@@ -9657,7 +9695,7 @@ function pgCharges(){
     card.querySelectorAll("[data-undo]").forEach(b => b.onclick = () => { const x = rows[+b.dataset.undo]; snapshot(); x.t.charge.state = x.t.charge.invNo ? "invoiced" : "open"; delete x.t.charge.settled; commit(); render(); });
     const ib = card.querySelector("[data-inv]"); if(ib) ib.onclick = () => chInvoiceSheet(openRows, email);
     const db = card.querySelector("[data-ded]"); if(db) db.onclick = () => chSettleSheet(openRows, "Deducted from their payment");
-    const pb = card.querySelector("[data-pdf]"); if(pb) pb.onclick = () => printDoc(chInvoiceHTML(openRows, chNextNo(c0.party)));
+    const pb = card.querySelector("[data-pdf]"); if(pb) pb.onclick = () => downloadPdf(chInvoiceHTML(openRows, chNextNo(c0.party)), `Invoice ${chNextNo(c0.party)} - ${c0.party}`);
   });
 }
 function chSettleSheet(rows, method){
@@ -13567,7 +13605,7 @@ const HELP = {
     <p>One statement per property each month — who it goes to, the payout, and whether it's been sent.</p>
     <ol><li>Pick the month at the top left (it opens on the month you closed last).</li>
       <li><b>Email statements</b> makes them all at once — as Gmail drafts in pm@ to check first, or sent straight away.</li>
-      <li><b>Preview &amp; send</b> on a row opens one statement to read, edit and send on its own. <b>PDF</b> opens the statement itself.</li>
+      <li><b>Preview &amp; send</b> on a row opens one statement to read, edit and send on its own. <b>PDF</b> downloads the statement as a PDF file.</li>
       <li><b>Recipients</b> sets who gets that owner's statements — add as many addresses as you need. Everyone listed is on the To line, every month.</li></ol>
     <p class="hp-tip"><b>Need an email</b> lists properties with no owner or no address — fix those with <b>Add owner</b> or <b>Recipients</b>.</p>`},
   start:{t:"How this console works", b:`
