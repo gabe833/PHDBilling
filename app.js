@@ -7334,16 +7334,21 @@ function pmRentDate(p, m, unitId){
     const x = typeof mdReady === "function" && mdReady() ? mdFor(p.id) : null;
     if(!x || !x.property) return "";
     const uid0 = unitId || (!x.whole && x.unit ? x.unit.id : "");
-    let last = "";
+    let last = "", early = "";
     (S.md.leases || []).filter(l => l.propertyId === x.property.id && !l.draft && (!uid0 || l.unitId === uid0)).forEach(l => {
       const g = (l.months || {})[m];
-      ((g && g.pays) || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d.slice(0, 7) === m && d > last) last = d; });
+      // payments toward this month's rent (an early one in late October counts for November)
+      ((g && g.pays) || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d > last) last = d; });
+      if(!last && g && Number(g.paid || g.rent) > 0 && !(g.pays || []).length){
+        const lp = String(l.lastPayment || "").slice(0, 10), m0 = m + "-01", prev = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 2, 1)).toISOString().slice(0, 10);
+        if(lp && lp < m0 && lp >= prev) early = early > lp ? early : lp;     // paid ahead, before the month started
+      }
     });
-    return last;
+    return last || early;
   }catch(e){ return ""; }
 }
 function pmStmtDates(p, m, row){
-  const rent = pmRentDate(p, m);
+  const rent = Number(row.rentReceived) > 0 ? pmRentDate(p, m) : "";
   const reps = (row.repairItems || []).map(it => String(it.date || "").slice(0, 10)).filter(Boolean).sort();
   const today = todayISO(), endM = m + "-" + String(new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate()).padStart(2, "0");
   const fallback = rent || (today.slice(0, 7) === m ? today : today > endM ? endM : m + "-01");
@@ -17676,7 +17681,8 @@ function pmUnitLines(p, m){
     const gs = leases.filter(l => l.unitId === u.id).map(l => ({l, g:(l.months || {})[m]})).filter(y => y.g);
     let rentC = 0, credC = 0, paidC = 0, date = "";
     gs.forEach(({g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived);
-      (g.pays || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d.slice(0, 7) === m && d > date) date = d; }); });
+      (g.pays || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d > date) date = d; }); });
+    if(!paidC) date = ""; else if(!date) date = pmRentDate(p, m, u.id);
     const cur = gs.find(y => !y.l.ended) || gs[0];
     return {unit:u.name || "Unit", tenant:cur ? mdTenants(cur.l) : "", rentC, creditsC:credC, paidC, feeC:Math.round(paidC * rate / 100), rate, date};
   });
