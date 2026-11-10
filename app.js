@@ -19244,49 +19244,74 @@ function pgPmPays(){
   const months = [...new Set(all.map(r => r.date.slice(0, 7)).concat(all.flatMap(r => r.parts.map(a => a.month)).filter(m => /^\d{4}-\d{2}$/.test(m))))].sort().reverse();
   const by = S.ui.rpBy === "rent" ? "rent" : "paid", m = months.includes(S.ui.rpMonth) ? S.ui.rpMonth : (months.includes(thisMonth()) ? thisMonth() : months[0]);
   const q = String(S.ui.rpQ || "").toLowerCase(), only = S.ui.rpOnly || "";
+  const mon = x => x === "before" ? "earlier" : monthLabel(x).split(" ")[0].slice(0, 3);
+  // what one payment paid for, in three plain numbers
+  const split = r => {
+    const pm = by === "rent" ? m : r.date.slice(0, 7), o = {rent:0, other:0, ahead:0, notes:[]};
+    r.parts.forEach(a => {
+      if(a.type === "credit"){ o.ahead += a.c; return; }
+      if(a.type !== "rent"){ o.other += a.c; return; }
+      if(by === "rent"){ if(a.month === m) o.rent += a.c; else if(a.month > m) o.ahead += a.c; else { o.other += a.c; o.notes.push(`${usd(a.c)} ${mon(a.month)} rent`); } return; }
+      if(a.month !== "before" && a.month > pm){ o.ahead += a.c; return; }
+      o.rent += a.c; if(a.month !== pm) o.notes.push(`${usd(a.c)} was ${mon(a.month)} rent`);
+    });
+    return o;
+  };
   let list = by === "paid" ? all.filter(r => r.date.slice(0, 7) === m) : all.filter(r => r.parts.some(a => a.type === "rent" && a.month === m));
   if(q) list = list.filter(r => `${r.where} ${r.unit} ${r.tenants}`.toLowerCase().includes(q));
-  if(only === "early") list = list.filter(r => r.parts.some(a => (a.type === "rent" && a.month > r.date.slice(0, 7)) || a.type === "credit"));
+  if(only === "early") list = list.filter(r => split(r).ahead > 0 || r.parts.some(a => a.type === "rent" && a.month > r.date.slice(0, 7)));
   if(only === "late") list = list.filter(r => r.parts.some(a => a.type === "rent" && (a.month === "before" || a.month < r.date.slice(0, 7))));
   if(only === "off") list = list.filter(r => !r.prop);
-  const amt = r => by === "rent" ? r.parts.filter(a => a.type === "rent" && a.month === m).reduce((x, a) => x + a.c, 0) : r.c;
-  const total = list.reduce((x, r) => x + amt(r), 0);
+  const rows = list.map(r => Object.assign({r}, split(r)));
+  const T = rows.reduce((t, x) => ({pay:t.pay + x.r.c, rent:t.rent + x.rent, other:t.other + x.other, ahead:t.ahead + x.ahead}), {pay:0, rent:0, other:0, ahead:0});
   actions([["Export CSV", () => {
-    const rows = [["Date settled", "Rental", "Unit", "Tenant", "Payment", "Applied to", ...(by === "rent" ? [monthLabel(m) + " rent from it"] : []), "In Month close"]]
-      .concat(list.map(r => [r.date, r.where, r.unit, r.tenants, (r.c / 100).toFixed(2), r.parts.map(a => rpLabel(a) + " " + (a.c / 100).toFixed(2)).join("; "), ...(by === "rent" ? [(amt(r) / 100).toFixed(2)] : []), r.prop ? "yes" : "no"]));
-    finCsv(`Rent payments ${by === "rent" ? "for" : "received"} ${monthLabel(m)}.csv`, rows);
+    const head = ["Date settled", "Rental", "Unit", "Tenant", "Payment", by === "rent" ? monthLabel(m) + " rent" : "Rent", "Filters, fees & other", "Paid ahead", "Applied to", "In Month close"];
+    finCsv(`Rent payments ${by === "rent" ? "for" : "received"} ${monthLabel(m)}.csv`, [head].concat(rows.map(x => [x.r.date, x.r.where, x.r.unit, x.r.tenants, (x.r.c / 100).toFixed(2), (x.rent / 100).toFixed(2), (x.other / 100).toFixed(2), (x.ahead / 100).toFixed(2), x.r.parts.map(a => rpLabel(a) + " " + (a.c / 100).toFixed(2)).join("; "), x.r.prop ? "yes" : "no"]))
+      .concat([["Total", "", "", "", (T.pay / 100).toFixed(2), (T.rent / 100).toFixed(2), (T.other / 100).toFixed(2), (T.ahead / 100).toFixed(2), "", ""]]));
   }, "ghost"]]);
-  const bar = elm("div", "card rp-bar");
-  bar.innerHTML = `<div class="rp-ctl">
+
+  const top = elm("div", "rp-top");
+  top.innerHTML = `
+    <div class="rp-ctl">
       <div class="sc-seg"><button data-by="paid" class="${by === "paid" ? "on" : ""}">Received in</button><button data-by="rent" class="${by === "rent" ? "on" : ""}">Rent for</button></div>
-      <select id="rpM">${months.map(x => `<option value="${x}" ${x === m ? "selected" : ""}>${monthLabel(x)}</option>`).join("")}</select>
-      <select id="rpOnly"><option value="">All payments</option><option value="early" ${only === "early" ? "selected" : ""}>Paid early / ahead</option><option value="late" ${only === "late" ? "selected" : ""}>Late rent for an earlier month</option><option value="off" ${only === "off" ? "selected" : ""}>Not in Month close</option></select>
-      <input type="search" id="rpQ" placeholder="Find a rental or tenant…" value="${esc(S.ui.rpQ || "")}">
+      <select id="rpM" aria-label="Month">${months.map(x => `<option value="${x}" ${x === m ? "selected" : ""}>${monthLabel(x)}</option>`).join("")}</select>
+      <select id="rpOnly" aria-label="Show"><option value="">All payments</option><option value="early" ${only === "early" ? "selected" : ""}>Paid early or ahead</option><option value="late" ${only === "late" ? "selected" : ""}>Late rent</option><option value="off" ${only === "off" ? "selected" : ""}>Not in Month close</option></select>
+      <input type="search" id="rpQ" placeholder="Find a rental or tenant" value="${esc(S.ui.rpQ || "")}">
     </div>
-    <div class="rp-sum"><span><b>${list.length}</b> payment${list.length === 1 ? "" : "s"}</span><span class="num"><b>${usd(total)}</b> ${by === "rent" ? esc(monthLabel(m)) + " rent" : "received"}</span>
-      <span class="muted">${by === "paid" ? "Same list and order as MagicDoor's Rent Payments report for the month (settled payments; failed and processing ones aren't money in)." : "Every payment that paid " + esc(monthLabel(m)) + " rent, whenever it was made — this is the rent that counts for the month."}</span></div>`;
-  v.appendChild(bar);
-  bar.querySelectorAll("[data-by]").forEach(b => b.onclick = () => { S.ui.rpBy = b.dataset.by; persistUi(); render(); });
-  bar.querySelector("#rpM").onchange = e => { S.ui.rpMonth = e.target.value; persistUi(); render(); };
-  bar.querySelector("#rpOnly").onchange = e => { S.ui.rpOnly = e.target.value; persistUi(); render(); };
-  const qi = bar.querySelector("#rpQ"); qi.oninput = () => { S.ui.rpQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#rpQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 200); };
-  const card = elm("div", "card");
-  if(!list.length){ card.innerHTML = `<div class="empty"><b>No payments</b><p>Nothing matches for ${esc(monthLabel(m))}.</p></div>`; v.appendChild(card); return; }
-  // grouped by day, like the bank and MagicDoor's report
-  const days = {}; list.forEach(r => (days[r.date] = days[r.date] || []).push(r));
-  const t = elm("table", "tbl rp-tbl");
-  t.innerHTML = `<thead><tr><th>Date</th><th>Rental</th><th>Tenant</th><th class="r">Payment</th><th>Applied to</th>${by === "rent" ? `<th class="r">${esc(monthLabel(m).split(" ")[0])} rent</th>` : ""}</tr></thead><tbody>
-    ${Object.keys(days).sort().reverse().map(d => { const ds = days[d], dt = ds.reduce((x, r) => x + (by === "rent" ? amt(r) : r.c), 0);
-      return `<tr class="rp-day"><td colspan="${by === "rent" ? 3 : 3}"><b>${esc(fdateS(d))}</b> <span class="muted">· ${ds.length} payment${ds.length === 1 ? "" : "s"}</span></td><td class="r num"><b>${by === "rent" ? "" : usd(dt)}</b></td><td></td>${by === "rent" ? `<td class="r num"><b>${usd(dt)}</b></td>` : ""}</tr>` +
-        ds.map(r => `<tr><td class="muted nw">${esc(fdateS(r.date))}</td>
-          <td>${r.prop ? `<a href="#" data-rpp="${r.prop.id}">${esc(r.where)}</a>` : esc(r.where)}${r.unit && !/^home$/i.test(r.unit) && r.unit !== r.where && !(r.prop && r.prop.name === r.unit) ? `<div class="muted" style="font-size:11.5px">${esc(r.unit)}</div>` : ""}${r.prop ? "" : ` <span class="tag gold">not in Month close</span>`}</td>
-          <td class="muted">${esc(r.tenants || "")}</td><td class="r num">${usd(r.c)}</td>
-          <td class="rp-ap">${r.parts.length ? r.parts.map(a => `<span class="rp-p ${a.type === "rent" ? (a.month === r.date.slice(0, 7) ? "now" : a.month === "before" || a.month < r.date.slice(0, 7) ? "late" : "early") : a.type === "credit" ? "early" : "fee"}">${esc(rpLabel(a))} <b>${usd(a.c)}</b></span>`).join("") : `<span class="muted">—</span>`}</td>
-          ${by === "rent" ? `<td class="r num">${usd(amt(r))}</td>` : ""}</tr>`).join(""); }).join("")}
-  </tbody><tfoot><tr><td colspan="3"><b>Total</b></td><td class="r num"><b>${by === "rent" ? "" : usd(total)}</b></td><td></td>${by === "rent" ? `<td class="r num"><b>${usd(total)}</b></td>` : ""}</tr></tfoot>`;
-  t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); S.ui.pmPropId = a.dataset.rpp; go("pmProperty", a.dataset.rpp); });
-  const w = elm("div", "tbl-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
-  v.appendChild(elm("p", "muted", `<span style="font-size:12px">"Applied to" is worked out the way MagicDoor applies a payment: to the oldest charge first (fees and rent dated the 1st, late fees after). A payment made before the month's charges post waits as the tenant's credit and pays the next month's rent. Tenant names come from MagicDoor.</span>`));
+    <div class="rp-stats">
+      <div><span>${by === "rent" ? "Payments" : "Received"}</span><b>${usd(T.pay)}</b><small>${rows.length} payment${rows.length === 1 ? "" : "s"}</small></div>
+      <div><span>${by === "rent" ? esc(monthLabel(m)) + " rent" : "Rent"}</span><b>${usd(T.rent)}</b><small>${by === "rent" ? "counts for the month" : "incl. late rent"}</small></div>
+      <div><span>Filters, fees & other</span><b>${usd(T.other)}</b><small>${by === "rent" ? "incl. other months' rent" : "filters, late fees, PHD charges"}</small></div>
+      <div><span>Paid ahead</span><b>${usd(T.ahead)}</b><small>next month or tenant credit</small></div>
+    </div>`;
+  v.appendChild(top);
+  top.querySelectorAll("[data-by]").forEach(b => b.onclick = () => { S.ui.rpBy = b.dataset.by; persistUi(); render(); });
+  top.querySelector("#rpM").onchange = e => { S.ui.rpMonth = e.target.value; persistUi(); render(); };
+  top.querySelector("#rpOnly").onchange = e => { S.ui.rpOnly = e.target.value; persistUi(); render(); };
+  const qi = top.querySelector("#rpQ"); qi.oninput = () => { S.ui.rpQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#rpQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 200); };
+
+  const card = elm("div", "card rp-card");
+  if(!rows.length){ card.innerHTML = `<div class="empty"><b>No payments</b><p>Nothing matches for ${esc(monthLabel(m))}.</p></div>`; v.appendChild(card); return; }
+  const days = {}; rows.forEach(x => (days[x.r.date] = days[x.r.date] || []).push(x));
+  const money = c => c ? usd(c) : `<span class="rp-z">—</span>`;
+  const who = t => { const n = String(t || "").split(/\s*\/\s*/).filter(Boolean).map(x => x.replace(/\s+-\s+.*$/, "")); return n.length ? esc(n[0]) + (n.length > 1 ? ` <span class="rp-more">+${n.length - 1}</span>` : "") : ""; };
+  const t = elm("table", "rp-tbl");
+  t.innerHTML = `<colgroup><col class="c-rent-w"><col><col class="c-num"><col class="c-num"><col class="c-num"><col class="c-num"></colgroup>
+    <thead><tr><th>Rental</th><th>Tenant</th><th class="r">Payment</th><th class="r">${by === "rent" ? esc(mon(m)) + " rent" : "Rent"}</th><th class="r">Fees &amp; other</th><th class="r">Ahead</th></tr></thead>
+    ${Object.keys(days).sort().reverse().map(d => { const ds = days[d], s = k => ds.reduce((a, x) => a + (k === "pay" ? x.r.c : x[k]), 0);
+      return `<tbody><tr class="rp-day"><th colspan="2">${esc(new Date(d + "T12:00:00").toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"}))}<span>${ds.length} payment${ds.length === 1 ? "" : "s"}</span></th><th class="r">${usd(s("pay"))}</th><th class="r">${usd(s("rent"))}</th><th class="r">${money(s("other"))}</th><th class="r">${money(s("ahead"))}</th></tr>
+        ${ds.map(x => `<tr>
+          <td><div class="rp-name">${x.r.prop ? `<a href="#" data-rpp="${x.r.prop.id}">${esc(x.r.where)}</a>` : esc(x.r.where)}${x.r.prop ? "" : ` <span class="rp-flag">not in Month close</span>`}</div>${x.r.unit && !/^home$/i.test(x.r.unit) && x.r.unit !== x.r.where ? `<div class="rp-sub">${esc(x.r.unit)}</div>` : ""}</td>
+          <td class="rp-who">${who(x.r.tenants)}</td>
+          <td class="r num">${usd(x.r.c)}</td>
+          <td class="r num">${money(x.rent)}${x.notes.length ? `<div class="rp-note">${esc(x.notes.join(", "))}</div>` : ""}</td>
+          <td class="r num">${money(x.other)}</td>
+          <td class="r num ${x.ahead ? "rp-ahead" : ""}">${money(x.ahead)}</td></tr>`).join("")}</tbody>`; }).join("")}
+    <tfoot><tr><th colspan="2">Total · ${rows.length} payment${rows.length === 1 ? "" : "s"}</th><th class="r">${usd(T.pay)}</th><th class="r">${usd(T.rent)}</th><th class="r">${usd(T.other)}</th><th class="r">${usd(T.ahead)}</th></tr>
+      <tr class="rp-tot2"><td colspan="6"><span>Rent <b>${usd(T.rent)}</b></span><span>+ Filters, fees &amp; other <b>${usd(T.other)}</b></span><span>= <b>${usd(T.rent + T.other)}</b></span>${T.ahead ? `<span class="muted">plus ${usd(T.ahead)} paid ahead</span>` : ""}</td></tr></tfoot>`;
+  t.querySelectorAll("[data-rpp]").forEach(a => a.onclick = e => { e.preventDefault(); go("pmProperty", a.dataset.rpp); });
+  const w = elm("div", "rp-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
+  v.appendChild(elm("p", "rp-foot", `Which month a payment paid for is worked out the way MagicDoor applies it: oldest charge first. A payment made before the month's rent is charged waits as the tenant's credit and pays the next month. Dates are the day each payment settled.`));
 }
 {
   // a way in from Rent overview
