@@ -17084,18 +17084,22 @@ function actTeamBuild(rows){
   }
   return res.filter(e => e.lines.length || e.verb !== "Changed");
 }
+// loaded per person filter ("" = everyone), so picking Peter fetches Peter's own history rather than whatever
+// happens to be in the newest 300 saves
+const actWhoKey = () => /@/.test(S.ui.actW || "") ? S.ui.actW : "";
+const actSet = () => (ACTV.sets = ACTV.sets || {})[actWhoKey()] || null;
 async function actTeamLoad(more){
   if(!(typeof Cloud !== "undefined" && Cloud.sb) || ACTV.busy) return;
-  if(!more && Date.now() - ACTV.teamAt < 60000) return;
-  ACTV.busy = true; ACTV.teamAt = Date.now();
+  const key = actWhoKey(), sets = (ACTV.sets = ACTV.sets || {}), cur = sets[key];
+  if(!more && cur && Date.now() - cur.at < 60000) return;
+  ACTV.busy = true;
   try{
-    const before = more && ACTV.raw && ACTV.raw.length ? ACTV.raw[ACTV.raw.length - 1].at : null;
-    const {data, error} = await Cloud.sb.rpc("team_activity", {lim:300, before});
+    const before = more && cur && cur.raw.length ? cur.raw[cur.raw.length - 1].at : null;
+    const {data, error} = await Cloud.sb.rpc("team_activity", {lim:300, before, who:key || null});
     if(error) throw error;
-    ACTV.raw = more ? (ACTV.raw || []).concat(data || []) : (data || []);
-    ACTV.more = (data || []).length >= 300;
-    ACTV.team = actTeamBuild(ACTV.raw); ACTV.err = "";
-  }catch(e){ ACTV.err = (e && e.message) || "Couldn't load the change history"; if(!ACTV.team) ACTV.team = []; }
+    const raw = more && cur ? cur.raw.concat(data || []) : (data || []);
+    sets[key] = {raw, team:actTeamBuild(raw), more:(data || []).length >= 300, at:Date.now()}; ACTV.err = "";
+  }catch(e){ ACTV.err = (e && e.message) || "Couldn't load the change history"; if(!sets[key]) sets[key] = {raw:[], team:[], more:false, at:Date.now()}; }
   ACTV.busy = false;
   if(S.ui.view === "activity") render();
 }
@@ -17132,10 +17136,10 @@ function pgActivity(){
   $("#pgCrumb").textContent = sideName(side); $("#pgTitle").textContent = "Activity log";
   const F0 = S.ui.actF || "all", F = ACT_SRC_SIDE[F0] && ACT_SRC_SIDE[F0] !== side ? "all" : F0, q = String(S.ui.actQ || "").toLowerCase(), W = S.ui.actW || "";
   if(F === "team" || F === "all") actTeamLoad();
-  const team = (ACTV.team || []);
+  const set = actSet(), team = set ? set.team : [];
   const pool = F === "team" ? team : F === "all" ? actEntries().concat(team).sort((a, b) => String(b.at).localeCompare(String(a.at))) : actEntries();
   const all = pool.filter(e => { const s2 = actSide(e); return !s2 || s2 === side; });
-  const people = [...new Set(all.map(e => e.by).filter(b => !actIsAuto(b)))].sort();
+  const people = [...new Set(all.map(e => e.by).concat(((typeof Cloud !== "undefined" && Cloud.staff) || []).map(x => x.email), /@/.test(W) ? [W] : []).filter(b => b && !actIsAuto(b)))].sort();
   const text = e => (e.what + " " + (e.by || "") + " " + (e.lines || []).map(l => l.t).join(" ")).toLowerCase();
   const list = all.filter(e => (F === "all" || F === "team" || e.src === F) && (!W || (W === "auto" ? actIsAuto(e.by) : W === "people" ? !actIsAuto(e.by) : e.by === W)) && (!q || text(e).includes(q)));
   $("#pgSub").textContent = `${list.length} entr${list.length === 1 ? "y" : "ies"}${F !== "all" ? " · " + ACT_SRC[F] : ""}${W ? " · " + (W === "auto" ? "automatic only" : W === "people" ? "people only" : actWhoName(W)) : ""}`;
@@ -17150,7 +17154,8 @@ function pgActivity(){
   bar.querySelector(".act-who").onchange = e => { S.ui.actW = e.target.value; persistUi(); render(); };
   const qi = bar.querySelector(".act-q"); qi.oninput = () => { S.ui.actQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = document.querySelector(".act-q"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
   if(ACTV.err && (F === "team" || F === "all")) v.appendChild(elm("div", "pm-banner", `Couldn't load what each person changed: ${esc(ACTV.err)}`));
-  if(F === "team" && ACTV.team == null){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
+  if(F === "team" && !set){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
+  if(!list.length && (F === "team" || F === "all") && !set){ v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading the change history…</p></div>`)); return; }
   if(!list.length){ v.appendChild(elm("div", "card", `<div class="empty"><b>Nothing here${q || W ? " for this filter" : " yet"}</b><p class="muted">Approvals, bills, payments, syncs, automatic actions and every change a person saves on the ${esc(sideName(side).toLowerCase())} side show up here as they happen.</p></div>`)); return; }
   const card = elm("div", "card act-card"); let day = "", html = "";
   list.slice(0, 600).forEach(e => {
@@ -17163,7 +17168,7 @@ function pgActivity(){
       <span class="act-l">${ref.file ? `<a href="${esc(ref.file)}" target="_blank" rel="noopener">Receipt</a>` : ""}${ref.pid ? `<a href="#" data-ap="${esc(ref.pid)}" data-as="${esc(ref.side || "")}">Open</a>` : ""}${ref.bill ? `<a href="#" data-ab="${esc(ref.bill)}">Bill</a>` : ""}</span></div>`;
   });
   card.innerHTML = html + (list.length > 600 ? `<p class="help" style="padding:10px 16px">Showing the newest 600 — search to find older ones.</p>` : "")
-    + ((F === "team" || F === "all") && ACTV.more && ACTV.team ? `<div class="act-older"><button class="btn sm" id="actOlder" ${ACTV.busy ? "disabled" : ""}>${ACTV.busy ? "Loading…" : "Load older changes by people"}</button></div>` : "");
+    + ((F === "team" || F === "all") && set && set.more ? `<div class="act-older"><button class="btn sm" id="actOlder" ${ACTV.busy ? "disabled" : ""}>${ACTV.busy ? "Loading…" : "Load older changes by people"}</button></div>` : "");
   v.appendChild(card);
   card.querySelectorAll("[data-ap]").forEach(a => a.onclick = ev => { ev.preventDefault(); if(a.dataset.as === "pm" || pmProp(a.dataset.ap)) pmOpenProperty(a.dataset.ap); else go("txns", a.dataset.ap); });
   card.querySelectorAll("[data-ab]").forEach(a => a.onclick = ev => { ev.preventDefault(); go("pmBills"); setTimeout(() => billSheet(a.dataset.ab), 30); });
