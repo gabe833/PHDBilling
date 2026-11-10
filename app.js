@@ -19116,6 +19116,22 @@ function exqFind(m){
     found.push({k, kind:"payreceipt", p:pmProp(b2.propertyId), keep:twin, drop:b2,
       why:`${b2.vendor} ${usd(cents(b2.amount))} on ${fdateS(b2.date)} is the day the ${fdateS(twin.date)} bill for the same ${usd(cents(twin.amount))} was paid${twin.pay && twin.pay.method ? " (" + twin.pay.method + ")" : ""} — it looks like that payment's confirmation, not a second expense.`});
   });
+  // a console bill that MagicDoor already charged the owner for (the vendor's invoice entered twice: once in MagicDoor,
+  // once through the receipt inbox) — same rental, vendor and amount within ~10 weeks, and not linked to that MagicDoor bill
+  if(typeof mdReady === "function" && mdReady()){
+    const vk = v => String(v || "").toLowerCase().replace(/\s+and\s+/g, "&").replace(/[^a-z0-9]/g, "").slice(0, 5);
+    bills.forEach(b => {
+      if(!b.deduct || b.deduct.month !== m || b.charged) return;
+      const p = pmProp(b.propertyId), x = p && mdFor(p.id); if(!x || !x.property) return;
+      const row = pmRow(m, p.id), it = row && (row.repairItems || []).find(i => i.billId === b.id); if(!it || it.mdBill || it.mdLine) return;
+      const twin = (S.md.bills || []).find(md => !/admin fee/i.test(md.memo || "") && vk(md.vendor) === vk(b.vendor) && Math.abs((new Date(md.date) - new Date(b.date)) / 864e5) <= 75
+        && (md.lines || []).some(l => l.propertyId === x.property.id && cents(l.amount) === cents(b.amount))
+        && !Object.values(pmState().rows).some(r => r.month === m && r.propertyId === p.id && (r.repairItems || []).some(i => i.mdBill === md.id)));
+      if(!twin) return;
+      const k = "md:" + b.id; if(ign[k]) return;
+      found.push({k, kind:"inmd", p, bill:b, twin, why:`${b.vendor} ${usd(cents(b.amount))} (${fdateS(b.date)}) is already in MagicDoor as "${twin.memo || twin.vendor}" (${fdateS(twin.date)}), which charged the owner then — this would charge them a second time.`});
+    });
+  }
   // the same expense on two statements (this month against the last three)
   const live = pmLiveProps();
   live.forEach(p => {
@@ -19152,12 +19168,14 @@ function exqCard(m){
   const closed = (pmState().meta[m] || {}).closed;
   card.innerHTML = `<div class="dep-h"><div><h3>Expense check</h3><div class="muted" style="font-size:12.5px">Every repair and bill on ${esc(monthLabel(m))}'s statements, checked against the bills and the last three months, so nothing is charged twice. Exact copies are removed on their own.</div></div>
       <span class="tag ${F.length ? "red" : "green"}">${F.length ? F.length + " to decide" : "No duplicates"}</span></div>
-    ${F.map((f, i) => `<div class="exq-r"><div><b>${esc(f.p ? f.p.name : "")}</b> · ${f.kind === "payreceipt" ? "payment confirmation entered as a bill" : "charged twice?"}<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(f.why)}</div>
+    ${F.map((f, i) => `<div class="exq-r"><div><b>${esc(f.p ? f.p.name : "")}</b> · ${f.kind === "payreceipt" ? "payment confirmation entered as a bill" : f.kind === "inmd" ? "already charged in MagicDoor" : "charged twice?"}<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(f.why)}</div>
         ${f.drop && (f.drop.receipt || {}).url ? "" : ""}${(f.drop && (pmRow(m, f.drop.propertyId) || {}).repairItems || []).some(x => x.billId === (f.drop || {}).id && x.mdBill) || (f.it && f.it.mdBill) ? `<div class="exq-md">It's also in MagicDoor — after removing it here, delete that bill and its 10% admin fee bill in MagicDoor too.</div>` : ""}</div>
-      <div class="exq-a">${closed ? "" : `<button class="btn sm primary" data-xfix="${i}">${f.kind === "payreceipt" ? "Remove the duplicate" : "Remove the " + monthLabel(m).split(" ")[0] + " one"}</button>`}<button class="btn sm ghost" data-xok="${i}">Not a duplicate</button></div></div>`).join("")}`;
+      <div class="exq-a">${closed ? "" : `<button class="btn sm primary" data-xfix="${i}">${f.kind === "payreceipt" ? "Remove the duplicate" : f.kind === "inmd" ? "Take it off — keep it to pay the vendor" : "Remove the " + monthLabel(m).split(" ")[0] + " one"}</button>`}<button class="btn sm ghost" data-xok="${i}">Not a duplicate</button></div></div>`).join("")}`;
   card.querySelectorAll("[data-xfix]").forEach(b => b.onclick = () => {
     const f = F[+b.dataset.xfix]; snapshot();
     if(f.kind === "payreceipt"){ f.drop.status = "void"; f.drop.voidWhy = "Payment confirmation of " + f.keep.id + " (expense check)"; billSave(f.drop, false); }
+    else if(f.kind === "inmd"){ const b = f.bill, r = pmRow(m, b.propertyId); if(r){ r.repairItems = (r.repairItems || []).filter(i => i.billId !== b.id); if(!r.locked){ r.repairs = null; r.adminFee = null; } pmTouch(r); }
+      b.deduct = null; b.charged = {month:String(f.twin.date || "").slice(0, 7), note:`Already charged in MagicDoor ("${f.twin.memo || ""}", ${f.twin.date}) — kept here only to pay the vendor`}; billSave(b, false); }
     else exqRemove(f.row, f.it);
     actLog("pm", `Expense check · ${f.p ? f.p.name : ""}: removed a duplicate ${usd(cents((f.drop || f.it).amount))} ${(f.drop || f.it).vendor || ""} from ${monthLabel(m)}`);
     commit(); render(); toast("Duplicate removed from the statement");
