@@ -18900,7 +18900,7 @@ function depLeaseAlloc(l){
   const apply = () => {
     while(queue.length && pool.length){
       const ch = queue[0], py = pool[0], a = Math.min(ch.left, py.left);
-      allocs.push({date:py.date, c:a, month:ch.month, type:ch.type});
+      if(!py.credit) allocs.push({date:py.date, c:a, month:ch.month, type:ch.type});
       ch.left -= a; py.left -= a;
       if(!ch.left) queue.shift(); if(!py.left) pool.shift();
     }
@@ -18916,13 +18916,17 @@ function depLeaseAlloc(l){
   events.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : (a.kind === "charges" ? -1 : 1));
   events.forEach(e => {
     if(e.kind === "charges"){
-      const g = e.g, rentC = Math.max(0, C(g.rent) - C(g.credits)), extraCred = Math.max(0, C(g.credits) - C(g.rent));
-      [["fees", C(g.filters) + C(g.lateFee) + C(g.applications)], ["rent", rentC], ["other", Math.max(0, C(g.other) - extraCred)], ["phd", C(g.phd)]]
+      // oldest charge first, as MagicDoor applies a payment: the month's company charges (filters, application fees)
+      // and rent are dated the 1st; the owner's other charges and PHD's after; late fees post days later, so last
+      const g = e.g;
+      [["fees", C(g.filters) + C(g.applications)], ["rent", C(g.rent)], ["other", C(g.other)], ["phd", C(g.phd)], ["late", C(g.lateFee)]]
         .forEach(([type, c]) => { if(c > 0) queue.push({month:e.m, type, left:c}); });
+      // a credit given to the tenant pays charges too, but no money moves (it isn't rent received)
+      if(C(g.credits) > 0) pool.unshift({date:e.m + "-01", left:C(g.credits), credit:true});
     } else if(e.c > 0) pool.push({date:e.at, left:e.c});
     apply();
   });
-  pool.forEach(py => { if(py.left > 0) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit"}); });
+  pool.forEach(py => { if(py.left > 0 && !py.credit) allocs.push({date:py.date, c:py.left, month:"ahead", type:"credit"}); });
   return {allocs, pending:C((M[ms[ms.length - 1]] || {}).pending)};
 }
 // which MagicDoor leases a console rental's rent comes from (the same leases Month close reads)
@@ -18952,7 +18956,7 @@ function depMonth(m){
       if(String(a.date).slice(0, 7) !== m) return;
       if(a.type === "rent") a.month === m ? B.thisRent += a.c : a.month === "before" || a.month < m ? B.lateRent += a.c : B.ahead += a.c;
       else if(a.type === "credit") B.ahead += a.c;
-      else if(a.type === "fees") B.fees += a.c; else if(a.type === "phd") B.phd += a.c; else B.other += a.c;
+      else if(a.type === "fees" || a.type === "late") B.fees += a.c; else if(a.type === "phd") B.phd += a.c; else B.other += a.c;
     });
   });
   // 2. each rental: rent on the statement vs. rent the payments paid for this month
@@ -18961,7 +18965,12 @@ function depMonth(m){
     const row = pmRow(m, p.id), ls = depLeasesFor(p);
     const stmtC = row && !row.deleted ? cents(row.rentReceived) : 0;
     let paidC = 0, early = 0; const parts = [];
-    ls.forEach(l => alloc.get(l.id).allocs.forEach(a => { if(a.type !== "rent" || a.month !== m) return; paidC += a.c; if(String(a.date) < m + "-01") early += a.c; parts.push({date:a.date, c:a.c, unit:ls.length > 1 ? unitName(l) : ""}); }));
+    // rent counts on the statement of the month it is both due and paid: this month's rent paid this month or early,
+    // and late rent for an earlier month paid this month (the way MagicDoor's owner statement counts it)
+    ls.forEach(l => alloc.get(l.id).allocs.forEach(a => { if(a.type !== "rent") return; const pm = String(a.date).slice(0, 7), rm = a.month === "before" ? "0000-00" : a.month;
+      if((pm > rm ? pm : rm) !== m) return;
+      paidC += a.c; if(rm === m && String(a.date) < m + "-01") early += a.c;
+      parts.push({date:a.date, c:a.c, unit:ls.length > 1 ? unitName(l) : "", late:rm < m}); }));
     const cashM = ls.reduce((s, l) => s + Object.values(l.months || {}).reduce((x, g) => x + (g.pays || []).filter(q => String(q[0]).slice(0, 7) === m).reduce((y, q) => y + cents(q[1]), 0), 0), 0);
     const pend = ls.reduce((s, l) => s + cents(((l.months || {})[m] || {}).pending), 0);
     if(!ls.length && !stmtC) return;
@@ -19001,7 +19010,7 @@ function depCard(m){
         </tbody></table>
         <table class="tbl dep-br" style="margin-top:12px"><tbody>
           <tr class="dep-tot"><td>Rent received on ${esc(monthLabel(m))} statements</td><td class="r num">${usd(D.stmtTotal)}</td></tr>
-          <tr><td>Paid in ${esc(monthLabel(m))}</td><td class="r num">${usd(D.paidTotal - D.earlyTotal)}</td></tr>
+          <tr><td>Paid in ${esc(monthLabel(m))} (including late rent for earlier months)</td><td class="r num">${usd(D.paidTotal - D.earlyTotal)}</td></tr>
           <tr><td>Paid early, in ${esc(monthLabel(PMCore.monthAdd(m, -1)))}</td><td class="r num">${usd(D.earlyTotal)}</td></tr>
           <tr class="dep-chk"><td>${D.stmtTotal === D.paidTotal ? "Statements match the payments ✓" : `Statements are ${usd(Math.abs(D.stmtTotal - D.paidTotal))} ${D.stmtTotal > D.paidTotal ? "over" : "under"} the payments`}</td><td class="r num">${usd(D.paidTotal)}</td></tr>
         </tbody></table>
@@ -19014,10 +19023,10 @@ function depCard(m){
       </div>
     </div>
     ${off.length ? `<h4 class="dep-h4">Rent on the statement doesn't match the payments <span class="muted">${off.length}</span></h4>
-      <table class="tbl dep-off"><thead><tr><th>Rental</th><th class="r">On the statement</th><th class="r">Payments for ${esc(monthLabel(m).split(" ")[0])} rent</th><th class="r">Difference</th><th>Payments</th><th></th></tr></thead><tbody>
+      <table class="tbl dep-off"><thead><tr><th>Rental</th><th class="r">On the statement</th><th class="r">Rent the payments cover</th><th class="r">Difference</th><th>Payments</th><th></th></tr></thead><tbody>
       ${off.map(r => `<tr><td><a href="#" data-dp="${r.p.id}">${esc(r.p.name)}</a>${r.noRow ? ` <span class="tag gold">not in Month close</span>` : ""}${r.pend ? `<div class="muted" style="font-size:11.5px">${usd(r.pend)} still processing</div>` : ""}</td>
         <td class="r num">${r.noRow ? "—" : usd(r.stmtC)}</td><td class="r num">${usd(r.paidC)}</td><td class="r num ${r.diff > 0 ? "neg" : ""}">${r.diff > 0 ? "+" : "−"}${usd(Math.abs(r.diff))}</td>
-        <td class="muted" style="font-size:12px">${r.parts.length ? r.parts.map(x => `${x.date === "before" ? "credit from before" : esc(fdateS(x.date))} ${usd(x.c)}${x.unit ? " (" + esc(x.unit) + ")" : ""}`).join(" · ") : r.linked ? "no payment toward this month's rent" : "not linked to MagicDoor"}</td>
+        <td class="muted" style="font-size:12px">${r.parts.length ? r.parts.map(x => `${x.date === "before" ? "credit from before" : esc(fdateS(x.date))} ${usd(x.c)}${x.late ? " late rent" : ""}${x.unit ? " (" + esc(x.unit) + ")" : ""}`).join(" · ") : r.linked ? "no payment toward this month's rent" : "not linked to MagicDoor"}</td>
         <td>${!r.noRow && !closed && !(r.row && (r.row.paidOut || r.row.locked)) ? `<button class="btn sm" data-dfix="${r.p.id}" data-dv="${r.paidC}">Use ${usd(r.paidC)}</button>` : ""}</td></tr>`).join("")}
       </tbody></table>` : ""}
     ${D.notOnStatement.length ? `<h4 class="dep-h4">Deposited, but on no owner statement <span class="muted">${D.notOnStatement.length}</span></h4>
@@ -19027,7 +19036,7 @@ function depCard(m){
   card.querySelectorAll("[data-dp]").forEach(a => a.onclick = e => { e.preventDefault(); if(typeof pmRowSheet === "function"){ pmRowSheet(m, a.dataset.dp); } });
   card.querySelectorAll("[data-dfix]").forEach(b => b.onclick = () => {
     const p = pmProp(b.dataset.dfix), row = pmRow(m, p.id), v = Number(b.dataset.dv) / 100;
-    if(!row || !confirm(`Set ${p.name}'s ${monthLabel(m)} rent received from ${usd(cents(row.rentReceived))} to ${usd(cents(v))}, what MagicDoor's payments paid for this month's rent?`)) return;
+    if(!row || !confirm(`Set ${p.name}'s ${monthLabel(m)} rent received from ${usd(cents(row.rentReceived))} to ${usd(cents(v))}, the rent MagicDoor's payments cover for this month?`)) return;
     snapshot(); row.rentReceived = v; pmTouch(row); actLog("pm", `Rent received · ${p.name} · ${monthLabel(m)}: set to ${usd(cents(v))} to match the deposits`); commit(); render();
   });
   return card;
