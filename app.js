@@ -7597,7 +7597,7 @@ function pmStatementPdfHTML(m, pid, opts){
     UN && UN.credit && UN.credit.length ? UN.credit.map(x => line(d(D.fee), `${esc(x.label)}<br><span class="m">${esc(x.why)}</span>`, "", usd(x.c), "fee")).join("") : "",
     c.leasingC ? line(d(D.fee), "Leasing fee", "", neg(c.leasingC), "fee") : ""].join("") + (RC => !RC.length ? "" :
     `<tr class="sub"><td></td><td colspan="2">${esc(monthLabel(m))} net proceeds</td><td class="r">${usd(c.payoutC + RC.reduce((x, y) => x + y.nowC, 0))}</td></tr>` +
-    RC.map(x => line(d(pmStmtRecDate(m, row)), `Recovery of the ${esc(x.mo)} overpayment
+    RC.map(x => `<tr class="fee"><td class="dt">${d(pmStmtRecDate(m, row))}</td><td colspan="2">Recovery of the ${esc(x.mo)} overpayment
       <table class="rec">
         <tr><td>${esc(x.mo)} owner payout</td><td class="r">${usd(x.dueC)}</td></tr>
         ${x.pays.map((y, i) => `<tr><td>${i ? "Paid again" : "Paid"} ${esc(docShort(y.date))} · ${esc(y.by)}${y.ref ? ` · ref ${esc(y.ref)}` : ""}</td><td class="r">${usd(y.c)}</td></tr>`).join("")}
@@ -7606,7 +7606,7 @@ function pmStatementPdfHTML(m, pid, opts){
         <tr><td>Withheld from ${esc(monthLabel(m))} proceeds${x.agreed ? " (as agreed" + (x.agreed.date ? " " + esc(docShort(x.agreed.date)) : "") + ")" : ""}</td><td class="r">−${usd(x.nowC)}</td></tr>
         <tr class="rl"><td>${x.leftC ? "Still to recover" : "Remaining overpayment"}</td><td class="r">${usd(x.leftC)}</td></tr>
       </table>
-      <span class="m">Payments sent by ACH can take a few business days to arrive, so both may show in your bank on the same day.</span>`, "", neg(x.nowC), "fee")).join(""))(pmStmtRecoveries(m, pid, row));
+      <span class="m">Payments sent by ACH can take a few business days to arrive, so both may show in your bank on the same day.</span></td><td class="r">${neg(x.nowC)}</td></tr>`).join(""))(pmStmtRecoveries(m, pid, row));
   const owe = c.payoutC < 0;
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Owner Statement</title><style>
   @page{size:letter;margin:0.6in}
