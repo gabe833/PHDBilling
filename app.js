@@ -19885,6 +19885,7 @@ function pmdCard(v){
   const sec = (t, n, body, open) => n ? `<details class="pmd-sec"${open ? " open" : ""}><summary><b>${t}</b> <span class="muted">${n}</span></summary>${body}</details>` : "";
   const done = (by.done || []).length, todo = (by.todo || []).length;
   c.innerHTML = head + `<div class="card-b">
+    ${cfg.canEdit === false ? `<p class="pm-banner" style="margin:0 0 12px"><b>billing@ can only view ${esc(cfg.root.name)}.</b> Share it with billing@phdproperties.realestate as <b>Editor</b> (in Drive: right-click → Share), then press Re-read folders.</p>` : ""}
     <div class="pmd-stats"><div><b>${props.length - miss.length}</b><span>of ${props.length} rentals matched to a folder</span></div><div><b>${done}</b><span>bills in Drive</span></div><div><b>${todo}</b><span>waiting to file</span></div><div><b>${(by.unit || []).length + (by.maybe || []).length}</b><span>need you</span></div></div>
     ${sec("Which unit?", (by.unit || []).length, (by.unit || []).map(unitRow).join(""), true)}
     ${sec("Already in Drive?", (by.maybe || []).length, (by.maybe || []).map(maybeRow).join(""), true)}
