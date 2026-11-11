@@ -16886,7 +16886,7 @@ function ofRunSheet(id){
       <div class="sheet-b">
         <div class="f2"><label class="fld"><span>Period from</span><input type="date" id="orS" value="${esc(r.periodStart)}" ${editable ? "" : "disabled"}></label><label class="fld"><span>to</span><input type="date" id="orE" value="${esc(r.periodEnd)}" ${editable ? "" : "disabled"}></label></div>
         <div class="f2"><label class="fld"><span>Pay date</span><input type="date" id="orP" value="${esc(r.payDate)}" ${editable ? "" : "disabled"}></label>
-          <label class="fld"><span>Paid from</span><select id="orA" ${editable || r.status === "approved" ? "" : "disabled"}>${OF_ACCOUNTS.map(a => `<option ${a === r.account ? "selected" : ""}>${a}</option>`).join("")}</select></label></div>
+          <label class="fld"><span>Paid from <span class="muted" style="font-weight:400">· send by ${esc(fdateS(ofSendBy(r.payDate)))}</span></span><select id="orA" ${editable || r.status === "approved" ? "" : "disabled"}>${OF_ACCOUNTS.map(a => `<option ${a === r.account ? "selected" : ""}>${a}</option>`).join("")}</select></label></div>
         ${r.lines.map((l, i) => { const items = (l.entries || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean), off = (l.timeoff || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean);
           return `<div class="of-line">
             <div class="of-line-h"><b>${esc(l.name)}</b><span class="num">${usd(l.netC)}</span>${editable ? `<button class="linkish" data-rm="${i}">remove</button>` : ""}</div>
@@ -20131,7 +20131,8 @@ async function ofRunNickel(r, box){
           ${v ? `<select data-nkm="${esc(l.person)}">${(v.payout || []).map(m => `<option value="${esc(m.id)}" ${m.id === pk.payoutMethodId ? "selected" : ""}>${esc(m.label)}</option>`).join("") || `<option value="">No bank account on file</option>`}</select>` : ""}
           ${l.nickel && l.nickel.err ? `<div style="color:var(--red);font-size:12px">Last try: ${esc(l.nickel.err)}</div>` : ""}`}</div>`; }).join("")}
       <div class="f2" style="margin-top:8px"><label class="fld"><span>Pay from</span><select id="nkFrom">${plan.payFrom.map(m => `<option value="${esc(m.id)}" ${m.id === from.id ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>
-        <label class="fld"><span>Arrive on <span class="muted" style="font-weight:400">· optional</span></span><input type="date" id="nkWhen" value="${esc(r.payDate && r.payDate > todayISO() ? r.payDate : "")}" min="${todayISO()}"></label></div>
+        <label class="fld"><span>Arrive on <span class="muted" style="font-weight:400">· optional</span></span><input type="date" id="nkWhen" value="${esc(r.payDate && ofBizOnOrBefore(r.payDate) > todayISO() ? ofBizOnOrBefore(r.payDate) : "")}" min="${todayISO()}"></label></div>
+      ${todayISO() > ofSendBy(r.payDate) ? `<p class="pm-banner late" style="margin:6px 0">Sending after ${esc(fdateS(ofSendBy(r.payDate)))} — it likely lands after ${esc(fdateS(r.payDate))}.</p>` : `<p class="help" style="margin:4px 0 8px">Send by ${esc(fdateS(ofSendBy(r.payDate)))} so it's in their account on ${esc(fdateS(r.payDate))}.</p>`}
       ${plan.canPay ? `<button class="btn primary" id="nkGo" ${live.length && live.every(l => pick[l.person].vendorId && pick[l.person].payoutMethodId) ? "" : "disabled"}>Send ${usd(tot)} in Nickel</button>` : `<p class="help">You're not on the payments list, so you can't send money — ${esc((plan.payers || []).join(", ") || "someone who is")} can.</p>`}
       <p class="help" style="margin-top:6px">Nickel shows its own confirmation before anything is sent. Russell-style lines (working off what's owed) send only the net shown.</p>`;
     box.querySelectorAll("[data-nkon]").forEach(c => c.onchange = () => { pick[c.dataset.nkon].on = c.checked; draw(); });
@@ -20170,9 +20171,9 @@ async function ofNotifyApprovers(run){
   const net = (run.lines || []).reduce((a, l) => a + (+l.netC || 0), 0), link = `${location.origin}/?view=ofRuns&r=${encodeURIComponent(run._id)}`;
   const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}`);
   const names = (run.lines || []).filter(l => +l.netC > 0).map(l => String(l.name || "").split(" ")[0]);
-  const daysLeft = PMCore.dayNum(run.payDate || todayISO()) - PMCore.dayNum(todayISO());
-  const when = daysLeft <= 0 ? "due today" : daysLeft === 1 ? "due tomorrow" : `due ${fdateS(run.payDate)}`;
-  const subject = `Action needed: approve payroll ${usd(net)} · ${when} · ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}`;
+  const by = ofSendBy(run.payDate || todayISO()), daysLeft = PMCore.dayNum(by) - PMCore.dayNum(todayISO());
+  const when = daysLeft < 0 ? "late — send today" : daysLeft === 0 ? "approve today" : daysLeft === 1 ? "approve by tomorrow" : `approve by ${fdateS(by)}`;
+  const subject = `Action needed: payroll ${usd(net)} · ${when} · ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}`;
   const text = `${ofWho()} sent a pay run for your approval.\n\nPeriod: ${fdateS(run.periodStart)} – ${fdateS(run.periodEnd)}\nPay date: ${fdateS(run.payDate)}\nFrom: ${run.account}\n\n${rows.join("\n")}\n\nNet to send: ${usd(net)}\n\nReview and approve: ${link}`;
   const html = ofRunEmailHTML(run, link);
   try{ await bmCall({action:"send", to:to.join(","), subject, text, html, noSignature:true}); toast(`Emailed ${who} to approve it`); }
@@ -20212,14 +20213,15 @@ function ofRunEmailHTML(run, link){
         <td style="padding:14px 16px"><div style="font-size:12px;color:${C.muted}">Net to send</div><div style="font-size:28px;font-weight:700;color:${C.ink};margin-top:2px">${e(usd(net))}</div>
           ${ded ? `<div style="font-size:12px;color:${C.muted};margin-top:2px">${e(usd(gross))} earned · ${e(usd(ded))} applied to what's owed</div>` : ""}</td>
         <td style="padding:14px 16px;text-align:right;font-size:13px;color:${C.ink};line-height:1.7;white-space:nowrap">
-          <span style="color:${C.muted}">Pay date</span> ${e(fdateS(run.payDate))}<br>
+          <span style="color:${C.muted}">Approve by</span> <b style="color:${C.red}">${e(fdateS(ofSendBy(run.payDate)))}</b><br>
+          <span style="color:${C.muted}">In their account</span> ${e(fdateS(run.payDate))}<br>
           <span style="color:${C.muted}">Period</span> ${e(fdateS(run.periodStart))} – ${e(fdateS(run.periodEnd))}<br>
           <span style="color:${C.muted}">From</span> ${e(run.account)}</td></tr></table>
     </td></tr>
     <tr><td style="padding:6px 28px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${(run.lines || []).map(person).join("")}</table></td></tr>
     <tr><td style="padding:14px 28px 26px">
       <a href="${e(link)}" style="display:inline-block;background:${C.brand};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 18px;border-radius:8px">Review &amp; approve</a>
-      <div style="font-size:12px;color:${C.muted};margin-top:12px">Nothing is paid until it's approved in the console and sent in Nickel.</div>
+      <div style="font-size:12px;color:${C.muted};margin-top:12px">Bank transfers take about 3 business days, so it has to be sent by ${e(fdateS(ofSendBy(run.payDate)))} to arrive on ${e(fdateS(run.payDate))}. Nothing is paid until it's approved in the console and sent in Nickel.</div>
     </td></tr>
   </table></td></tr></table>`;
 }
@@ -20238,3 +20240,12 @@ function ofNextPay(day){
   const pay = d <= 15 ? `${y}-${pad(mo)}-15` : `${y}-${pad(mo)}-${pad(last)}`;
   return Object.assign({pay}, ofPeriodFor(pay));
 }
+
+// money must be sent ~3 business days before it lands (ACH): the day to send by for a pay date
+function ofSendBy(pay){
+  let n = PMCore.dayNum(String(pay || todayISO()).slice(0, 10)), left = 3;
+  while(left > 0){ n--; const wd = new Date(PMCore.isoOf(n) + "T12:00:00").getDay(); if(wd !== 0 && wd !== 6) left--; }
+  return PMCore.isoOf(n);
+}
+// banks don't settle on weekends: a pay date on a Saturday or Sunday lands the Friday before
+function ofBizOnOrBefore(day){ let n = PMCore.dayNum(day); for(;;){ const wd = new Date(PMCore.isoOf(n) + "T12:00:00").getDay(); if(wd !== 0 && wd !== 6) return PMCore.isoOf(n); n--; } }
