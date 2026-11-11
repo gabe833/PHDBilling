@@ -19731,7 +19731,9 @@ const pmdInvName = n => /invoice|repair|receipt|\bbills?\b|expense/i.test(n);
 // match rentals to folders from the folder list
 function pmdMatch(tree, props){
   const F = tree.folders, kids = id => F.filter(f => f.parent === id);
-  const invIn = id => kids(id).find(f => pmdInvName(f.name)) || null;
+  // the rental's own Invoices & Repairs — never the one inside "Project Management" (that's the projects side)
+  const invIn = id => { const L = kids(id).filter(f => pmdInvName(f.name) && !/project/i.test(f.name));
+    return L.find(f => /invoices?\s*(&|and)\s*repairs/i.test(f.name)) || L[0] || null; };
   const unitsIn = id => { const o = {}; kids(id).forEach(f => { const k = pmdKey(f.name); if(k && k.unit && !k.many && !/\s[-–]\s/.test(f.name)) o[k.unit] = {id:f.id, name:f.name, inv:invIn(f.id)}; }); return o; };
   const map = {};
   props.forEach(p => {
@@ -19789,6 +19791,8 @@ function pmdUnits(b, place){
   if(b.driveUnit === "bldg") return [""];
   if(b.driveUnit && labels.includes(b.driveUnit)) return [b.driveUnit];
   const text = [b.memo, b.receipt && b.receipt.name, b.billNo, b.category, b.payNote].filter(Boolean).join(" ");
+  // split across units, or for the whole property: the building's own folder
+  if(b.split || /\bsplit\b|whole (property|building|house)|common area|both units|all units|\bexterior\b|\blandscap|\broof\b|\bgutter/i.test(text)) return place.inv ? [""] : labels;
   const hits = labels.filter(L => new RegExp(`(?:\\bunits?\\b|\\bapt\\.?|#|&)\\s*${L}\\b`, "i").test(text));
   if(hits.length === 1) return hits;
   if(hits.length > 1) return place.inv ? [""] : labels;     // the whole building
