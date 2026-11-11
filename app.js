@@ -10150,7 +10150,7 @@ async function pjdSave(p, unit, inv){
   const b64 = await pdfRender(invoiceDocHTML(p, unit, inv), name, "base64");
   if(!b64) throw new Error("couldn't make the PDF");
   const f = dfOf(p);
-  const r = await inboxPost({action:"folderAdd", folderId:f ? f.id : "", propertyName:p.name, sub:"Invoices", byName:true, items:[{txnId:key, data:b64, mime:"application/pdf", name}]});
+  const r = await inboxPost({action:"folderAdd", folderId:f ? f.id : "", propertyName:p.name, sub:"Invoices", byName:state !== "draft", items:[{txnId:key, data:b64, mime:"application/pdf", name}]});
   const res = (r.results || [])[0] || {}, got = res.file || res.duplicateOf;
   if(!got) throw new Error(res.error || "not saved");
   // an unpaid or in-progress copy is replaced by the newer one
