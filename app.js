@@ -19865,6 +19865,9 @@ const pmdReady = () => pmdOn() && typeof inboxConn === "function" && inboxConn()
 async function pmdSweep(){
   if(PMD.busy || !pmdReady() || !cloudChores() || Date.now() - PMD.last < 60 * 1000) return;
   PMD.last = Date.now();
+  // folders made by mistake (next to the real Invoices & Repairs): their copies go into the real one, then the empty folder to trash
+  const fx = (pmdCfg().fixes || []).filter(x => !x.done);
+  if(fx.length){ try{ const r = await inboxPost({action:"pmFix", pairs:fx}); if(!(r.errors || []).length){ snapshot(); S.pmSettings = Object.assign({}, S.pmSettings, {drive:Object.assign({}, pmdCfg(), {fixes:(pmdCfg().fixes || []).map(x => Object.assign({}, x, {done:new Date().toISOString(), result:{moved:r.moved, same:r.same, trashed:r.trashed}}))})}); commit(); } }catch(e){} }
   const todo = billList().filter(b => pmdState(b) === "todo").slice(0, 6); if(!todo.length) return;
   PMD.busy = true; let n = 0, held = 0;
   try{ for(const b of todo){ try{ const r = await pmdFile(b); if(Object.keys(r.maybe).length) held++; else n++; }
