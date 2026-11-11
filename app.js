@@ -10172,7 +10172,7 @@ async function pjdSave(p, unit, inv){
 }
 const pjdReady = () => typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 12;
 async function pjdSweep(){
-  if(PJD.busy || !pjdReady() || Date.now() - PJD.last < 60 * 1000) return;
+  if(PJD.busy || !pjdReady() || !cloudChores() || Date.now() - PJD.last < 60 * 1000) return;
   PJD.last = Date.now();
   const todo = pjdTodo().slice(0, 5); if(!todo.length) return;
   PJD.busy = true; let n = 0;
@@ -12957,9 +12957,10 @@ function cloudChip(){
   const b = $("#saveChip"), l = $("#saveLbl"); if(!b) return;
   b.classList.remove("live","attn");
   if(Cloud.status === "error"){ b.classList.add("attn"); l.textContent = "Not saved — retrying"; b.title = Cloud.error; return; }
-  b.classList.add("live");
-  l.textContent = Cloud.status === "saving" ? "Saving…" : `Synced · ${Cloud.name.split(" ")[0]}`;
-  b.title = `Signed in as ${Cloud.email}. Everything saves to the office database.`;
+  const down = Cloud.liveState && Cloud.liveState !== "SUBSCRIBED";
+  b.classList.add(down ? "attn" : "live");
+  l.textContent = Cloud.status === "saving" ? "Saving…" : down ? "Reconnecting…" : `Synced · ${Cloud.name.split(" ")[0]}`;
+  b.title = down ? "Live updates paused — your changes still save. Catching up as soon as the connection is back." : `Signed in as ${Cloud.email}. Everything saves to the office database, and other people's changes show up here as they happen.`;
 }
 /* PM properties an owner has */
 const ownerPmProps = o => o ? pmState().properties.filter(p => p.ownerId === o.id && !p.deleted && p.status !== "inactive") : [];
@@ -13207,8 +13208,11 @@ Cloud.onRemote = function(row){
     Cloud.synced.set("shared/qbo", {json:JSON.stringify(row.data), version:row.version, deleted:row.deleted});
     S.qbo = row.deleted ? null : row.data; Cloud.remoteDirty = true; render(); return;
   }
+  cloudSeen(row.updated_at);
   const key = row.kind + "/" + row.id, s = Cloud.synced.get(key);
   if(s && row.version <= s.version) return;                     // our own save coming back
+  // a large record comes through without its contents: read it rather than blanking it out
+  if(!row.deleted && (row.data === undefined || row.data === null)){ cloudFetchDoc(row.kind, row.id); return; }
   const localNow = cloudDocs().get(key);
   // our own save echoing back before its response arrived (or a save that changed nothing): nothing to show
   if(!row.deleted && localNow && cloudCanon(localNow) === cloudCanon(row.data)){ Cloud.synced.set(key, {json:row.data, version:row.version, deleted:row.deleted}); return; }
@@ -13224,9 +13228,12 @@ Cloud.onRemote = function(row){
   cloudApply(row.kind, row.id, row.data, row.deleted);
   Cloud.synced.set(key, {json:row.data, version:row.version, deleted:row.deleted});
   recalc(); Cloud.remoteDirty = true;
-  const msg = `${cloudWho(row.updated_by)} updated ${cloudLabel(row.kind, row.id, row.data)}`;
-  if(!Cloud.lastRemote || Date.now() - Cloud.lastRemote > 4000) toast(msg);
-  Cloud.lastRemote = Date.now();
+  // the screen updates by itself; a note only when it's what you have open, once a minute per record
+  if(cloudShowing(row.kind, row.id, row.data) && row.updated_by && row.updated_by !== Cloud.email){
+    const k = key + "|" + row.updated_by, t0 = Cloud.noted.get(k) || 0;
+    if(Date.now() - t0 > 60 * 1000 && (!Cloud.lastRemote || Date.now() - Cloud.lastRemote > 4000)){ toast(`${cloudWho(row.updated_by)} just changed ${cloudLabel(row.kind, row.id, row.data)} — showing their change`); Cloud.lastRemote = Date.now(); }
+    Cloud.noted.set(k, Date.now());
+  }
 };
 /* re-draw after remote changes, but never while someone is typing or has a panel open */
 setInterval(() => {
@@ -13235,6 +13242,151 @@ setInterval(() => {
   if(typing || $("#sheet").classList.contains("on") || $("#cmdk").classList.contains("on")) return;
   Cloud.remoteDirty = false; const y = window.scrollY; render(); window.scrollTo(0, y);
 }, 800);
+
+/* =====================================================================
+   SEVERAL PEOPLE AT ONCE
+   · Live: every save reaches everyone's screen within a second (realtime).
+     If the connection drops — laptop asleep, Wi-Fi blip — the console
+     catches up with what changed as soon as it's back (and checks every
+     minute anyway), so nothing is missed without a refresh.
+   · Chores: the automatic jobs (fee credits, late-rent matching, expense
+     copies, Nickel/QuickBooks passes, filing invoices in Drive…) run in ONE
+     browser — the one open longest — so two laptops never fight over the
+     same record (27 Smith's November row flipped back and forth every few
+     seconds between two browsers).
+   · New version: when a new console is published, each open copy reloads
+     itself the next time it's idle, so nobody runs old code.
+   · Who's where: the faces at the top say what each person has open, and a
+     page someone else is on says so.
+   ===================================================================== */
+Cloud.noted = new Map(); Cloud.maxAt = ""; Cloud.tabs = [];
+const CLOUD_TAB = Math.random().toString(36).slice(2, 10), CLOUD_SINCE = Date.now();
+function cloudSeen(at){ if(at && String(at) > Cloud.maxAt) Cloud.maxAt = String(at); }
+async function cloudFetchDoc(kind, id){
+  const {data, error} = await Cloud.sb.from("docs").select("kind,id,data,version,deleted,updated_at,updated_by").eq("kind", kind).eq("id", id).maybeSingle();
+  if(error || !data || data.data == null && !data.deleted) return;
+  Cloud.onRemote(data);
+}
+// everything saved since we last heard anything — after a dropped connection, a sleeping laptop, or once a minute
+Cloud.catchingUp = false;
+async function cloudCatchUp(){
+  if(!Cloud.ready || Cloud.catchingUp || !Cloud.maxAt) return;
+  Cloud.catchingUp = true;
+  try{
+    const since = new Date(new Date(Cloud.maxAt).getTime() - 2 * 60 * 1000).toISOString();     // a little overlap: clocks and slow commits
+    const {data, error} = await Cloud.sb.from("docs").select("kind,id,version,updated_at").gt("updated_at", since).limit(1000);
+    if(error || !data) return;
+    for(const r of data){
+      cloudSeen(r.updated_at);
+      const s = Cloud.synced.get(r.kind + "/" + r.id);
+      if(!s || r.version > s.version) await cloudFetchDoc(r.kind, r.id);
+    }
+  }catch(e){ console.warn("catch-up", e); }
+  finally{ Cloud.catchingUp = false; }
+}
+// what this browser has open, for the others to see
+function cloudWhere(){
+  const ui = S.ui || {};
+  if(ui.mode === "pm"){
+    const pp = ui.view === "pmProperty" && ui.pmPropId ? pmProp(ui.pmPropId) : null;
+    return pp ? {key:"pm_property/" + pp.id, label:pp.name} : {key:"pm:" + ui.view + (ui.view === "pmMonth" ? ":" + (ui.pmMonth || "") : ""), label:(typeof PM_VIEW_NAME !== "undefined" && PM_VIEW_NAME[ui.view]) || ""};
+  }
+  if(ui.mode === "office") return {key:"office:" + ui.view, label:"Office"};
+  const pj = (ui.view !== "portfolio" && ui.view !== "inbox" && ui.view !== "team" && S.activeId) ? S.properties.find(x => x.id === S.activeId) : null;
+  return pj ? {key:"pj_property/" + pj.id, label:pj.name} : {key:"pj:" + ui.view, label:""};
+}
+// is this record part of what's on screen right now?
+function cloudShowing(kind, id, data){
+  const w = cloudWhere();
+  if(kind === "pj_property" || kind === "pm_property") return w.key === kind + "/" + id;
+  if(kind === "pm_row") return w.key === "pm_property/" + String(id).split("|")[1] || w.key === "pm:pmMonth:" + String(id).split("|")[0];
+  if(kind === "pm_bill") return !!data && w.key === "pm_property/" + data.propertyId;
+  return false;
+}
+function cloudLive(){
+  const ch = Cloud.sb.channel("docs-live").on("postgres_changes", {event:"*", schema:"public", table:"docs"}, p => Cloud.onRemote(p.new));
+  let joined = false;
+  ch.subscribe(st => {
+    Cloud.liveState = st;
+    if(st === "SUBSCRIBED"){ if(joined) cloudCatchUp(); joined = true; }   // back after a drop: pick up what was missed
+    chip();
+  });
+  const pres = Cloud.pres = Cloud.sb.channel("office", {config:{presence:{key:Cloud.email + "#" + CLOUD_TAB}}});
+  pres.on("presence", {event:"sync"}, () => {
+    const st = pres.presenceState();
+    Cloud.tabs = Object.values(st).map(x => x[0]).filter(Boolean);
+    const seen = new Map();
+    Cloud.tabs.filter(x => x.email && x.email !== Cloud.email).forEach(x => { const o = seen.get(x.email); if(!o || (x.moved || 0) > (o.moved || 0)) seen.set(x.email, x); });
+    Cloud.online = [...seen.values()];
+    const wasLead = Cloud.lead; Cloud.lead = cloudLeader();
+    cloudPresence(); cloudHere();
+    if(Cloud.lead && !wasLead) setTimeout(render, 300);      // this browser just took over the chores: run them
+  }).subscribe(async s => { if(s === "SUBSCRIBED") await cloudTrack(); });
+  document.addEventListener("visibilitychange", () => { if(!document.hidden){ cloudCatchUp(); buildCheck(); } });
+  window.addEventListener("online", () => { cloudCatchUp(); });
+  window.addEventListener("focus", () => cloudCatchUp());
+  setInterval(cloudCatchUp, 60 * 1000);
+}
+let CLOUD_WHERE = "";
+async function cloudTrack(){
+  if(!Cloud.pres) return;
+  const w = cloudWhere(); CLOUD_WHERE = w.key;
+  try{ await Cloud.pres.track({email:Cloud.email, name:Cloud.name, at:Date.now(), tab:CLOUD_TAB, since:CLOUD_SINCE, where:w.key, label:w.label, moved:Date.now()}); }catch(e){}
+}
+// one browser does the office's automatic jobs: the tab open longest (only tabs running this version take part)
+function cloudLeader(){
+  if(typeof Cloud === "undefined" || !Cloud.ready || !Cloud.pres) return true;
+  const c = Cloud.tabs.filter(x => x.tab && x.since);
+  if(!c.length) return true;
+  c.sort((a, b) => a.since - b.since || String(a.tab).localeCompare(String(b.tab)));
+  return c[0].tab === CLOUD_TAB;
+}
+const cloudChores = () => typeof Cloud === "undefined" || !Cloud.sb || (!!Cloud.email && (!Cloud.ready || cloudLeader()));
+// "Peter is on this too"
+function cloudHere(){
+  document.querySelectorAll(".co-here").forEach(x => x.remove());
+  const w = cloudWhere(); if(!w.key || !/\//.test(w.key)) return;
+  const ppl = Cloud.online.filter(x => x.where === w.key); if(!ppl.length) return;
+  const host = document.querySelector("#view"); if(!host) return;
+  const el = elm("div", "co-here", `${ppl.map(x => `<span class="pres">${esc(initials(x.name || x.email))}</span>`).join("")}<span>${esc(ppl.map(x => (x.name || x.email.split("@")[0]).split(" ")[0]).join(" and "))} ${ppl.length === 1 ? "has" : "have"} this open too — changes show up for both of you as they're saved.</span>`);
+  host.insertBefore(el, host.firstChild);
+}
+
+/* a newer console was published: reload when it won't interrupt anything */
+const BUILD = {tag:"", stale:false, last:0, input:Date.now()};
+["keydown", "pointerdown", "wheel"].forEach(ev => window.addEventListener(ev, () => { BUILD.input = Date.now(); }, {passive:true, capture:true}));
+async function buildTag(){
+  const parts = await Promise.all(["app.js", "ux.js", "engine.js", "app.css", "ux.css"].map(f => fetch(location.origin + "/" + f, {method:"HEAD", cache:"no-store"}).then(r => r.ok ? (r.headers.get("etag") || r.headers.get("last-modified") || "") : "").catch(() => "")));
+  return parts.every(x => !x) ? "" : parts.join("|");
+}
+async function buildCheck(){
+  if(Date.now() - BUILD.last < 60 * 1000 && !BUILD.stale) return;
+  BUILD.last = Date.now();
+  const t = await buildTag(); if(!t) return;
+  if(!BUILD.tag){ BUILD.tag = t; return; }
+  if(t !== BUILD.tag) BUILD.stale = true;
+  if(BUILD.stale) buildReload();
+}
+function buildSafe(){
+  const a = document.activeElement, typing = a && /input|textarea|select/i.test(a.tagName) || (a && a.isContentEditable);
+  const open = ["#sheet", "#cmdk"].some(q => { const e = $(q); return e && e.classList.contains("on"); });
+  const saving = typeof Cloud !== "undefined" && Cloud.ready && (Cloud.saving || Cloud.timer && Cloud.status === "saving" || Cloud.status === "error");
+  return !typing && !open && !saving;
+}
+function buildReload(){
+  if(!buildSafe()) return buildBanner();
+  if(document.hidden || Date.now() - BUILD.input > 45 * 1000){ try{ cloudSaveUi(); }catch(e){} location.reload(); return; }
+  buildBanner();
+}
+function buildBanner(){
+  if($("#buildNew")) return;
+  const b = elm("div", "build-new", `<span>A new version of the console is ready.</span><button class="btn sm primary" type="button">Reload now</button>`);
+  b.id = "buildNew";
+  b.querySelector("button").onclick = () => { if(!buildSafe() && !confirm("You're in the middle of something — reload anyway? Saved changes are kept.")) return; try{ cloudSaveUi(); }catch(e){} location.reload(); };
+  document.body.appendChild(b);
+}
+setInterval(() => { if(BUILD.stale) buildReload(); else buildCheck(); }, 2 * 60 * 1000);
+setTimeout(buildCheck, 5000);
 
 /* ---------- boot ---------- */
 Cloud.boot = async function(){
@@ -13257,7 +13409,7 @@ Cloud.boot = async function(){
   // everything, a page at a time (the API returns at most 1,000 rows per call)
   let all = [], from = 0;
   for(;;){
-    const {data, error} = await Cloud.sb.from("docs").select("kind,id,data,version,deleted").order("kind").order("id").range(from, from + 999);
+    const {data, error} = await Cloud.sb.from("docs").select("kind,id,data,version,deleted,updated_at").order("kind").order("id").range(from, from + 999);
     if(error){ cloudSplash("Couldn't load data: " + esc(error.message), true); return; }
     all = all.concat(data); if(data.length < 1000) break; from += 1000;
   }
@@ -13266,6 +13418,7 @@ Cloud.boot = async function(){
   all.filter(r => !r.deleted).forEach(r => { if(!(r.kind === "shared" && r.id === "main")) cloudApply(r.kind, r.id, r.data, false); });
   if(main && !main.deleted) cloudApply("shared", "main", main.data, false);
   all.forEach(r => Cloud.synced.set(r.kind + "/" + r.id, {json:JSON.stringify(r.data), version:r.version, deleted:r.deleted}));
+  all.forEach(r => cloudSeen(r.updated_at));
   if(!S.properties.length) S.properties = [];          // an empty office starts with no projects
   S.version = 3;
   S.ui = Object.assign({view:"portfolio", unit:null, query:"", showExcluded:true, open:{}}, cloudLoadUi());
@@ -13286,10 +13439,7 @@ Cloud.boot = async function(){
   Store.save = async () => { cloudSaveUi(); if(Cloud.ready) Cloud.queue(); };
   Store.load = async () => S;
   AutoFile.queue = () => {}; AutoFile.pull = async () => {};
-  Cloud.sb.channel("docs-live").on("postgres_changes", {event:"*", schema:"public", table:"docs"}, p => Cloud.onRemote(p.new)).subscribe();
-  const pres = Cloud.sb.channel("office", {config:{presence:{key:Cloud.email}}});
-  pres.on("presence", {event:"sync"}, () => { const st = pres.presenceState(); Cloud.online = Object.values(st).map(x => x[0]).filter(x => x && x.email !== Cloud.email); cloudPresence(); })
-      .subscribe(async s => { if(s === "SUBSCRIBED") await pres.track({email:Cloud.email, name:Cloud.name, at:Date.now()}); });
+  cloudLive();
   $("#cloudSplash") && $("#cloudSplash").remove();
   document.body.classList.add("cloud");
   Cloud.ready = true;
@@ -13336,7 +13486,7 @@ function cloudDenied(){
 function cloudPresence(){
   const box = $("#presence"); if(!box) return;
   const ppl = Cloud.online.slice(0, 5);
-  box.innerHTML = ppl.map(p => `<span class="pres" title="${esc(p.name || p.email)} is online">${esc(initials(p.name || p.email))}</span>`).join("")
+  box.innerHTML = ppl.map(p => `<span class="pres" title="${esc(p.name || p.email)} is online${p.label ? " · on " + esc(p.label) : ""}">${esc(initials(p.name || p.email))}</span>`).join("")
     + (Cloud.online.length > 5 ? `<span class="pres more">+${Cloud.online.length - 5}</span>` : "");
 }
 
@@ -16793,7 +16943,7 @@ function ofRunPaid(r){
 /* expenses after the 15th: put bills placed under the old rule in the right month, once, when Rentals opens */
 if(typeof render === "function"){
   const cutRender0 = render;
-  render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)) try{ pmApplyExpenseCutoff(); }catch(e){ console.error(e); } return r; };
+  render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size) && cloudChores()) try{ pmApplyExpenseCutoff(); }catch(e){ console.error(e); } return r; };
 }
 
 /* =====================================================================
@@ -16886,7 +17036,7 @@ if(typeof render === "function"){
     const r = lateRender0.apply(this, arguments);
     // once per MagicDoor sync (and once when the console opens), in Rentals
     try{
-      if(S.ui.mode === "pm" && typeof mdReady === "function" && mdReady() && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)){
+      if(S.ui.mode === "pm" && typeof mdReady === "function" && mdReady() && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size) && cloudChores()){
         const sig = (S.md && S.md.syncedAt) + "|" + Object.keys(pmState().rows).length;
         if(sig !== PM_LATE_AT){ PM_LATE_AT = sig; snapshot(); const n = pmLateRentCarry(); if(n){ commit(); toast(`Owner payouts matched to when MagicDoor collected the rent (${n} row${n === 1 ? "" : "s"})`); } }
       }
@@ -16987,7 +17137,7 @@ if(typeof render === "function"){
   render = function(){
     const r = wbRender0.apply(this, arguments);
     try{
-      if(document.body.classList.contains("mode-pm") && wbLiveId() && Date.now() - WBL.at > 15 * 60 * 1000 && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email))
+      if(document.body.classList.contains("mode-pm") && wbLiveId() && Date.now() - WBL.at > 15 * 60 * 1000 && cloudChores())
         setTimeout(() => wbLiveSync({quiet:true}), 1500);
     }catch(e){}
     return r;
@@ -17111,7 +17261,7 @@ if(typeof render === "function"){
   const nkaRender0 = render;
   render = function(){
     const r = nkaRender0.apply(this, arguments);
-    try{ if(nickelOn() && (nkAutoOn("invoices") || nkAutoOn("bills")) && !NKA.busy && Date.now() - NKA.at > 3 * 60 * 1000) setTimeout(nkAutoPass, 2500); }catch(e){}
+    try{ if(cloudChores() && nickelOn() && (nkAutoOn("invoices") || nkAutoOn("bills")) && !NKA.busy && Date.now() - NKA.at > 3 * 60 * 1000) setTimeout(nkAutoPass, 2500); }catch(e){}
     return r;
   };
 }
@@ -17842,7 +17992,7 @@ if(typeof render === "function"){
     const r = qbpRender0.apply(this, arguments);
     try{
       const sig = (S.qbo && S.qbo.syncedAt) || "";
-      if(sig && sig !== QBP_SIG && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){ QBP_SIG = sig; setTimeout(() => { try{ qbAutoPaid(); }catch(e){ console.error("QuickBooks paid", e); } }, 3000); }
+      if(sig && sig !== QBP_SIG && cloudChores()){ QBP_SIG = sig; setTimeout(() => { try{ qbAutoPaid(); }catch(e){ console.error("QuickBooks paid", e); } }, 3000); }
     }catch(e){}
     return r;
   };
@@ -17856,7 +18006,7 @@ if(typeof render === "function"){
   render = function(){
     const r = bsoRender0.apply(this, arguments);
     try{
-      if(typeof pmState === "function" && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+      if(typeof pmState === "function" && cloudChores()){
         const todo = Object.values(pmState().bills || {}).filter(b => b && b.syncOnLoad && !b.deleted);
         if(todo.length) setTimeout(() => {
           const now = Object.values(pmState().bills || {}).filter(b => b && b.syncOnLoad && !b.deleted); if(!now.length) return;
@@ -17967,7 +18117,7 @@ if(typeof render === "function"){
   render = function(){
     const r = rvRender0.apply(this, arguments);
     try{
-      if(S.recov && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+      if(S.recov && cloudChores()){
         const sig = cloudCanon(S.recov) + "|" + Object.values(pmState().rows).filter(x => S.recov.items.some(i => i.pid === x.propertyId)).map(x => x.month + (x.paidOut ? "p" : "") + (x.locked ? "l" : "") + cloudCanon(x.adjustments || [])).join(",");
         if(sig !== RV_SIG){ RV_SIG = sig; setTimeout(() => { snapshot(); const n = rvApply(); if(n){ commit(); } }, 400); }
       }
@@ -18512,6 +18662,7 @@ function fcLedger(p){
 function fcApply(){
   let n = 0;
   if(typeof mdReady === "function" && !mdReady()) return 0;
+  if(!cloudChores()) return 0;
   pmState().properties.forEach(p => {
     const rowsWith = Object.values(pmState().rows).filter(r => r.propertyId === p.id && PMCore.has(r.feeCredit));
     const L = fcList(p).length ? fcLedger(p) : {months:{}, unknown:{}};
@@ -18529,7 +18680,7 @@ let FC_SIG = "";
     const r = fcR0.apply(this, arguments);
     try{
       const ps = pmState().properties.filter(p => fcList(p).length);
-      if(ps.length && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+      if(ps.length && cloudChores()){
         const sig = ps.map(p => cloudCanon(p.feeCredits) + Object.values(pmState().rows).filter(x => x.propertyId === p.id).map(x => x.month + "|" + (x.pmFee ?? "") + "|" + (x.feeCredit ?? "") + (x.locked ? "l" : "")).join(",")).join(";") + (S.md && S.md.syncedAt || "");
         if(sig !== FC_SIG){ FC_SIG = sig; setTimeout(() => { snapshot(); if(fcApply()) commit(); }, 450); }
       }
@@ -19347,7 +19498,7 @@ function exqCard(m){
     render = function(){
       const r = exqR0.apply(this, arguments);
       try{
-        if(typeof pmState === "function" && pmState().properties.length && (typeof Cloud === "undefined" || !Cloud.sb || Cloud.email)){
+        if(typeof pmState === "function" && pmState().properties.length && cloudChores()){
           const sig = Object.values(pmState().rows).map(x => x.month + x.propertyId + (x.repairItems || []).length).join(",");
           if(sig !== EXQ.sig){ EXQ.sig = sig; setTimeout(() => {
             if(!exqDedupe(true).length) return;
@@ -19528,4 +19679,14 @@ function pgPmPays(){
 {
   const r0 = render;
   render = function(){ const out = r0.apply(this, arguments); if(typeof pjdSweep === "function") setTimeout(() => { if(typeof ibScriptCheck === "function") ibScriptCheck(); pjdSweep(); }, 4000); return out; };
+}
+
+/* where this browser is, for the others — and who else is on this page */
+{
+  const r0 = render;
+  render = function(){
+    const out = r0.apply(this, arguments);
+    try{ if(typeof Cloud !== "undefined" && Cloud.ready){ if(cloudWhere().key !== CLOUD_WHERE) cloudTrack(); cloudHere(); } }catch(e){}
+    return out;
+  };
 }
