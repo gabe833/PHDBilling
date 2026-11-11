@@ -2638,3 +2638,14 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 
 .of-line-pf{display:flex;align-items:center;gap:8px;margin:-2px 0 8px;font-size:12.5px}
 .of-line-pf select{max-width:300px;font-size:12.5px;padding:3px 6px}
+
+.of-line-pf.need select{border-color:var(--red)}
+.of-line-pf.need>span:first-child{color:var(--red);font-weight:600}
+.of-sendby{display:flex;flex-direction:column;justify-content:center;height:40px;padding:0 2px;font-weight:600}
+.of-sendby small{font-weight:400;font-size:11.5px;color:var(--muted)}
+.of-sendby.late{color:var(--red)}
+.of-items summary{display:flex;justify-content:space-between;gap:12px;cursor:pointer;padding:7px 0;list-style:none}
+.of-items summary::-webkit-details-marker{display:none}
+.of-items summary span:first-child::before{content:"▸ ";color:var(--muted)}
+.of-items[open] summary span:first-child::before{content:"▾ "}
+.of-items .pm-sum{margin:0 0 6px;font-size:12.5px;color:var(--muted)}
