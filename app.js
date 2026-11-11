@@ -19818,7 +19818,14 @@ function pmdState(b){
 async function pmdInvFolder(p, place, unit){
   const t = unit ? place.units[unit] : place;
   if(t.inv && t.inv.id) return t.inv.id;
-  const r = await inboxPost({action:"folderMake", parentId:t.id, name:`${t.name} - Invoices & Repairs`});
+  // not seen in the first read (deep folders): look inside this folder before making one
+  try{
+    const q = await inboxPost({action:"pmTree", rootId:t.id});
+    const L = (q.folders || []).filter(f => f.depth === 1 && pmdInvName(f.name) && !/project/i.test(f.name));
+    const hit = L.find(f => /invoices?\s*(&|and)\s*repairs/i.test(f.name)) || L[0];
+    if(hit){ t.inv = {id:hit.id, name:hit.name}; snapshot(); commit(); return hit.id; }
+  }catch(e){ throw new Error("couldn't look inside " + t.name + " — try again"); }
+  const r = await inboxPost({action:"folderMake", parentId:t.id, name:`${String(t.name).replace(/\s*\([^)]*\)\s*$/, "")} - Invoices & Repairs`});
   if(!r || !r.folder) throw new Error("couldn't make the Invoices & Repairs folder");
   t.inv = {id:r.folder.id, name:r.folder.name};
   const c = pmdCfg(); if(c && c.map && c.map[p.id]){ snapshot(); commit(); }

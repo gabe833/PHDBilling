@@ -677,14 +677,14 @@ function doPostBody_(b, lock){
     }
     if(b.action === 'pmTree'){
       // the folders under the PM properties folder (property → unit → "Invoices & Repairs"), names only
-      const root = DriveApp.getFolderById(String(b.rootId)), out = [], max = 2500;
+      const root = DriveApp.getFolderById(String(b.rootId)), out = [], max = 4000;
       let canEdit = false;
       try{ const a = root.getAccess(Session.getEffectiveUser().getEmail()); canEdit = a === DriveApp.Permission.OWNER || a === DriveApp.Permission.EDIT || a === DriveApp.Permission.ORGANIZER; }catch(e){}
       const walk = (fo, parent, depth) => {
         const it = fo.getFolders();
         while(it.hasNext() && out.length < max){
           const f = it.next(); out.push({id:f.getId(), name:f.getName(), parent, depth});
-          if(depth < 3) walk(f, f.getId(), depth + 1);
+          if(depth < 4) walk(f, f.getId(), depth + 1);
         }
       };
       walk(root, root.getId(), 1);
