@@ -2635,3 +2635,6 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .of-nk-h{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px;font-size:13px}
 .of-nk-r{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-top:1px dashed var(--line)}
 .of-nk-r select{max-width:260px}
+
+.of-line-pf{display:flex;align-items:center;gap:8px;margin:-2px 0 8px;font-size:12.5px}
+.of-line-pf select{max-width:300px;font-size:12.5px;padding:3px 6px}

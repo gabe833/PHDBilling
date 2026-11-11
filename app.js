@@ -16783,6 +16783,7 @@ function ofPersonSheet(id, seed){
       <div class="f2"><label class="fld"><span>Paid by</span><select id="opB">${[["none", "Per item (invoices, commissions)"], ["hourly", "Hourly"], ["salary", "Set amount each pay period"]].map(([k, l]) => `<option value="${k}" ${p.pay.basis === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <label class="fld" id="opAmtF"><span id="opAmtL"></span><input type="number" step="0.01" min="0" id="opAmt"></label></div>
       <label class="fld" id="opPerF"><span>Pay period</span><select id="opPer">${["weekly", "bi-weekly", "twice a month", "monthly"].map(x => `<option ${p.pay.period === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      <label class="fld"><span>Pay them from</span><select id="opPf"><option value="">The pay run's account</option>${ofPfOptions(p.payFromId, "", true)}</select>${OF.pf ? "" : `<span class="help">Loading the accounts…</span>`}</label>
       <label class="fld"><span>When they owe PHD money</span><select id="opOw"><option value="">Take it out of their pay</option><option value="extras" ${p.owedFrom === "extras" ? "selected" : ""}>Work it off — take it only from extra work (lock changes, cleanings…); regular pay is paid in full</option></select></label>
       <label class="fld"><span>Notes</span><textarea id="opNo" rows="2">${esc(p.notes || "")}</textarea></label>
       <label class="switchbox"><input type="checkbox" id="opA" ${p.active !== false ? "checked" : ""}> Active</label>
@@ -16803,7 +16804,7 @@ function ofPersonSheet(id, seed){
     const email = $("#opE").value.trim().toLowerCase(); if(email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("That email doesn't look right");
     const b = $("#opB").value, amt = +$("#opAmt").value || 0;
     const next = Object.assign({}, cur || {}, {type:"person", name, email, role:$("#opR").value, commissionPct:+$("#opC").value || 0, notes:$("#opNo").value.trim(), active:$("#opA").checked,
-      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}, owedFrom:$("#opOw").value || ""});
+      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}, owedFrom:$("#opOw").value || "", payFromId:$("#opPf") ? $("#opPf").value || "" : (cur || {}).payFromId || ""});
     delete next._id; delete next.id;
     const pid = id || (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "p") + "-" + uid().slice(0, 4);
     ofPut("person:" + pid, next);
@@ -16859,6 +16860,7 @@ function ofRunLine(p, run, keep){
   const pay = p.pay || {}, baseC = pay.basis === "salary" ? cents(pay.amount || 0) : 0;
   const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
   if(keep){ L.entries = keep.entries || []; L.timeoff = off.map(e => e._id); }
+  if(!keep && p.payFromId) L.payFromId = p.payFromId;
   L.grossC = (+L.baseC || 0) + L.entries.reduce((a, k) => a + (ofAll()[k] ? ofEntryC(ofAll()[k]) : 0), 0);
   const B = ofBalance(p.id), workOff = p.owedFrom === "extras";
   // someone working off what they owe (Russell): every work invoice goes toward it — confirmed or still waiting — and base pay is untouched
@@ -16881,15 +16883,17 @@ function ofRunSheet(id){
   const sh = $("#sheet");
   const recalc = () => { r.lines = r.lines.map(l => { const p = ofPerson(l.person); return p ? ofRunLine(p, r, l) : l; }); };
   const draw = () => {
+    if(OF.pf && !r.payFromId){ const d = ofPfDefault(r.account); if(d){ r.payFromId = d.id; r.account = ofPfShort(d.id); } }
     const sum = k => r.lines.reduce((a, l) => a + (+l[k] || 0), 0), canApprove = ofCanApprove() && r.status === "submitted", mineIn = r.lines.some(l => l.email && l.email === ofMe());
     sh.innerHTML = `<div class="sheet-h"><div><h3>Pay run · ${esc(fdateS(r.payDate || ""))}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${ofSt(r.status)} ${r.approvedBy ? ` approved by ${esc(r.approvedBy)}` : ""}${r.status === "rejected" && r.rejectNote ? ` · sent back: ${esc(r.rejectNote)}` : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
         <div class="f2"><label class="fld"><span>Period from</span><input type="date" id="orS" value="${esc(r.periodStart)}" ${editable ? "" : "disabled"}></label><label class="fld"><span>to</span><input type="date" id="orE" value="${esc(r.periodEnd)}" ${editable ? "" : "disabled"}></label></div>
         <div class="f2"><label class="fld"><span>Pay date</span><input type="date" id="orP" value="${esc(r.payDate)}" ${editable ? "" : "disabled"}></label>
-          <label class="fld"><span>Paid from <span class="muted" style="font-weight:400">· send by ${esc(fdateS(ofSendBy(r.payDate)))}</span></span><select id="orA" ${editable || r.status === "approved" ? "" : "disabled"}>${OF_ACCOUNTS.map(a => `<option ${a === r.account ? "selected" : ""}>${a}</option>`).join("")}</select></label></div>
+          <label class="fld"><span>Paid from <span class="muted" style="font-weight:400">· send by ${esc(fdateS(ofSendBy(r.payDate)))}</span></span><select id="orA" ${editable || r.status === "approved" ? "" : "disabled"}>${ofPfOptions(r.payFromId, r.account)}</select></label></div>
         ${r.lines.map((l, i) => { const items = (l.entries || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean), off = (l.timeoff || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean);
           return `<div class="of-line">
             <div class="of-line-h"><b>${esc(l.name)}</b><span class="num">${usd(l.netC)}</span>${editable ? `<button class="linkish" data-rm="${i}">remove</button>` : ""}</div>
+            ${OF.pf ? `<div class="of-line-pf"><span class="muted">Paid from</span> <select data-lpf="${i}" ${editable || r.status === "approved" ? "" : "disabled"}><option value="">Same as the run${r.payFromId ? ` (${esc(ofPfShort(r.payFromId))})` : ""}</option>${ofPfOptions(l.payFromId, "", true)}</select></div>` : ""}
             <table class="pm-sum">
               ${l.baseC ? `<tr><td>Base pay</td><td class="r num">${editable ? `<input class="of-in num" type="number" step="0.01" data-base="${i}" value="${(l.baseC / 100).toFixed(2)}">` : usd(l.baseC)}</td></tr>` : ""}
               ${items.map(e => `<tr><td>${esc(fdateS(e.date || ""))} · ${esc(OF_KIND[e.kind])}${e.desc ? " · " + esc(e.desc) : ""}${e.address ? " · " + esc(e.address) : ""} ${e.status === "submitted" ? `<span class="st st-gold" style="height:18px"><i></i>not reviewed</span>` : ""}</td><td class="r num">${usd(ofEntryC(e))}${editable ? ` <button class="linkish" data-drop="${i}|${esc(e._id)}" title="Leave it for a later run">×</button>` : ""}</td></tr>`).join("")}
@@ -16928,7 +16932,9 @@ function ofRunSheet(id){
       sh.querySelectorAll("[data-rm]").forEach(x => x.onclick = () => { r.lines.splice(+x.dataset.rm, 1); draw(); });
       const ad = $("#orAdd"); if(ad) ad.onchange = () => { const p = ofPerson(ad.value); if(p) r.lines.push(ofRunLine(p, r)); draw(); };
     }
-    const acc = $("#orA"); if(acc) acc.onchange = () => { r.account = acc.value; };
+    const acc = $("#orA"); if(acc) acc.onchange = () => { const m = (OF.pf || []).find(x => x.id === acc.value); if(m){ r.payFromId = m.id; r.account = ofPfShort(m.id); } else r.account = acc.value; if(!editable) ofPut(r._id, Object.assign({}, ofAll()[r._id], {payFromId:r.payFromId, account:r.account})); draw(); };
+    sh.querySelectorAll("[data-lpf]").forEach(x => x.onchange = () => { const l = r.lines[+x.dataset.lpf]; if(x.value) l.payFromId = x.value; else delete l.payFromId; if(!editable) ofPut(r._id, Object.assign({}, ofAll()[r._id], {lines:r.lines})); draw(); });
+    if(!OF.pf && !OF.pfLoading) ofPfLoad().then(() => { if($("#sheet").classList.contains("on") && $("#orA")){ if(!r.payFromId){ const d = ofPfDefault(r.account); if(d){ r.payFromId = d.id; r.account = ofPfShort(d.id); } } r.lines.forEach(l => { const p = ofPerson(l.person); if(p && p.payFromId && !l.payFromId) l.payFromId = p.payFromId; }); draw(); } });
     const store = st => { const d = Object.assign({}, r, {type:"run", email:"", status:st, payees:r.lines.map(l => l.email).filter(Boolean)}); delete d._id; d.by = d.by || ofWho(); d.at = d.at || new Date().toISOString(); ofPut(r._id, d); return d; };
     const sv = $("#orSave"); if(sv) sv.onclick = () => { store("draft"); closeSheet(); render(); toast("Saved as a draft"); };
     const sd = $("#orSend"); if(sd) sd.onclick = () => { if(!r.lines.length) return toast("Nobody is on this run"); const d = store("submitted"); d.submittedAt = new Date().toISOString(); d.submittedBy = ofWho(); delete d.rejectNote; ofPut(r._id, d); closeSheet(); render(); ofNotifyApprovers(Object.assign({_id:r._id}, d)); };
@@ -20120,7 +20126,9 @@ async function ofRunNickel(r, box){
   const pick = {};
   lines.forEach(l => { const p = ofPerson(l.person) || {name:l.name}; const vid = ofNkGuess(p); const v = ofNkVendors().find(x => x.id === vid); pick[l.person] = {on:!(l.nickel && l.nickel.sent), vendorId:vid, payoutMethodId:v && v.payout && v.payout[0] ? v.payout[0].id : ""}; });
   // the run's own account (PM Operating / Real Estate) — never tenant money (Rental Income, Deposits) by default
-  const okFrom = plan.payFrom.filter(m => !/rental income|deposit/i.test(m.label)), want = String(r.account || "").toLowerCase().replace(/real estate/, "re");
+  if(!r.payFromId){ const fr0 = ofAll()[r._id]; if(fr0 && fr0.payFromId) r.payFromId = fr0.payFromId; }
+  if(r.payFromId && plan.payFrom.some(m => m.id === r.payFromId)) plan.payFrom = plan.payFrom.slice().sort((a, b) => (b.id === r.payFromId) - (a.id === r.payFromId));
+  const okFrom = plan.payFrom.filter(m => !/rental income|deposit/i.test(m.label)).sort((a, b) => (b.id === r.payFromId) - (a.id === r.payFromId)), want = String(r.account || "").toLowerCase().replace(/real estate/, "re");
   const from = {id:(okFrom.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(want) && /nickel/i.test(m.label)) || okFrom.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(want)) || okFrom[0] || {}).id || ""};
   const draw = () => {
     const live = lines.filter(l => pick[l.person].on && !(l.nickel && l.nickel.sent)), tot = live.reduce((a, l) => a + (+l.netC || 0), 0);
@@ -20130,7 +20138,7 @@ async function ofRunNickel(r, box){
           ${done ? `<span class="st st-green"><i></i>Sent · ${esc(l.nickel.ref)}</span>` : `<select data-nkv="${esc(l.person)}"><option value="">Pick the payee in Nickel…</option>${ofNkVendors().slice().sort((a, b) => String(a.name).localeCompare(b.name)).map(x => `<option value="${esc(x.id)}" ${x.id === pk.vendorId ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
           ${v ? `<select data-nkm="${esc(l.person)}">${(v.payout || []).map(m => `<option value="${esc(m.id)}" ${m.id === pk.payoutMethodId ? "selected" : ""}>${esc(m.label)}</option>`).join("") || `<option value="">No bank account on file</option>`}</select>` : ""}
           ${l.nickel && l.nickel.err ? `<div style="color:var(--red);font-size:12px">Last try: ${esc(l.nickel.err)}</div>` : ""}`}</div>`; }).join("")}
-      <div class="f2" style="margin-top:8px"><label class="fld"><span>Pay from</span><select id="nkFrom">${plan.payFrom.map(m => `<option value="${esc(m.id)}" ${m.id === from.id ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>
+      <div class="f2" style="margin-top:8px"><label class="fld"><span>Pay from <span class="muted" style="font-weight:400">· unless a person has their own above</span></span><select id="nkFrom">${plan.payFrom.filter(m => !ofPfBlocked(m)).map(m => `<option value="${esc(m.id)}" ${m.id === from.id ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>
         <label class="fld"><span>Arrive on <span class="muted" style="font-weight:400">· optional</span></span><input type="date" id="nkWhen" value="${esc(r.payDate && ofBizOnOrBefore(r.payDate) > todayISO() ? ofBizOnOrBefore(r.payDate) : "")}" min="${todayISO()}"></label></div>
       ${todayISO() > ofSendBy(r.payDate) ? `<p class="pm-banner late" style="margin:6px 0">Sending after ${esc(fdateS(ofSendBy(r.payDate)))} — it likely lands after ${esc(fdateS(r.payDate))}.</p>` : `<p class="help" style="margin:4px 0 8px">Send by ${esc(fdateS(ofSendBy(r.payDate)))} so it's in their account on ${esc(fdateS(r.payDate))}.</p>`}
       ${plan.canPay ? `<button class="btn primary" id="nkGo" ${live.length && live.every(l => pick[l.person].vendorId && pick[l.person].payoutMethodId) ? "" : "disabled"}>Send ${usd(tot)} in Nickel</button>` : `<p class="help">You're not on the payments list, so you can't send money — ${esc((plan.payers || []).join(", ") || "someone who is")} can.</p>`}
@@ -20142,11 +20150,11 @@ async function ofRunNickel(r, box){
     if(/rental income|deposit/i.test((plan.payFrom.find(m => m.id === from.id) || {}).label || "")) box.insertAdjacentHTML("beforeend", `<p class="pm-banner late" style="margin-top:8px">That account holds tenants' money — pay staff from an operating account.</p>`);
     const go = $("#nkGo"); if(go) go.onclick = async () => {
       const when = $("#nkWhen").value;
-      if(!confirm(`Send ${usd(tot)} to ${live.map(l => `${l.name} (${usd(l.netC)})`).join(", ")} from ${(plan.payFrom.find(m => m.id === from.id) || {}).label || "the account"}${when ? ", arriving " + fdateS(when) : ""}?`)) return;
+      if(!confirm(`Send ${usd(tot)}${when ? ", arriving " + fdateS(when) : ""}?\n\n${live.map(l => `${l.name} · ${usd(l.netC)} · from ${ofPfShort(l.payFromId || from.id)}`).join("\n")}`)) return;
       // remember each person's payee for next time
       live.forEach(l => { const p = ofAll()["person:" + l.person]; if(p && p.nickelVendorId !== pick[l.person].vendorId) ofAll()["person:" + l.person] = Object.assign({}, p, {nickelVendorId:pick[l.person].vendorId}); }); commit();
       go.disabled = true; go.textContent = "Sending…";
-      let res; try{ res = await nkRun("payrun.send", {runKey:r._id, payFrom:from.id, arrivalDate:when, lines:live.map(l => ({person:l.person, vendorId:pick[l.person].vendorId, payoutMethodId:pick[l.person].payoutMethodId}))}, "Pay run"); }
+      let res; try{ res = await nkRun("payrun.send", {runKey:r._id, payFrom:from.id, arrivalDate:when, lines:live.map(l => ({person:l.person, vendorId:pick[l.person].vendorId, payoutMethodId:pick[l.person].payoutMethodId, payFrom:l.payFromId || ""}))}, "Pay run"); }
       catch(e){ toast(String(e.message || e)); go.disabled = false; go.textContent = `Send ${usd(tot)} in Nickel`; return; }
       if(!res || !res.ok) return draw();
       // read the run back (the server wrote each line's bill), then record it as paid when everyone's pay is on its way
@@ -20249,3 +20257,26 @@ function ofSendBy(pay){
 }
 // banks don't settle on weekends: a pay date on a Saturday or Sunday lands the Friday before
 function ofBizOnOrBefore(day){ let n = PMCore.dayNum(day); for(;;){ const wd = new Date(PMCore.isoOf(n) + "T12:00:00").getDay(); if(wd !== 0 && wd !== 6) return PMCore.isoOf(n); n--; } }
+
+/* the accounts pay can go out from: Nickel's own accounts and the FCB ones linked to it — never PM Deposits
+   (the escrow money market holds tenants' deposits) */
+OF.pf = null; OF.pfLoading = null;
+const ofPfBlocked = m => /\bdeposit/i.test(String(m && m.label || ""));
+async function ofPfLoad(){
+  if(OF.pf) return OF.pf;
+  if(!OF.pfLoading) OF.pfLoading = payCall("nk.payoutPlan", {ownerIds:[]}, {noSave:true}).then(j => { OF.pf = (j.payFrom || []).filter(m => !ofPfBlocked(m)); return OF.pf; }).catch(() => { OF.pfLoading = null; return null; });
+  return OF.pfLoading;
+}
+const ofPfShort = id => { const m = (OF.pf || []).find(x => x.id === id); return m ? String(m.label).replace(/\s*·\s*\$[\d,.]+ available$/, "").replace(/\s+\d{4}\s+····(\d{4})$/, " ····$1") : ""; };
+function ofPfDefault(account){
+  const w = String(account || "").toLowerCase().replace(/real estate/, "re"), L = (OF.pf || []).filter(m => !/rental income/i.test(m.label));
+  return L.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(w) && /nickel/i.test(m.label)) || L.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(w)) || L[0] || null;
+}
+function ofPfOptions(selId, account, noFallback){
+  if(!OF.pf){ ofPfLoad(); return noFallback ? "" : OF_ACCOUNTS.map(a => `<option ${a === account ? "selected" : ""}>${a}</option>`).join(""); }
+  const grp = (t, L) => L.length ? `<optgroup label="${t}">${L.map(m => `<option value="${esc(m.id)}" ${m.id === selId ? "selected" : ""}>${esc(ofPfShort(m.id))}${/rental income/i.test(m.label) ? " — tenants' rent" : ""}${/available/.test(m.label) ? " · " + esc(m.label.match(/\$[\d,.]+ available/)[0]) : ""}</option>`).join("")}</optgroup>` : "";
+  return grp("Nickel", OF.pf.filter(m => /nickel/i.test(m.label))) + grp("First Capital Bank", OF.pf.filter(m => !/nickel/i.test(m.label)));
+}
+
+// the account list is read once when Office opens, so profiles and pay runs show the real accounts
+{ const r0 = render; render = function(){ const out = r0.apply(this, arguments); try{ if(S.ui.mode === "office" && ofIsAdmin() && typeof nickelOn === "function" && nickelOn()) ofPfLoad(); }catch(e){} return out; }; }

@@ -559,6 +559,9 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
   if (op === "payrun.send") {
     if (!(await payers()).includes(by)) throw new Error("You're not on the payments list, so you can't send money.");
     const from = S(body.payFrom), pf = await payFrom(); if (!pf.some((m) => m.id === from)) throw new Error("Pick the account to pay from");
+    // each person can be paid from their own account; never from the deposits (escrow) account
+    const fromOf = (x: Obj) => { const id = S(x && x.payFrom) || from, m = pf.find((y) => y.id === id); if (!m) throw new Error("That pay-from account isn't in Nickel"); if (/\bdeposit/i.test(S(m.label))) throw new Error("Pay can't come out of the deposits account"); return id; };
+    fromOf({});
     const key = S(body.runKey); if (!/^run:[A-Za-z0-9_-]{6,80}$/.test(key)) throw new Error("Missing pay run");
     const run = await docData("hr", key); if (!run) throw new Error("Pay run not found");
     if (run.status !== "approved") throw new Error("Only an approved pay run can be paid");
@@ -572,6 +575,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       const want = pick[S(l.person)]; if (!want) continue;              // not chosen this time
       const nv = nvs.find((y) => y.id === S(want.vendorId)); if (!nv) { say(`${S(l.name)} isn't a payee in Nickel`); continue; }
       const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(want.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { say(`${S(nv.name)} has no bank account or check address in Nickel`); continue; }
+      let fromId = ""; try { fromId = fromOf(want); } catch (e) { say(S((e as Error).message)); continue; }
       const ref = `PAY-${day}-${alnum(l.name).slice(0, 10)}`;
       let found: Obj | null = null;
       try { found = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id) || null; } catch { /* make one */ }
@@ -585,7 +589,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
         if (!billId) { try { const f = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id); billId = f ? S(f.id) : ""; } catch { /* below */ } }
         if (!billId) { say("Nickel added the bill but didn't say its id — pay it in Nickel"); continue; }
       }
-      go.push({ l, nv, pm, amt, ref, billId });
+      go.push({ l, nv, pm, amt, ref, billId, from: fromId });
     }
     const check = async (x: Obj, res: string) => {
       let st: Obj = {}; try { st = (await read("get_bill", { billId: x.billId })) || {}; } catch { /* keep going */ }
@@ -593,7 +597,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       x.err = (res.match(new RegExp(`"billId":"${x.billId}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
     };
     if (go.length) {
-      const rows = (b: Obj[]) => b.map((x) => { const row: Obj = { billId: x.billId, vendorId: x.nv.id, merchantPaymentMethodId: from, vendorPayoutMethodId: x.pm.id }; if (arrival) row.arrivalDate = arrival; return row; });
+      const rows = (b: Obj[]) => b.map((x) => { const row: Obj = { billId: x.billId, vendorId: x.nv.id, merchantPaymentMethodId: x.from, vendorPayoutMethodId: x.pm.id }; if (arrival) row.arrivalDate = arrival; return row; });
       const tot = go.reduce((a, x) => a + x.amt, 0);
       let r: Obj | null = await tool("pay_bill", { bills: rows(go) }, ask(`Send pay to ${go.map((x) => S(x.l.name)).join(", ")} · $${(tot / 100).toFixed(2)}`));
       if (!r.ok && go.length > 1 && /plan|upgrade|batch|not (?:available|enabled|allowed)|subscription/i.test(S(r.error && r.error.message))) r = null;
@@ -608,7 +612,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const now = new Date().toISOString();
     await updateDoc("hr", key, (d) => {
       (d.lines || []).forEach((l: Obj) => { const x = go.find((y) => S(y.l.person) === S(l.person)); if (!x) return;
-        l.nickel = { billId: x.billId, ref: x.ref, sent: !!x.moving, err: x.moving ? "" : (x.err || "Nickel didn't start this payment"), vendor: S(x.nv.name), delivery: S(x.pm.type) === "CHECK" ? "Check" : "ACH", amountC: x.amt, at: now, by, ...(arrival ? { arrives: arrival } : {}) }; });
+        l.nickel = { billId: x.billId, ref: x.ref, from: S((pf.find((m) => m.id === x.from) || {}).label), sent: !!x.moving, err: x.moving ? "" : (x.err || "Nickel didn't start this payment"), vendor: S(x.nv.name), delivery: S(x.pm.type) === "CHECK" ? "Check" : "ACH", amountC: x.amt, at: now, by, ...(arrival ? { arrives: arrival } : {}) }; });
       const owed = (d.lines || []).filter((l: Obj) => Math.round(Number(l.netC) || 0) > 0);
       if (owed.length && owed.every((l: Obj) => l.nickel && l.nickel.sent)) d.nickelSent = { at: now, by, from: S((pf.find((m) => m.id === from) || {}).label) };
     });
