@@ -8572,7 +8572,7 @@ function billSheet(id, preset){
         <label class="fld"><span>Payment note</span><input type="text" data-k="payNote" value="${esc(b.payNote || "")}" placeholder="e.g. Pay from 4091 today"></label>
         <div class="f2"><label class="fld"><span>Category</span><select data-k="category">${BILL_CATS.map(c => `<option ${c === b.category ? "selected" : ""}>${c}</option>`).join("")}</select></label>
           <label class="fld"><span>Vendor's invoice #</span><input type="text" data-k="billNo" value="${esc(b.billNo)}"></label></div>
-        <label class="fld"><span>Receipt or invoice link</span><div class="fld-row"><input type="text" data-rc value="${esc((b.receipt && b.receipt.url) || "")}" placeholder="Paste a Google Drive or Dropbox link">${b.receipt && b.receipt.url ? `<a class="btn" href="${esc(b.receipt.url)}" target="_blank" rel="noopener">Open</a>` : ""}</div><span class="help">Receipts emailed to the receipt inbox are linked automatically.</span></label>
+        <label class="fld"><span>Receipt or invoice link</span><div class="fld-row"><input type="text" data-rc value="${esc((b.receipt && b.receipt.url) || "")}" placeholder="Paste a Google Drive or Dropbox link">${b.receipt && b.receipt.url ? `<a class="btn" href="${esc(b.receipt.url)}" target="_blank" rel="noopener">Open</a>` : ""}</div><span class="help">Receipts emailed to the receipt inbox are linked automatically.${b.drive && b.drive.files && b.drive.files.length ? ` In the rental's Drive folder: ${b.drive.files.map(f => `<a href="${esc(f.url)}" target="_blank" rel="noopener">${f.unit ? "Unit " + esc(f.unit) : "open"}</a>`).join(", ")}.` : typeof pmdOn === "function" && pmdOn() && b.receipt && b.receipt.url ? " Gets a copy in the rental's Drive folder shortly." : ""}</span></label>
 
         <div class="sectl">Owner</div>
         <div class="bl-rec">${Object.entries(BILL_REC).map(([k, l]) => `<label class="${b.recover === k ? "on" : ""} ${lockedOwner ? "dis" : ""}"><input type="radio" name="rec" value="${k}" ${b.recover === k ? "checked" : ""} ${lockedOwner || (k !== "phd" && !(o)) ? "disabled" : ""}> ${l}</label>`).join("")}</div>
@@ -17480,7 +17480,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 12;
+const IB_SCRIPT_NEED = 13;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -17495,7 +17495,7 @@ async function ibScriptCheck(){
     if(!inboxConn()) return;
     ibScriptCheck();
     if(IBV.version != null && IBV.version < IB_SCRIPT_NEED){
-      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (filing project invoices in Drive, splitting one invoice across properties, vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
+      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (filing PM bills and project invoices in Drive, splitting one invoice across properties, vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
         <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
       v.insertBefore(b, v.firstChild);
     }
@@ -19690,3 +19690,223 @@ function pgPmPays(){
     return out;
   };
 }
+
+/* =====================================================================
+   PM BILLS IN DRIVE — each rental's vendor bills filed in its own
+   "Invoices & Repairs" folder, split by unit where the rental has units:
+     PHD PM Properties / 120 Smith St. Units A & B / 120 Smith St. Unit A /
+       120 Smith St. Unit A - Invoices & Repairs / <the bill's file>
+   · Setup: point the console at the "PHD PM Properties" folder once (it
+     finds it by name). It reads the folder names and matches every rental —
+     and every unit — to its folder by street number, street and unit.
+   · Before a file goes in, the folder is checked: the same file, the same
+     bytes, the same name → linked, not copied. A file that looks like the
+     same bill (same amount and vendor, or the bill number, in its name) is
+     held for a person to decide. Originals are copied, never moved.
+   · The unit comes from the bill's own words ("Unit A", "#B"); when it can't
+     be told, the bill waits for someone to pick (or "both units").
+   · Runs a few bills a minute in one browser (cloudChores).
+   S.pmSettings.drive = {root:{id,name,url}, at, on, map:{pid:{id,name,inv,units:{A:{id,name,inv}}}}, pick:{pid:folderId}}
+   bill.drive = {at, files:[{unit, id, url, name}]} · bill.driveUnit = "A" | "*" · bill.driveMaybe = {unit:[files]}
+   ===================================================================== */
+const PMD = {busy:false, last:0, failed:{}, tree:null, reading:false};
+const pmdCfg = () => (S.pmSettings && S.pmSettings.drive) || null;
+const pmdOn = () => { const c = pmdCfg(); return !!(c && c.on && c.root && c.root.id); };
+const PMD_ABBR = {street:"st", drive:"dr", avenue:"ave", road:"rd", lane:"ln", court:"ct", boulevard:"blvd", circle:"cir", place:"pl", parkway:"pkwy", highway:"hwy", terrace:"ter", trail:"trl"};
+function pmdKey(name){
+  const t = String(name || "").toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  const m = t.match(/^(\d+[a-z]?)\s+([a-z0-9]+)/); if(!m) return null;
+  const street = PMD_ABBR[m[2]] || m[2];
+  const u = t.match(/(?:\bunits?\b|\bapt\b|\bapartment\b|#)\s*([a-z0-9]{1,4})\b/);
+  return {num:m[1], street, unit:u ? u[1].toUpperCase() : "", many:/\bunits\b|&|\band\b/.test(t)};
+}
+const pmdInvName = n => /invoice|repair|receipt|\bbills?\b|expense/i.test(n);
+// match rentals to folders from the folder list
+function pmdMatch(tree, props){
+  const F = tree.folders, kids = id => F.filter(f => f.parent === id);
+  const invIn = id => kids(id).find(f => pmdInvName(f.name)) || null;
+  const unitsIn = id => { const o = {}; kids(id).forEach(f => { const k = pmdKey(f.name); if(k && k.unit && !k.many && !/\s[-–]\s/.test(f.name)) o[k.unit] = {id:f.id, name:f.name, inv:invIn(f.id)}; }); return o; };
+  const map = {};
+  props.forEach(p => {
+    const pk = pmdKey(p.name) || pmdKey(p.address); if(!pk) return;
+    // the rental's own folders, not their "… - Marketing", "… - Tenants" subfolders
+    const same = F.filter(f => { const k = pmdKey(f.name); return k && k.num === pk.num && k.street === pk.street && !pmdInvName(f.name) && !/\s[-–]\s/.test(f.name); });
+    if(!same.length) return;
+    let hit = null;
+    if(pk.unit){                                                    // a rental that is one unit: its own unit folder
+      const u = same.find(f => pmdKey(f.name).unit === pk.unit && !pmdKey(f.name).many);
+      if(u) hit = {id:u.id, name:u.name, inv:invIn(u.id), units:{}};
+    }
+    if(!hit){
+      const top = same.slice().sort((a, b) => a.depth - b.depth)[0];          // the building's folder
+      const units = unitsIn(top.id);
+      if(pk.unit && units[pk.unit]) hit = {id:units[pk.unit].id, name:units[pk.unit].name, inv:units[pk.unit].inv, units:{}};
+      else hit = {id:top.id, name:top.name, inv:invIn(top.id), units:Object.keys(units).length > 1 ? units : {}};
+      if(!Object.keys(hit.units).length && !hit.inv){ const one = Object.values(units)[0]; if(one){ hit.inv = one.inv; hit.id = one.id; hit.name = one.name; } }
+    }
+    map[p.id] = hit;
+  });
+  return map;
+}
+async function pmdRead(rootId){
+  PMD.reading = true;
+  try{ const r = await inboxPost({action:"pmTree", rootId}); PMD.tree = r; return r; }
+  finally{ PMD.reading = false; }
+}
+function pmdProps(){ return pmState().properties.filter(p => !p.deleted && p.status !== "inactive"); }
+async function pmdSetup(root){
+  const tree = await pmdRead(root.id);
+  const map = pmdMatch(tree, pmState().properties.filter(p => !p.deleted));
+  snapshot();
+  const old = pmdCfg() || {};
+  S.pmSettings = Object.assign({}, S.pmSettings || {}, {drive:Object.assign({}, old, {root:{id:tree.root.id, name:tree.root.name, url:tree.root.url}, at:new Date().toISOString(), map, on:old.on !== false, canEdit:tree.root.canEdit})});
+  commit();
+  return map;
+}
+// where a rental's bills go (with its own pick overriding the match)
+function pmdPlace(p){
+  const c = pmdCfg(); if(!c) return null;
+  const pick = (c.pick || {})[p.id];
+  if(pick && PMD.tree){ const f = PMD.tree.folders.find(x => x.id === pick); if(f){ const inv = PMD.tree.folders.find(x => x.parent === f.id && pmdInvName(x.name)); return {id:f.id, name:f.name, inv:inv || null, units:{}}; } }
+  return (c.map || {})[p.id] || null;
+}
+// which unit(s) a bill is for: its own pick, else what the bill says.
+// "" = the building's own Invoices & Repairs folder (used when the bill names every unit and the building has one)
+function pmdUnits(b, place){
+  const labels = Object.keys(place.units || {}); if(!labels.length) return [""];
+  if(b.driveUnit === "*") return labels;
+  if(b.driveUnit === "bldg") return [""];
+  if(b.driveUnit && labels.includes(b.driveUnit)) return [b.driveUnit];
+  const text = [b.memo, b.receipt && b.receipt.name, b.billNo, b.category, b.payNote].filter(Boolean).join(" ");
+  const hits = labels.filter(L => new RegExp(`(?:\\bunits?\\b|\\bapt\\.?|#|&)\\s*${L}\\b`, "i").test(text));
+  if(hits.length === 1) return hits;
+  if(hits.length > 1) return place.inv ? [""] : labels;     // the whole building
+  return null;                                              // doesn't say: someone picks
+}
+const pmdFileId = u => { const m = String(u || "").match(/\/d\/([A-Za-z0-9_-]{20,})/) || String(u || "").match(/[?&]id=([A-Za-z0-9_-]{20,})/); return m ? m[1] : ""; };
+// every bill's state
+function pmdState(b){
+  if(!b || b.deleted || b.status === "void" || b.voidWhy) return "skip";
+  if(b.drive && b.drive.at) return "done";
+  if(!(b.receipt && b.receipt.url)) return "nofile";
+  const p = pmProp(b.propertyId); if(!p) return "skip";
+  const place = pmdPlace(p); if(!place) return "nofolder";
+  if(b.driveMaybe && !b.driveForce) return "maybe";
+  if(!pmdUnits(b, place)) return "unit";
+  if(!pmdFileId(b.receipt.url) && !/nickelpayments\.com/i.test(b.receipt.url)) return "nolink";
+  if(PMD.failed[b.id]) return "error";
+  return "todo";
+}
+// the Invoices & Repairs folder for a place (made when it's missing)
+async function pmdInvFolder(p, place, unit){
+  const t = unit ? place.units[unit] : place;
+  if(t.inv && t.inv.id) return t.inv.id;
+  const r = await inboxPost({action:"folderMake", parentId:t.id, name:`${t.name} - Invoices & Repairs`});
+  if(!r || !r.folder) throw new Error("couldn't make the Invoices & Repairs folder");
+  t.inv = {id:r.folder.id, name:r.folder.name};
+  const c = pmdCfg(); if(c && c.map && c.map[p.id]){ snapshot(); commit(); }
+  return t.inv.id;
+}
+async function pmdFile(b, force){
+  const p = pmProp(b.propertyId), place = p && pmdPlace(p); if(!place) throw new Error("no folder for this rental");
+  const units = pmdUnits(b, place); if(!units) throw new Error("pick the unit first");
+  const files = [], maybe = {};
+  for(const u of units){
+    const folderId = await pmdInvFolder(p, place, u);
+    const r = await inboxPost({action:"pmFile", items:[{key:b.id + "|" + u, folderId, fileId:pmdFileId(b.receipt.url), url:pmdFileId(b.receipt.url) ? "" : b.receipt.url,
+      name:b.receipt.name || `${String(b.date || "").replace(/-/g, "")} - ${p.name} - ${b.memo || "Bill"} - ${b.vendor || ""}.pdf`, amount:Number(b.amount) || 0, vendor:b.vendor || "", billNo:b.billNo || "", force:!!force}]});
+    const res = (r.results || [])[0] || {};
+    if(res.error) throw new Error(res.error);
+    if(res.maybe){ maybe[u || "-"] = res.maybe; continue; }
+    const got = res.file || res.duplicateOf || res.already;
+    if(got) files.push({unit:u, id:got.id, url:got.url, name:got.name, how:res.file ? "copied" : "already there"});
+  }
+  const live = billById(b.id) || b;
+  snapshot();
+  if(Object.keys(maybe).length){ live.driveMaybe = maybe; delete live.driveForce; }
+  else { live.drive = {at:new Date().toISOString(), files}; delete live.driveMaybe; delete live.driveForce; }
+  live.updatedAt = new Date().toISOString(); live.updatedBy = billWho();
+  commit();
+  return {files, maybe};
+}
+const pmdReady = () => pmdOn() && typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 13;
+async function pmdSweep(){
+  if(PMD.busy || !pmdReady() || !cloudChores() || Date.now() - PMD.last < 60 * 1000) return;
+  PMD.last = Date.now();
+  if(!PMD.tree){ try{ await pmdRead(pmdCfg().root.id); }catch(e){ return; } }
+  const todo = billList().filter(b => pmdState(b) === "todo").slice(0, 6); if(!todo.length) return;
+  PMD.busy = true; let n = 0, held = 0;
+  try{ for(const b of todo){ try{ const r = await pmdFile(b); if(Object.keys(r.maybe).length) held++; else n++; }catch(e){ PMD.failed[b.id] = String(e && e.message || e); } } }
+  finally{ PMD.busy = false; }
+  if(n || held) toast(`${n ? `${n} bill${n === 1 ? "" : "s"} filed in Drive` : ""}${n && held ? " · " : ""}${held ? `${held} look${held === 1 ? "s" : ""} like ${held === 1 ? "it's" : "they're"} already there — check in PM settings` : ""}`);
+  if(S.ui.view === "pmSettings") render();
+}
+{ const r0 = render; render = function(){ const out = r0.apply(this, arguments); setTimeout(() => { try{ pmdSweep(); }catch(e){} }, 5000); return out; }; }
+
+/* ---------- PM settings → Bills in Drive ---------- */
+function pmdCard(v){
+  const c = elm("div", "card pmd"); c.style.marginTop = "16px";
+  const cfg = pmdCfg(), ok = inboxConn();
+  const head = `<div class="card-h"><h3>Bills in Drive</h3><span class="muted" style="margin-left:auto;font-size:12px">${pmdOn() ? `On · ${esc(cfg.root.name)}` : "Off"}</span></div>`;
+  if(!ok){ c.innerHTML = head + `<div class="card-b"><p class="muted">Connect the Receipt inbox first — it's what saves to Drive.</p></div>`; v.appendChild(c); return; }
+  if(IBV.version != null && IBV.version < 13){ c.innerHTML = head + `<div class="card-b"><p>The receipt inbox script needs updating before bills can be filed: replace <b>Code.gs</b> with the new <code>apps-script/Code.gs</code>, then Deploy → Manage deployments → edit → <b>New version</b>.</p></div>`; v.appendChild(c); return; }
+  if(!cfg || !cfg.root){
+    c.innerHTML = head + `<div class="card-b" style="max-width:760px">
+      <p style="margin-top:0">Every vendor bill with a file gets a copy in its rental's <b>Invoices &amp; Repairs</b> folder — in the right unit's folder where there are units — unless it's already there.</p>
+      <div class="pm-add"><input type="text" id="pmdQ" value="PHD PM Properties" placeholder="Folder name or link"><button class="btn primary sm" id="pmdFind">Find it and match the rentals</button></div>
+      <p class="help">The folder that holds every rental's folder. billing@ needs <b>Editor</b> access to it.</p><div id="pmdOut"></div></div>`;
+    v.appendChild(c);
+    c.querySelector("#pmdFind").onclick = async () => {
+      const btn = c.querySelector("#pmdFind"), out = c.querySelector("#pmdOut"), q = c.querySelector("#pmdQ").value.trim();
+      btn.disabled = true; btn.textContent = "Looking…";
+      try{
+        let root = null; const id = dfFolderId(q);
+        if(id) root = {id};
+        else { const r = await inboxPost({action:"folderFind", q}); const L = (r.folders || []).filter(f => f.name.toLowerCase() === q.toLowerCase()); const L2 = L.length ? L : r.folders || [];
+          if(!L2.length) throw new Error(`No folder called “${q}” that billing@ can see — share it with billing@, or paste its link`);
+          if(L2.length > 1 && !L.length){ out.innerHTML = `<p>Which one?</p>${L2.slice(0, 8).map(f => `<button class="btn sm" data-pick="${esc(f.id)}" style="margin:0 6px 6px 0">${esc(f.name)}${f.parent ? ` <span class="muted">in ${esc(f.parent)}</span>` : ""}</button>`).join("")}`;
+            out.querySelectorAll("[data-pick]").forEach(x => x.onclick = () => { c.querySelector("#pmdQ").value = "https://drive.google.com/drive/folders/" + x.dataset.pick; btn.disabled = false; btn.textContent = "Find it and match the rentals"; btn.click(); }); return; }
+          root = L2[0]; }
+        btn.textContent = "Reading the folders…";
+        const map = await pmdSetup(root);
+        toast(`Matched ${Object.keys(map).length} of ${pmdProps().length} rentals`); render();
+      }catch(e){ out.innerHTML = `<p style="color:var(--red)">${esc(e.message || e)}</p>`; btn.disabled = false; btn.textContent = "Find it and match the rentals"; }
+    };
+    return;
+  }
+  // set up: what's matched, and what needs a person
+  const props = pmdProps(), bills = billList(), by = {};
+  bills.forEach(b => { const st = pmdState(b); (by[st] = by[st] || []).push(b); });
+  const miss = props.filter(p => !pmdPlace(p));
+  const nm = b => { const p = pmProp(b.propertyId); return `<b>${esc(b.vendor || "Bill")}</b> ${usd(cents(b.amount))} <span class="muted">· ${esc(p ? p.name : "")}${b.date ? " · " + esc(fdateS(b.date)) : ""}</span>${b.receipt && b.receipt.url ? ` · <a href="${esc(b.receipt.url)}" target="_blank" rel="noopener">file</a>` : ""}`; };
+  const unitRow = b => { const pl = pmdPlace(pmProp(b.propertyId)), L = Object.keys(pl.units || {});
+    return `<div class="pmd-r"><div>${nm(b)}<div class="muted" style="font-size:12px">${esc(b.memo || "")}</div></div><div class="pmd-a">${L.map(u => `<button class="btn sm" data-unit="${esc(b.id)}" data-u="${esc(u)}">Unit ${esc(u)}</button>`).join("")}${pl.inv ? `<button class="btn sm ghost" data-unit="${esc(b.id)}" data-u="bldg">Whole building</button>` : `<button class="btn sm ghost" data-unit="${esc(b.id)}" data-u="*">Every unit</button>`}</div></div>`; };
+  const maybeRow = b => `<div class="pmd-r"><div>${nm(b)}<div class="muted" style="font-size:12px">Looks like it's already there: ${Object.values(b.driveMaybe || {}).flat().map(f => `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.name)}</a>`).join(", ")}</div></div><div class="pmd-a"><button class="btn sm" data-same="${esc(b.id)}">Same bill — link it</button><button class="btn sm ghost" data-diff="${esc(b.id)}">Different — add it</button></div></div>`;
+  const sec = (t, n, body, open) => n ? `<details class="pmd-sec"${open ? " open" : ""}><summary><b>${t}</b> <span class="muted">${n}</span></summary>${body}</details>` : "";
+  const done = (by.done || []).length, todo = (by.todo || []).length;
+  c.innerHTML = head + `<div class="card-b">
+    <div class="pmd-stats"><div><b>${props.length - miss.length}</b><span>of ${props.length} rentals matched to a folder</span></div><div><b>${done}</b><span>bills in Drive</span></div><div><b>${todo}</b><span>waiting to file</span></div><div><b>${(by.unit || []).length + (by.maybe || []).length}</b><span>need you</span></div></div>
+    ${sec("Which unit?", (by.unit || []).length, (by.unit || []).map(unitRow).join(""), true)}
+    ${sec("Already in Drive?", (by.maybe || []).length, (by.maybe || []).map(maybeRow).join(""), true)}
+    ${sec("Couldn't file", (by.error || []).length + (by.nolink || []).length, [...(by.error || []).map(b => `<div class="pmd-r"><div>${nm(b)}<div style="color:var(--red);font-size:12px">${esc(PMD.failed[b.id] || "")}</div></div><div class="pmd-a"><button class="btn sm" data-retry="${esc(b.id)}">Try again</button></div></div>`), ...(by.nolink || []).map(b => `<div class="pmd-r"><div>${nm(b)}<div class="muted" style="font-size:12px">The file isn't in Google Drive (${esc(String(b.receipt.url).replace(/^https?:\/\//, "").split("/")[0])}) — save it to Drive and paste that link on the bill</div></div></div>`)].join(""), false)}
+    ${sec("Rentals with no folder", miss.length, `<p class="help" style="margin:4px 0 8px">Pick the folder, or leave it — these rentals' bills just aren't filed.</p>${miss.map(p => `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="pmd-a"><select data-fold="${esc(p.id)}"><option value="">Pick a folder…</option>${PMD.tree ? PMD.tree.folders.filter(f => f.depth <= 2 && !pmdInvName(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("") : ""}</select></div></div>`).join("")}${PMD.tree ? "" : `<p class="muted">Re-read the folders to pick one.</p>`}`, false)}
+    ${sec("Where each rental's bills go", props.length - miss.length, `<div class="pmd-map">${props.filter(p => pmdPlace(p)).map(p => { const pl = pmdPlace(p), U = Object.keys(pl.units || {});
+      return `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="muted" style="font-size:12.5px">${U.length ? U.map(u => `Unit ${esc(u)} → ${esc((pl.units[u].inv || {}).name || pl.units[u].name + " (Invoices & Repairs made on first bill)")}`).join("<br>") + (pl.inv ? `<br>Whole building → ${esc(pl.inv.name)}` : "") : esc((pl.inv || {}).name || pl.name + " (Invoices & Repairs made on first bill)")}</div></div>`; }).join("")}</div>`, false)}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+      <label class="switchbox"><input type="checkbox" id="pmdOn" ${cfg.on ? "checked" : ""}> File bills automatically</label><span style="flex:1"></span>
+      <a class="btn sm ghost" href="${esc(cfg.root.url || "")}" target="_blank" rel="noopener">Open ${esc(cfg.root.name || "folder")}</a>
+      <button class="btn sm" id="pmdRe">Re-read folders</button>${todo ? `<button class="btn sm primary" id="pmdNow">File ${todo} now</button>` : ""}</div>
+    <p class="help">Only copies are made — the original stays where it is. Before a copy goes in, the folder is checked for the same file, the same name, or a file that looks like the same bill.</p></div>`;
+  v.appendChild(c);
+  const live = id => billById(id);
+  c.querySelector("#pmdOn").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings, {drive:Object.assign({}, cfg, {on:e.target.checked})}); commit(); render(); };
+  c.querySelector("#pmdRe").onclick = async e => { e.target.disabled = true; e.target.textContent = "Reading…"; try{ const map = await pmdSetup(cfg.root); toast(`Matched ${Object.keys(map).length} rentals`); }catch(err){ toast(String(err.message || err)); } render(); };
+  const now = c.querySelector("#pmdNow"); if(now) now.onclick = async () => { now.disabled = true; now.textContent = "Filing…"; PMD.last = 0; await pmdSweep(); render(); };
+  c.querySelectorAll("[data-unit]").forEach(x => x.onclick = async () => { const b = live(x.dataset.unit); if(!b) return; snapshot(); b.driveUnit = x.dataset.u; commit(); x.closest(".pmd-r").style.opacity = .5; try{ await pmdFile(b); }catch(e){ PMD.failed[b.id] = String(e.message || e); } render(); });
+  c.querySelectorAll("[data-same]").forEach(x => x.onclick = () => { const b = live(x.dataset.same); if(!b) return; snapshot(); const f = Object.entries(b.driveMaybe || {}).map(([u, L]) => Object.assign({unit:u === "-" ? "" : u, how:"matched by hand"}, L[0])); b.drive = {at:new Date().toISOString(), files:f}; delete b.driveMaybe; commit(); render(); });
+  c.querySelectorAll("[data-diff]").forEach(x => x.onclick = async () => { const b = live(x.dataset.diff); if(!b) return; x.disabled = true; try{ await pmdFile(b, true); toast("Added to Drive"); }catch(e){ toast(String(e.message || e)); } render(); });
+  c.querySelectorAll("[data-retry]").forEach(x => x.onclick = async () => { const b = live(x.dataset.retry); delete PMD.failed[x.dataset.retry]; x.disabled = true; try{ await pmdFile(b); }catch(e){ PMD.failed[b.id] = String(e.message || e); } render(); });
+  c.querySelectorAll("[data-fold]").forEach(x => x.onchange = () => { if(!x.value) return; snapshot(); const d = Object.assign({}, cfg, {pick:Object.assign({}, cfg.pick || {}, {[x.dataset.fold]:x.value})}); S.pmSettings = Object.assign({}, S.pmSettings, {drive:d}); commit(); render(); });
+  if(!PMD.tree && !PMD.reading) pmdRead(cfg.root.id).then(() => { if(S.ui.view === "pmSettings") render(); }).catch(() => {});
+}
+{ const s0 = pgPmSettings; pgPmSettings = function(){ s0.apply(this, arguments); try{ if(typeof Cloud !== "undefined" && Cloud.ready) ibScriptCheck(); pmdCard($("#view")); }catch(e){ console.error("Bills in Drive", e); } }; }

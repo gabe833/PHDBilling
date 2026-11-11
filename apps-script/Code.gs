@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 12;   // 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 13;   // 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -665,6 +665,72 @@ function doPost(e){
         out.push(res);
       });
       return json_({ok:true, results:out});
+    }
+    if(b.action === 'pmTree'){
+      // the folders under the PM properties folder (property → unit → "Invoices & Repairs"), names only
+      const root = DriveApp.getFolderById(String(b.rootId)), out = [], max = 2500;
+      let canEdit = false;
+      try{ const a = root.getAccess(Session.getEffectiveUser().getEmail()); canEdit = a === DriveApp.Permission.OWNER || a === DriveApp.Permission.EDIT || a === DriveApp.Permission.ORGANIZER; }catch(e){}
+      const walk = (fo, parent, depth) => {
+        const it = fo.getFolders();
+        while(it.hasNext() && out.length < max){
+          const f = it.next(); out.push({id:f.getId(), name:f.getName(), parent, depth});
+          if(depth < 3) walk(f, f.getId(), depth + 1);
+        }
+      };
+      walk(root, root.getId(), 1);
+      return json_({ok:true, root:{id:root.getId(), name:root.getName(), url:root.getUrl(), canEdit}, folders:out, capped:out.length >= max});
+    }
+    if(b.action === 'pmFile'){
+      // a copy of each bill's file in its rental's folder — unless it's already there:
+      //   the same file (it already sits in that folder), the same bytes, the same name, or
+      //   a file that looks like the same bill (same amount and vendor or bill number in its name) → "maybe", not copied unless forced
+      const out = [];
+      (Array.isArray(b.items) ? b.items : []).slice(0, 6).forEach(x => {
+        const res = {key:String(x.key || '')};
+        try{
+          const dest = DriveApp.getFolderById(String(x.folderId));
+          // what's already there (and one level down)
+          const files = [], add = fo => { const it = fo.getFiles(); while(it.hasNext() && files.length < 600){ const g = it.next(); files.push(g); } };
+          add(dest); const subs = dest.getFolders(); while(subs.hasNext()) add(subs.next());
+          const link = g => ({id:g.getId(), url:g.getUrl(), name:g.getName()});
+          let src = null, blob = null;
+          if(x.fileId){
+            src = DriveApp.getFileById(String(x.fileId));
+            const same = files.find(g => g.getId() === src.getId());
+            if(same){ res.already = link(same); out.push(res); return; }
+            blob = /^application\/vnd\.google-apps/.test(src.getMimeType()) ? src.getAs('application/pdf') : src.getBlob();
+          } else if(x.url && /^https:\/\/([a-z0-9-]+\.)*nickelpayments\.com\//i.test(String(x.url))){
+            const resp = UrlFetchApp.fetch(String(x.url), {muteHttpExceptions:true, followRedirects:true});
+            const ct = String(resp.getHeaders()['Content-Type'] || resp.getHeaders()['content-type'] || '').toLowerCase();
+            if(resp.getResponseCode() !== 200 || !/pdf|image\//.test(ct)) throw new Error('the link did not return a PDF (' + resp.getResponseCode() + ')');
+            blob = resp.getBlob();
+          } else throw new Error('no file to copy');
+          const size = blob.getBytes().length; let h = null;
+          for(const g of files){ if(g.getSize() !== size) continue; h = h || hash_(blob); try{ if(hash_(g.getBlob()) === h){ res.duplicateOf = link(g); break; } }catch(e){} }
+          if(res.duplicateOf){ out.push(res); return; }
+          const nm = fileNm_(String(x.name || blob.getName() || 'Bill'));
+          const byName = files.find(g => g.getName() === nm);
+          if(byName){ res.duplicateOf = link(byName); out.push(res); return; }
+          if(!x.force){
+            const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ');
+            const amt = Number(x.amount) || 0, amts = amt ? [amt.toFixed(2), amt.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}).replace(/,/g, ''), String(amt)] : [];
+            const ven = norm(x.vendor).split(' ').filter(w => w.length > 2 && !/^(llc|inc|the|and|co)$/.test(w))[0] || '', no = norm(x.billNo).trim();
+            const maybe = files.filter(g => { const n = norm(g.getName()).replace(/,/g, ''); const hasAmt = amts.some(a => n.indexOf(a) >= 0); return (no && no.length > 2 && n.indexOf(no) >= 0) || (hasAmt && ven && n.indexOf(ven) >= 0); }).slice(0, 3).map(link);
+            if(maybe.length){ res.maybe = maybe; out.push(res); return; }
+          }
+          const made = src && !/^application\/vnd\.google-apps/.test(src.getMimeType()) ? src.makeCopy(nm, dest) : dest.createFile(blob.setName(nm));
+          res.file = link(made);
+        }catch(e){ res.error = /access|permission|not found|no item/i.test(String(e && e.message || e)) ? 'billing@ can\'t open the file or the folder — share it with billing@ (Editor)' : String(e && e.message || e).slice(0, 160); }
+        out.push(res);
+      });
+      return json_({ok:true, results:out});
+    }
+    if(b.action === 'folderMake'){
+      // a missing "Invoices & Repairs" folder, made inside the rental's (or unit's) folder
+      const parent = DriveApp.getFolderById(String(b.parentId)), name = safeName_(String(b.name || 'Invoices & Repairs'));
+      const it = parent.getFoldersByName(name), f = it.hasNext() ? it.next() : parent.createFolder(name);
+      return json_({ok:true, folder:{id:f.getId(), name:f.getName(), url:f.getUrl()}});
     }
     if(b.action === 'invoiceRetire'){
       // an unpaid or in-progress invoice's copy, once a newer copy is filed: moved to Drive's trash (restorable for 30 days).
