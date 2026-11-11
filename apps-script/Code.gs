@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 14;   // 14: Drive-only jobs no longer wait on the inbox lock · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 14;   // 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -503,7 +503,7 @@ function doPost(e){
   try{ return doPostBody_(b, lock); }
   finally { lock.releaseLock(); }
 }
-const DRIVE_ACTIONS_ = ['pmTree', 'pmFile', 'folderMake', 'folderFind', 'invoiceRetire'];
+const DRIVE_ACTIONS_ = ['pmTree', 'pmFile', 'folderMake', 'folderFind', 'invoiceRetire', 'pmFix'];
 function doPostBody_(b, lock){
   {
     if(b.action === 'config'){
@@ -734,6 +734,24 @@ function doPostBody_(b, lock){
         out.push(res);
       });
       return json_({ok:true, results:out});
+    }
+    if(b.action === 'pmFix'){
+      // a folder the console made by mistake (billing@ made it today, next to the real one): its files move into the
+      // real folder (or to trash when the same file is already there), then the empty folder goes to trash
+      const me = Session.getEffectiveUser().getEmail(), res = {ok:true, moved:0, same:0, trashed:0, errors:[]};
+      (Array.isArray(b.pairs) ? b.pairs : []).slice(0, 10).forEach(x => {
+        try{
+          const from = DriveApp.getFolderById(String(x.from)), to = DriveApp.getFolderById(String(x.to));
+          if(String(from.getOwner() && from.getOwner().getEmail()).toLowerCase() !== me.toLowerCase()) throw new Error('not a folder billing@ made');
+          const it = from.getFiles();
+          while(it.hasNext()){
+            const f = it.next(), dup = sameBlobIn_(to, f.getBlob());
+            if(dup){ f.setTrashed(true); res.same++; } else { f.moveTo(to); res.moved++; }
+          }
+          if(!from.getFiles().hasNext() && !from.getFolders().hasNext()){ from.setTrashed(true); res.trashed++; }
+        }catch(e){ res.errors.push(String(x.from) + ': ' + String(e && e.message || e).slice(0, 120)); }
+      });
+      return json_(res);
     }
     if(b.action === 'folderMake'){
       // a missing "Invoices & Repairs" folder, made inside the rental's (or unit's) folder

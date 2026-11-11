@@ -17486,7 +17486,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 13;
+const IB_SCRIPT_NEED = 14;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -19717,7 +19717,7 @@ function pgPmPays(){
    ===================================================================== */
 const PMD = {busy:false, last:0, failed:{}, tree:null, reading:false};
 const pmdCfg = () => (S.pmSettings && S.pmSettings.drive) || null;
-const pmdOn = () => { const c = pmdCfg(); return !!(c && c.on && c.root && c.root.id); };
+const pmdOn = () => { const c = pmdCfg(); return !!(c && c.run && c.root && c.root.id); };
 const PMD_ABBR = {street:"st", drive:"dr", avenue:"ave", road:"rd", lane:"ln", court:"ct", boulevard:"blvd", circle:"cir", place:"pl", parkway:"pkwy", highway:"hwy", terrace:"ter", trail:"trl"};
 function pmdKey(name){
   const t = String(name || "").toLowerCase().replace(/[.,]/g, " ").replace(/^(\d+)-([a-z])\b/, "$1 unit $2 ").replace(/\s+/g, " ").trim()
@@ -19760,6 +19760,14 @@ function pmdMatch(tree, props){
   });
   return map;
 }
+// a re-read keeps the Invoices & Repairs folders already found inside deep folders
+function pmdKeepInv(old, map){
+  if(!old) return map;
+  Object.entries(map).forEach(([pid, n]) => { const o = old[pid]; if(!o || o.id !== n.id) return;
+    if(!n.inv && o.inv) n.inv = o.inv;
+    Object.entries(n.units || {}).forEach(([u, x]) => { const ou = (o.units || {})[u]; if(ou && ou.id === x.id && !x.inv && ou.inv) x.inv = ou.inv; }); });
+  return map;
+}
 async function pmdRead(rootId){
   PMD.reading = true;
   try{ const r = await inboxPost({action:"pmTree", rootId}); PMD.tree = r; return r; }
@@ -19771,7 +19779,7 @@ async function pmdSetup(root){
   const map = pmdMatch(tree, pmState().properties.filter(p => !p.deleted));
   snapshot();
   const old = pmdCfg() || {};
-  S.pmSettings = Object.assign({}, S.pmSettings || {}, {drive:Object.assign({}, old, {root:{id:tree.root.id, name:tree.root.name, url:tree.root.url}, at:new Date().toISOString(), map, on:old.on !== false, canEdit:tree.root.canEdit})});
+  S.pmSettings = Object.assign({}, S.pmSettings || {}, {drive:Object.assign({}, old, {root:{id:tree.root.id, name:tree.root.name, url:tree.root.url}, at:new Date().toISOString(), map:pmdKeepInv(old.map, map), run:old.run !== false, on:false, canEdit:tree.root.canEdit})});
   commit();
   return map;
 }
@@ -19853,7 +19861,7 @@ async function pmdFile(b, force){
   commit();
   return {files, maybe};
 }
-const pmdReady = () => pmdOn() && typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 13;
+const pmdReady = () => pmdOn() && typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 14;
 async function pmdSweep(){
   if(PMD.busy || !pmdReady() || !cloudChores() || Date.now() - PMD.last < 60 * 1000) return;
   PMD.last = Date.now();
@@ -19875,7 +19883,7 @@ function pmdCard(v){
   const cfg = pmdCfg(), ok = inboxConn();
   const head = `<div class="card-h"><h3>Bills in Drive</h3><span class="muted" style="margin-left:auto;font-size:12px">${pmdOn() ? `On · ${esc(cfg.root.name)}` : "Off"}</span></div>`;
   if(!ok){ c.innerHTML = head + `<div class="card-b"><p class="muted">Connect the Receipt inbox first — it's what saves to Drive.</p></div>`; v.appendChild(c); return; }
-  if(IBV.version != null && IBV.version < 13){ c.innerHTML = head + `<div class="card-b"><p>The receipt inbox script needs updating before bills can be filed: replace <b>Code.gs</b> with the new <code>apps-script/Code.gs</code>, then Deploy → Manage deployments → edit → <b>New version</b>.</p></div>`; v.appendChild(c); return; }
+  if(IBV.version != null && IBV.version < 14){ c.innerHTML = head + `<div class="card-b"><p>The receipt inbox script needs updating before bills can be filed: replace <b>Code.gs</b> with the new <code>apps-script/Code.gs</code>, then Deploy → Manage deployments → edit → <b>New version</b>.</p></div>`; v.appendChild(c); return; }
   if(!cfg || !cfg.root){
     c.innerHTML = head + `<div class="card-b" style="max-width:760px">
       <p style="margin-top:0">Every vendor bill with a file gets a copy in its rental's <b>Invoices &amp; Repairs</b> folder — in the right unit's folder where there are units — unless it's already there.</p>
@@ -19920,13 +19928,13 @@ function pmdCard(v){
     ${sec("Where each rental's bills go", props.length - miss.length, `<div class="pmd-map">${props.filter(p => pmdPlace(p)).map(p => { const pl = pmdPlace(p), U = Object.keys(pl.units || {});
       return `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="muted" style="font-size:12.5px">${U.length ? U.map(u => `Unit ${esc(u)} → ${esc((pl.units[u].inv || {}).name || pl.units[u].name + " (Invoices & Repairs made on first bill)")}`).join("<br>") + (pl.inv ? `<br>Whole building → ${esc(pl.inv.name)}` : "") : esc((pl.inv || {}).name || pl.name + " (Invoices & Repairs made on first bill)")}</div></div>`; }).join("")}</div>`, false)}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
-      <label class="switchbox"><input type="checkbox" id="pmdOn" ${cfg.on ? "checked" : ""}> File bills automatically</label><span style="flex:1"></span>
+      <label class="switchbox"><input type="checkbox" id="pmdOn" ${cfg.run ? "checked" : ""}> File bills automatically</label><span style="flex:1"></span>
       <a class="btn sm ghost" href="${esc(cfg.root.url || "")}" target="_blank" rel="noopener">Open ${esc(cfg.root.name || "folder")}</a>
       <button class="btn sm" id="pmdRe">Re-read folders</button>${todo ? `<button class="btn sm primary" id="pmdNow">File ${todo} now</button>` : ""}</div>
     <p class="help">Only copies are made — the original stays where it is. Before a copy goes in, the folder is checked for the same file, the same name, or a file that looks like the same bill.</p></div>`;
   v.appendChild(c);
   const live = id => billById(id);
-  c.querySelector("#pmdOn").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings, {drive:Object.assign({}, cfg, {on:e.target.checked})}); commit(); render(); };
+  c.querySelector("#pmdOn").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings, {drive:Object.assign({}, cfg, {run:e.target.checked, on:false})}); commit(); render(); };
   c.querySelector("#pmdRe").onclick = async e => { e.target.disabled = true; e.target.textContent = "Reading…"; try{ const map = await pmdSetup(cfg.root); toast(`Matched ${Object.keys(map).length} rentals`); }catch(err){ toast(String(err.message || err)); } render(); };
   const now = c.querySelector("#pmdNow"); if(now) now.onclick = async () => { now.disabled = true; now.textContent = "Filing…"; PMD.last = 0; await pmdSweep(); render(); };
   c.querySelectorAll("[data-unit]").forEach(x => x.onclick = async () => { const b = live(x.dataset.unit); if(!b) return; snapshot(); b.driveUnit = x.dataset.u; commit(); x.closest(".pmd-r").style.opacity = .5; try{ await pmdFile(b); }catch(e){ PMD.failed[b.id] = String(e.message || e); } render(); });
