@@ -20183,6 +20183,7 @@ async function ofNotifyApprovers(run){
   const when = daysLeft < 0 ? "late — send today" : daysLeft === 0 ? "approve today" : daysLeft === 1 ? "approve by tomorrow" : `approve by ${fdateS(by)}`;
   const subject = `Action needed: payroll ${usd(net)} · ${when} · ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}`;
   const text = `${ofWho()} sent a pay run for your approval.\n\nPeriod: ${fdateS(run.periodStart)} – ${fdateS(run.periodEnd)}\nPay date: ${fdateS(run.payDate)}\nFrom: ${run.account}\n\n${rows.join("\n")}\n\nNet to send: ${usd(net)}\n\nReview and approve: ${link}`;
+  try{ OF.pf = null; OF.pfLoading = null; await ofPfLoad(); }catch(e){}      // today's balances
   const html = ofRunEmailHTML(run, link);
   try{ await bmCall({action:"send", to:to.join(","), subject, text, html, noSignature:true}); toast(`Emailed ${who} to approve it`); }
   catch(e){ toast(`Waiting for ${who} to approve in Office → Pay runs — the email didn't go: ${e.message || e}`); }
@@ -20206,6 +20207,7 @@ function ofRunEmailHTML(run, link){
   const person = l => `<tr><td style="padding:14px 0;border-top:1px solid ${C.line};vertical-align:top">
       <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(l.name)}</div>
       <div style="font-size:12.5px;color:${C.muted};margin-top:3px">${detail(l)}</div>
+      ${l.payFromId && l.payFromId !== run.payFromId ? `<div style="font-size:12.5px;color:${C.muted};margin-top:3px">Paid from ${e(ofPfShort(l.payFromId))}</div>` : ""}
       ${+l.deductC ? `<div style="font-size:12.5px;color:${C.red};margin-top:3px">− ${e(usd(l.deductC))} applied to what's owed to PHD${l.owedC > l.deductC ? ` · ${e(usd(l.owedC - l.deductC))} still owed` : " · paid off"}</div>` : ""}</td>
     <td style="padding:14px 0;border-top:1px solid ${C.line};vertical-align:top;text-align:right;white-space:nowrap">
       <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(usd(l.netC))}</div>
@@ -20224,8 +20226,13 @@ function ofRunEmailHTML(run, link){
           <span style="color:${C.muted}">Approve by</span> <b style="color:${C.red}">${e(fdateS(ofSendBy(run.payDate)))}</b><br>
           <span style="color:${C.muted}">In their account</span> ${e(fdateS(run.payDate))}<br>
           <span style="color:${C.muted}">Period</span> ${e(fdateS(run.periodStart))} – ${e(fdateS(run.periodEnd))}<br>
-          <span style="color:${C.muted}">From</span> ${e(run.account)}</td></tr></table>
+          <span style="color:${C.muted}">From</span> ${e(run.payFromId ? ofPfShort(run.payFromId) || run.account : run.account)}</td></tr></table>
     </td></tr>
+    ${ofRunAccounts(run).length ? `<tr><td style="padding:6px 28px 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      ${ofRunAccounts(run).map(a => `<tr><td style="padding:8px 0;font-size:13px;color:${C.ink};border-top:1px solid ${C.line}">${e(a.name)}<div style="font-size:12px;color:${C.muted};margin-top:2px">${a.availC != null ? `${e(usd(a.availC))} available` : "Bank balance not shown in Nickel"}</div></td>
+        <td style="padding:8px 0;text-align:right;font-size:13px;border-top:1px solid ${C.line};white-space:nowrap"><span style="color:${C.muted}">Paying out</span> <b style="color:${C.ink}">${e(usd(a.outC))}</b>
+        ${a.availC != null ? (a.availC < a.outC ? `<div style="font-size:12px;color:${C.red};font-weight:600;margin-top:2px">Short by ${e(usd(a.outC - a.availC))}</div>` : `<div style="font-size:12px;color:${C.muted};margin-top:2px">${e(usd(a.availC - a.outC))} left after</div>`) : ""}</td></tr>`).join("")}
+    </table></td></tr>` : ""}
     <tr><td style="padding:6px 28px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${(run.lines || []).map(person).join("")}</table></td></tr>
     <tr><td style="padding:14px 28px 26px">
       <a href="${e(link)}" style="display:inline-block;background:${C.brand};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 18px;border-radius:8px">Review &amp; approve</a>
@@ -20280,3 +20287,12 @@ function ofPfOptions(selId, account, noFallback){
 
 // the account list is read once when Office opens, so profiles and pay runs show the real accounts
 { const r0 = render; render = function(){ const out = r0.apply(this, arguments); try{ if(S.ui.mode === "office" && ofIsAdmin() && typeof nickelOn === "function" && nickelOn()) ofPfLoad(); }catch(e){} return out; }; }
+
+// what a pay run takes out of each account, beside what's available there (Nickel accounts show a balance; bank ones don't)
+function ofRunAccounts(run){
+  if(!OF.pf) return [];
+  const by = {};
+  (run.lines || []).forEach(l => { const id = l.payFromId || run.payFromId; if(!id || !(+l.netC > 0)) return; by[id] = (by[id] || 0) + (+l.netC || 0); });
+  return Object.entries(by).map(([id, outC]) => { const m = OF.pf.find(x => x.id === id) || {}, av = String(m.label || "").match(/\$([\d,]+\.\d{2}) available/);
+    return {id, name:ofPfShort(id) || "Account", outC, availC:av ? Math.round(parseFloat(av[1].replace(/,/g, "")) * 100) : null}; });
+}
