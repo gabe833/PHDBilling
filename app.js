@@ -20166,7 +20166,52 @@ async function ofNotifyApprovers(run){
   const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}`);
   const subject = `Pay run to approve · ${fdateS(run.payDate)} · ${usd(net)}`;
   const text = `${ofWho()} sent a pay run for your approval.\n\nPeriod: ${fdateS(run.periodStart)} – ${fdateS(run.periodEnd)}\nPay date: ${fdateS(run.payDate)}\nFrom: ${run.account}\n\n${rows.join("\n")}\n\nNet to send: ${usd(net)}\n\nReview and approve: ${link}`;
-  const html = `<p>${esc(ofWho())} sent a pay run for your approval.</p><p>Period: ${esc(fdateS(run.periodStart))} – ${esc(fdateS(run.periodEnd))}<br>Pay date: ${esc(fdateS(run.payDate))}<br>From: ${esc(run.account)}</p><p>${rows.map(esc).join("<br>")}</p><p><b>Net to send: ${esc(usd(net))}</b></p><p><a href="${esc(link)}">Review and approve in the console</a></p>`;
+  const html = ofRunEmailHTML(run, link);
   try{ await bmCall({action:"send", to:to.join(","), subject, text, html, noSignature:true}); toast(`Emailed ${who} to approve it`); }
   catch(e){ toast(`Waiting for ${who} to approve in Office → Pay runs — the email didn't go: ${e.message || e}`); }
+}
+
+// the approval email: built with tables and inline styles so Gmail, Outlook and phones all show it the same
+function ofRunEmailHTML(run, link){
+  const C = {ink:"#1d2433", muted:"#6b7280", line:"#e5e7eb", soft:"#f6f7f9", brand:"#1f5c50", red:"#b42318"};
+  const e = x => esc(String(x == null ? "" : x));
+  const net = (run.lines || []).reduce((a, l) => a + (+l.netC || 0), 0), gross = (run.lines || []).reduce((a, l) => a + (+l.grossC || 0), 0), ded = gross - net;
+  const detail = l => {
+    const items = (l.entries || []).map(k => ofAll()[k]).filter(Boolean);
+    const hrs = items.filter(x => x.kind === "hours"), work = items.filter(x => x.kind === "work"), other = items.filter(x => x.kind !== "hours" && x.kind !== "work");
+    const out = [];
+    if(+l.baseC) out.push(`Base pay ${usd(l.baseC)}`);
+    if(hrs.length){ const h = hrs.reduce((a, x) => a + (+x.hours || 0), 0); out.push(`${hrs.length} day${hrs.length === 1 ? "" : "s"} · ${Math.round(h * 100) / 100} h · ${usd(hrs.reduce((a, x) => a + ofEntryC(x), 0))}`); }
+    if(work.length) out.push(`${work.length} work invoice${work.length === 1 ? "" : "s"} · ${usd(work.reduce((a, x) => a + ofEntryC(x), 0))}`);
+    if(other.length) out.push(`${other.length} other · ${usd(other.reduce((a, x) => a + ofEntryC(x), 0))}`);
+    return out.join(" &nbsp;·&nbsp; ");
+  };
+  const person = l => `<tr><td style="padding:14px 0;border-top:1px solid ${C.line};vertical-align:top">
+      <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(l.name)}</div>
+      <div style="font-size:12.5px;color:${C.muted};margin-top:3px">${detail(l)}</div>
+      ${+l.deductC ? `<div style="font-size:12.5px;color:${C.red};margin-top:3px">− ${e(usd(l.deductC))} applied to what's owed to PHD${l.owedC > l.deductC ? ` · ${e(usd(l.owedC - l.deductC))} still owed` : " · paid off"}</div>` : ""}</td>
+    <td style="padding:14px 0;border-top:1px solid ${C.line};vertical-align:top;text-align:right;white-space:nowrap">
+      <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(usd(l.netC))}</div>
+      ${+l.deductC ? `<div style="font-size:12px;color:${C.muted};margin-top:3px">of ${e(usd(l.grossC))}</div>` : ""}</td></tr>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.soft};padding:24px 0"><tr><td align="center">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${C.line};border-radius:12px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+    <tr><td style="padding:22px 28px 0">
+      <div style="font-size:12px;letter-spacing:.02em;color:${C.brand};font-weight:600">PHD Properties · Pay run</div>
+      <div style="font-size:20px;font-weight:600;color:${C.ink};margin-top:6px">${e(ofWho())} sent this for your approval</div>
+    </td></tr>
+    <tr><td style="padding:18px 28px 6px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.soft};border-radius:10px"><tr>
+        <td style="padding:14px 16px"><div style="font-size:12px;color:${C.muted}">Net to send</div><div style="font-size:28px;font-weight:700;color:${C.ink};margin-top:2px">${e(usd(net))}</div>
+          ${ded ? `<div style="font-size:12px;color:${C.muted};margin-top:2px">${e(usd(gross))} earned · ${e(usd(ded))} applied to what's owed</div>` : ""}</td>
+        <td style="padding:14px 16px;text-align:right;font-size:13px;color:${C.ink};line-height:1.7;white-space:nowrap">
+          <span style="color:${C.muted}">Pay date</span> ${e(fdateS(run.payDate))}<br>
+          <span style="color:${C.muted}">Period</span> ${e(fdateS(run.periodStart))} – ${e(fdateS(run.periodEnd))}<br>
+          <span style="color:${C.muted}">From</span> ${e(run.account)}</td></tr></table>
+    </td></tr>
+    <tr><td style="padding:6px 28px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${(run.lines || []).map(person).join("")}</table></td></tr>
+    <tr><td style="padding:14px 28px 26px">
+      <a href="${e(link)}" style="display:inline-block;background:${C.brand};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 18px;border-radius:8px">Review &amp; approve</a>
+      <div style="font-size:12px;color:${C.muted};margin-top:12px">Nothing is paid until it's approved in the console and sent in Nickel.</div>
+    </td></tr>
+  </table></td></tr></table>`;
 }
