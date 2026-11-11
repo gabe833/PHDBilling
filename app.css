@@ -2629,3 +2629,9 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .ts-drop.on{border-color:var(--accent);background:var(--accent-soft)}
 .ts-t td{vertical-align:top}
 .ts-t tr.ts-off td{opacity:.55}
+
+/* Office · pay a run in Nickel */
+.of-nk{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.of-nk-h{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px;font-size:13px}
+.of-nk-r{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-top:1px dashed var(--line)}
+.of-nk-r select{max-width:260px}

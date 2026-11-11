@@ -16858,7 +16858,11 @@ function ofRunLine(p, run, keep){
   const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
   if(keep){ L.entries = keep.entries || []; L.timeoff = off.map(e => e._id); }
   L.grossC = (+L.baseC || 0) + L.entries.reduce((a, k) => a + (ofAll()[k] ? ofEntryC(ofAll()[k]) : 0), 0);
-  const owed = ofBalance(p.id).owedC, capC = p.owedFrom === "extras" ? Math.max(0, L.grossC - (+L.baseC || 0)) : L.grossC;
+  const B = ofBalance(p.id), workOff = p.owedFrom === "extras";
+  // someone working off what they owe (Russell): every work invoice goes toward it — confirmed or still waiting — and base pay is untouched
+  const owed = workOff ? Math.max(0, ofEntries().filter(e => e.person === p.id && OF_OWE.has(e.kind) && (e.status === "submitted" || e.status === "confirmed")).reduce((a, e) => a + ofEntryC(e), 0) - B.taken) : B.owedC;
+  const capC = workOff ? Math.max(0, L.grossC - (+L.baseC || 0)) : L.grossC;
+  L.workOff = workOff; L.owedPendingC = workOff ? Math.max(0, owed - B.owedC) : 0;
   if(!keep || keep.deductC == null) L.deductC = Math.min(owed, capC);
   L.deductC = Math.max(0, Math.min(+L.deductC || 0, capC));
   L.netC = L.grossC - L.deductC;
@@ -16887,7 +16891,7 @@ function ofRunSheet(id){
               ${l.baseC ? `<tr><td>Base pay</td><td class="r num">${editable ? `<input class="of-in num" type="number" step="0.01" data-base="${i}" value="${(l.baseC / 100).toFixed(2)}">` : usd(l.baseC)}</td></tr>` : ""}
               ${items.map(e => `<tr><td>${esc(fdateS(e.date || ""))} · ${esc(OF_KIND[e.kind])}${e.desc ? " · " + esc(e.desc) : ""}${e.address ? " · " + esc(e.address) : ""} ${e.status === "submitted" ? `<span class="st st-gold" style="height:18px"><i></i>not reviewed</span>` : ""}</td><td class="r num">${usd(ofEntryC(e))}${editable ? ` <button class="linkish" data-drop="${i}|${esc(e._id)}" title="Leave it for a later run">×</button>` : ""}</td></tr>`).join("")}
               <tr class="rule"><td>What ${esc(l.name.split(" ")[0])} would be paid</td><td class="r num">${usd(l.grossC)}</td></tr>
-              ${l.owedC || l.deductC ? `<tr><td>Taken out toward what's owed to PHD <span class="muted">(${usd(l.owedC)} owed)</span></td><td class="r num" style="color:var(--red)">${editable ? `−<input class="of-in num" type="number" step="0.01" data-ded="${i}" value="${(l.deductC / 100).toFixed(2)}">` : "−" + usd(l.deductC)}</td></tr>` : ""}
+              ${l.owedC || l.deductC ? `<tr><td>${l.workOff ? "Work applied to what's owed to PHD" : "Taken out toward what's owed to PHD"} <span class="muted">(${usd(l.owedC)} owed${l.owedPendingC ? `, ${usd(l.owedPendingC)} of it not confirmed yet` : ""})</span></td><td class="r num" style="color:var(--red)">${editable ? `−<input class="of-in num" type="number" step="0.01" data-ded="${i}" value="${(l.deductC / 100).toFixed(2)}">` : "−" + usd(l.deductC)}</td></tr>` : ""}
               <tr class="rule"><td><b>Net pay</b></td><td class="r num"><b>${usd(l.netC)}</b></td></tr>
             </table>
             ${off.length ? `<p class="help" style="margin:6px 0 0">Time off in this period: ${off.map(e => `${esc(fdateS(e.date))}${+e.days > 1 ? ` (${e.days} days)` : ""}${e.desc ? " — " + esc(e.desc) : ""}`).join("; ")}</p>` : ""}
@@ -16895,7 +16899,8 @@ function ofRunSheet(id){
           </div>`; }).join("") || `<p class="muted">Nobody has pay in this period. Change the dates, or add people and their hours first.</p>`}
         ${editable ? `<div style="margin-top:8px"><select id="orAdd"><option value="">Add someone…</option>${ofPeople().filter(p => !r.lines.some(l => l.person === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></div>` : ""}
         <div class="mn-sum" style="margin-top:12px;border:1px solid var(--line-2);border-radius:10px"><span>Gross <b class="num">${usd(sum("grossC"))}</b></span><span>Taken out <b class="num">${usd(sum("deductC"))}</b></span><span>Net to send <b class="num">${usd(sum("netC"))}</b></span><span class="muted">from ${esc(r.account)}</span></div>
-        ${r.status === "approved" ? `<p class="help">Approved. Send the payments (Nickel or the bank), then record it here — nothing is sent from the console.</p>` : ""}
+        ${r.status === "approved" ? (typeof nickelOn === "function" && nickelOn() ? `<div id="orNk" class="of-nk"><p class="muted" style="margin:0">Loading Nickel…</p></div>` : `<p class="help">Approved. Send the payments (Nickel or the bank), then record it here.</p>`) : ""}
+        ${(r.lines || []).some(l => l.nickel) && r.status !== "approved" ? `<p class="help">${r.lines.filter(l => l.nickel).map(l => `${esc(l.name)}: Nickel ${esc(l.nickel.ref)} ${l.nickel.sent ? `sent ${esc(l.nickel.delivery || "")}${l.nickel.arrives ? " for " + esc(fdateS(l.nickel.arrives)) : ""}` : "— " + esc(l.nickel.err || "not sent")}`).join("<br>")}</p>` : ""}
         ${r.status === "submitted" && !canApprove ? `<p class="help">Waiting for ${esc((ofSettings().approvers || []).join(", ") || "an approver")}.${mineIn ? " You're paid in this run, so someone else approves it." : ""}</p>` : ""}
         ${r.paidAt ? `<p class="help">Recorded as paid ${esc(fdateS(String(r.paidOn || r.paidAt).slice(0, 10)))} by ${esc(r.paidBy || "")}${r.method ? " · " + esc(r.method) : ""}.</p>` : ""}
       </div>
@@ -16925,6 +16930,7 @@ function ofRunSheet(id){
     const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
     const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); commit(); closeSheet(); render(); };
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
+    if(r.status === "approved" && $("#orNk")) ofRunNickel(r, $("#orNk"));
     const ro = $("#orReopen"); if(ro) ro.onclick = () => { if(!confirm("Reopen this pay run as a draft? It will need approving again.")) return; const d = store("draft"); delete d.approvedBy; delete d.approvedAt; ofPut(r._id, d); closeSheet(); ofRunSheet(r._id); };
   };
   draw(); openPanel();
@@ -16934,14 +16940,18 @@ function ofRunPaid(r){
   const on = prompt(`Date the payments went out (YYYY-MM-DD) — from ${r.account}`, r.payDate || todayISO()); if(on == null) return;
   if(!/^\d{4}-\d{2}-\d{2}$/.test(on.trim())) return toast("Use the date like 2026-10-31");
   const method = prompt("How was it sent? (Nickel, ACH, check…)", "Nickel"); if(method == null) return;
+  ofRunMarkPaid(r, on.trim(), method.trim());
+}
+function ofRunMarkPaid(r, on, method){
   snapshot();
-  const A = ofAll(), day = on.trim(), now = new Date().toISOString(), who = ofWho();
+  const A = ofAll(), day = String(on).trim(), now = new Date().toISOString(), who = ofWho();
+  r = Object.assign({}, r, A[r._id] || {}, {_id:r._id});
   r.lines.forEach(l => {
     (l.entries || []).forEach(k => { if(A[k]) A[k] = Object.assign({}, A[k], {status:"paid", paidOn:day, runId:r._id}); });
-    if(l.netC) A["entry:" + uid() + uid()] = {type:"entry", kind:"payment", person:l.person, email:l.email, name:l.name, date:day, amountC:l.netC, desc:`Pay ${fdateS(r.periodStart)} – ${fdateS(r.periodEnd)} · ${method.trim()} from ${r.account}`, status:"paid", paidOn:day, runId:r._id, by:who, at:now};
+    if(l.netC) A["entry:" + uid() + uid()] = {type:"entry", kind:"payment", person:l.person, email:l.email, name:l.name, date:day, amountC:l.netC, desc:`Pay ${fdateS(r.periodStart)} – ${fdateS(r.periodEnd)} · ${method}${l.nickel && l.nickel.ref ? " " + l.nickel.ref : ""} from ${r.account}`, status:"paid", paidOn:day, runId:r._id, by:who, at:now};
     if(l.deductC) A["entry:" + uid() + uid()] = {type:"entry", kind:"deduction", person:l.person, email:l.email, name:l.name, date:day, amountC:l.deductC, desc:`Taken out of pay ${fdateS(r.periodStart)} – ${fdateS(r.periodEnd)} toward what's owed to PHD`, status:"paid", paidOn:day, runId:r._id, by:who, at:now};
   });
-  const d = Object.assign({}, A[r._id], {status:"paid", paidOn:day, paidAt:now, paidBy:who, method:method.trim(), account:r.account});
+  const d = Object.assign({}, A[r._id], {status:"paid", paidOn:day, paidAt:now, paidBy:who, method, account:r.account});
   A[r._id] = d;
   commit(); closeSheet(); render(); toast("Recorded as paid");
 }
@@ -20073,3 +20083,66 @@ function tsDropZone(v){
 }
 { const w0 = pgOfWork; pgOfWork = function(){ w0.apply(this, arguments); try{ tsDropZone($("#view")); }catch(e){ console.error(e); } }; }
 { const m0 = pgOfMe; pgOfMe = function(){ m0.apply(this, arguments); try{ if(ofMyPerson()) tsDropZone($("#view")); }catch(e){ console.error(e); } }; }
+
+
+/* =====================================================================
+   OFFICE · PAY AN APPROVED PAY RUN IN NICKEL
+   Each person with net pay gets a Nickel bill (PAY-<pay date>-<name>) and
+   it's paid from the account picked here — Nickel's confirmation shows
+   first. Only net pay goes out: what's applied to money someone owes PHD
+   (Russell working his off) never leaves the account. Once every line is
+   on its way, the run is recorded as paid (items paid, payment and
+   deduction lines written), exactly like "Record as paid".
+   ===================================================================== */
+const ofNkVendors = () => ((S.nk && S.nk.nickelVendors) || []).filter(v => v && v.id);
+function ofNkGuess(p){
+  if(p.nickelVendorId && ofNkVendors().some(v => v.id === p.nickelVendorId)) return p.nickelVendorId;
+  const w = String(p.name || "").toLowerCase().split(/\s+/).filter(Boolean); if(!w.length) return "";
+  const hits = ofNkVendors().filter(v => { const n = String(v.name || "").toLowerCase().split(/\s+/);
+    const first = n.some(x => x.slice(0, 3) === w[0].slice(0, 3) && (x.startsWith(w[0]) || w[0].startsWith(x) || w[0].length <= 4));
+    const last = w.length < 2 || n.includes(w[w.length - 1]);
+    return first && last; });
+  return hits.length === 1 ? hits[0].id : "";
+}
+async function ofRunNickel(r, box){
+  let plan = null;
+  try{ plan = await payCall("nk.payoutPlan", {ownerIds:[]}, {noSave:true}); }catch(e){ box.innerHTML = `<p class="help">Couldn't reach Nickel: ${esc(e.message || e)} — or send the payments yourself and press Record as paid.</p>`; return; }
+  const lines = (r.lines || []).filter(l => (+l.netC || 0) > 0);
+  const pick = {};
+  lines.forEach(l => { const p = ofPerson(l.person) || {name:l.name}; const vid = ofNkGuess(p); const v = ofNkVendors().find(x => x.id === vid); pick[l.person] = {on:!(l.nickel && l.nickel.sent), vendorId:vid, payoutMethodId:v && v.payout && v.payout[0] ? v.payout[0].id : ""}; });
+  const from = {id:(plan.payFrom.find(m => m.isDefault) || plan.payFrom[0] || {}).id || ""};
+  const draw = () => {
+    const live = lines.filter(l => pick[l.person].on && !(l.nickel && l.nickel.sent)), tot = live.reduce((a, l) => a + (+l.netC || 0), 0);
+    box.innerHTML = `<div class="of-nk-h"><b>Pay in Nickel</b><span class="muted">one bill per person, then paid — net pay only</span></div>
+      ${lines.map(l => { const pk = pick[l.person], v = ofNkVendors().find(x => x.id === pk.vendorId), done = l.nickel && l.nickel.sent;
+        return `<div class="of-nk-r"><label class="switchbox"><input type="checkbox" data-nkon="${esc(l.person)}" ${pk.on && !done ? "checked" : ""} ${done ? "disabled" : ""}> <b>${esc(l.name)}</b> <span class="num">${usd(l.netC)}</span></label>
+          ${done ? `<span class="st st-green"><i></i>Sent · ${esc(l.nickel.ref)}</span>` : `<select data-nkv="${esc(l.person)}"><option value="">Pick the payee in Nickel…</option>${ofNkVendors().slice().sort((a, b) => String(a.name).localeCompare(b.name)).map(x => `<option value="${esc(x.id)}" ${x.id === pk.vendorId ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+          ${v ? `<select data-nkm="${esc(l.person)}">${(v.payout || []).map(m => `<option value="${esc(m.id)}" ${m.id === pk.payoutMethodId ? "selected" : ""}>${esc(m.label)}</option>`).join("") || `<option value="">No bank account on file</option>`}</select>` : ""}
+          ${l.nickel && l.nickel.err ? `<div style="color:var(--red);font-size:12px">Last try: ${esc(l.nickel.err)}</div>` : ""}`}</div>`; }).join("")}
+      <div class="f2" style="margin-top:8px"><label class="fld"><span>Pay from</span><select id="nkFrom">${plan.payFrom.map(m => `<option value="${esc(m.id)}" ${m.id === from.id ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>
+        <label class="fld"><span>Arrive on <span class="muted" style="font-weight:400">· optional</span></span><input type="date" id="nkWhen" value="${esc(r.payDate && r.payDate > todayISO() ? r.payDate : "")}" min="${todayISO()}"></label></div>
+      ${plan.canPay ? `<button class="btn primary" id="nkGo" ${live.length && live.every(l => pick[l.person].vendorId && pick[l.person].payoutMethodId) ? "" : "disabled"}>Send ${usd(tot)} in Nickel</button>` : `<p class="help">You're not on the payments list, so you can't send money — ${esc((plan.payers || []).join(", ") || "someone who is")} can.</p>`}
+      <p class="help" style="margin-top:6px">Nickel shows its own confirmation before anything is sent. Russell-style lines (working off what's owed) send only the net shown.</p>`;
+    box.querySelectorAll("[data-nkon]").forEach(c => c.onchange = () => { pick[c.dataset.nkon].on = c.checked; draw(); });
+    box.querySelectorAll("[data-nkv]").forEach(c => c.onchange = () => { const k = pick[c.dataset.nkv], v = ofNkVendors().find(x => x.id === c.value); k.vendorId = c.value; k.payoutMethodId = v && v.payout && v.payout[0] ? v.payout[0].id : ""; draw(); });
+    box.querySelectorAll("[data-nkm]").forEach(c => c.onchange = () => { pick[c.dataset.nkm].payoutMethodId = c.value; });
+    const fr = $("#nkFrom"); if(fr) fr.onchange = () => { from.id = fr.value; };
+    const go = $("#nkGo"); if(go) go.onclick = async () => {
+      const when = $("#nkWhen").value;
+      if(!confirm(`Send ${usd(tot)} to ${live.map(l => `${l.name} (${usd(l.netC)})`).join(", ")} from ${(plan.payFrom.find(m => m.id === from.id) || {}).label || "the account"}${when ? ", arriving " + fdateS(when) : ""}?`)) return;
+      // remember each person's payee for next time
+      live.forEach(l => { const p = ofAll()["person:" + l.person]; if(p && p.nickelVendorId !== pick[l.person].vendorId) ofAll()["person:" + l.person] = Object.assign({}, p, {nickelVendorId:pick[l.person].vendorId}); }); commit();
+      go.disabled = true; go.textContent = "Sending…";
+      let res; try{ res = await nkRun("payrun.send", {runKey:r._id, payFrom:from.id, arrivalDate:when, lines:live.map(l => ({person:l.person, vendorId:pick[l.person].vendorId, payoutMethodId:pick[l.person].payoutMethodId}))}, "Pay run"); }
+      catch(e){ toast(String(e.message || e)); go.disabled = false; go.textContent = `Send ${usd(tot)} in Nickel`; return; }
+      if(!res || !res.ok) return draw();
+      // read the run back (the server wrote each line's bill), then record it as paid when everyone's pay is on its way
+      await cloudFetchDoc("hr", r._id).catch(() => {});
+      const fresh = Object.assign({}, ofAll()[r._id], {_id:r._id});
+      const all = (fresh.lines || []).filter(l => (+l.netC || 0) > 0).every(l => l.nickel && l.nickel.sent);
+      if(all){ ofRunMarkPaid(fresh, when || todayISO(), "Nickel"); toast(`Sent ${res.sent} payment${res.sent === 1 ? "" : "s"} in Nickel — pay run recorded as paid`); }
+      else { toast(`${res.sent} sent, ${res.failed} not — see the pay run`); closeSheet(); ofRunSheet(r._id); }
+    };
+  };
+  draw();
+}

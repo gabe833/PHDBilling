@@ -551,6 +551,71 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     return { ok: true, sent: results.filter((x) => x.ok).length, failed: results.filter((x) => !x.ok && x.pid).length, oneByOne: batchOff, results };
   }
 
+  /* ---- Office pay runs paid from the console (Office → Pay runs) ----
+     Only an APPROVED run. One Nickel bill per person, numbered PAY-<pay date>-<name> (reused if it's already there and
+     unpaid for the same amount), then paid — Nickel's own confirmation is shown in the console first. Each line records
+     its bill; a line already on its way is never sent twice. Net pay only: what's taken out toward what someone owes
+     PHD never leaves the account. */
+  if (op === "payrun.send") {
+    if (!(await payers()).includes(by)) throw new Error("You're not on the payments list, so you can't send money.");
+    const from = S(body.payFrom), pf = await payFrom(); if (!pf.some((m) => m.id === from)) throw new Error("Pick the account to pay from");
+    const key = S(body.runKey); if (!/^run:[A-Za-z0-9_-]{6,80}$/.test(key)) throw new Error("Missing pay run");
+    const run = await docData("hr", key); if (!run) throw new Error("Pay run not found");
+    if (run.status !== "approved") throw new Error("Only an approved pay run can be paid");
+    const arrival = /^\d{4}-\d{2}-\d{2}$/.test(S(body.arrivalDate)) && S(body.arrivalDate) > today() ? S(body.arrivalDate) : "";
+    const nvs: Obj[] = map.nickelVendors || [], pick: Obj = {}; ((body.lines || []) as Obj[]).forEach((x) => { pick[S(x.person)] = x; });
+    const day = alnum(S(run.payDate || today())).slice(0, 8), results: Obj[] = [], go: Obj[] = [];
+    for (const l of ((run.lines || []) as Obj[])) {
+      const amt = Math.round(Number(l.netC) || 0), say = (why: string) => results.push({ person: S(l.person), ok: false, why });
+      if (!(amt > 0)) continue;
+      if (l.nickel && l.nickel.sent) { results.push({ person: S(l.person), ok: true, already: true }); continue; }
+      const want = pick[S(l.person)]; if (!want) continue;              // not chosen this time
+      const nv = nvs.find((y) => y.id === S(want.vendorId)); if (!nv) { say(`${S(l.name)} isn't a payee in Nickel`); continue; }
+      const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(want.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { say(`${S(nv.name)} has no bank account or check address in Nickel`); continue; }
+      const ref = `PAY-${day}-${alnum(l.name).slice(0, 10)}`;
+      let found: Obj | null = null;
+      try { found = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id) || null; } catch { /* make one */ }
+      if (found && S(found.paidStatus).toUpperCase() !== "UNPAID") { say(`Nickel already shows ${ref} as paid or on its way`); continue; }
+      if (found && cAmt(found) !== amt) { say(`Nickel has ${ref} for a different amount — fix it there first`); continue; }
+      let billId = found ? S(found.id) : "";
+      if (!billId) {
+        const r = await tool("create_bill", { vendorId: nv.id, amountInCents: amt, dueDate: arrival || today(), invoiceNumber: ref, description: `Pay ${S(run.periodStart)} – ${S(run.periodEnd)} · ${S(l.name)}`.slice(0, 200) }, autoYes);
+        if (!r.ok) { say(S(r.error && r.error.message) || "Nickel didn't add the bill"); continue; }
+        billId = newId(r.data, "billId");
+        if (!billId) { try { const f = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id); billId = f ? S(f.id) : ""; } catch { /* below */ } }
+        if (!billId) { say("Nickel added the bill but didn't say its id — pay it in Nickel"); continue; }
+      }
+      go.push({ l, nv, pm, amt, ref, billId });
+    }
+    const check = async (x: Obj, res: string) => {
+      let st: Obj = {}; try { st = (await read("get_bill", { billId: x.billId })) || {}; } catch { /* keep going */ }
+      x.moving = ((st.amountScheduled || {}).amountInCents || 0) + ((st.amountPaid || {}).amountInCents || 0) > 0 || S(st.paidStatus).toUpperCase() !== "UNPAID";
+      x.err = (res.match(new RegExp(`"billId":"${x.billId}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
+    };
+    if (go.length) {
+      const rows = (b: Obj[]) => b.map((x) => { const row: Obj = { billId: x.billId, vendorId: x.nv.id, merchantPaymentMethodId: from, vendorPayoutMethodId: x.pm.id }; if (arrival) row.arrivalDate = arrival; return row; });
+      const tot = go.reduce((a, x) => a + x.amt, 0);
+      let r: Obj | null = await tool("pay_bill", { bills: rows(go) }, ask(`Send pay to ${go.map((x) => S(x.l.name)).join(", ")} · $${(tot / 100).toFixed(2)}`));
+      if (!r.ok && go.length > 1 && /plan|upgrade|batch|not (?:available|enabled|allowed)|subscription/i.test(S(r.error && r.error.message))) r = null;
+      if (r && !r.ok) { const ref = refused(r, "The payment"); go.forEach((x) => { x.err = S(ref.error); }); if (ref.approvalUrl) results.push({ ok: false, approvalUrl: ref.approvalUrl, why: S(ref.error) }); }
+      else if (r) { const res = JSON.stringify(r.data || {}); for (const x of go) await check(x, res); }
+      else for (const x of go) {   // one at a time
+        const r1 = await tool("pay_bill", { bills: rows([x]) }, ask(`Send ${S(x.l.name)} · $${(x.amt / 100).toFixed(2)}`));
+        if (!r1.ok) { const ref = refused(r1, "The payment"); x.err = S(ref.error); if (ref.declined || ref.timedOut) break; continue; }
+        await check(x, JSON.stringify(r1.data || {}));
+      }
+    }
+    const now = new Date().toISOString();
+    await updateDoc("hr", key, (d) => {
+      (d.lines || []).forEach((l: Obj) => { const x = go.find((y) => S(y.l.person) === S(l.person)); if (!x) return;
+        l.nickel = { billId: x.billId, ref: x.ref, sent: !!x.moving, err: x.moving ? "" : (x.err || "Nickel didn't start this payment"), vendor: S(x.nv.name), delivery: S(x.pm.type) === "CHECK" ? "Check" : "ACH", amountC: x.amt, at: now, by, ...(arrival ? { arrives: arrival } : {}) }; });
+      const owed = (d.lines || []).filter((l: Obj) => Math.round(Number(l.netC) || 0) > 0);
+      if (owed.length && owed.every((l: Obj) => l.nickel && l.nickel.sent)) d.nickelSent = { at: now, by, from: S((pf.find((m) => m.id === from) || {}).label) };
+    });
+    go.forEach((x) => results.push({ person: S(x.l.person), ok: !!x.moving, why: x.moving ? "" : (x.err || "Nickel didn't start this payment"), ref: x.ref }));
+    return { ok: true, sent: results.filter((x) => x.ok && !x.already).length, failed: results.filter((x) => !x.ok).length, results };
+  }
+
   if (op === "bill.record") {   // paid outside Nickel: record it there too, so QuickBooks matches
     const id = S(body.billId), b = await docData("pm_bill", id); if (!b || !(b.nickel && b.nickel.billId)) return { ok: true, skipped: true };
     const args: Obj = { billId: b.nickel.billId, amountInCents: cents(b.amount) };
