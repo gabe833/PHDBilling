@@ -19792,10 +19792,12 @@ function pmdUnits(b, place){
   if(b.driveUnit && labels.includes(b.driveUnit)) return [b.driveUnit];
   const text = [b.memo, b.receipt && b.receipt.name, b.billNo, b.category, b.payNote].filter(Boolean).join(" ");
   // split across units, or for the whole property: the building's own folder
-  if(b.split || /\bsplit\b|whole (property|building|house)|common area|both units|all units|\bexterior\b|\blandscap|\broof\b|\bgutter/i.test(text)) return place.inv ? [""] : labels;
+  const toBldg = () => place.inv ? [""] : labels;
+  if(b.split || /\bsplit\b|whole (property|building|house)|both units|all units/i.test(text)) return toBldg();
   const hits = labels.filter(L => new RegExp(`(?:\\bunits?\\b|\\bapt\\.?|#|&)\\s*${L}\\b`, "i").test(text));
   if(hits.length === 1) return hits;
-  if(hits.length > 1) return place.inv ? [""] : labels;     // the whole building
+  if(hits.length > 1) return toBldg();                      // names every unit: the whole building
+  if(/common area|\bexterior\b|\blandscap|\blawn\b|\broof\b|\bgutter|\birrigation/i.test(text)) return toBldg();   // outside work, no unit named
   return null;                                              // doesn't say: someone picks
 }
 const pmdFileId = u => { const m = String(u || "").match(/\/d\/([A-Za-z0-9_-]{20,})/) || String(u || "").match(/[?&]id=([A-Za-z0-9_-]{20,})/); return m ? m[1] : ""; };
