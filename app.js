@@ -10115,7 +10115,7 @@ const pjdState = inv => (inv.reg || {}).paid ? "paid" : pjdSent(inv) ? "open" : 
 const pjdHas = inv => { const d = (inv.reg || {}).drive; return d && d.id ? (d.state || "paid") : ""; };
 function pjdName(p, unit, inv, state){
   const reg = inv.reg || {}, paid = state === "paid";
-  const day = paid ? pjdPaidOn(inv) || todayISO() : String(reg.dateSent || (reg.nickel || {}).sentAt || todayISO()).slice(0, 10);
+  const day = paid ? pjdPaidOn(inv) || todayISO() : String(reg.dateSent || (reg.nickel || {}).sentAt || (reg.nickel || {}).at || todayISO()).slice(0, 10);
   return pdfName(`${day} - Invoice ${pjInvNumber(p, unit, inv)} - ${p.name}${p.units.length > 1 ? " (" + unit.name + ")" : ""} - ${dfMoney(inv.totalC)} - ${paid ? "Paid" : "Unpaid"}`);
 }
 // what still needs filing: issued and not in Drive, or paid with only the unpaid copy there
