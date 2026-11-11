@@ -20110,7 +20110,9 @@ async function ofRunNickel(r, box){
   const lines = (r.lines || []).filter(l => (+l.netC || 0) > 0);
   const pick = {};
   lines.forEach(l => { const p = ofPerson(l.person) || {name:l.name}; const vid = ofNkGuess(p); const v = ofNkVendors().find(x => x.id === vid); pick[l.person] = {on:!(l.nickel && l.nickel.sent), vendorId:vid, payoutMethodId:v && v.payout && v.payout[0] ? v.payout[0].id : ""}; });
-  const from = {id:(plan.payFrom.find(m => m.isDefault) || plan.payFrom[0] || {}).id || ""};
+  // the run's own account (PM Operating / Real Estate) — never tenant money (Rental Income, Deposits) by default
+  const okFrom = plan.payFrom.filter(m => !/rental income|deposit/i.test(m.label)), want = String(r.account || "").toLowerCase().replace(/real estate/, "re");
+  const from = {id:(okFrom.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(want) && /nickel/i.test(m.label)) || okFrom.find(m => m.label.toLowerCase().replace(/real estate/, "re").includes(want)) || okFrom[0] || {}).id || ""};
   const draw = () => {
     const live = lines.filter(l => pick[l.person].on && !(l.nickel && l.nickel.sent)), tot = live.reduce((a, l) => a + (+l.netC || 0), 0);
     box.innerHTML = `<div class="of-nk-h"><b>Pay in Nickel</b><span class="muted">one bill per person, then paid — net pay only</span></div>
@@ -20126,7 +20128,8 @@ async function ofRunNickel(r, box){
     box.querySelectorAll("[data-nkon]").forEach(c => c.onchange = () => { pick[c.dataset.nkon].on = c.checked; draw(); });
     box.querySelectorAll("[data-nkv]").forEach(c => c.onchange = () => { const k = pick[c.dataset.nkv], v = ofNkVendors().find(x => x.id === c.value); k.vendorId = c.value; k.payoutMethodId = v && v.payout && v.payout[0] ? v.payout[0].id : ""; draw(); });
     box.querySelectorAll("[data-nkm]").forEach(c => c.onchange = () => { pick[c.dataset.nkm].payoutMethodId = c.value; });
-    const fr = $("#nkFrom"); if(fr) fr.onchange = () => { from.id = fr.value; };
+    const fr = $("#nkFrom"); if(fr) fr.onchange = () => { from.id = fr.value; draw(); };
+    if(/rental income|deposit/i.test((plan.payFrom.find(m => m.id === from.id) || {}).label || "")) box.insertAdjacentHTML("beforeend", `<p class="pm-banner late" style="margin-top:8px">That account holds tenants' money — pay staff from an operating account.</p>`);
     const go = $("#nkGo"); if(go) go.onclick = async () => {
       const when = $("#nkWhen").value;
       if(!confirm(`Send ${usd(tot)} to ${live.map(l => `${l.name} (${usd(l.netC)})`).join(", ")} from ${(plan.payFrom.find(m => m.id === from.id) || {}).label || "the account"}${when ? ", arriving " + fdateS(when) : ""}?`)) return;
