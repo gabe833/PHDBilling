@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 9;   // 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 10;   // 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -632,10 +632,14 @@ function doPost(e){
     if(b.action === 'folderAdd'){
       // put a COPY of each transaction's receipt in the property's folder (the original stays where it is), never twice
       // no project folder set: PHD Receipts/<Property>, the same place approved receipts go
-      const root = b.folderId ? DriveApp.getFolderById(String(b.folderId)) : folderByName_(rootFolder_(), safeName_(String(b.propertyName || CFG.UNFILED_FOLDER))), out = [];
+      // sub: a subfolder inside it (paid invoices go in "Invoices"); byName: a file already there under the same name counts as the same file
+      let root = b.folderId ? DriveApp.getFolderById(String(b.folderId)) : folderByName_(rootFolder_(), safeName_(String(b.propertyName || CFG.UNFILED_FOLDER)));
+      if(b.sub) root = folderByName_(root, safeName_(String(b.sub)));
+      const out = [];
       (Array.isArray(b.items) ? b.items : []).slice(0, 10).forEach(x => {
-        const res = {txnId:String(x.txnId || '')};
+        const res = {txnId:String(x.txnId || ''), folder:{id:root.getId(), url:root.getUrl(), name:root.getName()}};
         try{
+          if(b.byName && x.name){ const same = root.getFilesByName(fileNm_(String(x.name))); if(same.hasNext()){ const g = same.next(); res.duplicateOf = {id:g.getId(), url:g.getUrl(), name:g.getName()}; out.push(res); return; } }
           let blob;
           if(x.fileId){
             const src = DriveApp.getFileById(String(x.fileId));
