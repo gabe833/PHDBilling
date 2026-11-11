@@ -16874,7 +16874,8 @@ function ofRunLine(p, run, keep){
 function ofRunSheet(id){
   const cur = id ? Object.assign({}, ofAll()[id], {_id:id}) : null;
   const today = todayISO();
-  const r = cur ? JSON.parse(JSON.stringify(cur)) : {_id:"run:" + uid() + uid(), status:"draft", periodStart:PMCore.isoOf(PMCore.dayNum(today) - 13), periodEnd:today, payDate:today, account:OF_ACCOUNTS[0], lines:[]};
+  const pp0 = ofNextPay(today);
+  const r = cur ? JSON.parse(JSON.stringify(cur)) : {_id:"run:" + uid() + uid(), status:"draft", periodStart:pp0.start, periodEnd:pp0.end, payDate:pp0.pay, account:OF_ACCOUNTS[0], lines:[]};
   const editable = r.status === "draft" || r.status === "rejected";
   if(!cur){ r.lines = ofPeople().filter(p => p.active !== false).map(p => ofRunLine(p, r)).filter(l => l.grossC || l.timeoff.length); }
   const sh = $("#sheet");
@@ -16909,6 +16910,7 @@ function ofRunSheet(id){
       <div class="sheet-f">
         ${editable && cur ? `<button class="btn ghost" id="orDel">Delete</button>` : ""}
         ${canApprove ? `<button class="btn" id="orBack">Return for changes</button>` : ""}
+        ${r.status === "submitted" && ofIsAdmin() ? `<button class="btn ghost" id="orRemind" title="Email the approvers again">Email approvers</button>` : ""}
         ${ofIsAdmin() && (r.status === "submitted" || r.status === "approved") ? `<button class="btn ghost" id="orReopen" title="Back to a draft to change it — it needs approving again">Reopen to edit</button>` : ""}
         <span style="flex:1"></span><button class="btn" id="shCancel">Close</button>
         ${editable ? `<button class="btn" id="orSave">Keep as draft</button><button class="btn primary" id="orSend">Ask to approve</button>` : ""}
@@ -16917,7 +16919,9 @@ function ofRunSheet(id){
       </div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     if(editable){
-      ["#orS", "#orE", "#orP"].forEach(s => $(s).onchange = () => { r.periodStart = $("#orS").value; r.periodEnd = $("#orE").value; r.payDate = $("#orP").value; if(!cur) r.lines = ofPeople().filter(p => p.active !== false).map(p => ofRunLine(p, r)).filter(l => l.grossC || l.timeoff.length); else recalc(); draw(); });
+      ["#orS", "#orE", "#orP"].forEach(s => $(s).onchange = () => { r.periodStart = $("#orS").value; r.periodEnd = $("#orE").value;
+        // a new pay date on the 15th or the last day of a month brings its period with it
+        if(s === "#orP"){ r.payDate = $("#orP").value; const pr = ofPeriodFor(r.payDate); if(pr){ r.periodStart = pr.start; r.periodEnd = pr.end; } } else r.payDate = $("#orP").value; if(!cur) r.lines = ofPeople().filter(p => p.active !== false).map(p => ofRunLine(p, r)).filter(l => l.grossC || l.timeoff.length); else recalc(); draw(); });
       sh.querySelectorAll("[data-base]").forEach(x => x.onchange = () => { r.lines[+x.dataset.base].baseC = cents(x.value); recalc(); draw(); });
       sh.querySelectorAll("[data-ded]").forEach(x => x.onchange = () => { r.lines[+x.dataset.ded].deductC = cents(x.value); recalc(); draw(); });
       sh.querySelectorAll("[data-drop]").forEach(x => x.onclick = () => { const [i, k] = x.dataset.drop.split("|"); r.lines[+i].entries = r.lines[+i].entries.filter(y => y !== k); recalc(); draw(); });
@@ -16932,6 +16936,7 @@ function ofRunSheet(id){
     const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
     const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); commit(); closeSheet(); render(); };
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
+    const rm = $("#orRemind"); if(rm) rm.onclick = () => { rm.disabled = true; ofNotifyApprovers(Object.assign({}, ofAll()[r._id], {_id:r._id})); };
     if(r.status === "approved" && $("#orNk")) ofRunNickel(r, $("#orNk"));
     const ro = $("#orReopen"); if(ro) ro.onclick = () => { if(!confirm("Reopen this pay run as a draft? It will need approving again.")) return; const d = store("draft"); delete d.approvedBy; delete d.approvedAt; ofPut(r._id, d); closeSheet(); ofRunSheet(r._id); };
   };
@@ -20164,7 +20169,10 @@ async function ofNotifyApprovers(run){
   if(typeof bmConn !== "function" || !bmConn()){ toast(`Waiting for ${who} to approve in Office → Pay runs — connect billing@ email to send them a note`); return; }
   const net = (run.lines || []).reduce((a, l) => a + (+l.netC || 0), 0), link = `${location.origin}/?view=ofRuns&r=${encodeURIComponent(run._id)}`;
   const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}`);
-  const subject = `Pay run to approve · ${fdateS(run.payDate)} · ${usd(net)}`;
+  const names = (run.lines || []).filter(l => +l.netC > 0).map(l => String(l.name || "").split(" ")[0]);
+  const daysLeft = PMCore.dayNum(run.payDate || todayISO()) - PMCore.dayNum(todayISO());
+  const when = daysLeft <= 0 ? "due today" : daysLeft === 1 ? "due tomorrow" : `due ${fdateS(run.payDate)}`;
+  const subject = `Action needed: approve payroll ${usd(net)} · ${when} · ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}`;
   const text = `${ofWho()} sent a pay run for your approval.\n\nPeriod: ${fdateS(run.periodStart)} – ${fdateS(run.periodEnd)}\nPay date: ${fdateS(run.payDate)}\nFrom: ${run.account}\n\n${rows.join("\n")}\n\nNet to send: ${usd(net)}\n\nReview and approve: ${link}`;
   const html = ofRunEmailHTML(run, link);
   try{ await bmCall({action:"send", to:to.join(","), subject, text, html, noSignature:true}); toast(`Emailed ${who} to approve it`); }
@@ -20214,4 +20222,19 @@ function ofRunEmailHTML(run, link){
       <div style="font-size:12px;color:${C.muted};margin-top:12px">Nothing is paid until it's approved in the console and sent in Nickel.</div>
     </td></tr>
   </table></td></tr></table>`;
+}
+
+/* pay periods are twice a month: the 1st–15th is paid at the end of the month; the 16th–end is paid on the 15th of the next month */
+function ofPeriodFor(pay){
+  const m = String(pay || "").match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3], last = new Date(y, mo, 0).getDate(), pad = n => String(n).padStart(2, "0");
+  if(d === 15){ const py = mo === 1 ? y - 1 : y, pm = mo === 1 ? 12 : mo - 1, pl = new Date(py, pm, 0).getDate(); return {start:`${py}-${pad(pm)}-16`, end:`${py}-${pad(pm)}-${pad(pl)}`}; }
+  if(d === last) return {start:`${y}-${pad(mo)}-01`, end:`${y}-${pad(mo)}-15`};
+  return null;
+}
+// the next pay date on or after a day (the 15th or the month's last day), with its period
+function ofNextPay(day){
+  const [y, mo, d] = String(day).split("-").map(Number), last = new Date(y, mo, 0).getDate(), pad = n => String(n).padStart(2, "0");
+  const pay = d <= 15 ? `${y}-${pad(mo)}-15` : `${y}-${pad(mo)}-${pad(last)}`;
+  return Object.assign({pay}, ofPeriodFor(pay));
 }
