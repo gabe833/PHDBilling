@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 13;   // 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 14;   // 14: Drive-only jobs no longer wait on the inbox lock · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -495,8 +495,17 @@ function doPost(e){
   let b = {};
   try{ b = JSON.parse((e && e.postData && e.postData.contents) || '{}'); }catch(err){ return json_({ok:false, error:'bad json'}); }
   if(!tokenOk_(b.token)) return json_({ok:false, error:'unauthorized'});
+  // Drive-only jobs don't touch the sheet: they run without waiting on (or holding up) the inbox
+  if(DRIVE_ACTIONS_.indexOf(String(b.action)) >= 0){
+    try{ return doPostBody_(b, {releaseLock(){}}); }catch(err){ return json_({ok:false, error:String(err && err.message || err).slice(0, 200)}); }
+  }
   const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try{
+  try{ return doPostBody_(b, lock); }
+  finally { lock.releaseLock(); }
+}
+const DRIVE_ACTIONS_ = ['pmTree', 'pmFile', 'folderMake', 'folderFind', 'invoiceRetire'];
+function doPostBody_(b, lock){
+  {
     if(b.action === 'config'){
       // the console sends its property list so Claude can guess property and unit
       const list = (Array.isArray(b.properties) ? b.properties : []).slice(0, 200).map(p => ({
@@ -829,7 +838,7 @@ Call the describe_work tool once with one short line (under 110 characters) an o
       return json_({ok:false, error:'not found'});
     }
     return json_({ok:false, error:'unknown action'});
-  } finally { lock.releaseLock(); }
+  }
 }
 
 /* ============================ helpers ============================ */

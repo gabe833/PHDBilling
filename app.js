@@ -19777,6 +19777,7 @@ async function pmdSetup(root){
 function pmdPlace(p){
   const c = pmdCfg(); if(!c) return null;
   const pick = (c.pick || {})[p.id];
+  if(pick && typeof pick === "object") return pick;
   if(pick && PMD.tree){ const f = PMD.tree.folders.find(x => x.id === pick); if(f){ const inv = PMD.tree.folders.find(x => x.parent === f.id && pmdInvName(x.name)); return {id:f.id, name:f.name, inv:inv || null, units:{}}; } }
   return (c.map || {})[p.id] || null;
 }
@@ -19843,10 +19844,12 @@ const pmdReady = () => pmdOn() && typeof inboxConn === "function" && inboxConn()
 async function pmdSweep(){
   if(PMD.busy || !pmdReady() || !cloudChores() || Date.now() - PMD.last < 60 * 1000) return;
   PMD.last = Date.now();
-  if(!PMD.tree){ try{ await pmdRead(pmdCfg().root.id); }catch(e){ return; } }
   const todo = billList().filter(b => pmdState(b) === "todo").slice(0, 6); if(!todo.length) return;
   PMD.busy = true; let n = 0, held = 0;
-  try{ for(const b of todo){ try{ const r = await pmdFile(b); if(Object.keys(r.maybe).length) held++; else n++; }catch(e){ PMD.failed[b.id] = String(e && e.message || e); } } }
+  try{ for(const b of todo){ try{ const r = await pmdFile(b); if(Object.keys(r.maybe).length) held++; else n++; }
+    catch(e){ const m = String(e && e.message || e);
+      if(/reach Google|took too long|web page instead/i.test(m)){ PMD.retry = (PMD.retry || 0) + 1; break; }     // the script is busy or the connection dropped: next pass
+      PMD.failed[b.id] = m; } } }
   finally{ PMD.busy = false; }
   if(n || held) toast(`${n ? `${n} bill${n === 1 ? "" : "s"} filed in Drive` : ""}${n && held ? " · " : ""}${held ? `${held} look${held === 1 ? "s" : ""} like ${held === 1 ? "it's" : "they're"} already there — check in PM settings` : ""}`);
   if(S.ui.view === "pmSettings") render();
@@ -19900,7 +19903,7 @@ function pmdCard(v){
     ${sec("Which unit?", (by.unit || []).length, (by.unit || []).map(unitRow).join(""), true)}
     ${sec("Already in Drive?", (by.maybe || []).length, (by.maybe || []).map(maybeRow).join(""), true)}
     ${sec("Couldn't file", (by.error || []).length + (by.nolink || []).length, [...(by.error || []).map(b => `<div class="pmd-r"><div>${nm(b)}<div style="color:var(--red);font-size:12px">${esc(PMD.failed[b.id] || "")}</div></div><div class="pmd-a"><button class="btn sm" data-retry="${esc(b.id)}">Try again</button></div></div>`), ...(by.nolink || []).map(b => `<div class="pmd-r"><div>${nm(b)}<div class="muted" style="font-size:12px">The file isn't in Google Drive (${esc(String(b.receipt.url).replace(/^https?:\/\//, "").split("/")[0])}) — save it to Drive and paste that link on the bill</div></div></div>`)].join(""), false)}
-    ${sec("Rentals with no folder", miss.length, `<p class="help" style="margin:4px 0 8px">Pick the folder, or leave it — these rentals' bills just aren't filed.</p>${miss.map(p => `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="pmd-a"><select data-fold="${esc(p.id)}"><option value="">Pick a folder…</option>${PMD.tree ? PMD.tree.folders.filter(f => f.depth <= 2 && !pmdInvName(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("") : ""}</select></div></div>`).join("")}${PMD.tree ? "" : `<p class="muted">Re-read the folders to pick one.</p>`}`, false)}
+    ${sec("Rentals with no folder", miss.length, `<p class="help" style="margin:4px 0 8px">Pick the folder, or leave it — these rentals' bills just aren't filed.</p>${miss.map(p => `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="pmd-a"><select data-fold="${esc(p.id)}"><option value="">Pick a folder…</option>${PMD.tree ? PMD.tree.folders.filter(f => f.depth <= 2 && !pmdInvName(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric:true})).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("") : ""}</select></div></div>`).join("")}${PMD.tree ? "" : `<p class="muted">${PMD.reading ? "Reading the folders…" : "Loading the folder list…"}</p>`}`, false)}
     ${sec("Where each rental's bills go", props.length - miss.length, `<div class="pmd-map">${props.filter(p => pmdPlace(p)).map(p => { const pl = pmdPlace(p), U = Object.keys(pl.units || {});
       return `<div class="pmd-r"><div><b>${esc(p.name)}</b></div><div class="muted" style="font-size:12.5px">${U.length ? U.map(u => `Unit ${esc(u)} → ${esc((pl.units[u].inv || {}).name || pl.units[u].name + " (Invoices & Repairs made on first bill)")}`).join("<br>") + (pl.inv ? `<br>Whole building → ${esc(pl.inv.name)}` : "") : esc((pl.inv || {}).name || pl.name + " (Invoices & Repairs made on first bill)")}</div></div>`; }).join("")}</div>`, false)}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
@@ -19917,8 +19920,10 @@ function pmdCard(v){
   c.querySelectorAll("[data-same]").forEach(x => x.onclick = () => { const b = live(x.dataset.same); if(!b) return; snapshot(); const f = Object.entries(b.driveMaybe || {}).map(([u, L]) => Object.assign({unit:u === "-" ? "" : u, how:"matched by hand"}, L[0])); b.drive = {at:new Date().toISOString(), files:f}; delete b.driveMaybe; commit(); render(); });
   c.querySelectorAll("[data-diff]").forEach(x => x.onclick = async () => { const b = live(x.dataset.diff); if(!b) return; x.disabled = true; try{ await pmdFile(b, true); toast("Added to Drive"); }catch(e){ toast(String(e.message || e)); } render(); });
   c.querySelectorAll("[data-retry]").forEach(x => x.onclick = async () => { const b = live(x.dataset.retry); delete PMD.failed[x.dataset.retry]; x.disabled = true; try{ await pmdFile(b); }catch(e){ PMD.failed[b.id] = String(e.message || e); } render(); });
-  c.querySelectorAll("[data-fold]").forEach(x => x.onchange = () => { if(!x.value) return; snapshot(); const d = Object.assign({}, cfg, {pick:Object.assign({}, cfg.pick || {}, {[x.dataset.fold]:x.value})}); S.pmSettings = Object.assign({}, S.pmSettings, {drive:d}); commit(); render(); });
-  if(!PMD.tree && !PMD.reading) pmdRead(cfg.root.id).then(() => { if(S.ui.view === "pmSettings") render(); }).catch(() => {});
+  c.querySelectorAll("[data-fold]").forEach(x => x.onchange = () => { if(!x.value || !PMD.tree) return; const f = PMD.tree.folders.find(y => y.id === x.value); if(!f) return;
+    const inv = PMD.tree.folders.find(y => y.parent === f.id && pmdInvName(y.name));
+    snapshot(); const d = Object.assign({}, cfg, {pick:Object.assign({}, cfg.pick || {}, {[x.dataset.fold]:{id:f.id, name:f.name, inv:inv ? {id:inv.id, name:inv.name} : null, units:{}}})}); S.pmSettings = Object.assign({}, S.pmSettings, {drive:d}); commit(); render(); });
+  if(!PMD.tree && !PMD.reading && miss.length) c.querySelectorAll(".pmd-sec").forEach(d => d.addEventListener("toggle", () => { if(d.open && !PMD.tree && !PMD.reading && /no folder/.test(d.textContent)) pmdRead(cfg.root.id).then(() => { if(S.ui.view === "pmSettings") render(); }).catch(() => {}); }));
 }
 { const s0 = pgPmSettings; pgPmSettings = function(){ s0.apply(this, arguments);
     try{
