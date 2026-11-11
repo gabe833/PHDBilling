@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 14;   // 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 15;   // 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -503,7 +503,7 @@ function doPost(e){
   try{ return doPostBody_(b, lock); }
   finally { lock.releaseLock(); }
 }
-const DRIVE_ACTIONS_ = ['pmTree', 'pmFile', 'folderMake', 'folderFind', 'invoiceRetire', 'pmFix'];
+const DRIVE_ACTIONS_ = ['pmTree', 'pmFile', 'folderMake', 'folderFind', 'invoiceRetire', 'pmFix', 'timesheet'];   // (and reading a timesheet: no sheet involved)
 function doPostBody_(b, lock){
   {
     if(b.action === 'config'){
@@ -734,6 +734,36 @@ function doPostBody_(b, lock){
         out.push(res);
       });
       return json_({ok:true, results:out});
+    }
+    if(b.action === 'timesheet'){
+      // a screenshot (or PDF) of someone's timesheet: every day on it, read as it's written — the console checks the math
+      const mime = String(b.mime || '').toLowerCase(), kind = MIME_OK[mime];
+      if(!kind) return json_({ok:false, error:'Paste a screenshot (PNG or JPG) or a PDF'});
+      const bytes = Utilities.base64Decode(String(b.data || ''));
+      if(!bytes.length || bytes.length > (kind === 'image' ? CFG.MAX_IMAGE_BYTES : CFG.MAX_PDF_BYTES)) return json_({ok:false, error:'The picture is empty or too large'});
+      const content = [kind === 'document'
+        ? {type:'document', source:{type:'base64', media_type:'application/pdf', data:Utilities.base64Encode(bytes)}}
+        : {type:'image', source:{type:'base64', media_type:mime, data:Utilities.base64Encode(bytes)}},
+        {type:'text', text:`This is a worker's timesheet sent to PHD Properties. Read it exactly as written — do not fix or recompute anything.
+Call the read_timesheet tool once with:
+- name: the worker's name if it appears anywhere, else empty
+- period_start / period_end: the pay period's first and last day (YYYY-MM-DD) if stated
+- pay_date: the pay date or pay period label if stated (e.g. "Nov 15"), else empty
+- days: one entry per row, in order: date (YYYY-MM-DD, the year is ${String(b.year || new Date().getFullYear())} unless shown), activity, start and end exactly as written, hours as a number (0 for OFF), rate per hour, amount for the row, off (true when the day is off / not worked), note (anything in a paid/unpaid or notes column — leave out medical or family details; write just "personal" for those)
+- total_hours and total_amount: the totals exactly as written on the sheet (not your own sums)
+- currency: e.g. USD`}];
+      const tool = {name:'read_timesheet', description:'Every row of the timesheet, as written.', input_schema:{type:'object', properties:{
+        name:{type:'string'}, period_start:{type:'string'}, period_end:{type:'string'}, pay_date:{type:'string'}, currency:{type:'string'},
+        total_hours:{type:'number'}, total_amount:{type:'number'},
+        days:{type:'array', items:{type:'object', properties:{date:{type:'string'}, activity:{type:'string'}, start:{type:'string'}, end:{type:'string'}, hours:{type:'number'}, rate:{type:'number'}, amount:{type:'number'}, off:{type:'boolean'}, note:{type:'string'}}, required:['date', 'hours']}}
+      }, required:['days']}};
+      const out = callClaude_(content, tool) || {};
+      const sv = (v, n) => String(v == null ? '' : v).replace(/[\r\n\t]+/g, ' ').trim().slice(0, n || 80);
+      const num = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 100) / 100 : 0; };
+      const day = v => /^\d{4}-\d{2}-\d{2}$/.test(sv(v)) ? sv(v) : '';
+      const days = (Array.isArray(out.days) ? out.days : []).slice(0, 62).map(d => ({date:day(d.date), activity:sv(d.activity, 80), start:sv(d.start, 20), end:sv(d.end, 20), hours:num(d.hours), rate:num(d.rate), amount:num(d.amount), off:!!d.off || num(d.hours) === 0, note:sv(d.note, 60)})).filter(d => d.date);
+      return json_({ok:true, sheet:{name:sv(out.name, 60), period_start:day(out.period_start), period_end:day(out.period_end), pay_date:sv(out.pay_date, 30), currency:sv(out.currency, 6) || 'USD',
+        total_hours:out.total_hours == null ? null : num(out.total_hours), total_amount:out.total_amount == null ? null : num(out.total_amount), days}});
     }
     if(b.action === 'pmFix'){
       // a folder the console made by mistake (billing@ made it today, next to the real one): its files move into the

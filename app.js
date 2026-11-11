@@ -17486,7 +17486,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 14;
+const IB_SCRIPT_NEED = 15;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -19956,3 +19956,120 @@ function pmdCard(v){
       // the card first, where it's seen
       const c = document.querySelector("#view .card.pmd"), v = $("#view"); if(c && v.firstChild !== c){ v.insertBefore(c, v.firstChild); c.style.marginTop = "0"; c.style.marginBottom = "16px"; }
     }catch(e){ console.error("Bills in Drive", e); } }; }
+
+/* =====================================================================
+   OFFICE · TIMESHEET SCREENSHOTS — paste (Ctrl/⌘+V), drop or pick a
+   screenshot of someone's timesheet on "Hours & work invoices" or
+   "My pay & hours". The receipt-inbox script reads every row as written;
+   the console then checks it before anything is added:
+   · each day: start–end vs hours, hours × rate vs the row's amount
+   · the sheet's own totals vs what its days add up to
+   · the rate vs the person's pay rate
+   · days already entered for that person (left out, never doubled)
+   Worked days become one "Hours" entry each (waiting for review, or
+   confirmed when an admin adds them). Off days and notes are not stored.
+   ===================================================================== */
+const TS = {busy:false};
+const tsCents = v => Math.round((+v || 0) * 100);
+// "08:00:00 AM" → minutes after midnight
+function tsMin(t){ const m = String(t || "").trim().match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*([ap])\.?m?\.?$/i) || String(t || "").trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/); if(!m) return null;
+  let h = +m[1] % 12, mi = +(m[2] || 0); if(m[3] && /p/i.test(m[3])) h += 12; if(!m[3]) h = +m[1]; return h * 60 + mi; }
+function tsGuessPerson(name){
+  const n = String(name || "").toLowerCase().trim(); if(!n) return null;
+  const ps = ofPeople().filter(p => p.active !== false);
+  return ps.find(p => String(p.name || "").toLowerCase() === n) || ps.find(p => { const a = String(p.name || "").toLowerCase().split(/\s+/); return a[0] && n.split(/\s+/)[0] === a[0]; }) || null;
+}
+async function tsRead(file){
+  if(TS.busy) return;
+  if(typeof inboxConn !== "function" || !inboxConn()) return toast("Connect the Receipt inbox first — it's what reads the timesheet");
+  const mime0 = String(file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : String(file.type || "").toLowerCase();
+  if(!/^image\/(png|jpeg|webp|gif)$|^application\/pdf$/.test(mime0)) return toast("Paste a screenshot (PNG or JPG) or a PDF of the timesheet");
+  TS.busy = true; toast("Reading the timesheet…");
+  try{
+    const sm = await shrinkPhoto(file, mime0);
+    const r = await inboxPost({action:"timesheet", mime:sm.mime, data:await buBase64(sm.file), year:todayISO().slice(0, 4)});
+    if(!r.sheet || !(r.sheet.days || []).length) throw new Error("No days found on that picture — is the whole timesheet in the screenshot?");
+    tsReview(r.sheet);
+  }catch(e){ toast(/unknown action/i.test(String(e.message)) ? "Update the receipt inbox script first (apps-script/Code.gs, new version) — then paste again" : "Couldn't read it: " + (e.message || e)); }
+  finally{ TS.busy = false; }
+}
+function tsReview(sheet){
+  const admin = ofIsAdmin(), me = ofMyPerson();
+  let pid = admin ? ((tsGuessPerson(sheet.name) || {}).id || S.ui.ofWp || (TS.lastPerson || "")) : (me && me.id);
+  if(!pid){ if(admin && !ofPeople().length) return toast("Add the person first (Office → People)"); if(!admin) return toast("You aren't set up in Office yet — ask Gabe or Peter to add you"); }
+  const rows = sheet.days.map(d => Object.assign({}, d, {pick:!d.off && d.hours > 0}));
+  const sh = $("#sheet");
+  const draw = () => {
+    const p = ofPerson(pid) || {}, payRate = p.pay && p.pay.basis === "hourly" ? +p.pay.rate || 0 : 0;
+    const have = new Set(ofEntries().filter(e => e.person === pid && e.kind === "hours" && e.status !== "rejected").map(e => e.date));
+    const worked = rows.filter(r => !r.off && r.hours > 0);
+    const sumH = worked.reduce((a, r) => a + r.hours, 0), sumC = worked.reduce((a, r) => a + tsCents(r.amount || r.hours * (r.rate || payRate)), 0);
+    const flags = [];
+    if(sheet.total_hours != null && Math.abs(sheet.total_hours - sumH) > 0.01) flags.push(`The sheet's total says <b>${sheet.total_hours} hours</b>, but its days add up to <b>${Math.round(sumH * 100) / 100} hours</b>.`);
+    if(sheet.total_amount != null && Math.abs(tsCents(sheet.total_amount) - sumC) > 1) flags.push(`The sheet's total says <b>${usd(tsCents(sheet.total_amount))}</b>, but its days add up to <b>${usd(sumC)}</b>.`);
+    const rowFlag = r => { const out = [], a = tsMin(r.start), b = tsMin(r.end);
+      if(a != null && b != null){ const h = ((b - a + 1440) % 1440) / 60; if(Math.abs(h - r.hours) > 0.01) out.push(`${r.start}–${r.end} is ${Math.round(h * 100) / 100} h`); }
+      const rate = r.rate || payRate; if(rate && r.amount && Math.abs(tsCents(r.amount) - Math.round(r.hours * rate * 100)) > 1) out.push(`${r.hours} h × ${usd(tsCents(rate))} isn't ${usd(tsCents(r.amount))}`);
+      if(payRate && r.rate && Math.abs(r.rate - payRate) > 0.001) out.push(`rate on file is ${usd(tsCents(payRate))}`);
+      return out; };
+    const nNew = worked.filter(r => r.pick && !have.has(r.date)).length;
+    const pickC = worked.filter(r => r.pick && !have.has(r.date)).reduce((a, r) => a + Math.round(r.hours * (r.rate || payRate) * 100), 0);
+    sh.innerHTML = `<div class="sheet-h"><div><h3>Timesheet</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${esc([sheet.name, sheet.period_start && sheet.period_end ? `${fdateS(sheet.period_start)} – ${fdateS(sheet.period_end)}` : "", sheet.pay_date ? "pay period " + sheet.pay_date : ""].filter(Boolean).join(" · ") || "Read from the screenshot")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+      <div class="sheet-b">
+        ${admin ? `<label class="fld"><span>Whose timesheet</span><select id="tsP"><option value="">Pick a person…</option>${ofPeople().filter(x => x.active !== false || x.id === pid).map(x => `<option value="${esc(x.id)}" ${x.id === pid ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>` : ""}
+        ${flags.length ? `<div class="pm-banner late" style="margin-bottom:12px">${flags.join("<br>")} Only the days below are added — check with them before paying.</div>` : `<p class="help" style="margin-top:0">Totals on the sheet match its days.</p>`}
+        <div class="tbl-wrap"><table class="tbl ts-t"><thead><tr><th></th><th>Day</th><th>Hours</th><th class="r">Rate</th><th class="r">Amount</th><th></th></tr></thead><tbody>
+          ${rows.map((r, i) => { const dup = !r.off && have.has(r.date), fl = r.off ? [] : rowFlag(r);
+            return `<tr class="${r.off ? "ts-off" : ""}"><td>${r.off ? "" : `<input type="checkbox" data-ts="${i}" ${r.pick && !dup ? "checked" : ""} ${dup ? "disabled" : ""}>`}</td>
+              <td>${esc(fdateS(r.date))}<div class="muted" style="font-size:11.5px">${new Date(r.date + "T12:00:00").toLocaleDateString("en-US", {weekday:"short"})}</div></td>
+              <td>${r.off ? `<span class="muted">Off</span>` : `<input type="number" step="0.25" min="0" data-th="${i}" value="${r.hours}" style="width:72px">`}<div class="muted" style="font-size:11.5px">${r.off ? "" : esc([r.start, r.end].filter(Boolean).join(" – "))}</div></td>
+              <td class="r num">${r.off ? "" : usd(tsCents(r.rate || payRate))}</td>
+              <td class="r num">${r.off ? "" : usd(Math.round(r.hours * (r.rate || payRate) * 100))}</td>
+              <td style="font-size:11.5px">${dup ? `<span class="tag grey">Already entered</span>` : ""}${fl.length ? `<span style="color:var(--red)">${esc(fl.join(" · "))}</span>` : ""}</td></tr>`; }).join("")}
+        </tbody><tfoot><tr><td></td><td><b>Days worked</b></td><td><b>${Math.round(sumH * 100) / 100} h</b></td><td></td><td class="r num"><b>${usd(sumC)}</b></td><td></td></tr></tfoot></table></div>
+        ${!payRate && worked.some(r => !r.rate) ? `<p class="help">No rate on the sheet and none on file for ${esc(p.name || "this person")} — set their hourly rate under People first.</p>` : ""}
+        <p class="help">Each day worked becomes its own Hours entry, so nothing is entered twice. Days off and notes on the sheet aren't saved.</p>
+      </div>
+      <div class="sheet-f"><span class="muted" style="font-size:12.5px">${nNew} day${nNew === 1 ? "" : "s"} · ${usd(pickC)}</span><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button>
+        ${admin ? `<button class="btn" id="tsWait" ${nNew && pid ? "" : "disabled"}>Add as waiting</button><button class="btn primary" id="tsOk" ${nNew && pid ? "" : "disabled"}>Add confirmed</button>` : `<button class="btn primary" id="tsWait" ${nNew ? "" : "disabled"}>Submit ${nNew} day${nNew === 1 ? "" : "s"}</button>`}</div>`;
+    $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
+    const ps = $("#tsP"); if(ps) ps.onchange = () => { pid = ps.value; TS.lastPerson = pid; draw(); };
+    sh.querySelectorAll("[data-ts]").forEach(c => c.onchange = () => { rows[+c.dataset.ts].pick = c.checked; draw(); });
+    sh.querySelectorAll("[data-th]").forEach(c => c.onchange = () => { const r = rows[+c.dataset.th]; r.hours = Math.max(0, +c.value || 0); r.amount = 0; draw(); });
+    const add = st => {
+      const pp = ofPerson(pid); if(!pp) return toast("Pick whose timesheet it is");
+      const rate0 = pp.pay && pp.pay.basis === "hourly" ? +pp.pay.rate || 0 : 0;
+      const list = rows.filter(r => !r.off && r.hours > 0 && r.pick && !have.has(r.date));
+      if(list.some(r => !(r.rate || rate0))) return toast("Set " + pp.name + "'s hourly rate under People first");
+      const now = new Date().toISOString(), batch = "ts_" + uid(), who = ofWho();
+      snapshot();
+      list.forEach(r => { ofAll()["entry:" + uid() + uid()] = {kind:"hours", person:pp.id, email:pp.email ? String(pp.email).toLowerCase() : "", name:pp.name, date:r.date, hours:r.hours, rate:r.rate || rate0,
+        desc:r.activity || "Timesheet", source:"timesheet", tsBatch:batch, period:sheet.pay_date ? "Pay period " + sheet.pay_date : "", status:st, by:who, at:now,
+        ...(st === "confirmed" ? {reviewedBy:who, reviewedAt:now} : {})}; });
+      commit(); closeSheet(); render();
+      toast(`${list.length} day${list.length === 1 ? "" : "s"} added for ${pp.name}${st === "confirmed" ? " · confirmed" : " · waiting for review"}`);
+    };
+    const w = $("#tsWait"); if(w) w.onclick = () => add("submitted");
+    const o = $("#tsOk"); if(o) o.onclick = () => add("confirmed");
+  };
+  draw(); openPanel();
+}
+// paste anywhere on the two hours pages; drop onto the page; or the button
+document.addEventListener("paste", e => {
+  if(!(S.ui && S.ui.mode === "office" && (S.ui.view === "ofWork" || S.ui.view === "ofMe"))) return;
+  const a = document.activeElement; if(a && /input|textarea/i.test(a.tagName) && a.type !== "file") return;
+  const it = [...((e.clipboardData && e.clipboardData.items) || [])].find(x => x.kind === "file" && /^image\/|^application\/pdf$/.test(x.type));
+  if(!it) return; e.preventDefault(); tsRead(it.getAsFile());
+});
+function tsDropZone(v){
+  const z = elm("div", "ts-drop", `<b>Paste a timesheet screenshot</b><span>Press ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"}+V on this page, drop the picture here, or <a href="#" data-pick>choose a file</a>. Every day is read and checked against the sheet's totals before anything is added.</span><input type="file" accept="image/*,application/pdf" hidden>`);
+  const inp = z.querySelector("input");
+  z.querySelector("[data-pick]").onclick = ev => { ev.preventDefault(); inp.click(); };
+  inp.onchange = () => { if(inp.files[0]) tsRead(inp.files[0]); inp.value = ""; };
+  z.ondragover = ev => { ev.preventDefault(); z.classList.add("on"); };
+  z.ondragleave = () => z.classList.remove("on");
+  z.ondrop = ev => { ev.preventDefault(); z.classList.remove("on"); const f = ev.dataTransfer.files && ev.dataTransfer.files[0]; if(f) tsRead(f); };
+  const bar = v.querySelector(".sc-bar, .of-hero"); if(bar && bar.nextSibling) v.insertBefore(z, bar.nextSibling); else v.appendChild(z);
+}
+{ const w0 = pgOfWork; pgOfWork = function(){ w0.apply(this, arguments); try{ tsDropZone($("#view")); }catch(e){ console.error(e); } }; }
+{ const m0 = pgOfMe; pgOfMe = function(){ m0.apply(this, arguments); try{ if(ofMyPerson()) tsDropZone($("#view")); }catch(e){ console.error(e); } }; }
