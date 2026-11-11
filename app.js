@@ -6320,7 +6320,7 @@ function pgPmAlerts(){
   const f = S.ui.pmAlF || "all";
   const types = [["all","All"],["late","Rent late"],["short","Rent short"],["payout","Payouts"],["owes","Owner owes"],["lease","Leases"],["deposit","Deposits"],["vacant","Vacancy"],["start","Month-end"],["mismatch","Payout check"],["setup","Setup"],["inbox","Receipts"]];
   const typeOf = a => (a.type === "start" || a.type === "close") ? "start" : a.type;
-  actions([["Alert rules", () => go("pmSettings"), "ghost"]]);
+  actions([["Settings · bills in Drive", () => go("pmSettings"), "ghost"]]);
   $("#pgSub").textContent = all.length ? `${all.filter(a => a.level === "urgent").length} urgent · ${all.filter(a => a.level === "warn").length} need action · ${all.filter(a => a.level === "info").length} heads-up — also emailed to the team each morning` : "Nothing needs attention right now";
   const v = $("#view");
   const bar = elm("div","sc-bar");
@@ -14431,6 +14431,12 @@ function polConnList(){
   L.push({k:"drive", name:"Drive folders", what:"Each project's receipts folder — read, renamed and kept free of duplicates.",
     state: !props.length ? "off" : withF === props.length ? "ok" : withF ? "part" : "off", status: props.length ? `${withF} of ${props.length} projects connected` : "No projects yet",
     btn: props.length ? ["Connect one", () => { const p = props.find(x => !(x.driveFolder && x.driveFolder.id)) || props[0]; go("settings", p.id); }] : null});
+  if(typeof pmdCfg === "function" && typeof pmState === "function" && pmState().properties.length){
+    const c = pmdCfg(), n = c && c.map ? Object.keys(c.map).length : 0;
+    L.push({k:"pmdrive", name:"Rental bills in Drive", what:"Each vendor bill copied into its rental's Invoices & Repairs folder, by unit, never twice.",
+      state: pmdOn() ? "ok" : "off", status: pmdOn() ? `On · ${n} rentals matched` : "Not set up",
+      btn:[pmdOn() ? "Open" : "Set up", () => go("pmSettings")]});
+  }
   return L;
 }
 function pgConnections(){
@@ -14450,7 +14456,7 @@ function pgConnections(){
   const pm = typeof pmState === "function" && (pmState().properties || []).length;
   const set = [
     ["Property settings", "Units, fee, invoice cap, hold rules and tags for one project.", "Open", () => go("settings")],
-    pm ? ["Alert rules", "When rent counts as late, payouts as due, and leases as ending.", "Open", () => go("pmSettings")] : null,
+    pm ? ["Alert rules & rental bills in Drive", "When rent counts as late, payouts as due, leases as ending — and filing vendor bills in each rental's Drive folder.", "Open", () => go("pmSettings")] : null,
     ["Download a backup", "Everything — every property, owner and month — in one file.", "Download", () => backup()],
     ["Restore a backup", "Replace what's here with a backup file. You can undo right after.", "Choose file", () => $("#filePick").click()],
     ["How the console works", "The start-here guide, written for someone who has never used it.", "Read", () => typeof helpOpen === "function" && helpOpen("start", null)]
@@ -19714,7 +19720,8 @@ const pmdCfg = () => (S.pmSettings && S.pmSettings.drive) || null;
 const pmdOn = () => { const c = pmdCfg(); return !!(c && c.on && c.root && c.root.id); };
 const PMD_ABBR = {street:"st", drive:"dr", avenue:"ave", road:"rd", lane:"ln", court:"ct", boulevard:"blvd", circle:"cir", place:"pl", parkway:"pkwy", highway:"hwy", terrace:"ter", trail:"trl"};
 function pmdKey(name){
-  const t = String(name || "").toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  const t = String(name || "").toLowerCase().replace(/[.,]/g, " ").replace(/^(\d+)-([a-z])\b/, "$1 unit $2 ").replace(/\s+/g, " ").trim()
+    .replace(/^(\d+) unit ([a-z]) (.*)$/, "$1 $3 unit $2");                          // "141-D Coming St" = 141 Coming St Unit D
   const m = t.match(/^(\d+[a-z]?)\s+([a-z0-9]+)/); if(!m) return null;
   const street = PMD_ABBR[m[2]] || m[2];
   const u = t.match(/(?:\bunits?\b|\bapt\b|\bapartment\b|#)\s*([a-z0-9]{1,4})\b/);
@@ -19730,7 +19737,10 @@ function pmdMatch(tree, props){
   props.forEach(p => {
     const pk = pmdKey(p.name) || pmdKey(p.address); if(!pk) return;
     // the rental's own folders, not their "… - Marketing", "… - Tenants" subfolders
-    const same = F.filter(f => { const k = pmdKey(f.name); return k && k.num === pk.num && k.street === pk.street && !pmdInvName(f.name) && !/\s[-–]\s/.test(f.name); });
+    let same = F.filter(f => { const k = pmdKey(f.name); return k && k.num === pk.num && k.street === pk.street && !pmdInvName(f.name); });
+    const plain = same.filter(f => !/\s[-–]\s/.test(f.name));
+    if(plain.length) same = plain;                                    // "1 Carriage Ln. E - 17 Offices" is the rental's own folder when nothing plainer exists
+    else { const d = Math.min(...same.map(f => f.depth)); same = same.filter(f => f.depth === d); }
     if(!same.length) return;
     let hit = null;
     if(pk.unit){                                                    // a rental that is one unit: its own unit folder
@@ -19910,4 +19920,10 @@ function pmdCard(v){
   c.querySelectorAll("[data-fold]").forEach(x => x.onchange = () => { if(!x.value) return; snapshot(); const d = Object.assign({}, cfg, {pick:Object.assign({}, cfg.pick || {}, {[x.dataset.fold]:x.value})}); S.pmSettings = Object.assign({}, S.pmSettings, {drive:d}); commit(); render(); });
   if(!PMD.tree && !PMD.reading) pmdRead(cfg.root.id).then(() => { if(S.ui.view === "pmSettings") render(); }).catch(() => {});
 }
-{ const s0 = pgPmSettings; pgPmSettings = function(){ s0.apply(this, arguments); try{ if(typeof Cloud !== "undefined" && Cloud.ready) ibScriptCheck(); pmdCard($("#view")); }catch(e){ console.error("Bills in Drive", e); } }; }
+{ const s0 = pgPmSettings; pgPmSettings = function(){ s0.apply(this, arguments);
+    try{
+      if(inboxConn() && (IBV.version == null || IBV.version < IB_SCRIPT_NEED) && Date.now() - (PMD.pinged || 0) > 20000){ PMD.pinged = Date.now(); inboxGet({action:"ping"}).then(j => { const was = IBV.version; IBV.version = Number(j.version) || 0; IBV.checked = Date.now(); if(was !== IBV.version && S.ui.view === "pmSettings") render(); }).catch(() => {}); }
+      pmdCard($("#view"));
+      // the card first, where it's seen
+      const c = document.querySelector("#view .card.pmd"), v = $("#view"); if(c && v.firstChild !== c){ v.insertBefore(c, v.firstChild); c.style.marginTop = "0"; c.style.marginBottom = "16px"; }
+    }catch(e){ console.error("Bills in Drive", e); } }; }
