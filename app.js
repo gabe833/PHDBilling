@@ -13415,7 +13415,7 @@ async function pgTeam(){
   team.innerHTML = `<div class="card-h"><h3>Team</h3><span class="muted" style="margin-left:auto;font-size:12px">${(staff || []).filter(s => s.active).length} with access</span></div>
     <div class="card-b">
       ${(staff || []).map(s => `<div class="tm-r${s.active ? "" : " off"}"><span class="avatar sm">${esc(initials(s.name || s.email))}</span>
-        <div class="tm-who"><b>${esc(s.name || s.email.split("@")[0])}${s.email === Cloud.email ? " (you)" : ""}</b><span>${esc(s.email)}${onlineSet.has(s.email) ? ` · <span style="color:var(--green)">online</span>` : ""}${s.active ? "" : " · removed"}</span></div>
+        <div class="tm-who"><b><span class="tm-nm" data-nm="${esc(s.email)}" title="Edit name" tabindex="0" role="button">${esc(s.name || s.email.split("@")[0])}<span class="tm-pen" aria-hidden="true">✎</span></span>${s.email === Cloud.email ? " (you)" : ""}</b><span>${esc(s.email)}${onlineSet.has(s.email) ? ` · <span style="color:var(--green)">online</span>` : ""}${s.active ? "" : " · removed"}</span></div>
         ${s.email === Cloud.email ? "" : `<button class="btn sm ${s.active ? "ghost danger" : ""}" data-tog="${esc(s.email)}" data-act="${s.active ? 0 : 1}">${s.active ? "Remove" : "Restore"}</button>`}</div>`).join("")}
       <div class="pm-add" style="margin-top:14px"><input type="email" id="tmEmail" placeholder="name@phdproperties.realestate"><button class="btn primary sm" id="tmAdd">Add to team</button></div>
       <p class="help">They sign in with that Google account. Everyone on the team has the same access.</p></div>`;
@@ -13429,6 +13429,28 @@ async function pgTeam(){
     if(!on && !confirm(`Remove ${b.dataset.tog}? They'll be signed out of the console the next time it checks.`)) return;
     const {error} = await Cloud.sb.from("staff").update({active:on}).eq("email", b.dataset.tog);
     if(error) return toast(error.message); render();
+  });
+  // edit a name in place: Enter or clicking away saves, Esc cancels
+  team.querySelectorAll("[data-nm]").forEach(el => {
+    const open = () => {
+      const email = el.dataset.nm, st = (staff || []).find(x => x.email === email) || {};
+      const inp = elm("input", "tm-nm-in"); inp.type = "text"; inp.value = st.name || ""; inp.placeholder = email.split("@")[0]; inp.maxLength = 60;
+      el.replaceWith(inp); inp.focus(); inp.select();
+      let done = false;
+      const save = async keep => {
+        if(done) return; done = true;
+        const nm = inp.value.replace(/\s+/g, " ").trim();
+        if(!keep || nm === (st.name || "")) return render();
+        const {error} = await Cloud.sb.from("staff").update({name:nm || null}).eq("email", email);
+        if(error){ toast("Couldn't change the name: " + error.message); return render(); }
+        const c = (Cloud.staff || []).find(x => x.email === email); if(c) c.name = nm || null;
+        if(email === Cloud.email && nm) Cloud.name = nm;
+        toast(nm ? `Name saved: ${nm}` : "Name cleared"); render();
+      };
+      inp.onkeydown = e => { if(e.key === "Enter"){ e.preventDefault(); save(true); } else if(e.key === "Escape"){ e.preventDefault(); save(false); } };
+      inp.onblur = () => save(true);
+    };
+    el.onclick = open; el.onkeydown = e => { if(e.key === "Enter" || e.key === " "){ e.preventDefault(); open(); } };
   });
   team.querySelector("#tmAdd").onclick = async () => {
     const e = team.querySelector("#tmEmail").value.trim().toLowerCase();
