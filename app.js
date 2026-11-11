@@ -12984,7 +12984,7 @@ document.addEventListener("click", e => {
 });
 
 (function(){ try{ const q = new URLSearchParams(location.search), v = q.get("view");
-  if(v){ sessionStorage.setItem("phd-want", JSON.stringify({view:v, p:q.get("p"), m:q.get("m")})); history.replaceState(null, "", location.pathname); } }catch(e){} })();
+  if(v){ sessionStorage.setItem("phd-want", JSON.stringify({view:v, p:q.get("p"), m:q.get("m"), r:q.get("r")})); history.replaceState(null, "", location.pathname); } }catch(e){} })();
 /* =====================================================================
    CLOUD — Google sign-in, one shared database for the whole office,
    live updates between people, an activity log, and the team list.
@@ -13434,6 +13434,7 @@ Cloud.boot = async function(){
     }
     else if(want && ["txns","invoices","overview"].includes(want.view) && want.p && (S.properties || []).some(x => x.id === want.p)){ S.ui.mode = "projects"; S.ui.view = want.view; S.activeId = want.p; }
     else if(want && ["inbox","today","payments","charges"].includes(want.view)){ S.ui.view = want.view; }
+    else if(want && typeof OF_VIEWS !== "undefined" && OF_VIEWS.has(want.view)){ S.ui.mode = "office"; S.ui.view = want.view; if(/^run:[A-Za-z0-9_-]+$/.test(want.r || "")) setTimeout(() => { if(ofAll()[want.r]) ofRunSheet(want.r); }, 1500); }
   }catch(e){}
   Cloud.staff = (await Cloud.sb.from("staff").select("email,name,active")).data || [];
   // Store.save now means "sync": documents go to the database, screen state stays in this browser
@@ -16926,7 +16927,7 @@ function ofRunSheet(id){
     const acc = $("#orA"); if(acc) acc.onchange = () => { r.account = acc.value; };
     const store = st => { const d = Object.assign({}, r, {type:"run", email:"", status:st, payees:r.lines.map(l => l.email).filter(Boolean)}); delete d._id; d.by = d.by || ofWho(); d.at = d.at || new Date().toISOString(); ofPut(r._id, d); return d; };
     const sv = $("#orSave"); if(sv) sv.onclick = () => { store("draft"); closeSheet(); render(); toast("Saved as a draft"); };
-    const sd = $("#orSend"); if(sd) sd.onclick = () => { if(!r.lines.length) return toast("Nobody is on this run"); const d = store("submitted"); d.submittedAt = new Date().toISOString(); d.submittedBy = ofWho(); delete d.rejectNote; ofPut(r._id, d); closeSheet(); render(); toast(`Sent to ${(ofSettings().approvers || []).join(", ") || "the approver"}`); };
+    const sd = $("#orSend"); if(sd) sd.onclick = () => { if(!r.lines.length) return toast("Nobody is on this run"); const d = store("submitted"); d.submittedAt = new Date().toISOString(); d.submittedBy = ofWho(); delete d.rejectNote; ofPut(r._id, d); closeSheet(); render(); ofNotifyApprovers(Object.assign({_id:r._id}, d)); };
     const ok = $("#orOk"); if(ok) ok.onclick = () => { if(!confirm(`Approve ${usd(sum("netC"))} of pay for ${r.lines.map(l => l.name).join(", ")}?`)) return; const d = store("approved"); d.approvedBy = ofMe() || ofWho(); d.approvedAt = new Date().toISOString(); closeSheet(); render(); toast("Approved"); };
     const bk = $("#orBack"); if(bk) bk.onclick = () => { const why = prompt("What needs changing?"); if(why == null) return; const d = store("rejected"); d.rejectNote = why.trim(); ofPut(r._id, d); closeSheet(); render(); toast("Sent back"); };
     const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); commit(); closeSheet(); render(); };
@@ -20151,4 +20152,21 @@ async function ofRunNickel(r, box){
     };
   };
   draw();
+}
+
+/* a pay run sent for approval: email the approvers (not the sender, not anyone paid in it) from billing@, with a link
+   that opens the run in the console. The run waits in Office → Pay runs either way. */
+async function ofNotifyApprovers(run){
+  const me = ofMe(), paid = new Set((run.lines || []).map(l => String(l.email || "").toLowerCase()));
+  const to = (ofSettings().approvers || []).map(x => String(x).toLowerCase()).filter(x => x && x !== me && !paid.has(x));
+  const who = to.length ? to.join(", ") : "";
+  if(!to.length){ toast("Waiting for approval in Office → Pay runs (no other approver to email)"); return; }
+  if(typeof bmConn !== "function" || !bmConn()){ toast(`Waiting for ${who} to approve in Office → Pay runs — connect billing@ email to send them a note`); return; }
+  const net = (run.lines || []).reduce((a, l) => a + (+l.netC || 0), 0), link = `${location.origin}/?view=ofRuns&r=${encodeURIComponent(run._id)}`;
+  const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}`);
+  const subject = `Pay run to approve · ${fdateS(run.payDate)} · ${usd(net)}`;
+  const text = `${ofWho()} sent a pay run for your approval.\n\nPeriod: ${fdateS(run.periodStart)} – ${fdateS(run.periodEnd)}\nPay date: ${fdateS(run.payDate)}\nFrom: ${run.account}\n\n${rows.join("\n")}\n\nNet to send: ${usd(net)}\n\nReview and approve: ${link}`;
+  const html = `<p>${esc(ofWho())} sent a pay run for your approval.</p><p>Period: ${esc(fdateS(run.periodStart))} – ${esc(fdateS(run.periodEnd))}<br>Pay date: ${esc(fdateS(run.payDate))}<br>From: ${esc(run.account)}</p><p>${rows.map(esc).join("<br>")}</p><p><b>Net to send: ${esc(usd(net))}</b></p><p><a href="${esc(link)}">Review and approve in the console</a></p>`;
+  try{ await bmCall({action:"send", to:to.join(","), subject, text, html, noSignature:true}); toast(`Emailed ${who} to approve it`); }
+  catch(e){ toast(`Waiting for ${who} to approve in Office → Pay runs — the email didn't go: ${e.message || e}`); }
 }
