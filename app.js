@@ -3632,6 +3632,7 @@ function setInboxConn(v){
 }
 // the Apps Script web app: a phone on a weak connection can leave a request hanging, so give up after a while
 async function inboxFetch(url, opt, ms){
+  const t0 = Date.now();
   const ctl = typeof AbortController === "function" ? new AbortController() : null, t = ctl ? setTimeout(() => ctl.abort(), ms || 30000) : null;
   try{
     const r = await fetch(url, Object.assign({redirect:"follow", credentials:"omit", cache:"no-store"}, opt, ctl ? {signal:ctl.signal} : {}));
@@ -3640,7 +3641,7 @@ async function inboxFetch(url, opt, ms){
     catch(e){ throw new Error(/<html|<!doctype/i.test(txt) ? "Google answered with a web page instead of the inbox — the script's deployment may need “Who has access: Anyone”" : "The inbox sent back something unreadable"); }
   }catch(e){
     if(e && e.name === "AbortError") throw new Error("The inbox took too long to answer — check the connection and try again");
-    if(/Failed to fetch|Load failed|NetworkError|network connection/i.test(String(e && e.message))) throw new Error("Couldn't reach Google from this device — check the connection (Wi-Fi or data) and try again");
+    if(/Failed to fetch|Load failed|NetworkError|network connection/i.test(String(e && e.message))) throw new Error(Date.now() - t0 > 15000 ? "The receipt inbox script was busy with another job and gave up — try again in a minute" : "Couldn't reach Google from this device — check the connection (Wi-Fi or data) and try again");
     throw e;
   } finally { if(t) clearTimeout(t); }
 }
@@ -19994,6 +19995,8 @@ async function tsRead(file){
   if(typeof inboxConn !== "function" || !inboxConn()) return toast("Connect the Receipt inbox first — it's what reads the timesheet");
   const mime0 = String(file.type || "").toLowerCase() === "image/jpg" ? "image/jpeg" : String(file.type || "").toLowerCase();
   if(!/^image\/(png|jpeg|webp|gif)$|^application\/pdf$/.test(mime0)) return toast("Paste a screenshot (PNG or JPG) or a PDF of the timesheet");
+  if(IBV.version == null || IBV.version < 15){ try{ const j = await inboxGet({action:"ping"}); IBV.version = Number(j.version) || 0; IBV.checked = Date.now(); }catch(e){} }
+  if(IBV.version != null && IBV.version < 15) return toast("Reading timesheets needs the receipt inbox script updated (version 15): paste the new apps-script/Code.gs, then Deploy → Manage deployments → Edit → New version");
   TS.busy = true; toast("Reading the timesheet…");
   try{
     const sm = await shrinkPhoto(file, mime0);
