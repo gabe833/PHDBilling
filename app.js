@@ -1238,7 +1238,7 @@ function invoiceBlock(inv, unit, p){
         : "Freeze these line items so reordering or new charges can't change this invoice"}">
         <input type="checkbox" data-x="lock" ${inv.locked?"checked":""} ${inv.reg.paid||inv.reg.dateSent?"disabled":""}> Lock contents</label>
       <label class="switchbox"><input type="checkbox" data-reg="paid" ${inv.reg.paid?"checked":""}> Paid in full</label>
-      ${inv.reg.drive && inv.reg.drive.url ? `<a class="btn sm" href="${esc(inv.reg.drive.url)}" target="_blank" rel="noopener" title="${esc(inv.reg.drive.name || "")}">In Drive ✓</a>` : inv.reg.paid ? `<button class="btn sm" data-x="drive" title="Save a PDF of this paid invoice in the project's Drive folder">Save to Drive</button>` : ""}
+      ${pjdNeeds(inv) ? `<button class="btn sm" data-x="drive" title="Save a PDF of this ${inv.reg.paid ? "paid" : "unpaid"} invoice in the project's Drive folder${pjdHas(inv) === "open" ? " — replaces the unpaid copy" : ""}">${pjdHas(inv) === "open" ? "Save paid copy to Drive" : "Save to Drive"}</button>` : inv.reg.drive && inv.reg.drive.url ? `<a class="btn sm" href="${esc(inv.reg.drive.url)}" target="_blank" rel="noopener" title="${esc(inv.reg.drive.name || "")}">In Drive ✓${(inv.reg.drive.state || "paid") === "open" ? " (unpaid)" : ""}</a>${inv.reg.drive.oldOpen ? `<a class="btn sm" href="${esc(inv.reg.drive.oldOpen.url)}" target="_blank" rel="noopener" title="Couldn't move the unpaid copy to trash — remove it by hand">Old unpaid copy</a>` : ""}` : ""}
       <span style="flex:1"></span>
       <button class="btn sm" data-x="copy">Copy for QuickBooks</button>
       <button class="btn sm" data-x="csv">CSV</button>
@@ -1279,10 +1279,10 @@ function invoiceBlock(inv, unit, p){
   const dvb = body.querySelector('[data-x="drive"]');
   if(dvb) dvb.onclick = async () => {
     if(!inboxConn()) return toast("Connect the Receipt inbox first — it's what saves to Drive");
-    if(IBV.version != null && IBV.version < 10) return toast("Update the receipt inbox script first: paste the new apps-script/Code.gs, then Deploy → Manage deployments → Edit → New version");
+    if(IBV.version != null && IBV.version < 11) return toast("Update the receipt inbox script first: paste the new apps-script/Code.gs, then Deploy → Manage deployments → Edit → New version");
     dvb.disabled = true; dvb.textContent = "Saving…";
     try{ const got = await pjdSave(p, unit, inv); toast(`Saved to Drive: ${got.name}`); render(); }
-    catch(e){ dvb.disabled = false; dvb.textContent = "Save to Drive"; toast(/no file to copy/i.test(String(e.message)) ? "Update the receipt inbox script first (apps-script/Code.gs, new version)" : "Couldn't save it to Drive: " + (e.message || e)); }
+    catch(e){ dvb.disabled = false; dvb.textContent = "Save to Drive"; render(); toast(/no file to copy/i.test(String(e.message)) ? "Update the receipt inbox script first (apps-script/Code.gs, new version)" : "Couldn't save it to Drive: " + (e.message || e)); }
   };
   body.querySelector('[data-x="html"]').onclick  = () => download(`${p.name} ${p.units.length > 1 ? unit.name + " " : ""}Invoice ${inv.no}.html`, invoiceDocHTML(p, unit, inv));
   wrap.appendChild(body);
@@ -10096,45 +10096,68 @@ const dfOf = p => p && p.driveFolder && p.driveFolder.id ? p.driveFolder : null;
 const dfStreet = p => String(p.address || p.name || "").split(",")[0].replace(/\b(st|street|dr|drive|rd|road|ave|avenue|ln|lane|ct|court|blvd|way|cir|circle)\b\.?/gi, "").replace(/\s+/g, " ").trim();
 const dfMoney = c => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
 
-/* ---------- paid project invoices → the project's Drive folder ----------
-   Once an invoice is paid (marked here or by Nickel), a PDF of it — stamped
-   "Paid <date>" — goes in an "Invoices" subfolder of the project's folder
-   (PHD Receipts/<Project>/Invoices when no folder is set):
-     2026-11-04 - Invoice HARTWELL-003 - 3282 Hartwell - $4,812.50 - Paid.pdf
-   Filed once (reg.drive = {id, url, name, at}); a file already there under
-   that name counts. Organize leaves these out — they aren't receipts. */
+/* ---------- project invoices → the project's Drive folder ----------
+   Every issued invoice gets a PDF in an "Invoices" subfolder of the project's
+   folder (PHD Receipts/<Project>/Invoices when no folder is set):
+     2026-10-02 - Invoice HARTWELL-003 - 3282 Hartwell - $4,812.50 - Unpaid.pdf   (sent, not paid yet)
+     2026-11-04 - Invoice HARTWELL-003 - 3282 Hartwell - $4,812.50 - Paid.pdf     (stamped "Paid <date>")
+   Once it's paid, the paid copy is filed and the unpaid copy goes to Drive's
+   trash (restorable for 30 days), so each invoice has one current file.
+   Drafts aren't filed — they still change until they're sent.
+   reg.drive = {id, url, name, at, state:"open"|"paid"} (no state = paid, the
+   first version filed paid ones only). A file already there under the same
+   name counts. Organize leaves these out — they aren't receipts. */
 const PJD = {busy:false, failed:{}, last:0};
-const pjdIsInv = n => /^\d{4}-\d{2}-\d{2} - Invoice .+ - Paid\.pdf$/i.test(String(n || ""));
+const pjdIsInv = n => /^\d{4}-\d{2}-\d{2} - Invoice .+ - (Paid|Unpaid)\.pdf$/i.test(String(n || ""));
 const pjdPaidOn = inv => { const r = inv.reg || {}; return String(r.datePaid || (r.nickel || {}).paidAt || "").slice(0, 10); };
-function pjdName(p, unit, inv){
-  return pdfName(`${pjdPaidOn(inv) || todayISO()} - Invoice ${pjInvNumber(p, unit, inv)} - ${p.name}${p.units.length > 1 ? " (" + unit.name + ")" : ""} - ${dfMoney(inv.totalC)} - Paid`);
+const pjdSent = inv => { const r = inv.reg || {}; return !!(r.dateSent || (r.nickel && r.nickel.invoiceId)); };
+const pjdState = inv => (inv.reg || {}).paid ? "paid" : pjdSent(inv) ? "open" : "";
+const pjdHas = inv => { const d = (inv.reg || {}).drive; return d && d.id ? (d.state || "paid") : ""; };
+function pjdName(p, unit, inv, state){
+  const reg = inv.reg || {}, paid = state === "paid";
+  const day = paid ? pjdPaidOn(inv) || todayISO() : String(reg.dateSent || (reg.nickel || {}).sentAt || todayISO()).slice(0, 10);
+  return pdfName(`${day} - Invoice ${pjInvNumber(p, unit, inv)} - ${p.name}${p.units.length > 1 ? " (" + unit.name + ")" : ""} - ${dfMoney(inv.totalC)} - ${paid ? "Paid" : "Unpaid"}`);
+}
+// what still needs filing: issued and not in Drive, or paid with only the unpaid copy there
+function pjdNeeds(inv){
+  const want = pjdState(inv), has = pjdHas(inv);
+  if(!want || !(inv.totalC > 0)) return "";
+  if(!has) return want;
+  return want === "paid" && has === "open" ? "paid" : "";
 }
 function pjdTodo(){
   const out = [];
   live().forEach(p => { const C = ALL[p.id]; if(!C || !C.units) return;
     p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
-      const reg = inv.reg || {};
-      if(reg.paid && !reg.drive && inv.totalC > 0 && !PJD.failed[p.id + "|" + pjKey(u, inv)]) out.push({p, u, inv});
+      const st = pjdNeeds(inv);
+      if(st && !PJD.failed[p.id + "|" + pjKey(u, inv) + "|" + st]) out.push({p, u, inv, st});
     })); });
-  return out;
+  return out.sort((a, b) => (a.st === "paid" ? 0 : 1) - (b.st === "paid" ? 0 : 1));   // payments first
 }
 async function pjdSave(p, unit, inv){
-  const key = pjKey(unit, inv), name = pjdName(p, unit, inv);
+  const state = pjdState(inv); if(!state) throw new Error("this invoice hasn't been sent yet");
+  const key = pjKey(unit, inv), name = pjdName(p, unit, inv, state), old = (inv.reg || {}).drive;
   const b64 = await pdfRender(invoiceDocHTML(p, unit, inv), name, "base64");
   if(!b64) throw new Error("couldn't make the PDF");
   const f = dfOf(p);
   const r = await inboxPost({action:"folderAdd", folderId:f ? f.id : "", propertyName:p.name, sub:"Invoices", byName:true, items:[{txnId:key, data:b64, mime:"application/pdf", name}]});
   const res = (r.results || [])[0] || {}, got = res.file || res.duplicateOf;
   if(!got) throw new Error(res.error || "not saved");
+  // the unpaid copy is replaced by the paid one
+  let retired = false;
+  if(state === "paid" && old && old.id && old.state === "open" && old.id !== got.id){
+    try{ const t = await inboxPost({action:"invoiceRetire", ids:[old.id]}); retired = !!(t && t.trashed); }catch(e){ console.warn("Unpaid invoice copy not trashed:", e); }
+  }
   const lp = S.properties.find(x => x.id === p.id); if(!lp) return got;
   snapshot(); lp.register = lp.register || {};
   const g = lp.register[key] = lp.register[key] || {};
-  g.drive = {id:got.id, url:got.url, name:got.name, at:todayISO(), by:typeof billWho === "function" ? billWho() : ""};
-  actLog("projects", `Paid invoice ${pjInvNumber(p, unit, inv)} filed in Drive · ${p.name}`);
+  g.drive = {id:got.id, url:got.url, name:got.name, at:todayISO(), by:typeof billWho === "function" ? billWho() : "", state};
+  if(state === "paid" && old && old.state === "open" && !retired) g.drive.oldOpen = {id:old.id, url:old.url, name:old.name};   // left in place: shown so it can be removed by hand
+  actLog("projects", `${state === "paid" ? "Paid" : "Unpaid"} invoice ${pjInvNumber(p, unit, inv)} filed in Drive · ${p.name}${retired ? " (unpaid copy moved to trash)" : ""}`);
   commit();
   return got;
 }
-const pjdReady = () => typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 10;
+const pjdReady = () => typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 11;
 async function pjdSweep(){
   if(PJD.busy || !pjdReady() || Date.now() - PJD.last < 60 * 1000) return;
   PJD.last = Date.now();
@@ -10143,10 +10166,10 @@ async function pjdSweep(){
   try{
     for(const x of todo){
       try{ await pjdSave(x.p, x.u, x.inv); n++; }
-      catch(e){ PJD.failed[x.p.id + "|" + pjKey(x.u, x.inv)] = String(e && e.message || e); console.warn("Paid invoice to Drive:", e); }
+      catch(e){ PJD.failed[x.p.id + "|" + pjKey(x.u, x.inv) + "|" + x.st] = String(e && e.message || e); console.warn("Invoice to Drive:", e); }
     }
   } finally { PJD.busy = false; }
-  if(n){ toast(`${n} paid invoice${n === 1 ? "" : "s"} filed in Drive`); if(S.ui.mode === "projects") render(); }
+  if(n){ toast(`${n} invoice${n === 1 ? "" : "s"} filed in Drive`); if(S.ui.mode === "projects") render(); }
 }
 const dfClean = s => String(s || "").replace(/[\\/:*?"<>|#%]+/g, "-").replace(/\s+/g, " ").trim();
 const dfExt = (name, mime) => { const m = String(name || "").match(/\.(pdf|jpe?g|png|gif|webp|heic|tiff?|txt|docx?|xlsx?|csv)$/i); return m ? "." + m[1].toLowerCase() : mime === "application/pdf" ? ".pdf" : /image\/(jpe?g)/.test(mime || "") ? ".jpg" : /image\/png/.test(mime || "") ? ".png" : ""; };
@@ -10165,7 +10188,7 @@ function dfName(p, t, ext){
 function dfPlan(p, scan){
   const T = (p.transactions || []).filter(t => !t.feeFor && !t.inv && t.vendor !== "PHD Inventory");      // fee lines and inventory use have no receipt of their own
   const used = new Set(), plan = {renames:[], ok:[], dupes:[], unknown:[], other:[], inInbox:[], noFile:[], links:[], add:[]};
-  const files = scan.files.filter(f => !/^(duplicates|invoices)\b/i.test(f.path || "") && !pjdIsInv(f.name));   // our own paid invoices are not receipts
+  const files = scan.files.filter(f => !/^(duplicates|invoices)\b/i.test(f.path || "") && !pjdIsInv(f.name));   // our own invoice copies are not receipts
   // exact copies: keep the one a transaction already points at (else the oldest), set the rest aside
   const byHash = {};
   files.forEach(f => { if(f.hash) (byHash[f.hash] = byHash[f.hash] || []).push(f); });
@@ -17272,7 +17295,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 10;
+const IB_SCRIPT_NEED = 11;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
@@ -17287,7 +17310,7 @@ async function ibScriptCheck(){
     if(!inboxConn()) return;
     ibScriptCheck();
     if(IBV.version != null && IBV.version < IB_SCRIPT_NEED){
-      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (filing paid project invoices in Drive, splitting one invoice across properties, vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
+      const v = $("#view"), b = elm("div", "pm-banner ib-old", `<b>The receipt inbox script needs updating.</b> Some features (filing project invoices in Drive, splitting one invoice across properties, vendors emailing bills in, Check Gmail, the <b>In console</b> label, reading the workbook, the pay-from account on bills) only work with the newer copy.
         <ol style="margin:6px 0 0 18px;padding:0"><li>Open the Apps Script (Extensions → Apps Script from the inbox sheet, or script.google.com).</li><li>Replace <b>Code.gs</b> with the new one from the console's repository (apps-script/Code.gs).</li><li>Deploy → Manage deployments → edit (pencil) → Version: <b>New version</b> → Deploy.</li></ol>`);
       v.insertBefore(b, v.firstChild);
     }
