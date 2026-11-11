@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 11;   // 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 12;   // 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -667,13 +667,13 @@ function doPost(e){
       return json_({ok:true, results:out});
     }
     if(b.action === 'invoiceRetire'){
-      // an unpaid invoice's copy, once the paid copy is filed: moved to Drive's trash (restorable for 30 days).
-      // Only ever touches the console's own unpaid-invoice PDFs inside an "Invoices" folder.
+      // an unpaid or in-progress invoice's copy, once a newer copy is filed: moved to Drive's trash (restorable for 30 days).
+      // Only ever touches the console's own unpaid / in-progress invoice PDFs inside an "Invoices" folder.
       const res = {ok:true, trashed:0, errors:[]};
       (Array.isArray(b.ids) ? b.ids : []).slice(0, 20).forEach(id => {
         try{
           const f = DriveApp.getFileById(String(id)), ps = f.getParents(), par = ps.hasNext() ? ps.next() : null;
-          if(!/^\d{4}-\d{2}-\d{2} - Invoice .+ - Unpaid\.pdf$/i.test(f.getName())) throw new Error('not an unpaid invoice copy');
+          if(!/^\d{4}-\d{2}-\d{2} - Invoice .+ - (Unpaid|In progress)\.pdf$/i.test(f.getName())) throw new Error('not an unpaid or in-progress invoice copy');
           if(!par || !/^invoices$/i.test(par.getName())) throw new Error('not in an Invoices folder');
           if(!f.isTrashed()){ f.setTrashed(true); res.trashed++; }
         }catch(e){ res.errors.push(id + ': ' + String(e && e.message || e).slice(0, 120)); }

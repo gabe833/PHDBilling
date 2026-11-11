@@ -1238,7 +1238,7 @@ function invoiceBlock(inv, unit, p){
         : "Freeze these line items so reordering or new charges can't change this invoice"}">
         <input type="checkbox" data-x="lock" ${inv.locked?"checked":""} ${inv.reg.paid||inv.reg.dateSent?"disabled":""}> Lock contents</label>
       <label class="switchbox"><input type="checkbox" data-reg="paid" ${inv.reg.paid?"checked":""}> Paid in full</label>
-      ${pjdNeeds(inv) ? `<button class="btn sm" data-x="drive" title="Save a PDF of this ${inv.reg.paid ? "paid" : "unpaid"} invoice in the project's Drive folder${pjdHas(inv) === "open" ? " — replaces the unpaid copy" : ""}">${pjdHas(inv) === "open" ? "Save paid copy to Drive" : "Save to Drive"}</button>` : inv.reg.drive && inv.reg.drive.url ? `<a class="btn sm" href="${esc(inv.reg.drive.url)}" target="_blank" rel="noopener" title="${esc(inv.reg.drive.name || "")}">In Drive ✓${(inv.reg.drive.state || "paid") === "open" ? " (unpaid)" : ""}</a>${inv.reg.drive.oldOpen ? `<a class="btn sm" href="${esc(inv.reg.drive.oldOpen.url)}" target="_blank" rel="noopener" title="Couldn't move the unpaid copy to trash — remove it by hand">Old unpaid copy</a>` : ""}` : ""}
+      ${pjdNeeds(inv, p) ? `<button class="btn sm" data-x="drive" title="Save a PDF of this ${{paid:"paid", open:"unpaid", draft:"in-progress"}[pjdState(inv, p)]} invoice in the project's Drive folder${pjdHas(inv) && pjdHas(inv) !== "paid" ? " — replaces the copy there now" : ""}">${pjdHas(inv) ? "Update the copy in Drive" : "Save to Drive"}</button>` : inv.reg.drive && inv.reg.drive.url ? `<a class="btn sm" href="${esc(inv.reg.drive.url)}" target="_blank" rel="noopener" title="${esc(inv.reg.drive.name || "")}">In Drive ✓${{open:" (unpaid)", draft:" (in progress)"}[inv.reg.drive.state] || ""}</a>${inv.reg.drive.oldOpen ? `<a class="btn sm" href="${esc(inv.reg.drive.oldOpen.url)}" target="_blank" rel="noopener" title="Couldn't move the older copy to trash — remove it by hand">Old copy</a>` : ""}` : ""}
       <span style="flex:1"></span>
       <button class="btn sm" data-x="copy">Copy for QuickBooks</button>
       <button class="btn sm" data-x="csv">CSV</button>
@@ -1279,7 +1279,7 @@ function invoiceBlock(inv, unit, p){
   const dvb = body.querySelector('[data-x="drive"]');
   if(dvb) dvb.onclick = async () => {
     if(!inboxConn()) return toast("Connect the Receipt inbox first — it's what saves to Drive");
-    if(IBV.version != null && IBV.version < 11) return toast("Update the receipt inbox script first: paste the new apps-script/Code.gs, then Deploy → Manage deployments → Edit → New version");
+    if(IBV.version != null && IBV.version < 12) return toast("Update the receipt inbox script first: paste the new apps-script/Code.gs, then Deploy → Manage deployments → Edit → New version");
     dvb.disabled = true; dvb.textContent = "Saving…";
     try{ const got = await pjdSave(p, unit, inv); toast(`Saved to Drive: ${got.name}`); render(); }
     catch(e){ dvb.disabled = false; dvb.textContent = "Save to Drive"; render(); toast(/no file to copy/i.test(String(e.message)) ? "Update the receipt inbox script first (apps-script/Code.gs, new version)" : "Couldn't save it to Drive: " + (e.message || e)); }
@@ -10103,39 +10103,49 @@ const dfMoney = c => (c < 0 ? "-" : "") + "$" + (Math.abs(c) / 100).toLocaleStri
      2026-11-04 - Invoice HARTWELL-003 - 3282 Hartwell - $4,812.50 - Paid.pdf     (stamped "Paid <date>")
    Once it's paid, the paid copy is filed and the unpaid copy goes to Drive's
    trash (restorable for 30 days), so each invoice has one current file.
-   Drafts aren't filed — they still change until they're sent.
+   Drafts aren't filed — they still change until they're sent — except on the
+   projects in PJD_DRAFTS (120 Smith, 27 Smith): there an invoice still being
+   filled (under the cap) is filed as "… - In progress.pdf" and replaced each
+   time its total or lines change, then by the unpaid copy once it's sent.
    reg.drive = {id, url, name, at, state:"open"|"paid"} (no state = paid, the
    first version filed paid ones only). A file already there under the same
    name counts. Organize leaves these out — they aren't receipts. */
 const PJD = {busy:false, failed:{}, last:0};
-const pjdIsInv = n => /^\d{4}-\d{2}-\d{2} - Invoice .+ - (Paid|Unpaid)\.pdf$/i.test(String(n || ""));
+const pjdIsInv = n => /^\d{4}-\d{2}-\d{2} - Invoice .+ - (Paid|Unpaid|In progress)\.pdf$/i.test(String(n || ""));
+const PJD_DRAFTS = /^(120|27) Smith\b/i;     // projects whose in-progress invoices are filed too
+const pjdDraftsOn = p => p.driveDrafts != null ? !!p.driveDrafts : PJD_DRAFTS.test(String(p.name || ""));
+const pjdSig = inv => `${inv.totalC}|${(inv.lines || []).length}`;
 const pjdPaidOn = inv => { const r = inv.reg || {}; return String(r.datePaid || (r.nickel || {}).paidAt || "").slice(0, 10); };
 const pjdSent = inv => { const r = inv.reg || {}; return !!(r.dateSent || (r.nickel && r.nickel.invoiceId)); };
-const pjdState = inv => (inv.reg || {}).paid ? "paid" : pjdSent(inv) ? "open" : "";
+const pjdState = (inv, p) => (inv.reg || {}).paid ? "paid" : pjdSent(inv) ? "open"
+  : p && pjdDraftsOn(p) && inv.totalC > 0 && inv.totalC < cents(p.invoiceTarget) ? "draft" : "";
 const pjdHas = inv => { const d = (inv.reg || {}).drive; return d && d.id ? (d.state || "paid") : ""; };
 function pjdName(p, unit, inv, state){
   const reg = inv.reg || {}, paid = state === "paid";
+  if(state === "draft") return pdfName(`${todayISO()} - Invoice ${pjInvNumber(p, unit, inv)} - ${p.name}${p.units.length > 1 ? " (" + unit.name + ")" : ""} - ${dfMoney(inv.totalC)} so far - In progress`);
   const day = paid ? pjdPaidOn(inv) || todayISO() : String(reg.dateSent || (reg.nickel || {}).sentAt || (reg.nickel || {}).at || todayISO()).slice(0, 10);
   return pdfName(`${day} - Invoice ${pjInvNumber(p, unit, inv)} - ${p.name}${p.units.length > 1 ? " (" + unit.name + ")" : ""} - ${dfMoney(inv.totalC)} - ${paid ? "Paid" : "Unpaid"}`);
 }
-// what still needs filing: issued and not in Drive, or paid with only the unpaid copy there
-function pjdNeeds(inv){
-  const want = pjdState(inv), has = pjdHas(inv);
+// what still needs filing: not in Drive yet, a newer stage than the copy there, or an in-progress copy that's out of date
+const PJD_RANK = {draft:1, open:2, paid:3};
+function pjdNeeds(inv, p){
+  const want = pjdState(inv, p), has = pjdHas(inv);
   if(!want || !(inv.totalC > 0)) return "";
   if(!has) return want;
-  return want === "paid" && has === "open" ? "paid" : "";
+  if(PJD_RANK[want] > PJD_RANK[has]) return want;
+  return want === "draft" && has === "draft" && (inv.reg.drive.sig || "") !== pjdSig(inv) ? "draft" : "";
 }
 function pjdTodo(){
   const out = [];
   live().forEach(p => { const C = ALL[p.id]; if(!C || !C.units) return;
     p.units.forEach(u => (C.units[u.id] || []).forEach(inv => {
-      const st = pjdNeeds(inv);
-      if(st && !PJD.failed[p.id + "|" + pjKey(u, inv) + "|" + st]) out.push({p, u, inv, st});
+      const st = pjdNeeds(inv, p);
+      if(st && !PJD.failed[p.id + "|" + pjKey(u, inv) + "|" + st + (st === "draft" ? "|" + pjdSig(inv) : "")]) out.push({p, u, inv, st});
     })); });
-  return out.sort((a, b) => (a.st === "paid" ? 0 : 1) - (b.st === "paid" ? 0 : 1));   // payments first
+  return out.sort((a, b) => PJD_RANK[b.st] - PJD_RANK[a.st]);   // payments first, in-progress last
 }
 async function pjdSave(p, unit, inv){
-  const state = pjdState(inv); if(!state) throw new Error("this invoice hasn't been sent yet");
+  const state = pjdState(inv, p); if(!state) throw new Error("this invoice hasn't been sent yet");
   const key = pjKey(unit, inv), name = pjdName(p, unit, inv, state), old = (inv.reg || {}).drive;
   const b64 = await pdfRender(invoiceDocHTML(p, unit, inv), name, "base64");
   if(!b64) throw new Error("couldn't make the PDF");
@@ -10143,21 +10153,24 @@ async function pjdSave(p, unit, inv){
   const r = await inboxPost({action:"folderAdd", folderId:f ? f.id : "", propertyName:p.name, sub:"Invoices", byName:true, items:[{txnId:key, data:b64, mime:"application/pdf", name}]});
   const res = (r.results || [])[0] || {}, got = res.file || res.duplicateOf;
   if(!got) throw new Error(res.error || "not saved");
-  // the unpaid copy is replaced by the paid one
+  // an unpaid or in-progress copy is replaced by the newer one
   let retired = false;
-  if(state === "paid" && old && old.id && old.state === "open" && old.id !== got.id){
+  const oldSt = old && old.id ? old.state || "paid" : "";
+  if((oldSt === "open" || oldSt === "draft") && old.id !== got.id){
     try{ const t = await inboxPost({action:"invoiceRetire", ids:[old.id]}); retired = !!(t && t.trashed); }catch(e){ console.warn("Unpaid invoice copy not trashed:", e); }
   }
   const lp = S.properties.find(x => x.id === p.id); if(!lp) return got;
   snapshot(); lp.register = lp.register || {};
   const g = lp.register[key] = lp.register[key] || {};
   g.drive = {id:got.id, url:got.url, name:got.name, at:todayISO(), by:typeof billWho === "function" ? billWho() : "", state};
-  if(state === "paid" && old && old.state === "open" && !retired) g.drive.oldOpen = {id:old.id, url:old.url, name:old.name};   // left in place: shown so it can be removed by hand
-  actLog("projects", `${state === "paid" ? "Paid" : "Unpaid"} invoice ${pjInvNumber(p, unit, inv)} filed in Drive · ${p.name}${retired ? " (unpaid copy moved to trash)" : ""}`);
+  if(state === "draft") g.drive.sig = pjdSig(inv);
+  if((oldSt === "open" || oldSt === "draft") && old.id !== got.id && !retired) g.drive.oldOpen = {id:old.id, url:old.url, name:old.name};   // left in place: shown so it can be removed by hand
+  if(state === "draft"){ commit(); return got; }    // in-progress refreshes aren't logged one by one
+  actLog("projects", `${state === "paid" ? "Paid" : "Unpaid"} invoice ${pjInvNumber(p, unit, inv)} filed in Drive · ${p.name}${retired ? ` (${oldSt === "draft" ? "in-progress" : "unpaid"} copy moved to trash)` : ""}`);
   commit();
   return got;
 }
-const pjdReady = () => typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 11;
+const pjdReady = () => typeof inboxConn === "function" && inboxConn() && IBV.version != null && IBV.version >= 12;
 async function pjdSweep(){
   if(PJD.busy || !pjdReady() || Date.now() - PJD.last < 60 * 1000) return;
   PJD.last = Date.now();
@@ -17295,7 +17308,7 @@ if(typeof pgInbox === "function"){
 
 
 /* the receipt-inbox Apps Script is code you deploy by hand: when the console needs a newer copy, it says so */
-const IB_SCRIPT_NEED = 11;
+const IB_SCRIPT_NEED = 12;
 const IBV = {checked:0, version:null};
 async function ibScriptCheck(){
   if(!inboxConn() || Date.now() - IBV.checked < 30 * 60 * 1000) return;
