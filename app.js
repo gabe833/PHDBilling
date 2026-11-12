@@ -4292,11 +4292,21 @@ const PMCore = (function(){
     // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
     const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
     const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
+    // rent paid in parts on set days (2428 Midland: half on the 1st, half on the 15th): only what's come due so far
+    // this month counts as owed now; earlier months owe all of it
+    const td0 = today || new Date().toISOString().slice(0, 10), parts = (prop && Array.isArray(prop.rentParts) && prop.rentParts.length > 1) ? prop.rentParts : null;
+    let dueNowC = dueC, nextPart = null;
+    if(parts && row.month === td0.slice(0, 7)){
+      const dd = +td0.slice(8, 10); let soFar = 0;
+      parts.forEach(pt => { const c = Math.round(dueC * Number(pt.pct || 0) / 100); if(Number(pt.day) <= dd) soFar += c; else if(!nextPart) nextPart = {day:Number(pt.day), c}; });
+      dueNowC = Math.min(dueC, soFar);
+    } else if(parts && row.month > td0.slice(0, 7)) dueNowC = 0;
     const thisM = (today || new Date().toISOString().slice(0, 10)).slice(0, 7);
     const flags = [];
     if(recordedC != null && Math.abs(recordedC - calcC) > 1)
       flags.push({level:"warn", text:`Recorded payout ${usd(recordedC)} is ${usd(Math.abs(recordedC - calcC))} ${recordedC > calcC ? "more" : "less"} than the formula (${usd(calcC)})`});
-    if(dueC > 0 && recv > 0 && recv < dueC && !row.locked) flags.push({level:"warn", text:`${usd(dueC - recv)} short of rent due`});
+    if(dueC > 0 && recv > 0 && recv < dueNowC && !row.locked) flags.push({level:"warn", text:`${usd(dueNowC - recv)} short of rent due${dueNowC < dueC ? " so far" : ""}`});
+    else if(dueC > 0 && recv > 0 && recv < dueC && !row.locked && nextPart) flags.push({level:"info", text:`The rest of the rent (${usd(dueC - recv)}) is due ${shortDate(row.month + "-" + String(nextPart.day).padStart(2, "0"))} — paid in parts`});
     if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
     // rent still to come this month isn't a shortfall: only say the owner owes once rent is in (or the month is over)
     const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
@@ -4325,7 +4335,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */
@@ -4636,9 +4646,9 @@ const PMCore = (function(){
           const days = tn - dayNum(m + "-01");
           add({key:`late|${p.id}|${m}`, type:"late", level:"urgent", propId:p.id, month:m, title:`Rent late · ${p.name}`,
                detail:`${usd(c.dueC)} due ${shortDate(m + "-01")} — nothing recorded (${days} day${days === 1 ? "" : "s"})${p.tenants ? " · " + p.tenants : ""}`, action:"openRow"});
-        } else if(c.dueC > 0 && c.recv > 0 && c.recv < c.dueC && late && !r.shortOk){
+        } else if(c.dueC > 0 && c.recv > 0 && c.recv < c.dueNowC && late && !r.shortOk){
           add({key:`short|${p.id}|${m}`, type:"short", level:"warn", propId:p.id, month:m, title:`Rent short · ${p.name}`,
-               detail:`${usd(c.recv)} of ${usd(c.dueC)} received — ${usd(c.dueC - c.recv)} outstanding`, action:"openRow"});
+               detail:`${usd(c.recv)} of ${usd(c.dueNowC)}${c.dueNowC < c.dueC ? " due so far" : ""} received — ${usd(c.dueNowC - c.recv)} outstanding`, action:"openRow"});
         }
         if(c.recv > 0 && !r.paidOut && today > payDue && c.payoutC > 0)
           add({key:`payout|${p.id}|${m}`, type:"payout", level:"warn", propId:p.id, month:m, title:`Owner payout not marked paid · ${p.name}`,
@@ -4831,7 +4841,7 @@ function pmMonthRoll(m){
     ["dueC","recv","repairsC","adminC","pmFeeC","leasingC","otherC","payoutC","extrasC","phdC"].forEach(k => t[k] += c[k]);
     PM_EXTRA.forEach(([k]) => extras[k] += nz(row[k]));
     if(c.flags.some(f => f.level === "warn")) t.flags++;
-    if(c.dueC > 0 && c.recv < c.dueC) t.short += c.dueC - c.recv;
+    if(c.dueNowC > 0 && c.recv < c.dueNowC) t.short += c.dueNowC - c.recv;
   });
   ["repairsC","adminC"].forEach(k => { if(rawHit[k]){ const d = Math.round(raw[k]) - t[k]; t[k] += d; if(k === "adminC") t.phdC += d; } });
   const meta = pmState().meta[m] || {};
@@ -4936,7 +4946,7 @@ function pgPmMonth(){
   const bar = elm("div","sc-bar"); bar.style.marginTop = "16px";
   const counts = {all:rows.filter(x => !x.row.detailOnly && !pmEmptyRow(x.row, x.prop)).length, attn:0, short:0, repairs:0, payout:0};
   rows.forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop);
-    if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueC > 0 && c.recv < c.dueC) counts.short++; if(c.repairsC) counts.repairs++;
+    if(c.flags.some(x => x.level === "warn")) counts.attn++; if(c.dueNowC > 0 && c.recv < c.dueNowC) counts.short++; if(c.repairsC) counts.repairs++;
     if(!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))) counts.payout++; });
   bar.innerHTML = `<div class="sc-seg">${[["all","All"],["attn","Needs a look"],["short","Unpaid / short"],["payout","Payout to send"],["repairs","Has repairs"]]
       .map(([k, l]) => `<button data-pf="${k}" class="${f === k ? "on" : ""}">${l} <span>${counts[k]}</span></button>`).join("")}</div>
@@ -4958,7 +4968,7 @@ function pgPmMonth(){
     if(!q && !S.ui.pmShowEmpty && pmEmptyRow(row, prop)) return false;
     if(f === "all") return true;
     const c = pmCalc(row, prop);
-    return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueC > 0 && c.recv < c.dueC) : f === "repairs" ? c.repairsC > 0
+    return f === "attn" ? c.flags.some(x => x.level === "warn") : f === "short" ? (c.dueNowC > 0 && c.recv < c.dueNowC) : f === "repairs" ? c.repairsC > 0
       : f === "payout" ? (!row.locked && !row.paidOut && c.recv > 0 && c.payoutC > 0 && !(typeof finHoldFor === "function" && finHoldFor(prop.id, m))) : true;
   });
   vis.forEach(({row, prop}) => {
@@ -5552,6 +5562,10 @@ function pmPropSheet(id){
         <label class="fld"><span>Monthly rent</span><input type="number" step="0.01" id="pp_rent" value="${p.rent ?? ""}"></label>
         <label class="fld"><span>Tenants</span><input type="text" id="pp_ten" value="${esc(p.tenants || "")}" placeholder="Names on the lease"></label>
       </div>
+      <label class="fld"><span>Rent comes in</span><select id="pp_rs">
+        <option value="" ${!(p.rentParts || []).length ? "selected" : ""}>All at once, on the 1st</option>
+        ${[15, 16].map(d => `<option value="half${d}" ${(p.rentParts || []).length === 2 && Number(p.rentParts[1].day) === d ? "selected" : ""}>Half on the 1st, half on the ${d}th</option>`).join("")}
+      </select><span class="help">Paid in parts: until the second date, the second half isn't counted as short or late.</span></label>
       <div class="f2">
         <label class="fld"><span>Lease start</span><input type="date" id="pp_ls" value="${esc(p.leaseStart || "")}"></label>
         <label class="fld"><span>Lease end</span><input type="date" id="pp_le" value="${esc(p.leaseEnd || "")}"><span class="help">You'll get a renewal alert ${pmSettings().renewalDays} days ahead.</span></label>
@@ -5613,7 +5627,9 @@ function pmPropSheet(id){
         leaseStart:$("#pp_ls").value || null, leaseEnd:$("#pp_le").value || null, tenantEmail:$("#pp_te").value.trim(), tenantPhone:$("#pp_tp").value.trim(),
         monthlyFilters:$("#pp_mf").value === "" ? null : Number($("#pp_mf").value),
         adminRate:Number($("#pp_ar").value) || 0, recurring:p.recurring.filter(x => x.amount > 0 && (x.vendor || x.memo)),
-        feeRule:newRule, skipClose:$("#pp_sc").checked || undefined});
+        feeRule:newRule, skipClose:$("#pp_sc").checked || undefined,
+        rentParts:(v => /^half(\d+)$/.test(v) ? [{day:1, pct:50}, {day:Number(v.slice(4)), pct:50}] : undefined)($("#pp_rs").value)});
+      if(!p.rentParts) delete p.rentParts;
       delete p.feeRule.check; delete p._statusDraft;          // saving confirms the rule
       const L = pmState().properties;
       if(isNew) L.push(p); else L[L.findIndex(x => x.id === p.id)] = p;
@@ -5622,6 +5638,7 @@ function pmPropSheet(id){
   };
   // keep the visible field values when the recurring list redraws
   const snap = () => { ["name","addr","rent","ten","ls","le","te","tp","fv","ar","mf","notes"].forEach(k => { const el = $("#pp_" + k); if(el) p["_f_" + k] = el.value; });
+    { const rs = $("#pp_rs"); if(rs) p.rentParts = /^half(\d+)$/.test(rs.value) ? [{day:1, pct:50}, {day:Number(rs.value.slice(4)), pct:50}] : undefined; }
     p.name = p._f_name; p.address = p._f_addr; p.rent = p._f_rent === "" ? null : Number(p._f_rent); p.tenants = p._f_ten; p.leaseStart = p._f_ls; p.leaseEnd = p._f_le;
     p.tenantEmail = p._f_te; p.tenantPhone = p._f_tp; p.adminRate = Number(p._f_ar); p.monthlyFilters = p._f_mf === "" ? null : Number(p._f_mf); p.notes = p._f_notes;
     const sc = $("#pp_sc"); if(sc) p.skipClose = sc.checked || undefined;
@@ -7728,7 +7745,7 @@ function stmtCandidates(m){
 
 /* rent and PM fee unit by unit, for a building with several units on one property (120 Smith A & B).
    null when there's one unit, or MagicDoor's unit figures don't add up to the month's rent (then one line, as before). */
-const stmtUnitName = n => { const x = String(n || "").match(/^\s*([A-Za-z0-9]{1,4})\s*[-–—:]\s*(.+)$/); return x ? `Unit ${x[1]} (${x[2].trim()})` : /^unit\b/i.test(n || "") ? n : `Unit ${n}`; };
+const stmtUnitName = n => { const x = String(n || "").match(/^\s*([A-Za-z0-9]{1,4})\s*[-–—:]\s*(.+)$/); return x ? `Unit ${x[1]} (${x[2].trim()})` : /^(unit|suite|ste|apt|apartment|office|bldg|building|lot|space|#)\b/i.test(String(n || "").trim()) ? n : `Unit ${n}`; };
 /* dates on the statement: rent on the day MagicDoor received it (the last payment that month), fees on the same day
    (they come out of that rent), an adjustment on the day it was made — so no line is left without a date */
 function pmRentDate(p, m, unitId){

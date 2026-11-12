@@ -61,11 +61,21 @@ const PMCore = (function(){
     // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
     const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
     const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
+    // rent paid in parts on set days (2428 Midland: half on the 1st, half on the 15th): only what's come due so far
+    // this month counts as owed now; earlier months owe all of it
+    const td0 = today || new Date().toISOString().slice(0, 10), parts = (prop && Array.isArray(prop.rentParts) && prop.rentParts.length > 1) ? prop.rentParts : null;
+    let dueNowC = dueC, nextPart = null;
+    if(parts && row.month === td0.slice(0, 7)){
+      const dd = +td0.slice(8, 10); let soFar = 0;
+      parts.forEach(pt => { const c = Math.round(dueC * Number(pt.pct || 0) / 100); if(Number(pt.day) <= dd) soFar += c; else if(!nextPart) nextPart = {day:Number(pt.day), c}; });
+      dueNowC = Math.min(dueC, soFar);
+    } else if(parts && row.month > td0.slice(0, 7)) dueNowC = 0;
     const thisM = (today || new Date().toISOString().slice(0, 10)).slice(0, 7);
     const flags = [];
     if(recordedC != null && Math.abs(recordedC - calcC) > 1)
       flags.push({level:"warn", text:`Recorded payout ${usd(recordedC)} is ${usd(Math.abs(recordedC - calcC))} ${recordedC > calcC ? "more" : "less"} than the formula (${usd(calcC)})`});
-    if(dueC > 0 && recv > 0 && recv < dueC && !row.locked) flags.push({level:"warn", text:`${usd(dueC - recv)} short of rent due`});
+    if(dueC > 0 && recv > 0 && recv < dueNowC && !row.locked) flags.push({level:"warn", text:`${usd(dueNowC - recv)} short of rent due${dueNowC < dueC ? " so far" : ""}`});
+    else if(dueC > 0 && recv > 0 && recv < dueC && !row.locked && nextPart) flags.push({level:"info", text:`The rest of the rent (${usd(dueC - recv)}) is due ${shortDate(row.month + "-" + String(nextPart.day).padStart(2, "0"))} — paid in parts`});
     if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
     // rent still to come this month isn't a shortfall: only say the owner owes once rent is in (or the month is over)
     const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
@@ -94,7 +104,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */
@@ -405,9 +415,9 @@ const PMCore = (function(){
           const days = tn - dayNum(m + "-01");
           add({key:`late|${p.id}|${m}`, type:"late", level:"urgent", propId:p.id, month:m, title:`Rent late · ${p.name}`,
                detail:`${usd(c.dueC)} due ${shortDate(m + "-01")} — nothing recorded (${days} day${days === 1 ? "" : "s"})${p.tenants ? " · " + p.tenants : ""}`, action:"openRow"});
-        } else if(c.dueC > 0 && c.recv > 0 && c.recv < c.dueC && late && !r.shortOk){
+        } else if(c.dueC > 0 && c.recv > 0 && c.recv < c.dueNowC && late && !r.shortOk){
           add({key:`short|${p.id}|${m}`, type:"short", level:"warn", propId:p.id, month:m, title:`Rent short · ${p.name}`,
-               detail:`${usd(c.recv)} of ${usd(c.dueC)} received — ${usd(c.dueC - c.recv)} outstanding`, action:"openRow"});
+               detail:`${usd(c.recv)} of ${usd(c.dueNowC)}${c.dueNowC < c.dueC ? " due so far" : ""} received — ${usd(c.dueNowC - c.recv)} outstanding`, action:"openRow"});
         }
         if(c.recv > 0 && !r.paidOut && today > payDue && c.payoutC > 0)
           add({key:`payout|${p.id}|${m}`, type:"payout", level:"warn", propId:p.id, month:m, title:`Owner payout not marked paid · ${p.name}`,
