@@ -2683,4 +2683,4 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .sm-props li::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--teal,#1D5C57);margin:0 7px 2px 0;vertical-align:middle}
 .sm-acts{flex-wrap:wrap}
 .sm-acts .btn{white-space:nowrap}
-@media (max-width:900px){ .sm-r{grid-template-columns:20px minmax(0,1fr) auto} .sm-r>.sm-hi{display:none} .sm-r>.tag:empty,.sm-r>span:empty{display:none} .sm-acts{grid-column:2/-1;justify-content:flex-start} }
+@media (max-width:900px){ .sm-r{grid-template-columns:20px minmax(0,1fr) auto} .sm-r>.sm-hi{grid-column:2/-1} .sm-r>.tag:empty,.sm-r>span:empty{display:none} .sm-acts{grid-column:2/-1;justify-content:flex-start} }
