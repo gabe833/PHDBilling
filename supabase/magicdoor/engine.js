@@ -635,6 +635,12 @@ function mdStmtWant(p, rr, mpId, mm, g){
   // a vacant month that ended owing (bills paid with no rent coming in) is taken off this month, as MagicDoor does,
   // unless the console already has those costs on last month's row
   const prev = pmRow(PMCore.monthAdd(mm, -1), p.id);
+  // money left over from last month that MagicDoor took no PM fee on is usually last month's filter fee — PHD's, never the
+  // owner's (12 Bee St #D, Nov 2026: October's $20 filter fee showed as $20 of owner income)
+  if(x.lateOther > 0){
+    const filtC = cents(prev && PMCore.has(prev.filters) ? prev.filters : (p.monthlyFilters || 0)), offC = Math.min(cents(x.lateOther), filtC);
+    if(offC > 0) x = Object.assign({}, x, {lateOther:r2(x.lateOther - offC / 100), net:r2(x.net - offC / 100)});
+  }
   if(st.left < 0 && !(st.prevIn > 0) && !(st.prevDist > 0) && !(prev && ((prev.repairItems || []).length || Number(prev.repairs) > 0 || (prev.adjustments || []).some(a => Number(a.amount))))){
     const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
     x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});

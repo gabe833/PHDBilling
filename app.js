@@ -6884,6 +6884,12 @@ function mdStmtWant(p, rr, mpId, mm, g){
   // a vacant month that ended owing (bills paid with no rent coming in) is taken off this month, as MagicDoor does,
   // unless the console already has those costs on last month's row
   const prev = pmRow(PMCore.monthAdd(mm, -1), p.id);
+  // money left over from last month that MagicDoor took no PM fee on is usually last month's filter fee — PHD's, never the
+  // owner's (12 Bee St #D, Nov 2026: October's $20 filter fee showed as $20 of owner income)
+  if(x.lateOther > 0){
+    const filtC = cents(prev && PMCore.has(prev.filters) ? prev.filters : (p.monthlyFilters || 0)), offC = Math.min(cents(x.lateOther), filtC);
+    if(offC > 0) x = Object.assign({}, x, {lateOther:r2(x.lateOther - offC / 100), net:r2(x.net - offC / 100)});
+  }
   if(st.left < 0 && !(st.prevIn > 0) && !(st.prevDist > 0) && !(prev && ((prev.repairItems || []).length || Number(prev.repairs) > 0 || (prev.adjustments || []).some(a => Number(a.amount))))){
     const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
     x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});
@@ -17461,7 +17467,11 @@ function pmLateRentCarry(){
           // the month here already shows only what went out (the workbook's figures), but MagicDoor's statement for the
           // month also counts money the tenant paid on or after the payout day (432 Coopers Hawk, Oct 2026: $430 on Oct 15,
           // $400 of it the owner's). Nothing to take off this month — it just goes out with next month's payout.
-          const extra = cents(r.mdNet) - paid;
+          // against what actually went out (2018 Riverview, Oct 2026: $2,984 sent on a $2,944 row), and never counting a
+          // filter fee MagicDoor passed to the owner as income — filter fees are PHD's
+          const sentC = r.paidOut && has(r.paidOut.amount) ? cents(r.paidOut.amount) : paid;
+          const filtInC = r.md && has(r.md.otherIncome) && has(r.filters) ? Math.min(cents(r.md.otherIncome), cents(r.filters)) : 0;
+          const extra = cents(r.mdNet) - filtInC - sentC;
           if(extra > 100 && afterC >= extra - 100) shownC = Math.min(extra, afterC);
         }
       }
