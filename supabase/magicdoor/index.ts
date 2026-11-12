@@ -931,7 +931,16 @@ Deno.serve(async (req) => {
       return json({ at: new Date().toISOString(), auth: "ok", endpoints: out });
     }
     // read-only look at other MagicDoor addresses (GET only, /company-app/ only): finds where an endpoint moved to
-    if (mode === "probe") { const ask = Array.isArray(body.paths) ? (body.paths as unknown[]).map(S).filter((x) => /^\/company-app\/[A-Za-z0-9/_{}?=&.-]{1,120}$/.test(x)).slice(0, 40) : []; return json({ at: new Date().toISOString(), endpoints: await probe(ask.length ? ask : MORE) }); }
+    if (mode === "probe") {
+      // GET only. Any path on MagicDoor's API host (no "..") — or one of a few MagicDoor hosts — to find where an address moved
+      const BASES = [API, API + "/api", API + "/api/v1", API + "/v1", API + "/v2", "https://api.magicdoor.com", "https://api.magicdoor.com/api"];
+      const base = BASES.includes(S(body.base)) ? S(body.base) : API;
+      const ask = Array.isArray(body.paths) ? (body.paths as unknown[]).map(S).filter((x) => /^\/[A-Za-z0-9/_{}?=&.-]{1,120}$/.test(x) && !x.includes("..")).slice(0, 40) : [];
+      if (!ask.length) return json({ at: new Date().toISOString(), endpoints: await probe(MORE) });
+      const out: Obj = {};
+      for (const p of ask) { try { const r = await mdGetWith(p, base, mdToken); out[base + p] = r.status === 200 ? { status: 200, ...describe(r.body) } : { status: r.status, error: scrub(r.text).slice(0, 200) }; } catch (e) { out[base + p] = { status: "failed", error: scrub(String(e)).slice(0, 200) }; } }
+      return json({ at: new Date().toISOString(), endpoints: out });
+    }
     if (mode === "billFile") return json(await billFile(S(body.billId), S(body.fileId)));
     if (mode === "billSchema") return json(await billSchema(S(body.step)));
     if (mode === "billPreview") return json(await billPreview(body));
