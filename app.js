@@ -6749,6 +6749,12 @@ function mdStmtWant(p, rr, mpId, mm, g){
     mdCarried:carriedC ? carriedC / 100 : (PMCore.has(rr.mdCarried) ? 0 : null),
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
 }
+// late fees the tenant actually paid for a month, from MagicDoor's payment-to-charge links (l.alloc); null when unknown
+function mdLatePaid(L, mm){
+  if(!L || !Array.isArray(L.alloc)) return null;
+  let c = 0; L.alloc.forEach(([, , parts]) => (parts || []).forEach(([cm, kind, amt]) => { if(cm === mm && kind === "late") c += Math.round(Number(amt) || 0); }));
+  return c / 100;
+}
 function mdExactMonths(p, L, curM, out, mpId, mdPid){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
     const g = L && L.months ? L.months[mm] : null, rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
@@ -6761,6 +6767,8 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       return;
     }
     let want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
+    // late fees: exactly what was paid toward them (MagicDoor keeps them for PHD — not owner money, no 10% fee on them)
+    { const lp = mdLatePaid(L, mm); if(lp != null) want = Object.assign({}, want, {lateFee:lp > 0 ? lp : (PMCore.has(rr.lateFee) && rr.md && PMCore.has(rr.md.lateFee) ? null : undefined)}); if(want.lateFee === undefined) delete want.lateFee; }
     // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
     // month's statement) belongs to this month's owner payout
     const pm0 = PMCore.monthAdd(mm, -1), g0 = L && L.months ? L.months[pm0] : null, st0 = mdPid ? PMCore.mdStmt(S.md, mdPid, pm0) : null;
@@ -16238,6 +16246,7 @@ function rcSheet(m, pid, dir){
         ${c.pmFeeC ? `<div class="rc-w neg"><span>PM fee<small>${esc(feeRuleText(r.prop.feeRule))}</small></span><b class="num">−${usd(c.pmFeeC)}</b></div>` : ""}
         ${c.leasingC ? `<div class="rc-w neg"><span>Leasing fee</span><b class="num">−${usd(c.leasingC)}</b></div>` : ""}
         <div class="rc-w tot"><span>Owner payout</span><b class="num">${usd(c.calcC)}</b></div>
+        ${["lateFee", "filters", "applications", "reimbursement"].some(k => Number(r.row[k])) ? `<div class="rc-w phd"><span>Kept by PHD<small>${["lateFee", "filters", "applications", "reimbursement"].filter(k => Number(r.row[k])).map(k => `${({lateFee:"late fee", filters:"filter fee", applications:"application fee", reimbursement:"reimbursement"})[k]} ${usd(cents(r.row[k]))}`).join(" · ")} — not the owner's, no 10% fee on it</small></span><b class="num">${usd(["lateFee", "filters", "applications", "reimbursement"].reduce((a, k) => a + cents(r.row[k] || 0), 0))}</b></div>` : ""}
         ${has(r.row.mdNet) ? `<div class="rc-w cmp ${r.steps.md.s === "bad" ? "off" : "on"}"><span>MagicDoor's owner statement</span><b class="num">${usd(cents(r.row.mdNet))}</b></div>` : ""}
         ${c.recordedC != null ? `<div class="rc-w cmp ${r.steps.payout.s === "bad" ? "off" : "on"}"><span>Recorded payout</span><b class="num">${usd(c.recordedC)}</b></div>` : ""}
         ${r.fr && r.fr.result !== "none" ? `<div class="rc-w cmp ${r.steps.paid.s === "bad" ? "off" : r.steps.paid.s === "ok" ? "on" : ""}"><span>Actually paid</span><b class="num">${usd(r.fr.paidC)}</b></div>` : ""}
