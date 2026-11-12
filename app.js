@@ -7852,7 +7852,7 @@ function stmtFirstName(o){
   if(o.greeting != null && String(o.greeting).trim() !== "") return String(o.greeting).trim();
   const raw = String(o.name || "").trim();
   const paren = (raw.match(/\(([^)]*)\)/g) || []).map(x => x.slice(1, -1));
-  const main = raw.replace(/\([^)]*\)/g, " ");
+  const main = raw.replace(/\([^)]*\)/g, " ").split(/\s+(?:dba|d\/b\/a)\s+/i)[0];   // what follows "dba" is the business, not people
   const segs = main.split(/\s+(?:dba|d\/b\/a|c\/o|and)\s+|\s*[\/&,;]\s*|\s+[-–—]\s*|\s*[–—]\s*/i).concat(paren);
   // every person the owner record names, not just the first ("Susan Reed and Stephen Welt" → "Susan and Stephen")
   const all = []; for(const seg of segs){ const f = stmtPersonFirst(seg); if(f && !all.includes(f)) all.push(f); }
