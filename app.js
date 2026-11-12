@@ -4317,7 +4317,10 @@ const PMCore = (function(){
     // bills entered here that aren't in MagicDoor yet, the console's own adjustments (late rent moved between months,
     // a double payout being won back, credits by hand), and bills MagicDoor still lists unpaid that an earlier payout
     // already took off (row.mdCarried, kept by the sync)
-    if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1){
+    // the same as MagicDoor's own bottom line ("Net owner funds"): nothing to explain
+    if(has(row.mdFunds) && !row.locked && Math.abs(calcC - cents(row.mdFunds)) <= 1 && has(row.mdNet) && Math.abs(calcC - cents(row.mdNet)) > 1)
+      flags.push({level:"info", text:`Matches MagicDoor's owner statement: net owner funds ${usd(cents(row.mdFunds))}.`});
+    else if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1){
       const mdC = cents(row.mdNet);
       const ownAdjC = (row.adjustments || []).filter(a => !a.md).reduce((t, a) => t + cents(a.amount), 0);
       const notMdC = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount)).reduce((a, it) => a + cents(it.amount) + itemFee(it, prop), 0);
@@ -6720,9 +6723,9 @@ function mdProjectMatch(p, li, b, used){
    late fees, applications) once they're paid. A field MagicDoor filled before is kept in step; one a person
    typed is never changed — a difference is listed for you to look at instead. */
 function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee", reimbursement:"reimbursement (PHD)",
-  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout", mdCarried:"MagicDoor bills carried over", credits:"credits to the tenant"}; }
+  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout", mdCarried:"MagicDoor bills carried over", credits:"credits to the tenant", mdFunds:"MagicDoor net owner funds"}; }
 // keys MagicDoor owns outright (checks and MagicDoor-only lines): always kept in step, never "typed by hand"
-function mdOwned(k){ return k === "mdNet" || k === "mdAdj" || k === "mdCarried" || k === "credits"; }
+function mdOwned(k){ return k === "mdNet" || k === "mdAdj" || k === "mdCarried" || k === "credits" || k === "mdFunds"; }
 function mdExactWant(g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
@@ -6816,7 +6819,9 @@ function mdStmtWant(p, rr, mpId, mm, g){
     mdAdj:x.other || (x.returned && x.returned.length) || (rr.md && PMCore.has(rr.md.mdAdj)) ? Object.assign({amount:x.other, lines:x.otherLines}, x.returned && x.returned.length ? {returned:x.returned} : {}) : null,
     // bills and admin fees still unpaid in MagicDoor that last month's row already charged (for the MagicDoor check)
     mdCarried:carriedC ? carriedC / 100 : (PMCore.has(rr.mdCarried) ? 0 : null),
-    mdNet:r2(x.net)});      // unpaid bills are already among the bills
+    mdNet:r2(x.net),
+    // the bottom line of MagicDoor's owner statement: everything since its last payout, less the bills it still owes
+    mdFunds:st.net != null && isFinite(Number(st.net)) ? r2(st.net) : null});      // unpaid bills are already among the bills
 }
 // late fees the tenant actually paid for a month, from MagicDoor's payment-to-charge links (l.alloc); null when unknown
 function mdLatePaid(L, mm){
@@ -6866,7 +6871,7 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
         const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") + "|" + (x.returned || []).map(l => Math.round((Number(l.a) || 0) * 100) + "~" + (l.d || "")).join(";") : "";   // key order changes in storage
         const crKey = x => x ? (x.lines || []).map(l => Math.round((Number(l.a) || 0) * 100) + "~" + (l.d || "") + "~" + (l.t || "")).join(";") : "";
         const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : k === "credits" ? crKey(was.credits) === crKey(v) && (rr.credits || []).some(x => x.md) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
-        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : k === "credits" ? (was.credits ? was.credits.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried"});
+        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : k === "credits" ? (was.credits ? was.credits.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried" || k === "mdFunds"});
         return;
       }
       if(v === "clear"){ if(PMCore.has(rr[k]) && PMCore.has(was[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
@@ -17974,7 +17979,7 @@ function actEntries(){
    with what differs from the version before; the code below turns that into plain lines:
    "Rent received $2,200.00 → $2,300.00", "Added repair: Lowes $51.76 — Refrigerator water filter". */
 const ACTV = {team:null, teamAt:0, more:true, busy:false, open:{}};
-const ACT_SKIP = /^(updatedAt|updatedBy|version|wbVals|wbKept|md|mdNet|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|wbAt|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
+const ACT_SKIP = /^(updatedAt|updatedBy|version|wbVals|wbKept|md|mdNet|mdFunds|nkOpen|mdCarried|mdFilled|mdAdj|mdBill|mdLine|mdAdded|inboxDone|wbAt|auto|seq|rev|touched|syncedAt|at|by|id|_|log)$/;
 const ACT_MONEY = /amount|rent|fee|filters|reimburs|applications|payout|total|price|cost|paid|owed|balance|deposit|credit|income|charge|budget|target|^c$|C$/i;
 const ACT_LBL = {rentDue:"Rent due", rentReceived:"Rent received", otherIncome:"Other owner income", pmFee:"PM fee", leasingFee:"Leasing fee", adminFee:"Admin fee on repairs", feeCredit:"Fee credit", credits:"Credits to the tenant",
   lateFee:"Late fees", applications:"Application fees", reimbursement:"Reimbursements", filters:"Filters", notes:"Notes", note:"Note", locked:"Locked", ownerPayout:"Owner payout (typed in)", partialOk:"Partial rent expected",

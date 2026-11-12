@@ -86,7 +86,10 @@ const PMCore = (function(){
     // bills entered here that aren't in MagicDoor yet, the console's own adjustments (late rent moved between months,
     // a double payout being won back, credits by hand), and bills MagicDoor still lists unpaid that an earlier payout
     // already took off (row.mdCarried, kept by the sync)
-    if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1){
+    // the same as MagicDoor's own bottom line ("Net owner funds"): nothing to explain
+    if(has(row.mdFunds) && !row.locked && Math.abs(calcC - cents(row.mdFunds)) <= 1 && has(row.mdNet) && Math.abs(calcC - cents(row.mdNet)) > 1)
+      flags.push({level:"info", text:`Matches MagicDoor's owner statement: net owner funds ${usd(cents(row.mdFunds))}.`});
+    else if(has(row.mdNet) && !row.locked && Math.abs(calcC - cents(row.mdNet)) > 1){
       const mdC = cents(row.mdNet);
       const ownAdjC = (row.adjustments || []).filter(a => !a.md).reduce((t, a) => t + cents(a.amount), 0);
       const notMdC = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount)).reduce((a, it) => a + cents(it.amount) + itemFee(it, prop), 0);
