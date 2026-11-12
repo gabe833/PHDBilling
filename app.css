@@ -2729,3 +2729,8 @@ td>.tag+.st-rev{display:flex}
 .se-ask-l li:first-child{border-top:0}
 .se-ask-f{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:16px}
 .se-ask-l li>span:last-child{white-space:nowrap;flex:none}
+/* owner payouts: reviewed lock, and what isn't ready */
+.po-rev{display:inline-block;margin-left:6px;font-size:12px;font-weight:550;color:var(--green,#2F7A4F);white-space:nowrap}
+.po-nr .po-nr-a{white-space:nowrap;text-align:right}
+.po-nr .po-nr-a .btn{margin-left:6px}
+.po-nr-t td{vertical-align:middle}
