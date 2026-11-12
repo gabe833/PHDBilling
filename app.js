@@ -5215,7 +5215,7 @@ async function mdCreateUI(host, it, prop, done){
   catch(e){
     // MagicDoor's API reads bills but has no way to add one (it answers 404): say so plainly and open the by-hand steps
     const no = /\b404\b/.test(String(e.message));
-    host.innerHTML = no ? `<p class="help">MagicDoor doesn't let the console add bills, so enter this one by hand — the details are below, each with Copy. Then press <b>I've entered it in MagicDoor</b>.</p>`
+    host.innerHTML = no ? `<p class="help" style="color:var(--red)">MagicDoor is refusing the console's vendor and bill requests right now (404) — check the API key's Vendors permission in MagicDoor → Settings → API keys. Until then, enter this bill by hand below (each detail has Copy), then press <b>I've entered it in MagicDoor</b>.</p>`
       : `<p class="help" style="color:var(--red)">Couldn't reach MagicDoor: ${esc(e.message)} — enter it by hand below.</p>`;
     const d = host.parentElement && host.parentElement.querySelector("details.mda-hand"); if(d) d.open = true;
     return;
