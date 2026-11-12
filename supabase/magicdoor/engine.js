@@ -608,6 +608,16 @@ function mdStmtWant(p, rr, mpId, mm, g){
   const led = g ? mdExactWant(g) : {};
   const oneLease = (S.md.leases || []).filter(l => l.propertyId === mpId && !l.ended && !l.draft).length === 1;
   if(oneLease) x = mdStmtCap(x, g, st);
+  // a management fee MagicDoor charged for an earlier month's rent that's already taken here as an adjustment
+  // ("Management fee on October rent", −$130 on 6 Murray Hill's November): that fee is the adjustment, not part of this
+  // month's PM fee, and it isn't a difference from MagicDoor either
+  { const fees = (st.fees || []).map(a => Math.round(Number(a) * 100)), used = new Set();
+    if(fees.length > 1) (rr && rr.adjustments || []).filter(a => !a.md && cents(a.amount) < 0 && /management fee|pm fee/i.test(a.note || "")).forEach(a => {
+      const i = fees.findIndex((c, j) => !used.has(j) && c === -cents(a.amount)); if(i < 0 || used.size >= fees.length - 1) return;
+      used.add(i); const c0 = fees[i] / 100;
+      if(x.pmFee >= c0 - 0.005) x = Object.assign({}, x, {pmFee:Math.round((x.pmFee - c0) * 100) / 100, net:Math.round((x.net + c0) * 100) / 100});
+      else if(x.leasing >= c0 - 0.005) x = Object.assign({}, x, {leasing:Math.round((x.leasing - c0) * 100) / 100, net:Math.round((x.net + c0) * 100) / 100});
+    }); }
   // a vacant month that ended owing (bills paid with no rent coming in) is taken off this month, as MagicDoor does,
   // unless the console already has those costs on last month's row
   const prev = pmRow(PMCore.monthAdd(mm, -1), p.id);
