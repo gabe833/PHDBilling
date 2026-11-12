@@ -835,6 +835,9 @@ const scrub = (t: string) => t.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "(email)").sl
 const DISCOVER = ["properties", "units", "leases", "tenants", "owners", "management-fees"];
 // Addresses MagicDoor's own web app uses for the data still missing (rent payments, bills, distributions, work orders).
 const MORE = [
+  // where MagicDoor moved things in Nov 2026 (the old /company-app/vendors… addresses answer 404 now)
+  "accounting:/vendor-bills?pageSize=1", "accounting:/transactions?pageSize=1", "accounting:/reports/owner-statement?startDate=2026-11-01&endDate=2026-11-30",
+  "maintenance:/vendors?pageSize=1", "maintenance:/work-orders?pageSize=1",
   "/company-app/vendors/bills", "/company-app/service-bills", "/company-app/invoices", "/company-app/invoices/credits", "/company-app/payouts", "/company-app/companies/payments",
   "/company-app/reports/rent-roll", "/company-app/reports/delinquency", "/company-app/reports/late-fees", "/company-app/reports/lease-unpaid-ledger",
   "/company-app/reports/prepaid-rent", "/company-app/reports/owner-statement", "/company-app/reports/accounts-payable",
@@ -856,7 +859,8 @@ async function probe(paths: string[]) {
   const worker = async () => {
     while (queue.length) {
       const p = queue.shift()!;
-      try { const r = await mdGet(fill(p)); out[p] = r.status === 200 ? { status: 200, ...describe(r.body) } : { status: r.status, error: scrub(r.text) }; }
+      const host = p.startsWith("accounting:") ? ACCOUNTING : p.startsWith("maintenance:") ? MAINTENANCE : API, path = p.replace(/^(accounting|maintenance):/, "");
+      try { const r = await mdGet(fill(path), host); out[p] = r.status === 200 ? { status: 200, ...describe(r.body) } : { status: r.status, error: scrub(r.text) }; }
       catch (e) { out[p] = { status: "failed", error: scrub(String((e as Error).message || e)) }; }
     }
   };
