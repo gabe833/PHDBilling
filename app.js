@@ -8134,7 +8134,9 @@ function pmStatementMailSheet(m){
   let cands = stmtCandidates(m), sel = {};
   cands.forEach(x => { if(!x.why && !x.done) sel[x.p.id] = true; });
   const draw = (busy, note) => {
-    const ready = cands.filter(x => !x.why), n = ready.filter(x => sel[x.p.id]).length, blocked = cands.filter(x => x.why);
+    // sent ones are hidden unless asked for (to send an updated one, open it from Owner statements → View)
+    const isSent = x => !!(x.done && x.done.state === "sent"), nSent = cands.filter(x => !x.why && isSent(x)).length;
+    const ready = cands.filter(x => !x.why && (S.ui.smShowSent || !isSent(x))), n = ready.filter(x => sel[x.p.id]).length, blocked = cands.filter(x => x.why);
     const months = [...new Set(pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly)).concat([m]))].sort().reverse();
     sh.innerHTML = `<div class="sheet-h"><div><h3 class="sm-title">Email statements · <select id="smMonth" aria-label="Statement month">${months.map(mm => `<option value="${mm}" ${mm === m ? "selected" : ""}>${monthLabel(mm)}${(pmState().meta[mm] || {}).closed ? "" : " (open)"}</option>`).join("")}</select></h3><div class="muted" style="font-size:12.5px;margin-top:3px">One email per owner from pm@ (properties going to the same people share one), with each statement attached as a PDF. Check or edit any of them first, then send from here or save them as Gmail drafts.</div></div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
@@ -8146,6 +8148,7 @@ function pmStatementMailSheet(m){
             <button class="btn primary sm" id="smConn" type="button">Connect</button> <span id="smMsg" class="muted" style="font-size:12.5px;margin-left:8px"></span></div>`
           : `<div class="sm-box">Drafts go to <b>${esc(stmtConn().mailbox || "the statements mailbox")}</b> → Drafts · <a href="#" id="smChange">change</a></div>`}
         ${note ? `<div class="pm-banner">${note}</div>` : ""}
+        ${nSent ? `<div class="muted" style="font-size:12.5px;margin:0 0 8px">${nSent} already sent ${S.ui.smShowSent ? "are shown" : "are hidden"} · <a href="#" id="smSentT">${S.ui.smShowSent ? "hide them" : "show them"}</a></div>` : ""}
         <div class="sm-list">${stmtGroups(ready).map(g => {
             // one row per email: statements that go to the same people are one row, with every property listed
             const x = g[0], many = g.length > 1, ids = g.map(y => y.p.id).join(","), can = stmtSameTo(m, x, cands).length > 1, d = g.find(y => y.done) && g.find(y => y.done).done;
@@ -8166,6 +8169,7 @@ function pmStatementMailSheet(m){
         <button class="btn" id="shCancel">Close</button><button class="btn" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Save ${n} as Gmail draft${n === 1 ? "" : "s"}`}</button><button class="btn primary" id="smSend" ${!n || busy || !stmtConn() ? "disabled" : ""}>${(k => k < n ? `Send ${n} in ${k} email${k === 1 ? "" : "s"}` : `Send ${n} now`)(stmtGroups(ready.filter(x => sel[x.p.id])).length)}</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#smMonth").onchange = e => pmStatementMailSheet(e.target.value);
+    { const t = $("#smSentT"); if(t) t.onclick = e => { e.preventDefault(); S.ui.smShowSent = !S.ui.smShowSent; persistUi(); draw(); }; }
     sh.querySelectorAll("[data-rev]").forEach(b => b.onclick = () => { const xs = b.dataset.rev.split(",").map(id => cands.find(c => c.p.id === id)).filter(Boolean); const rv = stmtReview(m, xs); stmtSetReview(m, xs, !(rv && !rv.stale)); draw(); });
     sh.querySelectorAll("[data-sg]").forEach(i => i.onchange = () => { i.dataset.sg.split(",").forEach(id => sel[id] = i.checked); draw(); });
     sh.querySelectorAll("[data-fn]").forEach(i => {
