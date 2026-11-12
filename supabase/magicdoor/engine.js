@@ -85,7 +85,11 @@ const PMCore = (function(){
       if(a.carryOut && cents(a.amount)) flags.push({level:"info", text:`${usd(cents(a.amount))} owed by the owner carried to ${monthLabel(a.to)} — repairs ran past the rent`});
       if(a.carryIn && cents(a.amount)) flags.push({level:"info", text:`Includes ${usd(-cents(a.amount))} carried from ${monthLabel(a.from)}`});
     });
-    if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
+    // no rent this month at all (vacant): the owner owing for repairs is expected — it carries to next month's payout
+    // once the month ends (or the owner is billed directly), so it's a note, not something to fix
+    if(payoutC < 0 && !waiting && !dueC && !recv && !(row.adjustments || []).some(a => a.carryOut))
+      flags.push({level:"info", text:`No rent this month — the owner owes ${usd(-payoutC)} for repairs and fees. It carries to next month's payout once this month ends (or bill the owner directly).`});
+    else if(payoutC < 0 && !waiting && !(row.adjustments || []).some(a => a.carryOut)) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere
     // Some differences are expected and say so instead of warning: the PM fee MagicDoor only charges around the payout,
@@ -100,11 +104,13 @@ const PMCore = (function(){
       const ownAdjC = (row.adjustments || []).filter(a => !a.md).reduce((t, a) => t + cents(a.amount), 0);
       const notMdC = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount)).reduce((a, it) => a + cents(it.amount) + itemFee(it, prop), 0);
       const feeLaterC = !(row.md && has(row.md.pmFee)) && !has(row.pmFee) ? pmFeeC : 0, carriedC = nz(row.mdCarried);
-      const gap = calcC - ownAdjC + notMdC + feeLaterC - (mdC + carriedC);
+      const lateAfterC = row.lateAfter && has(row.lateAfter.amount) ? cents(row.lateAfter.amount) : 0;
+      const gap = calcC - ownAdjC + notMdC + feeLaterC + lateAfterC - (mdC + carriedC);
       const why = [feeLaterC ? `MagicDoor hasn't charged the ${usd(feeLaterC)} PM fee yet (it does around the payout)` : "",
         notMdC ? `${usd(notMdC)} of bills here aren't in MagicDoor yet` : "",
         ownAdjC ? `${usd(Math.abs(ownAdjC))} of adjustments made here` : "",
-        carriedC ? `${usd(carriedC)} of bills MagicDoor still lists that an earlier payout already took off` : ""].filter(Boolean);
+        carriedC ? `${usd(carriedC)} of bills MagicDoor still lists that an earlier payout already took off` : "",
+        lateAfterC ? `${usd(lateAfterC)} the tenant paid ${row.lateAfter.day ? "on " + row.lateAfter.day + ", " : ""}after this payout went out — paid with ${row.lateAfter.to ? monthLabel(row.lateAfter.to) : "next month"}` : ""].filter(Boolean);
       if(Math.abs(gap) <= 1) flags.push({level:"info", text:`MagicDoor's statement says ${usd(mdC)} for now — ${why.join("; ")}. The ${usd(calcC)} here is right.`});
       else flags.push({level:"warn", text:`Doesn't match MagicDoor's owner statement: MagicDoor says ${usd(mdC)}, the console works out ${usd(calcC)} (${usd(Math.abs(gap))} ${gap > 0 ? "more" : "less"} than MagicDoor${why.length ? ", after allowing for: " + why.join("; ") : ""})`});
     }

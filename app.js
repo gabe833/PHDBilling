@@ -4315,7 +4315,11 @@ const PMCore = (function(){
       if(a.carryOut && cents(a.amount)) flags.push({level:"info", text:`${usd(cents(a.amount))} owed by the owner carried to ${monthLabel(a.to)} — repairs ran past the rent`});
       if(a.carryIn && cents(a.amount)) flags.push({level:"info", text:`Includes ${usd(-cents(a.amount))} carried from ${monthLabel(a.from)}`});
     });
-    if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
+    // no rent this month at all (vacant): the owner owing for repairs is expected — it carries to next month's payout
+    // once the month ends (or the owner is billed directly), so it's a note, not something to fix
+    if(payoutC < 0 && !waiting && !dueC && !recv && !(row.adjustments || []).some(a => a.carryOut))
+      flags.push({level:"info", text:`No rent this month — the owner owes ${usd(-payoutC)} for repairs and fees. It carries to next month's payout once this month ends (or bill the owner directly).`});
+    else if(payoutC < 0 && !waiting && !(row.adjustments || []).some(a => a.carryOut)) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere
     // Some differences are expected and say so instead of warning: the PM fee MagicDoor only charges around the payout,
@@ -4330,11 +4334,13 @@ const PMCore = (function(){
       const ownAdjC = (row.adjustments || []).filter(a => !a.md).reduce((t, a) => t + cents(a.amount), 0);
       const notMdC = items.filter(it => !it.mdBill && !it.mdLine && cents(it.amount)).reduce((a, it) => a + cents(it.amount) + itemFee(it, prop), 0);
       const feeLaterC = !(row.md && has(row.md.pmFee)) && !has(row.pmFee) ? pmFeeC : 0, carriedC = nz(row.mdCarried);
-      const gap = calcC - ownAdjC + notMdC + feeLaterC - (mdC + carriedC);
+      const lateAfterC = row.lateAfter && has(row.lateAfter.amount) ? cents(row.lateAfter.amount) : 0;
+      const gap = calcC - ownAdjC + notMdC + feeLaterC + lateAfterC - (mdC + carriedC);
       const why = [feeLaterC ? `MagicDoor hasn't charged the ${usd(feeLaterC)} PM fee yet (it does around the payout)` : "",
         notMdC ? `${usd(notMdC)} of bills here aren't in MagicDoor yet` : "",
         ownAdjC ? `${usd(Math.abs(ownAdjC))} of adjustments made here` : "",
-        carriedC ? `${usd(carriedC)} of bills MagicDoor still lists that an earlier payout already took off` : ""].filter(Boolean);
+        carriedC ? `${usd(carriedC)} of bills MagicDoor still lists that an earlier payout already took off` : "",
+        lateAfterC ? `${usd(lateAfterC)} the tenant paid ${row.lateAfter.day ? "on " + row.lateAfter.day + ", " : ""}after this payout went out — paid with ${row.lateAfter.to ? monthLabel(row.lateAfter.to) : "next month"}` : ""].filter(Boolean);
       if(Math.abs(gap) <= 1) flags.push({level:"info", text:`MagicDoor's statement says ${usd(mdC)} for now — ${why.join("; ")}. The ${usd(calcC)} here is right.`});
       else flags.push({level:"warn", text:`Doesn't match MagicDoor's owner statement: MagicDoor says ${usd(mdC)}, the console works out ${usd(calcC)} (${usd(Math.abs(gap))} ${gap > 0 ? "more" : "less"} than MagicDoor${why.length ? ", after allowing for: " + why.join("; ") : ""})`});
     }
@@ -4993,7 +4999,7 @@ function pgPmMonth(){
       <td class="r">${locked ? `<span class="num">${c.recv ? usd(c.recv) : "—"}</span>` : `<input class="pm-in num" type="number" step="0.01" data-recv="${prop.id}" value="${has(row.rentReceived) ? row.rentReceived : ""}" placeholder="${c.dueC ? (c.dueC / 100).toFixed(2) : "0.00"}">`}</td>
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}${(() => { const n = (row.repairItems || []).filter(it => mdItemState(it) === "missing").length; return n ? `<div class="sub-n"><span class="tag red md-miss" title="Entered in the console only — open the month to add ${n === 1 ? "it" : "them"} to MagicDoor">${n} not in MD</span></div>` : ""; })()}</td>
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
-      <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${(row.adjustments || []).filter(a => a.carryOut && cents(a.amount)).map(a => `<div class="sub-n pm-carry" title="${esc("The owner owes " + usd(cents(a.amount)) + " this month (repairs ran past the rent). It comes off " + monthLabel(a.to) + "'s payout.")}">${usd(cents(a.amount))} owed → ${esc(monthShort(a.to))}</div>`).join("")}${(row.adjustments || []).filter(a => a.carryIn && cents(a.amount)).map(a => `<div class="sub-n pm-carry in" title="${esc("Carried from " + monthLabel(a.from) + ", when repairs ran past the rent")}">incl. −${usd(-cents(a.amount))} from ${esc(monthShort(a.from))}</div>`).join("")}${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
+      <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${(row.adjustments || []).filter(a => a.carryOut && cents(a.amount)).map(a => `<div class="sub-n pm-carry" title="${esc("The owner owes " + usd(cents(a.amount)) + " this month (repairs ran past the rent). It comes off " + monthLabel(a.to) + "'s payout.")}">${usd(cents(a.amount))} owed → ${esc(monthShort(a.to))}</div>`).join("")}${(row.adjustments || []).filter(a => a.carryIn && cents(a.amount)).map(a => `<div class="sub-n pm-carry in" title="${esc("Carried from " + monthLabel(a.from) + ", when repairs ran past the rent")}">incl. −${usd(-cents(a.amount))} from ${esc(monthShort(a.from))}</div>`).join("")}${c.payoutC < 0 && !locked && !row.paidOut && !(row.adjustments || []).some(a => a.carryOut) ? `<div class="sub-n pm-carry" title="${esc("The owner owes " + usd(-c.payoutC) + ". Once " + monthLabel(m) + " ends it comes off " + monthLabel(PMCore.monthAdd(m, 1)) + "'s payout.")}">carries → ${esc(monthShort(PMCore.monthAdd(m, 1)))}</div>` : ""}${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
       <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled || row.paidOut.pending ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.pending ? "Pending in Nickel since " + esc(row.paidOut.date) + " — not delivered yet" : row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled || row.paidOut.pending ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
           : (typeof finHoldFor === "function" && finHoldFor(prop.id, m)) ? `<button class="st st-hold" data-hold="${esc(finHoldFor(prop.id, m).id)}" title="${esc(finHoldFor(prop.id, m).title)} — payouts held on purpose"><i></i>On hold</button>`
           : (typeof finCloseCell === "function" && finCloseCell(m, row, prop, c, locked)) ? finCloseCell(m, row, prop, c, locked)
@@ -5003,9 +5009,13 @@ function pgPmMonth(){
     tb.appendChild(tr);
   });
   const foot = elm("tr","ow-tot");
-  foot.innerHTML = `<td><b>${vis.length === counts.all ? "All properties" : vis.length + " shown"}</b></td><td class="r num"><b>${usd(R.dueC)}</b></td><td class="r num"><b>${usd(R.recv)}</b></td>
-    <td class="r num"><b>${usd(R.repairsC)}</b></td><td class="r num"><b>${usd(R.adminC)}</b></td><td class="r num"><b>${usd(R.pmFeeC)}</b></td>
-    <td class="r num"><b>${usd(R.leasingC)}</b></td><td class="r num"><b>${usd(R.otherC)}</b></td><td class="r num"><b>${usd(R.payoutC)}</b></td><td></td><td></td>`;
+  // totals of the rows on screen (a filter shows its own total, not the whole month's)
+  const T = vis.length === counts.all ? R : vis.reduce((t, {row, prop}) => { const c = pmCalc(row, prop);
+    ["dueC", "recv", "repairsC", "adminC", "pmFeeC", "leasingC", "payoutC"].forEach(k => t[k] += c[k] || 0); t.otherC += (c.otherC || 0) + (c.adjC || 0); return t; },
+    {dueC:0, recv:0, repairsC:0, adminC:0, pmFeeC:0, leasingC:0, otherC:0, payoutC:0});
+  foot.innerHTML = `<td><b>${vis.length === counts.all ? "All properties" : vis.length + " shown"}</b></td><td class="r num"><b>${usd(T.dueC)}</b></td><td class="r num"><b>${usd(T.recv)}</b></td>
+    <td class="r num"><b>${usd(T.repairsC)}</b></td><td class="r num"><b>${usd(T.adminC)}</b></td><td class="r num"><b>${usd(T.pmFeeC)}</b></td>
+    <td class="r num"><b>${usd(T.leasingC)}</b></td><td class="r num"><b>${usd(T.otherC)}</b></td><td class="r num"><b>${usd(T.payoutC)}</b></td><td></td><td></td>`;
   tb.appendChild(foot);
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
   if(nEmpty && !q){ const e = elm("button", "pm-empty-tog", S.ui.pmShowEmpty ? `Hide ${nEmpty} with nothing this month` : `${nEmpty} propert${nEmpty === 1 ? "y" : "ies"} with nothing this month not shown · show`);
@@ -6556,6 +6566,10 @@ function pgPmProperty(){
       </div>
       ${PMCore.has(r.mdNet) && !pending ? (Math.abs(c.calcC - cents(r.mdNet)) <= 1
           ? `<div class="pp-mdchk ok">✓ Matches MagicDoor's owner statement · ${usd(cents(r.mdNet))} to the owner</div>`
+          : r.lateAfter && Math.abs(c.calcC + cents(r.lateAfter.amount) - cents(r.mdNet)) <= 1
+          ? `<div class="pp-mdchk ok">✓ Matches MagicDoor's owner statement (${usd(cents(r.mdNet))}) — ${usd(cents(r.lateAfter.amount))} of it came in ${r.lateAfter.day ? fdateS(r.lateAfter.day) + ", " : ""}after this payout, so it's paid with ${monthLabel(r.lateAfter.to)}</div>`
+          : (c.flags || []).some(f => f.level === "info" && (/^Matches MagicDoor's owner statement/.test(f.text) || /here is right\.$/.test(f.text)))
+          ? `<div class="pp-mdchk ok">✓ ${esc((c.flags.find(f => f.level === "info" && (/^Matches MagicDoor's owner statement/.test(f.text) || /here is right\.$/.test(f.text)))).text)}</div>`
           : `<div class="pp-mdchk off"><b>Doesn't match MagicDoor's owner statement.</b> MagicDoor: ${usd(cents(r.mdNet))} · here: ${usd(c.calcC)} (${usd(Math.abs(c.calcC - cents(r.mdNet)))} ${c.calcC > cents(r.mdNet) ? "more" : "less"}). Open the month to see which line differs.</div>`) : ""}
       <div class="pp-foot">${r.paidOut ? (r.paidOut.pending ? `<span class="tag gold">Payout pending in Nickel · ${esc(fdateS(r.paidOut.date))}${PMCore.has(r.paidOut.amount) ? " · " + usd(cents(r.paidOut.amount)) : ""}</span>` : r.paidOut.scheduled ? `<span class="tag gold">Payout scheduled in Nickel · ${esc(fdateS(r.paidOut.date))}${r.paidOut.arrives ? " · arrives " + esc(fdateS(r.paidOut.arrives)) : ""}</span>` : `<span class="tag green"${r.paidOut.group ? ` title="${esc("Paid together: " + r.paidOut.group.refs.join(", ") + " = " + usd(r.paidOut.group.totalC) + " for " + r.paidOut.group.props.join(", "))}"` : ""}>Paid out ${esc(fdateS(r.paidOut.date))}${r.paidOut.method ? " · " + esc(r.paidOut.method) : ""}${PMCore.has(r.paidOut.amount) ? " · " + usd(cents(r.paidOut.amount)) : ""}${r.paidOut.group ? ` · part of ${r.paidOut.group.refs.length} payments` : ""}</span>`)
           : r.locked ? `<span class="muted">Imported from the workbook</span>` : c.recv > 0 && c.payoutC > 0 ? `<span class="tag gold">Payout to send</span>` : ""}
@@ -17435,7 +17449,7 @@ function pmLateRentCarry(){
         if(P2.properties.filter(q => !q.deleted && q.id !== p.id && (mdFor(q.id) || {}).property && mdFor(q.id).property.id === f.property.id).length) return null;
         const st = PMCore.mdStmt(S.md, f.property.id, m), x = st && PMCore.mdStmtMonth(st, p); return x && x.recv > 0 ? cents(x.recv) : null; })();
       const mdRecvC = mdNow != null ? mdNow : r.md && has(r.md.rentReceived) ? cents(r.md.rentReceived) : null;
-      let unpaidC = 0;
+      let unpaidC = 0, shownC = 0;
       if(pays && paid != null && day){
         const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
         const gap = calcC - paid;
@@ -17443,7 +17457,18 @@ function pmLateRentCarry(){
           const owed = mdRecvC != null && has(r.rentReceived) ? Math.max(0, cents(r.rentReceived) - mdRecvC) : 0;
           const late = gap - Math.min(owed, gap);
           if(late > 0 && afterC >= late - 100){ carryC = late; unpaidC = gap - late; }   // covered by payments made that day or later
+        } else if(Math.abs(gap) <= 100 && has(r.mdNet)){
+          // the month here already shows only what went out (the workbook's figures), but MagicDoor's statement for the
+          // month also counts money the tenant paid on or after the payout day (432 Coopers Hawk, Oct 2026: $430 on Oct 15,
+          // $400 of it the owner's). Nothing to take off this month — it just goes out with next month's payout.
+          const extra = cents(r.mdNet) - paid;
+          if(extra > 100 && afterC >= extra - 100) shownC = Math.min(extra, afterC);
         }
+      }
+      const wantA = shownC ? {amount:shownC / 100, to:monthAdd(m, 1), day} : null;
+      if(!(r.lateAfter && wantA && cents(r.lateAfter.amount) === shownC && r.lateAfter.to === wantA.to) && (r.lateAfter || wantA)){
+        if(wantA) r.lateAfter = wantA; else delete r.lateAfter;
+        pmTouch(r); changed++;
       }
       const mineU = (r.adjustments || []).find(a => a[KEY] === "unpaid");
       const wantU = unpaidC ? {amount:-unpaidC / 100, note:`Rent the tenant still owes per MagicDoor — goes to the owner once it's paid`, [KEY]:"unpaid", auto:true} : null;
@@ -17469,8 +17494,10 @@ function pmLateRentCarry(){
       }
       const next = monthAdd(m, 1), nk = next + "|" + p.id, nr = P2.rows[nk];
       const want = carryC ? {amount:-carryC / 100, note:`Rent collected on or after the ${fdateS(day)} payout — paid with ${monthLabel(next)}`, [KEY]:"out", auto:true} : null;
-      if(!want && !mine) return;
-      if(want && mine && cents(mine.amount) === -carryC) { /* already right */ }
+      const inC = carryC || shownC;
+      if(!want && !mine && !inC && !(nr && (nr.adjustments || []).some(a => a[KEY] === "in:" + m))) return;
+      if(!want && !mine) { /* nothing to take off this month */ }
+      else if(want && mine && cents(mine.amount) === -carryC) { /* already right */ }
       else {
         r.adjustments = (r.adjustments || []).filter(a => a[KEY] !== "out"); if(want) r.adjustments.push(want);
         pmTouch(r); changed++;
@@ -17478,8 +17505,8 @@ function pmLateRentCarry(){
       // next month: the same amount added back, once its row exists (and it isn't closed)
       if(nr && !(P2.meta[next] || {}).closed){
         const have = (nr.adjustments || []).find(a => a[KEY] === "in:" + m);
-        const add = carryC ? {amount:carryC / 100, note:`${monthLabel(m)} rent collected after ${monthLabel(m)}'s payout`, [KEY]:"in:" + m, auto:true} : null;
-        if(!(have && add && cents(have.amount) === carryC) && (have || add)){
+        const add = inC ? {amount:inC / 100, note:`${monthLabel(m)} rent collected after ${monthLabel(m)}'s payout${day ? ` (${fdateS(day)})` : ""}`, [KEY]:"in:" + m, auto:true} : null;
+        if(!(have && add && cents(have.amount) === inC && have.note === add.note) && (have || add)){
           nr.adjustments = (nr.adjustments || []).filter(a => a[KEY] !== "in:" + m); if(add) nr.adjustments.push(add);
           pmTouch(nr); changed++;
         }
