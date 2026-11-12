@@ -2710,3 +2710,8 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .sm-acts .btn{justify-content:center}
 .sm-acts .sm-split{font-size:12px;padding-top:2px;padding-bottom:2px;border-color:transparent;background:none}
 @media (max-width:720px){ .sm-acts{flex-direction:row;flex-wrap:wrap;align-items:center} }
+/* owner statements list: reviewed label under the status */
+.st-rev{display:inline-flex;align-items:center;gap:4px;margin-top:6px;font-size:12px;font-weight:550;color:var(--green,#2F7A4F);white-space:nowrap}
+.st-rev svg{width:13px;height:13px}
+.st-rev.stale{color:var(--gold,#9A6B12)}
+td>.tag+.st-rev{display:flex}

@@ -8264,6 +8264,10 @@ function pgPmStatements(){
   const months = [...new Set(pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly)).concat([m]))].sort().reverse();
   const cands = stmtCandidates(m);
   const by = {todo:[], draft:[], sent:[], blocked:[]}; cands.forEach(x => by[stState(x)].push(x));
+  // reviewed: the email this statement goes out in was checked (and its numbers haven't changed since)
+  const revOf = new Map(); cands.forEach(x => { const rv = x.why ? null : stmtReview(m, stmtGroupFor(m, x, cands)); revOf.set(x.p.id, rv); });
+  const isRev = x => { const r = revOf.get(x.p.id); return !!(r && !r.stale); };
+  by.rev = cands.filter(x => !x.why && isRev(x)); by.unrev = cands.filter(x => !x.why && !isRev(x) && stState(x) !== "sent");
   $("#pgSub").textContent = `${monthLabel(m)} · ${meta.closed ? "month closed" : "month still open"} · sent from ${(stmtConn() || {}).mailbox || "pm@phdproperties.realestate"}`;
   const nReady = cands.filter(x => !x.why && !x.done).length;
   actions([["Print all", () => { const g = {}; cands.forEach(x => { const k = x.p.ownerId || "p:" + x.p.id; (g[k] = g[k] || []).push(x.p.id); }); printDoc(pmStatementHTML(m, null, Object.values(g))); }],
@@ -8294,7 +8298,7 @@ function pgPmStatements(){
   const f = S.ui.stFilter && by[S.ui.stFilter] ? S.ui.stFilter : "all", q = (S.ui.stQ || "").toLowerCase();
   const bar = elm("div", "sc-bar"); bar.style.marginTop = "16px";
   bar.innerHTML = `<select id="stM" class="st-month" aria-label="Statement month">${months.map(mm => `<option value="${mm}" ${mm === m ? "selected" : ""}>${monthLabel(mm)}</option>`).join("")}</select>
-    <div class="sc-seg">${[["all", "All", cands.length], ["todo", "Not sent", by.todo.length], ["draft", "Drafts", by.draft.length], ["sent", "Sent", by.sent.length], ["blocked", "Need an email", by.blocked.length]]
+    <div class="sc-seg">${[["all", "All", cands.length], ["todo", "Not sent", by.todo.length], ["draft", "Drafts", by.draft.length], ["sent", "Sent", by.sent.length], ["blocked", "Need an email", by.blocked.length], ["unrev", "Not reviewed", by.unrev.length], ["rev", "Reviewed", by.rev.length]]
       .map(([k, l, n]) => `<button data-sf="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>`).join("")}</div>
     <div class="sc-q"><input type="text" id="stQ" placeholder="Find a property, owner or email…" value="${esc(S.ui.stQ || "")}"></div>`;
   v.appendChild(bar);
@@ -8303,7 +8307,8 @@ function pgPmStatements(){
   const qi = bar.querySelector("#stQ");
   qi.oninput = () => { S.ui.stQ = qi.value; clearTimeout(qi._t); qi._t = setTimeout(() => { render(); const n = $("#stQ"); if(n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 160); };
 
-  const vis = (f === "all" ? cands : by[f]).filter(x => !q || `${x.p.name} ${x.p.address || ""} ${ownerLabel(x.o)} ${x.to} ${x.cc.join(" ")}`.toLowerCase().includes(q));
+  const vis = (f === "all" ? cands : by[f]).filter(x => !q || `${x.p.name} ${x.p.address || ""} ${ownerLabel(x.o)} ${x.to} ${x.cc.join(" ")}`.toLowerCase().includes(q))
+    .map((x, i) => [x, i]).sort((a, b) => (isRev(a[0]) - isRev(b[0])) || a[1] - b[1]).map(a => a[0]);   // reviewed ones last, otherwise in order
   const card = elm("div", "card");
   const wrap = elm("div", "tbl-wrap"), t = elm("table", "tbl st-tbl");
   t.innerHTML = `<thead><tr><th>Property</th><th>Goes to</th><th class="r">Owner payout</th><th>Status</th><th></th></tr></thead>`;
@@ -8319,7 +8324,8 @@ function pgPmStatements(){
     tr.innerHTML = `<td><div class="item-t">${esc(x.p.name)}</div><div class="item-s">${x.o ? esc(ownerLabel(x.o)) : `<span style="color:var(--red)">No owner on file</span>`}</div></td>
       <td>${to}</td>
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b></td>
-      <td>${status}</td>
+      <td>${status}${(r => r ? (r.stale ? `<span class="st-rev stale" title="${esc("Reviewed by " + (r.by || "someone") + " — the numbers changed after that")}">Changed since review</span>`
+        : `<span class="st-rev" title="${esc("Reviewed by " + (r.by || "someone") + " · " + fdateS(String(r.at).slice(0, 10)))}">${icon("check")} Reviewed</span>`) : "")(revOf.get(x.p.id))}</td>
       <td class="st-acts">${x.o ? `<button class="btn sm ghost" data-strc="${x.o.id}" type="button">Recipients</button>` : `<button class="btn sm" data-pp="${x.p.id}" type="button">Add owner</button>`}
         <button class="btn sm" data-pv="${x.p.id}" type="button" ${x.why ? "disabled" : ""}>${st === "sent" ? "View" : "Preview & send"}</button>
         <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button></td>`;
