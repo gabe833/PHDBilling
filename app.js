@@ -7828,7 +7828,7 @@ const stmtJoin = a => a.length <= 2 ? a.join(" and ") : a.slice(0, -1).join(", "
 function stmtComposeGroup(m, xs){
   if(xs.length === 1) return stmtCompose(m, xs[0]);
   const e = ((pmState().meta[m] || {}).emailEdits || {})[stmtGroupKey(xs)] || {};
-  const names = xs.map(x => x.p.name), first = xs.map(x => x.first).find(Boolean) || "";
+  const names = xs.map(x => x.p.name), first = stmtGroupFirst(xs);
   const to = [...new Set(xs.flatMap(x => x.toList))], cc = [...new Set(xs.flatMap(x => x.cc))].filter(c => !to.includes(c));
   const std = {subject:`Owner Statements – ${names.length > 3 ? names.length + " properties" : stmtJoin(names)} – ${monthLabel(m)}`,
     body:STMT_BODY(first, "\u0000", m).replace(/is your owner statement for \u0000/, "are your owner statements for " + stmtJoin(names)).replace("statement for \u0000", "statements for " + stmtJoin(names)).replace(/\u0000/g, stmtJoin(names))
@@ -7854,9 +7854,14 @@ function stmtFirstName(o){
   const paren = (raw.match(/\(([^)]*)\)/g) || []).map(x => x.slice(1, -1));
   const main = raw.replace(/\([^)]*\)/g, " ");
   const segs = main.split(/\s+(?:dba|d\/b\/a|c\/o|and)\s+|\s*[\/&,;]\s*|\s+[-–—]\s*|\s*[–—]\s*/i).concat(paren);
-  for(const seg of segs){ const f = stmtPersonFirst(seg); if(f) return f; }
-  return "";
+  // every person the owner record names, not just the first ("Susan Reed and Stephen Welt" → "Susan and Stephen")
+  const all = []; for(const seg of segs){ const f = stmtPersonFirst(seg); if(f && !all.includes(f)) all.push(f); }
+  return stmtNames(all);
 }
+// "Susan" · "Susan and Stephen" · "Susan, Stephen and Mason"
+function stmtNames(list){ const l = [...new Set(list.filter(Boolean))]; return l.length <= 1 ? (l[0] || "") : l.slice(0, -1).join(", ") + " and " + l[l.length - 1]; }
+// the greeting for several statements in one email: everyone each owner's greeting names, once each
+function stmtGroupFirst(xs){ return stmtNames(xs.flatMap(x => String(x.first || "").split(/\s*,\s*|\s+and\s+|\s*&\s*/).map(t => t.trim()))); }
 const stmtAddr = p => (p.address || p.name || "").replace(/\s+/g, " ").trim();
 function stmtFileName(p, m){ return `Owner Statement - ${(p.name || "Property").replace(/\s*#\s*/g, " Unit ").replace(/[\\/:*?"<>|%]+/g, "-")} - ${monthLabel(m)}.pdf`; }
 const stmtEmailOk = e => /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(String(e || "").trim());
@@ -8097,7 +8102,7 @@ function pmStatementMailSheet(m){
             return `<div class="sm-r${many ? " grp" : ""}">
             <input type="checkbox" data-sg="${ids}" ${g.every(y => sel[y.p.id]) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="Include ${esc(many ? g.length + " statements" : x.p.name)}">
             <div class="sm-t"><b>${many ? `${g.length} statements · one email` : esc(x.p.name)}</b>${many ? `<ul class="sm-props">${g.map(y => `<li>${esc(y.p.name)}</li>`).join("")}</ul>` : ""}<span class="sm-to">To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span>
-              <label class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" data-fng="${ids}" value="${esc(g.map(y => y.first).find(Boolean) || "")}" placeholder="(no name)" ${busy ? "disabled" : ""}></label></div>
+              <label class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" data-fng="${ids}" value="${esc(stmtGroupFirst(g))}" placeholder="(no name)" ${busy ? "disabled" : ""}></label></div>
             <div class="sm-side"><div class="sm-tags">${d ? (d.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(d.sentAt || d.at).slice(0, 10)))}</span>`
                 : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(d.at.slice(0, 10)) + (d.by ? " by " + d.by : ""))}">Draft in Gmail</span>`) : ""}${rv && rv.stale ? stmtRevTag(rv) : ""}</div>
             <div class="sm-acts"><button class="btn sm${revOn ? " rev-on" : ""}" data-rev="${ids}" type="button" ${busy ? "disabled" : ""}>${revOn ? icon("check") + " Reviewed" : "Mark reviewed"}</button><button class="btn sm" data-pv="${x.p.id}" type="button">${(many ? stmtComposeGroup(m, g) : stmtCompose(m, x)).edited ? "Edited · open" : "Preview & edit"}</button>${!many && x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}${can ? `<button class="btn sm ghost sm-split" data-one="${esc(stmtRecipKey(x))}" data-on="${many ? 0 : 1}" type="button" ${busy ? "disabled" : ""}>${many ? "Split into separate emails" : "Combine into one email"}</button>` : ""}</div></div></div>`; }).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
