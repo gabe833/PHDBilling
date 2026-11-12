@@ -7885,13 +7885,16 @@ function pmStatementMailSheet(m){
             <button class="btn primary sm" id="smConn" type="button">Connect</button> <span id="smMsg" class="muted" style="font-size:12.5px;margin-left:8px"></span></div>`
           : `<div class="sm-box">Drafts go to <b>${esc(stmtConn().mailbox || "the statements mailbox")}</b> → Drafts · <a href="#" id="smChange">change</a></div>`}
         ${note ? `<div class="pm-banner">${note}</div>` : ""}
-        <div class="sm-list">${ready.map(x => `<label class="sm-r">
-            <input type="checkbox" data-s="${x.p.id}" ${sel[x.p.id] ? "checked" : ""} ${busy ? "disabled" : ""}>
-            <div class="sm-t"><b>${esc(x.p.name)}</b><span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span>${(g => g.length > 1 ? `<span class="sm-grp">${stmtOneOn(stmtRecipKey(x)) ? `One email with ${esc(stmtJoin(g.filter(y => y !== x).map(y => y.p.name)))} · <a href="#" data-one="${esc(stmtRecipKey(x))}" data-on="0">send separately</a>` : `Same people as ${esc(stmtJoin(g.filter(y => y !== x).map(y => y.p.name)))} · <a href="#" data-one="${esc(stmtRecipKey(x))}" data-on="1">send as one email</a>`}</span>` : "")(stmtSameTo(m, x, cands))}</div>
-            <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" value="${esc(x.first)}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
-            ${x.done ? (x.done.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
-                : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
-            <span class="sm-acts">${x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm ghost" data-pv="${x.p.id}" type="button">${stmtCompose(m, x).edited ? "Edited · open" : "Preview & edit"}</button></span></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
+        <div class="sm-list">${stmtGroups(ready).map(g => {
+            // one row per email: statements that go to the same people are one row, with every property listed
+            const x = g[0], many = g.length > 1, ids = g.map(y => y.p.id).join(","), can = stmtSameTo(m, x, cands).length > 1, d = g.find(y => y.done) && g.find(y => y.done).done;
+            return `<div class="sm-r${many ? " grp" : ""}">
+            <input type="checkbox" data-sg="${ids}" ${g.every(y => sel[y.p.id]) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="Include ${esc(many ? g.length + " statements" : x.p.name)}">
+            <div class="sm-t"><b>${many ? `${g.length} statements · one email` : esc(x.p.name)}</b>${many ? `<ul class="sm-props">${g.map(y => `<li>${esc(y.p.name)}</li>`).join("")}</ul>` : ""}<span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span></div>
+            <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" data-fng="${ids}" value="${esc(g.map(y => y.first).find(Boolean) || "")}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
+            ${d ? (d.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(d.sentAt || d.at).slice(0, 10)))}</span>`
+                : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(d.at.slice(0, 10)) + (d.by ? " by " + d.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
+            <span class="sm-acts">${can ? `<button class="btn sm" data-one="${esc(stmtRecipKey(x))}" data-on="${many ? 0 : 1}" type="button" ${busy ? "disabled" : ""}>${many ? "Send separately" : "Send as one email"}</button>` : ""}${!many && x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm" data-pv="${x.p.id}" type="button">${(many ? stmtComposeGroup(m, g) : stmtCompose(m, x)).edited ? "Edited · open" : "Preview & edit"}</button></span></div>`; }).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
           <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
         <label class="sm-auto"><input type="checkbox" id="smAttach" ${stmtAttachOn() ? "checked" : ""}> Attach the vendors' invoices from MagicDoor to each statement</label>
@@ -7901,12 +7904,15 @@ function pmStatementMailSheet(m){
         <button class="btn" id="shCancel">Close</button><button class="btn" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Save ${n} as Gmail draft${n === 1 ? "" : "s"}`}</button><button class="btn primary" id="smSend" ${!n || busy || !stmtConn() ? "disabled" : ""}>${(k => k < n ? `Send ${n} in ${k} email${k === 1 ? "" : "s"}` : `Send ${n} now`)(stmtGroups(ready.filter(x => sel[x.p.id])).length)}</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#smMonth").onchange = e => pmStatementMailSheet(e.target.value);
-    sh.querySelectorAll("[data-s]").forEach(i => i.onchange = () => { sel[i.dataset.s] = i.checked; draw(); });
+    sh.querySelectorAll("[data-sg]").forEach(i => i.onchange = () => { i.dataset.sg.split(",").forEach(id => sel[id] = i.checked); draw(); });
     sh.querySelectorAll("[data-fn]").forEach(i => {
       i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); };
       i.onchange = () => {   // keep it on the owner, so every statement to them uses it from now on
         const x = cands.find(c => c.p.id === i.dataset.fn); if(!x || !x.o) return;
-        snapshot(); x.o.greeting = i.value.trim(); commit();
+        snapshot(); x.o.greeting = i.value.trim();
+        // one email for several owner records (Susan Reed / Stephen Welt): the name goes on each of them
+        String(i.dataset.fng || "").split(",").forEach(id => { const y = cands.find(c => c.p.id === id); if(y){ y.first = i.value.trim(); if(y.o) y.o.greeting = i.value.trim(); } });
+        commit();
         cands.filter(c => c.o && c.o.id === x.o.id).forEach(c => c.first = i.value.trim());
         sh.querySelectorAll("[data-fn]").forEach(j => { const y = cands.find(c => c.p.id === j.dataset.fn); if(y && y.o && y.o.id === x.o.id && j !== i) j.value = y.first; });
       };
