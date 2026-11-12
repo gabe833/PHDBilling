@@ -19793,19 +19793,33 @@ function poPickSheet(p){
 async function poSend(list, o){
   const totC = list.reduce((a, x) => a + x.amountC, 0);
   if(!confirm(`Send ${list.length} owner payout${list.length === 1 ? "" : "s"} — ${usd(totC)} — from ${o.acctLabel || "the account picked"}, ${o.when === "asap" ? "as soon as possible" : "arriving " + fdateS(o.date)}?\n\n${list.map(x => x.split ? `· ${x.split.name} (${x.rows.length} properties) — ${usd(x.amountC)}: ${x.shares.filter(sh => sh.amountC > 0).map(sh => `${(poNv(sh.vendorId) || {}).name || sh.name} ${usd(sh.amountC)}`).join(", ")}` : `· ${ownerLabel(x.o)} · ${x.p.name} — ${usd(x.amountC)}`).join("\n")}\n\nNickel will ask you to confirm once more for each batch of up to 25.`)) return;
-  try{
-    const r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:list.map(x => {
-      if(x.split) return {month:x.m, pids:x.rows.map(r => r.p.id), amounts:Object.fromEntries(x.rows.map(r => [r.p.id, r.amountC])), groupKey:x.split.key || x.split.name,
-        splits:x.shares.filter(sh => sh.amountC > 0).map(sh => ({vendorId:sh.vendorId, payoutMethodId:(((poNv(sh.vendorId) || {}).payout || [])[0] || {}).id, amountC:sh.amountC, key:sh.key || (poNv(sh.vendorId) || {}).name || ""}))};
-      const pe = poPayeeFor(x); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; })}, `Send ${list.length} owner payout${list.length === 1 ? "" : "s"} · ${usd(totC)}`);
-    if(r && r.results){
-      const bad = r.results.filter(x => !x.ok && x.pid && !String(x.pid).startsWith("split:"));
-      actLog("finance", `Owner payouts sent from the console: ${r.sent} of ${list.length}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
-      if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
-      toast(`${r.sent} payout${r.sent === 1 ? "" : "s"} sent${bad.length ? ` · ${bad.length} didn't go: ${bad.slice(0, 3).map(x => `${(pmProp(x.pid) || {}).name}: ${x.why}`).join("; ")}` : ""}${r.oneByOne ? " · Nickel's plan sends them one at a time" : ""}`, true);
-      S.ui.poSel = {};
-    }
-  }catch(e){ toast(e.message); }
+  const item = x => {
+    if(x.split) return {month:x.m, pids:x.rows.map(r => r.p.id), amounts:Object.fromEntries(x.rows.map(r => [r.p.id, r.amountC])), groupKey:x.split.key || x.split.name,
+      splits:x.shares.filter(sh => sh.amountC > 0).map(sh => ({vendorId:sh.vendorId, payoutMethodId:(((poNv(sh.vendorId) || {}).payout || [])[0] || {}).id, amountC:sh.amountC, key:sh.key || (poNv(sh.vendorId) || {}).name || ""}))};
+    const pe = poPayeeFor(x); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; };
+  // one request per Nickel batch (up to 25 payments — a split counts once per payee): each gets its own confirmation and
+  // finishes well inside the server's time limit, so batch 2 can't be cut off after batch 1 went (Nov 12)
+  const chunks = []; let cur = [], n = 0;
+  list.forEach(x => { const k = x.split ? Math.max(1, x.shares.filter(sh => sh.amountC > 0).length) : 1; if(cur.length && n + k > 25){ chunks.push(cur); cur = []; n = 0; } cur.push(x); n += k; });
+  if(cur.length) chunks.push(cur);
+  let sent = 0; const bad = [];
+  for(let i = 0; i < chunks.length; i++){
+    const ch = chunks[i], chC = ch.reduce((a, x) => a + x.amountC, 0);
+    let r = null;
+    try{ r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:ch.map(item)},
+      `${chunks.length > 1 ? `Batch ${i + 1} of ${chunks.length} · ` : ""}Send ${ch.length} owner payout${ch.length === 1 ? "" : "s"} · ${usd(chC)}`); }
+    catch(e){ toast(e.message); break; }
+    if(!r || !r.results){ if(chunks.length > 1 && i < chunks.length - 1) toast(`Stopped after batch ${i}. Nothing else was sent.`); break; }
+    sent += r.sent || 0; r.results.filter(x => !x.ok && x.pid && !String(x.pid).startsWith("split:")).forEach(x => bad.push(x));
+    if(r.declined) break;
+  }
+  if(sent || bad.length){
+    actLog("finance", `Owner payouts sent from the console: ${sent} of ${list.length}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
+    if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
+    toast(`${sent} payout${sent === 1 ? "" : "s"} sent${bad.length ? ` · ${bad.length} didn't go: ${bad.slice(0, 3).map(x => `${(pmProp(x.pid) || {}).name}: ${x.why}`).join("; ")}` : ""}`, true);
+    S.ui.poSel = {};
+  }
+  if(typeof poNickelLoad === "function") poNickelLoad(true);
   render();
 }
 // a rental's page: who pays this owner (Nickel or MagicDoor)
