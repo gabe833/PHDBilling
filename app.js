@@ -8257,19 +8257,19 @@ function stmtEmailSheet(m, pid){
   const xs = stmtGroupFor(m, x, cands), grp = xs.length > 1, pids = xs.map(y => y.p.id);
   const c = grp ? stmtComposeGroup(m, xs) : stmtCompose(m, x), conn = stmtConn() || {}, rec = x.done || (xs.find(y => y.done) || {}).done;
   // already sent: the next one is an update — say so in the subject and first line (only while the wording is the standard one)
-  if(rec && rec.state === "sent" && !c.edited){
-    const when = fdateS(String(rec.sentAt || rec.at).slice(0, 10));
-    if(!/^Updated/i.test(c.subject)) c.subject = "Updated: " + c.subject;
-    const paras = String(c.body).split(/\n{2,}/);
-    const note = `This is an updated statement that replaces the one we sent on ${when}.`;
-    if(!c.body.includes(note)) c.body = (paras.length > 1 ? [paras[0], note].concat(paras.slice(1)) : [note].concat(paras)).join("\n\n");
-  }
+  const updWhen = rec && (rec.sentAt || rec.at) ? fdateS(String(rec.sentAt || rec.at).slice(0, 10)) : "";
+  const updNote = `This is an updated statement that replaces the one we sent${updWhen ? " on " + updWhen : " earlier"}.`;
+  const updOn = (subj, bod) => { const paras = String(bod).split(/\n{2,}/);
+    return [/^Updated/i.test(subj) ? subj : "Updated: " + subj, bod.includes(updNote) ? bod : (paras.length > 1 ? [paras[0], updNote].concat(paras.slice(1)) : [updNote].concat(paras)).join("\n\n")]; };
+  const updOff = (subj, bod) => [String(subj).replace(/^Updated:\s*/i, ""), String(bod).split("\n\n" + updNote).join("").split(updNote + "\n\n").join("")];
+  if(rec && rec.state === "sent" && !c.edited) [c.subject, c.body] = updOn(c.subject, c.body);
   const sig = conn.signature || "";
   sh.innerHTML = `<div class="sheet-h"><div><h3>${grp ? `Owner statements · ${xs.length} properties, one email` : `Owner statement · ${esc(x.p.name)}`}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${grp ? esc(stmtJoin(xs.map(y => y.p.name))) + " · " : ""}${monthLabel(m)} · from ${esc(conn.mailbox || "pm@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       ${rec ? `<div class="pm-banner" style="background:var(--panel-2)">${rec.state === "sent" ? `Sent ${esc(fdateS(String(rec.sentAt || rec.at).slice(0, 10)))} to ${esc(rec.to)}.` : `A draft is waiting in Gmail (made ${esc(fdateS(String(rec.at).slice(0, 10)))}). Sending from here makes a fresh email with what's below.`}</div>` : ""}
       ${x.why ? `<div class="pm-banner">${esc(x.why)}</div>` : ""}
       <div class="f2"><div class="fld"><span>To</span><div class="se-addrs" id="seToBox"></div><input type="hidden" id="seTo" value="${esc(c.to)}"></div><div class="fld"><span>Cc</span><div class="se-addrs" id="seCcBox"></div><input type="hidden" id="seCc" value="${esc(c.cc)}"></div></div>
+      <label class="ps-chk" style="margin:0 0 10px"><input type="checkbox" id="seUpd" ${/^Updated/i.test(c.subject) ? "checked" : ""}> This replaces a statement already sent — mark it as an update</label>
       <label class="fld"><span>Subject</span><input type="text" id="seSub" value="${esc(c.subject)}"></label>
       <label class="fld"><span>Message</span><textarea id="seBody" rows="13">${esc(c.body)}</textarea><span class="help">{breakdown} becomes the month's summary table: rent, what came out, and what's paid to the owner.</span></label>
       <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
@@ -8292,6 +8292,7 @@ function stmtEmailSheet(m, pid){
         setStmtConn(Object.assign({}, c0, {signature:j.signature || "", version:Number(j.version) || 0, sigNote:j.sigNote || "", multiTo:!!j.multiTo})); if($("#seBody")) stmtEmailSheet(m, pid); } }).catch(() => {});
   }
   const sub = $("#seSub"), body = $("#seBody"), prev = $("#sePrev");
+  { const u = $("#seUpd"); if(u) u.onchange = () => { const [s2, b2] = (u.checked ? updOn : updOff)(sub.value, body.value); sub.value = s2; body.value = b2; sub.dispatchEvent(new Event("input")); body.dispatchEvent(new Event("input")); }; }
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${stmtBodyOut(body.value, m, grp ? pids : pid).html}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
   const toGet = stmtAddrBoxes($("#seToBox"), stmtSplit(c.to), () => { $("#seTo").value = toGet(); draw(); saveSoon(); });
