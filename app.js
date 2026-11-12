@@ -7843,7 +7843,7 @@ const STMT_CO = /\b(llc|l\.l\.c|inc|corp|corporation|trust|properties|property|h
 const STMT_ROLE = /^(owner|owners|manager|member|contact|attn|attention|president|ceo|mgr|managing|partner|trustee|c\/o)$/i;
 function stmtPersonFirst(seg){
   seg = String(seg || "").replace(/^(attn|attention|c\/o)[:\s]+/i, "").trim();
-  if(!seg || STMT_CO.test(seg)) return "";
+  if(!seg || STMT_CO.test(seg) || /\b(joint|account|acct)\b/i.test(seg)) return "";
   const w = seg.split(/\s+/).filter(x => !/^(mr|mrs|ms|miss|dr)\.?$/i.test(x) && !STMT_ROLE.test(x))[0] || "";
   return /^[A-Za-z][A-Za-z'’-]+$/.test(w) && w.length > 1 ? w[0].toUpperCase() + w.slice(1) : "";
 }
@@ -7861,7 +7861,8 @@ function stmtFirstName(o){
 // "Susan" · "Susan and Stephen" · "Susan, Stephen and Mason"
 function stmtNames(list){ const l = [...new Set(list.filter(Boolean))]; return l.length <= 1 ? (l[0] || "") : l.slice(0, -1).join(", ") + " and " + l[l.length - 1]; }
 // the greeting for several statements in one email: everyone each owner's greeting names, once each
-function stmtGroupFirst(xs){ return stmtNames(xs.flatMap(x => String(x.first || "").split(/\s*,\s*|\s+and\s+|\s*&\s*/).map(t => t.trim()))); }
+function stmtGroupFirst(xs){ const n = x => String(x.first || "").split(/,| and /).length;   // the record naming the most people sets the order
+  return stmtNames([...xs].sort((a, b) => n(b) - n(a)).flatMap(x => String(x.first || "").split(/\s*,\s*|\s+and\s+|\s*&\s*/).map(t => t.trim()))); }
 const stmtAddr = p => (p.address || p.name || "").replace(/\s+/g, " ").trim();
 function stmtFileName(p, m){ return `Owner Statement - ${(p.name || "Property").replace(/\s*#\s*/g, " Unit ").replace(/[\\/:*?"<>|%]+/g, "-")} - ${monthLabel(m)}.pdf`; }
 const stmtEmailOk = e => /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(String(e || "").trim());
