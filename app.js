@@ -19569,19 +19569,30 @@ async function poLoadPlan(ownerIds, force){
 const poKey = t => String(t || "").split(",")[0].toUpperCase().replace(/#.*$/, "").replace(/[^A-Z0-9 ]/g, " ").trim().split(/\s+/).slice(0, 2).join("");
 function poPayeeFor(x){
   const list = typeof nkVendorList === "function" ? nkVendorList() : [], a = S.acct || {};
+  // owner payouts go by bank transfer only, never by check: a payee's check address is never used, and a payee with only
+  // a check address can't be paid from here (342 King St #A/#B went out as checks to a check-only payee, Nov 12)
+  const bank = v => (v.payout || []).filter(m => String(m.type || "").toUpperCase() !== "CHECK");
+  const out = (v, how) => ({id:v.id, name:v.name, payout:bank(v), how, checkOnly:!bank(v).length && !!(v.payout || []).length});
   const pick = (a.propVendor || {})[x.p.id], nv0 = pick && list.find(v => v.id === pick);
-  if(nv0) return {id:nv0.id, name:nv0.name, payout:nv0.payout || [], how:"property"};
+  if(nv0) return out(nv0, "property");
+  // whoever this rental's last payout went to (from Nickel's own bills), if they can still take a bank transfer
+  { const bills = ((typeof NKOB !== "undefined" && NKOB.data && NKOB.data.bills) || []).filter(b => b.pids.includes(x.p.id) && b.month < x.m && (b.status === "paid" || b.status === "pending"))
+      .sort((p, q) => q.month.localeCompare(p.month));
+    for(const b of bills){ const vs = list.filter(v => v.name === b.vendor); if(vs.length === 1 && bank(vs[0]).length) return out(vs[0], "last month"); if(vs.length) break; } }
   const k = poKey(x.p.name), unit = (String(x.p.name).match(/#\s*([A-Za-z0-9]+)/) || [])[1];
   if(k.length >= 5){
     let hits = list.filter(v => String(v.name || "").toUpperCase().replace(/[^A-Z0-9]/g, "").includes(k));
+    if(hits.length > 1){ const h = hits.filter(v => bank(v).length); if(h.length) hits = h; }
     // several payees named after the property (a former tenant's refund payee, say): the owner's own wins
     // (350 King St #307: "Dixie Dunbar - 350 King St 307" is the owner; "Marie Mcclurg - 350 King St #307" a former tenant)
     if(hits.length > 1 && x.o){ const own = poPayee(x.o.id), sur = String(ownerLabel(x.o) || "").toUpperCase().split(/[^A-Z]+/).filter(w => w.length >= 3 && !/^(LLC|INC|THE|AND|DBA|TRUST|JOINT|ACCOUNT)$/.test(w));
       const h = hits.filter(v => v.id === own.id || sur.some(w => String(v.name || "").toUpperCase().includes(w))); if(h.length) hits = h; }
     if(hits.length > 1 && unit) { const h = hits.filter(v => new RegExp("(#|UNIT\\s*)" + unit + "\\b", "i").test(v.name)); if(h.length) hits = h; }
-    if(hits.length === 1) return {id:hits[0].id, name:hits[0].name, payout:hits[0].payout || [], how:"name"};
+    if(hits.length === 1) return out(hits[0], "name");
   }
-  return x.o ? Object.assign(poPayee(x.o.id), {how:"owner"}) : {id:""};
+  if(!x.o) return {id:""};
+  const ow = poPayee(x.o.id);
+  return Object.assign({}, ow, {how:"owner", payout:(ow.payout || []).filter(m => String(m.type || "").toUpperCase() !== "CHECK"), checkOnly:!!(ow.payout || []).length && (ow.payout || []).every(m => String(m.type || "").toUpperCase() === "CHECK")});
 }
 function poPayee(oid){
   const a = S.acct || {}, pl = PO.plan && PO.plan.owners ? PO.plan.owners[oid] : null;
@@ -19612,7 +19623,7 @@ function pgPayouts(){
   if(!nickelOn()) payStatusThenRedraw("payouts");   // opened straight after sign-in: find out Nickel is connected, then redraw
   const plan = PO.plan || {};
   const payee = x => x.o ? poPayeeFor(x) : {id:""};
-  const okToSend = x => x.split ? x.amountC > 0 && !x.waiting.length && x.shares.every(sh => sh.amountC <= 0 || ((poNv(sh.vendorId) || {}).payout || []).length)
+  const okToSend = x => x.split ? x.amountC > 0 && !x.waiting.length && x.shares.every(sh => sh.amountC <= 0 || ((poNv(sh.vendorId) || {}).payout || []).some(m => String(m.type || "").toUpperCase() !== "CHECK"))
     : (() => { const pe = payee(x); return x.amountC > 0 && pe.id && (pe.payout || []).length; })();
   ready = ready.concat(splitLines).sort((a, b) => (a.split ? a.split.name : ownerLabel(a.o)).localeCompare(b.split ? b.split.name : ownerLabel(b.o)));
   // only a payout whose owner statement was marked reviewed (and hasn't changed since) is ready; it's locked at that amount
@@ -19665,7 +19676,7 @@ function pgPayouts(){
     const who = !nickelOn() ? `<span class="muted">Nickel isn't connected</span>`
       : !PO.plan ? `<span class="muted">Checking Nickel…</span>`
       : !pe.id ? `<span class="po-no">Not a payee in Nickel</span> <button class="btn sm" data-padd="${esc(x.o.id)}">Add to Nickel</button> <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
-      : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · no bank on file</span> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
+      : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · ${pe.checkOnly ? "only a check address in Nickel — owner payouts go by bank transfer" : "no bank on file"}</span> <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
       : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.p.id)}" class="muted" style="font-size:12px">change</a>`;
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
       <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""} ${poTag(x)}</div></td>
@@ -19673,7 +19684,7 @@ function pgPayouts(){
   const splitLine = x => { const k = x.m + "|" + x.p.id, ok = okToSend(x);
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
       <td><b>${esc(x.split.name)}</b> <span class="tag">split</span> ${poTag(x)}<div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
-      <td class="po-who">${x.shares.map(sh => { const nv = poNv(sh.vendorId), b = nv && (nv.payout || [])[0]; return `<div class="po-sh"><span>${esc(nv ? nv.name : sh.name || "Pick a payee")}${b ? ` · <span class="muted">${esc(b.label || b.type)}</span>` : nv ? ` · <span class="po-no">no bank on file</span>` : ""}</span><b class="num">${usd(sh.amountC)}</b></div>`; }).join("")}
+      <td class="po-who">${x.shares.map(sh => { const nv = poNv(sh.vendorId), b = nv && (nv.payout || []).find(m => String(m.type || "").toUpperCase() !== "CHECK"); return `<div class="po-sh"><span>${esc(nv ? nv.name : sh.name || "Pick a payee")}${b ? ` · <span class="muted">${esc(b.label || b.type)}</span>` : nv ? ` · <span class="po-no">no bank on file</span>` : ""}</span><b class="num">${usd(sh.amountC)}</b></div>`; }).join("")}
         <a href="#" data-psplit="${esc(x.split.id)}" class="muted" style="font-size:12px">edit split</a></td>
       <td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
   card.innerHTML = `<div class="card-h"><h3>Ready to send · ${ready.length}</h3>
@@ -19799,7 +19810,7 @@ async function poSend(list, o){
   if(!confirm(`Send ${list.length} owner payout${list.length === 1 ? "" : "s"} — ${usd(totC)} — from ${o.acctLabel || "the account picked"}, ${o.when === "asap" ? "as soon as possible" : "arriving " + fdateS(o.date)}?\n\n${list.map(x => x.split ? `· ${x.split.name} (${x.rows.length} properties) — ${usd(x.amountC)}: ${x.shares.filter(sh => sh.amountC > 0).map(sh => `${(poNv(sh.vendorId) || {}).name || sh.name} ${usd(sh.amountC)}`).join(", ")}` : `· ${ownerLabel(x.o)} · ${x.p.name} — ${usd(x.amountC)}`).join("\n")}\n\nNickel will ask you to confirm once more for each batch of up to 25.`)) return;
   const item = x => {
     if(x.split) return {month:x.m, pids:x.rows.map(r => r.p.id), amounts:Object.fromEntries(x.rows.map(r => [r.p.id, r.amountC])), groupKey:x.split.key || x.split.name,
-      splits:x.shares.filter(sh => sh.amountC > 0).map(sh => ({vendorId:sh.vendorId, payoutMethodId:(((poNv(sh.vendorId) || {}).payout || [])[0] || {}).id, amountC:sh.amountC, key:sh.key || (poNv(sh.vendorId) || {}).name || ""}))};
+      splits:x.shares.filter(sh => sh.amountC > 0).map(sh => ({vendorId:sh.vendorId, payoutMethodId:(((poNv(sh.vendorId) || {}).payout || []).find(m => String(m.type || "").toUpperCase() !== "CHECK") || {}).id, amountC:sh.amountC, key:sh.key || (poNv(sh.vendorId) || {}).name || ""}))};
     const pe = poPayeeFor(x); return {month:x.m, pid:x.p.id, amountC:x.amountC, vendorId:pe.id, payoutMethodId:((pe.payout || [])[0] || {}).id}; };
   // one request per Nickel batch (up to 25 payments — a split counts once per payee): each gets its own confirmation and
   // finishes well inside the server's time limit, so batch 2 can't be cut off after batch 1 went (Nov 12)

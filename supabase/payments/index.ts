@@ -493,7 +493,9 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       for (const x of shares) {
         const amt = Math.round(Number(x.amountC) || 0); if (!(amt > 0)) continue;
         const nv = nvs.find((y) => y.id === S(x.vendorId)); if (!nv) { bad = "A payee isn't in Nickel"; break; }
-        const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(x.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { bad = `${nv.name} has no bank account on file in Nickel`; break; }
+        // owner payouts go by bank transfer only — never a mailed check (342 King St #A/#B, Nov 12)
+        const banks = ((nv.payout || []) as Obj[]).filter((m) => S(m.type).toUpperCase() !== "CHECK");
+        const pm = banks.find((m) => m.id === S(x.payoutMethodId)) || banks[0]; if (!pm) { bad = `${nv.name} has no bank account in Nickel (owner payouts don't go by check)`; break; }
         const base = it.splits ? `OWN-${month}-${alnum(it.groupKey || ps[0].name).slice(0, 8)}` : `OWN-${month}-${refName(ps[0].name)}`;
         recips.push({ nv, pm, amt, ref: it.splits ? `${base}-${alnum(x.key || nv.name).slice(0, 10)}` : base });
       }
