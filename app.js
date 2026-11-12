@@ -8941,14 +8941,16 @@ function nkPreview(text, title){
 // run one Nickel action: shows the confirmation when Nickel asks, returns the server's answer
 async function nkRun(op, args, label){
   const runId = "run_" + uid() + uid(), box = nkBox(label);
-  let finished = false, result = null, failure = null, asked = false;
+  let finished = false, result = null, failure = null, asking = false, asks = 0;
   const job = payCall("nk.do", Object.assign({op, runId}, args || {}), {raw:true}).then(r => { result = r; }, e => { failure = e; }).finally(() => { finished = true; });
   while(!finished){
     await Promise.race([job, nkSleep(1100)]);
     if(finished) break;
     let q = null; try{ q = await payCall("nk.pending", {runId}, {noSave:true}); }catch(e){}
-    if(q && q.pending && !asked){ asked = true; box.ask(q.pending, yes => payCall("nk.answer", {runId, confirm:yes}, {noSave:true}).catch(() => {})); }
-    else if(q && q.pending) box.tick(q.pending.secondsLeft);
+    // one action can ask more than once (owner payouts: one confirmation per batch of 25) — show each new question
+    if(q && q.pending && !q.pending.answered && !asking){ asking = true; asks++;
+      box.ask(Object.assign({}, q.pending, asks > 1 ? {note:(q.pending.note ? q.pending.note + " " : "") + `(confirmation ${asks})`} : {}), yes => { payCall("nk.answer", {runId, confirm:yes}, {noSave:true}).catch(() => {}).finally(() => { setTimeout(() => { asking = false; }, 2500); }); }); }
+    else if(q && q.pending && !q.pending.answered) box.tick(q.pending.secondsLeft);
   }
   if(failure){ box.close(); throw failure; }
   const r = result || {};

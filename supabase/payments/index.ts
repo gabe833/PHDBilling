@@ -526,28 +526,17 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       let st: Obj = {}; try { st = (await read("get_bill", { billId: x.billId })) || {}; } catch { /* keep going */ }
       x.moving = ((st.amountScheduled || {}).amountInCents || 0) + ((st.amountPaid || {}).amountInCents || 0) > 0 || Number(st.amountScheduled) > 0 || S(st.paidStatus).toUpperCase() !== "UNPAID";
       x.err = (res.match(new RegExp(`"billId":"${x.billId}"[^{}]*?"(?:error|message|reason)":"([^"]{3,200})"`)) || [])[1] || "";
+      x.checked = true;
     };
-    let batchOff = false, stopped = "";
-    for (let i = 0; i < go.length && !stopped; i += 25) {
-      const batch = go.slice(i, i + 25), tot = batch.reduce((a, x) => a + x.amt, 0);
-      let r = batchOff ? null : await pay(batch, `Send ${batch.length} owner payout${batch.length === 1 ? "" : "s"} · $${(tot / 100).toFixed(2)}`);
-      if (r && !r.ok && batch.length > 1 && /plan|upgrade|batch|not (?:available|enabled|allowed)|subscription/i.test(S(r.error.message))) { batchOff = true; r = null; }
-      if (r && !r.ok) { const ref = refused(r, "The payouts"); stopped = S(ref.error); if (ref.approvalUrl) results.push({ ok: false, approvalUrl: ref.approvalUrl, why: stopped }); batch.forEach((x) => { x.err = stopped; }); break; }
-      if (r) { const res = JSON.stringify(r.data || {}); for (const x of batch) await check(x, res); continue; }
-      for (const x of batch) {   // one at a time (Nickel's plan doesn't allow batches)
-        const r1 = await pay([x], `Send ${S(x.nv.name)} · $${(x.amt / 100).toFixed(2)}`);
-        if (!r1.ok) { const ref = refused(r1, "The payout"); x.err = S(ref.error); if (ref.declined || ref.timedOut) { stopped = x.err; break; } continue; }
-        await check(x, JSON.stringify(r1.data || {}));
-      }
-    }
-    // 3) record each property's payout — only when every share of it is on its way
-    for (const u of units.filter((u) => !u.skip)) {
+    // record each property's payout as soon as its batch has gone (not only at the very end): if a later batch waits
+    // or the run is cut short, what already left Nickel is never shown as still to send
+    const recordUnit = async (u: Obj) => {
+      u.recorded = true;
       const notYet = u.recips.filter((x: Obj) => !x.moving);
       if (notYet.length && u.recips.length === 1 && u.pids.length === 1) {
-        // the bill is in Nickel but wasn't paid: remember it, so a change to the payout updates it
         const x0 = u.recips[0]; await updateDoc("pm_row", `${u.month}|${u.pids[0]}`, (r) => { if (r.paidOut) return false; r.nkOpen = { billId: x0.billId, ref: x0.ref, amountC: x0.amt, at: new Date().toISOString() }; });
       }
-      if (notYet.length) { u.pids.forEach((pid: string) => results.push({ month: u.month, pid, ok: false, partial: notYet.length < u.recips.length, why: notYet.length < u.recips.length ? `Only part of the split went (${u.recips.filter((x: Obj) => x.moving).map((x: Obj) => x.nv.name).join(", ")}) — finish ${notYet.map((x: Obj) => x.nv.name).join(", ")} in Nickel` : (notYet[0].err || "Nickel didn't start this payment") })); continue; }
+      if (notYet.length) { u.pids.forEach((pid: string) => results.push({ month: u.month, pid, ok: false, partial: notYet.length < u.recips.length, why: notYet.length < u.recips.length ? `Only part of the split went (${u.recips.filter((x: Obj) => x.moving).map((x: Obj) => x.nv.name).join(", ")}) — finish ${notYet.map((x: Obj) => x.nv.name).join(", ")} in Nickel` : (notYet[0].err || "Nickel didn't start this payment") })); return; }
       const group = u.recips.length > 1 || u.pids.length > 1 ? { ids: u.recips.map((x: Obj) => x.billId), refs: u.recips.map((x: Obj) => x.ref), props: u.ps.map((p: Obj) => S(p.name)), totalC: u.totC } : null;
       for (const pid of u.pids) {
         await updateDoc("pm_row", `${u.month}|${pid}`, (r) => {
@@ -557,7 +546,24 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
         });
         results.push({ month: u.month, pid, ok: true, scheduled: !!arrival });
       }
+    };
+    const recordGone = async () => { for (const u of units.filter((u) => !u.skip && !u.recorded && u.recips.every((x: Obj) => x.checked && x.moving))) await recordUnit(u); };
+    let batchOff = false, stopped = "";
+    for (let i = 0; i < go.length && !stopped; i += 25) {
+      const batch = go.slice(i, i + 25), tot = batch.reduce((a, x) => a + x.amt, 0);
+      let r = batchOff ? null : await pay(batch, `Send ${batch.length} owner payout${batch.length === 1 ? "" : "s"} · $${(tot / 100).toFixed(2)}`);
+      if (r && !r.ok && batch.length > 1 && /plan|upgrade|batch|not (?:available|enabled|allowed)|subscription/i.test(S(r.error.message))) { batchOff = true; r = null; }
+      if (r && !r.ok) { const ref = refused(r, "The payouts"); stopped = S(ref.error); if (ref.approvalUrl) results.push({ ok: false, approvalUrl: ref.approvalUrl, why: stopped }); batch.forEach((x) => { x.err = stopped; }); break; }
+      if (r) { const res = JSON.stringify(r.data || {}); for (const x of batch) await check(x, res); await recordGone(); continue; }
+      for (const x of batch) {   // one at a time (Nickel's plan doesn't allow batches)
+        const r1 = await pay([x], `Send ${S(x.nv.name)} · $${(x.amt / 100).toFixed(2)}`);
+        if (!r1.ok) { const ref = refused(r1, "The payout"); x.err = S(ref.error); if (ref.declined || ref.timedOut) { stopped = x.err; break; } continue; }
+        await check(x, JSON.stringify(r1.data || {}));
+        await recordGone();
+      }
     }
+    // 3) everything not recorded yet: the ones that went, and why the others didn't
+    for (const u of units.filter((u) => !u.skip && !u.recorded)) await recordUnit(u);
     return { ok: true, sent: results.filter((x) => x.ok).length, failed: results.filter((x) => !x.ok && x.pid).length, oneByOne: batchOff, results };
   }
 
