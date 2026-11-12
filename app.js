@@ -5394,7 +5394,7 @@ function pmRowSheet(m, pid, focus){
       <div class="sheet-h"><div><h3>${esc(prop.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${monthLabel(m)} · ${feeRuleText(prop.feeRule)} PM fee · ${prop.adminRate ?? 10}% admin fee on repairs</div></div>
         <button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
       <div class="sheet-b">
-        ${ro ? `<div class="pm-banner">${row.locked ? `Imported from the workbook — numbers are shown exactly as recorded.${row.wbStatus ? " Sheet: " + esc(row.wbStatus) + "." : ""}${row.wbNotes ? " " + esc(row.wbNotes) + "." : ""}${!closed ? ` <button class="btn sm" id="rwUnlock" style="margin-left:6px">Unlock to edit</button>` : " Reopen the month to edit."}` : "This month is closed. Reopen the month to edit."}</div>` : ""}
+        ${ro ? `<div class="pm-banner">${row.locked && row.lockedBy === "Nickel" ? `🔒 Locked — the owner was paid in Nickel${row.paidOut && row.paidOut.date ? " on " + esc(fdateS(row.paidOut.date)) : ""}${row.paidOut && PMCore.has(row.paidOut.amount) ? " (" + usd(cents(row.paidOut.amount)) + ")" : ""}. MagicDoor and the workbook no longer change this month's figures.${!closed ? ` <button class="btn sm" id="rwUnlock" style="margin-left:6px">Unlock to edit</button>` : ""}` : row.locked ? `Imported from the workbook — numbers are shown exactly as recorded.${row.wbStatus ? " Sheet: " + esc(row.wbStatus) + "." : ""}${row.wbNotes ? " " + esc(row.wbNotes) + "." : ""}${!closed ? ` <button class="btn sm" id="rwUnlock" style="margin-left:6px">Unlock to edit</button>` : " Reopen the month to edit."}` : "This month is closed. Reopen the month to edit."}</div>` : ""}
         ${c.flags.length ? `<div class="pm-flags">${c.flags.map(x => `<div class="${x.level}">${esc(x.text)}</div>`).join("")}</div>` : ""}
         ${typeof pmUnitTableHTML === "function" ? pmUnitTableHTML(prop, m, row) : ""}
         <div class="f2">${num("rentDue","Rent due")}${num("rentReceived","Rent received")}</div>
@@ -5470,7 +5470,7 @@ function pmRowSheet(m, pid, focus){
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#pmStmt").onclick = () => { pmCommitRow(m, pid, row, ro); printDoc(pmStatementHTML(m, [pid])); };
     const ul = $("#rwUnlock");
-    if(ul) ul.onclick = () => { snapshot(); const live = pmState().rows[pmKey(m, pid)]; if(live) delete live.locked; commit(); closeSheet(); pmRowSheet(m, pid); };
+    if(ul) ul.onclick = () => { snapshot(); const live = pmState().rows[pmKey(m, pid)]; if(live){ if(live.lockedBy === "Nickel") live.lockOff = true; delete live.locked; delete live.lockedBy; delete live.lockedAt; } commit(); closeSheet(); pmRowSheet(m, pid); };
     if(ro) return;
     const poD = $("#poD"), poM = $("#poM"), so = $("#shortOk");
     if(poD) poD.onchange = poM.onchange = () => { row.paidOut = poD.value ? {date:poD.value, method:poM.value, by:(typeof Cloud !== "undefined" && Cloud.email) || ""} : undefined; if(!poD.value) delete row.paidOut; };

@@ -1265,8 +1265,17 @@ async function ownerPayouts(): Promise<number> {
     if (!rec && !(was && was.by === "Nickel" && billIds.includes(S(was.nickelBillId) || S((was.group || {}).ids?.[0])))) return;
     // (the database hands keys back in its own order, so compare in a fixed order — otherwise every row is rewritten every hour)
     const canon = (v: unknown): string => Array.isArray(v) ? "[" + v.map(canon).join(",") + "]" : v && typeof v === "object" ? "{" + Object.keys(v as Obj).sort().map((k) => JSON.stringify(k) + ":" + canon((v as Obj)[k])).join(",") + "}" : JSON.stringify(v ?? null);
-    if (rec && was && canon(was) === canon(rec)) return;
-    await updateDoc("pm_row", rowId, (r) => { if (rec) r.paidOut = rec; else delete r.paidOut; r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync"; });
+    // once Nickel says the owner was paid (sent or on its way — not just scheduled), the month is locked for that property:
+    // nothing (MagicDoor sync, workbook, chores) changes its figures afterwards. A payment that fails unlocks it again,
+    // but only a lock Nickel put there.
+    const lockIt = !!(rec && !rec.scheduled) && !cur.lockOff;     // someone unlocked it by hand: leave it unlocked
+    const lockOk = lockIt ? !!cur.locked : !(cur.locked && cur.lockedBy === "Nickel");
+    if (rec && was && canon(was) === canon(rec) && lockOk) return;
+    await updateDoc("pm_row", rowId, (r) => {
+      if (rec) r.paidOut = rec; else delete r.paidOut;
+      if (lockIt && !r.locked) { r.locked = true; r.lockedBy = "Nickel"; r.lockedAt = new Date().toISOString(); }
+      else if (!lockIt && r.locked && r.lockedBy === "Nickel") { r.locked = false; delete r.lockedBy; delete r.lockedAt; }
+      r.updatedAt = new Date().toISOString(); r.updatedBy = "Nickel sync"; });
     changed++;
   };
   // 1) one bill per property, by its OWN- number
