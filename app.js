@@ -7813,7 +7813,7 @@ function stmtGroups(list){
 function stmtSameTo(m, x, cands){
   cands = cands || stmtCandidates(m);
   if(x.why || !x.toList.length) return [x];
-  const k = stmtRecipKey(x), same = cands.filter(c => !c.why && stmtRecipKey(c) === k && (c.p.id === x.p.id || !(c.done && c.done.state === "sent")));
+  const k = stmtRecipKey(x), same = cands.filter(c => !c.why && stmtRecipKey(c) === k && (c.p.id === x.p.id || !!(c.done && c.done.state === "sent") === !!(x.done && x.done.state === "sent")));   // sent ones stay together (an updated statement goes out as the same email)
   return same.length ? same : [x];
 }
 // the ones that actually share an email with it
