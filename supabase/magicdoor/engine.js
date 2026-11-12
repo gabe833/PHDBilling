@@ -596,6 +596,11 @@ function mdStmtWant(p, rr, mpId, mm, g){
     const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
     x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});
   }
+  // a payment that bounced (NSF / returned) was never received: it comes off rent received, not shown as a separate line
+  // (342 King #A: $1,460 on Nov 5 returned Nov 10 — rent received is the $2,900 that stayed, not $4,360); kept on the
+  // month (mdAdj.returned) so the owner statement can say so
+  const retL = (x.otherLines || []).filter(l => l.k === "return"), retC = retL.reduce((a, l) => a + cents(l.a), 0);
+  if(retC) x = Object.assign({}, x, {recv:r2(x.recv + retC / 100), other:r2(x.other - retC / 100), otherLines:(x.otherLines || []).filter(l => l.k !== "return"), returned:retL.map(l => ({d:l.d || null, a:r2(-l.a)}))});
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
   // bills and admin fees MagicDoor carries over unpaid from last month's statement were already charged on last month's
@@ -612,7 +617,7 @@ function mdStmtWant(p, rr, mpId, mm, g){
     pmFee:x.pmFee > 0 || (rr.md && PMCore.has(rr.md.pmFee)) ? x.pmFee : null,
     leasingFee:x.leasing > 0 || (rr.md && PMCore.has(rr.md.leasingFee)) ? x.leasing : null,
     adminFee:adminOver ? newAdmin : (rr.md && PMCore.has(rr.md.adminFee) ? "clear" : null),
-    mdAdj:x.other || (rr.md && PMCore.has(rr.md.mdAdj)) ? {amount:x.other, lines:x.otherLines} : null,
+    mdAdj:x.other || (x.returned && x.returned.length) || (rr.md && PMCore.has(rr.md.mdAdj)) ? Object.assign({amount:x.other, lines:x.otherLines}, x.returned && x.returned.length ? {returned:x.returned} : {}) : null,
     // bills and admin fees still unpaid in MagicDoor that last month's row already charged (for the MagicDoor check)
     mdCarried:carriedC ? carriedC / 100 : (PMCore.has(rr.mdCarried) ? 0 : null),
     mdNet:r2(x.net)});      // unpaid bills are already among the bills
@@ -646,7 +651,7 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       // something MagicDoor filled in earlier that its data no longer shows (a charge moved to PHD's side, say) comes off
       if(v == null){ if(g && /^(otherIncome|reimbursement|lateFee|filters|applications)$/.test(k) && was[k] != null && PMCore.has(rr[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
       if(mdOwned(k)){
-        const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") : "";   // key order changes in storage
+        const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") + "|" + (x.returned || []).map(l => Math.round((Number(l.a) || 0) * 100) + "~" + (l.d || "")).join(";") : "";   // key order changes in storage
         const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
         if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried"});
         return;
@@ -966,7 +971,7 @@ function mdApply(opts){
     if(k === "mdAdj"){
       // other lines on MagicDoor's owner statement (an owner contribution, a refund): one adjustment the sync keeps in step
       row.adjustments = (row.adjustments || []).filter(a => !a.md);
-      if(cents(to.amount)) row.adjustments.push({id:uid(), md:true, amount:to.amount, note:"MagicDoor owner statement: " + ((to.lines || []).map(l => l.t || l.k).filter(Boolean).join(", ").slice(0, 120) || "other")});
+      if(cents(to.amount)) row.adjustments.push({id:uid(), md:true, amount:to.amount, note:mdAdjNote(to.lines)});
       row.md = Object.assign({}, row.md, {mdAdj:to, at:today});
       if(typeof pmTouch === "function") pmTouch(row);
       lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} ${cents(to.amount) ? `other owner-statement lines ${usd(cents(to.amount))}` : "other owner-statement lines removed"} (MagicDoor owner statement)`});
@@ -1073,4 +1078,14 @@ export function runApply(state, today){
   S = state; TODAY = today; _mdxCache = null; _mdLines = null;
   if(!mdReady() || mdLinks().auto === false) return 0;
   return mdApply({auto:true, quiet:true});
+}
+
+// what an owner-statement line from MagicDoor is, in words: "Owner contribution Nov 3 $500.00 · Refund to tenant Nov 9 −$45.00"
+function mdAdjNote(lines){
+  const K = {return:"Returned (bounced) payment", ownerContribution:"Owner contribution", refund:"Refund", tenantRefund:"Refund to the tenant", credit:"Credit", carry:"Owed from earlier months", transaction:"Transaction", journalEntry:"Journal entry", deposit:"Deposit"};
+  const word = k => K[k] || String(k || "Other").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, c => c.toUpperCase());
+  const day = d => { if(!d) return ""; const [, m, dd] = String(d).slice(0, 10).split("-").map(Number); return " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m - 1] + " " + dd; };
+  const money = a => (a < 0 ? "−" : "") + "$" + Math.abs(Number(a) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const out = (lines || []).map(l => `${l.t && l.k !== "carry" ? l.t : word(l.k)}${day(l.d)} ${money(l.a)}`);
+  return (out.join(" · ") || "Other line on MagicDoor's owner statement").slice(0, 200);
 }
