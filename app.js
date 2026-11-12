@@ -4310,6 +4310,11 @@ const PMCore = (function(){
     if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
     // rent still to come this month isn't a shortfall: only say the owner owes once rent is in (or the month is over)
     const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
+    // a balance carried between months (repairs that ran past the rent): say where it went or came from
+    (row.adjustments || []).forEach(a => {
+      if(a.carryOut && cents(a.amount)) flags.push({level:"info", text:`${usd(cents(a.amount))} owed by the owner carried to ${monthLabel(a.to)} — repairs ran past the rent`});
+      if(a.carryIn && cents(a.amount)) flags.push({level:"info", text:`Includes ${usd(-cents(a.amount))} carried from ${monthLabel(a.from)}`});
+    });
     if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere
@@ -4988,7 +4993,7 @@ function pgPmMonth(){
       <td class="r">${locked ? `<span class="num">${c.recv ? usd(c.recv) : "—"}</span>` : `<input class="pm-in num" type="number" step="0.01" data-recv="${prop.id}" value="${has(row.rentReceived) ? row.rentReceived : ""}" placeholder="${c.dueC ? (c.dueC / 100).toFixed(2) : "0.00"}">`}</td>
       <td class="r num">${c.repairsC ? `<button class="linkish" data-rep="${prop.id}">${usd(c.repairsC)}</button>` : `<span class="muted">—</span>`}${(row.repairItems || []).length ? `<div class="sub-n">${row.repairItems.length} item${row.repairItems.length === 1 ? "" : "s"}</div>` : ""}${(() => { const n = (row.repairItems || []).filter(it => mdItemState(it) === "missing").length; return n ? `<div class="sub-n"><span class="tag red md-miss" title="Entered in the console only — open the month to add ${n === 1 ? "it" : "them"} to MagicDoor">${n} not in MD</span></div>` : ""; })()}</td>
       ${cell(c.adminC)}${cell(c.pmFeeC)}${cell(c.leasingC)}${cell(c.otherC + c.adjC)}
-      <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
+      <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b>${(row.adjustments || []).filter(a => a.carryOut && cents(a.amount)).map(a => `<div class="sub-n pm-carry" title="${esc("The owner owes " + usd(cents(a.amount)) + " this month (repairs ran past the rent). It comes off " + monthLabel(a.to) + "'s payout.")}">${usd(cents(a.amount))} owed → ${esc(monthShort(a.to))}</div>`).join("")}${(row.adjustments || []).filter(a => a.carryIn && cents(a.amount)).map(a => `<div class="sub-n pm-carry in" title="${esc("Carried from " + monthLabel(a.from) + ", when repairs ran past the rent")}">incl. −${usd(-cents(a.amount))} from ${esc(monthShort(a.from))}</div>`).join("")}${warn.length ? `<div class="sub-n" style="color:var(--gold)" title="${esc(warn.map(x => x.text).join("\n"))}">● check</div>` : ""}</td>
       <td class="pm-po">${row.paidOut ? `<button class="po-done${row.paidOut.scheduled || row.paidOut.pending ? " sched" : ""}" data-unpay="${prop.id}" title="${row.paidOut.pending ? "Pending in Nickel since " + esc(row.paidOut.date) + " — not delivered yet" : row.paidOut.scheduled ? "Scheduled in Nickel for " + esc(row.paidOut.date) + (row.paidOut.arrives ? ", arriving " + esc(row.paidOut.arrives) : "") : "Sent " + esc(row.paidOut.date) + (row.paidOut.method ? " by " + esc(row.paidOut.method) : "")}${row.paidOut.by ? " · recorded by " + esc(row.paidOut.by) : ""} — click to undo">${row.paidOut.scheduled || row.paidOut.pending ? "⏱" : "✓"} ${esc(fdateS(row.paidOut.date))}${row.paidOut.method === "Nickel" ? " · Nickel" : ""}</button>`
           : (typeof finHoldFor === "function" && finHoldFor(prop.id, m)) ? `<button class="st st-hold" data-hold="${esc(finHoldFor(prop.id, m).id)}" title="${esc(finHoldFor(prop.id, m).title)} — payouts held on purpose"><i></i>On hold</button>`
           : (typeof finCloseCell === "function" && finCloseCell(m, row, prop, c, locked)) ? finCloseCell(m, row, prop, c, locked)
@@ -5315,6 +5320,50 @@ async function mdChargeTenant(m, pid, it, after){
     toast(`On the tenant's ledger in MagicDoor — ${usd(cents(li.amount))}`, true);
   }catch(e){ toast("MagicDoor: " + e.message); }
   if(after) after();
+}
+/* Repairs that run past the rent: the month ends at $0 and what the owner owes comes off the next month's payout.
+   Two adjustments kept in step: "Carried to <next month>" (+) on the month that ran short, "Carried from <month>" (−)
+   on the next one (made if it isn't there yet). Only open months that haven't paid out, and only once rent is in or the
+   month is over (a month still waiting on rent isn't short yet). If the amount changes both follow; if the month comes
+   back above $0 both come off. A next month that also runs short carries on to the one after. */
+const PM_CARRY_FROM = "2026-11";
+function pmCarryBase(row, p){ return pmCalc(Object.assign({}, row, {adjustments:(row.adjustments || []).filter(a => !a.carryOut)}), p); }
+function pmCarrySync(){
+  if(typeof cloudChores === "function" && !cloudChores()) return 0;
+  const P2 = pmState(), cur = todayISO().slice(0, 7), lines = []; let snap = false;
+  const open = mm => !(P2.meta[mm] || {}).closed;
+  const rows = Object.values(P2.rows).filter(r => !r.deleted && !r.detailOnly && r.month >= PM_CARRY_FROM).sort((a, b) => a.month.localeCompare(b.month));
+  for(const r of rows){
+    const p = pmProp(r.propertyId); if(!p || !p.ownerId || !open(r.month) || r.locked || r.paidOut) continue;
+    const c = pmCarryBase(r, p), next = PMCore.monthAdd(r.month, 1);
+    const ready = c.recv > 0 || r.month < cur;
+    const wantC = ready && c.payoutC < 0 ? -c.payoutC : 0;
+    const out = (r.adjustments || []).find(a => a.carryOut), haveC = out ? cents(out.amount) : 0;
+    const nr0 = P2.rows[pmKey(next, p.id)], inn = nr0 && (nr0.adjustments || []).find(a => a.carryIn && a.from === r.month);
+    // the next month gets its line once it has been started (a row made early would make it look like the current month)
+    if(wantC === haveC && (!wantC || !nr0 || (inn && cents(inn.amount) === -wantC))) continue;
+    if(wantC && (!open(next) || (nr0 && (nr0.paidOut || nr0.locked)))) continue;     // nowhere to carry it to
+    if(!snap){ snapshot(); snap = true; }
+    r.adjustments = (r.adjustments || []).filter(a => !a.carryOut);
+    if(wantC){
+      r.adjustments.push({id:uid(), carryOut:true, to:next, date:todayISO(), amount:wantC / 100, note:`Carried to ${monthLabel(next)} — repairs ran past the rent; the owner's ${usd(wantC)} comes off next month's payout`});
+      if(nr0){
+        nr0.adjustments = (nr0.adjustments || []).filter(a => !(a.carryIn && a.from === r.month));
+        nr0.adjustments.push({id:uid(), carryIn:true, from:r.month, date:next + "-01", amount:-wantC / 100, note:`Carried from ${monthLabel(r.month)} — repairs ran past that month's rent`});
+        pmTouch(nr0);
+      }
+    } else if(nr0){ nr0.adjustments = (nr0.adjustments || []).filter(a => !(a.carryIn && a.from === r.month)); pmTouch(nr0); }
+    pmTouch(r);
+    lines.push(wantC ? `${p.name}: ${usd(wantC)} owed for ${monthLabel(r.month)} carried to ${monthLabel(next)}` : `${p.name}: ${monthLabel(r.month)} no longer runs short — carry to ${monthLabel(next)} removed`);
+  }
+  if(snap){ commit(); lines.forEach(t => { try{ actLog("rentals", t); }catch(e){} }); }
+  return lines.length;
+}
+if(typeof render === "function"){
+  const carryRender0 = render; let carryAt = 0;
+  render = function(){ const r = carryRender0.apply(this, arguments);
+    try{ if(S.ui.mode === "pm" && Date.now() - carryAt > 20000 && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size)){ carryAt = Date.now(); setTimeout(() => { const n = pmCarrySync(); if(n){ toast(`${n} balance${n === 1 ? "" : "s"} carried between months`); render(); } }, 3500); } }catch(e){ console.error(e); }
+    return r; };
 }
 /* ---------------- one property, one month ---------------- */
 function pmRowSheet(m, pid, focus){
@@ -19435,7 +19484,7 @@ function pgPayouts(){
   const noPay = rows.filter(x => x.k === "none" && x.p.status === "active" && !(x.row && x.row.paidOut)).map(x => { const c = x.s.c || pmCalc(x.row, x.p);
     // a payout kept back to win back a double payout (October paid twice) — the workbook still lists it as a payment
     const rec = (x.row.adjustments || []).filter(a => a.recov && cents(a.amount) < 0), recC = rec.reduce((a, r) => a + cents(r.amount), 0);
-    return Object.assign({}, x, {amountC:c.payoutC, why:rec.length && c.recv > 0 ? `Kept back: recovering a double payout (${usd(-recC)} of ${usd(c.payoutC - recC)})` : c.recv <= 0 ? "Rent not in yet" : c.payoutC < 0 ? `Owner owes ${usd(-c.payoutC)}` : "$0 to pay"}); });
+    return Object.assign({}, x, {amountC:c.payoutC, why:(x.row.adjustments || []).some(a => a.carryOut) ? `Owner owed ${usd(cents((x.row.adjustments || []).find(a => a.carryOut).amount))} — carried to ${monthLabel((x.row.adjustments || []).find(a => a.carryOut).to)}` : rec.length && c.recv > 0 ? `Kept back: recovering a double payout (${usd(-recC)} of ${usd(c.payoutC - recC)})` : c.recv <= 0 ? "Rent not in yet" : c.payoutC < 0 ? `Owner owes ${usd(-c.payoutC)}` : "$0 to pay"}); });
   ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = !!okToSend(x); });
   const picked = ready.filter(x => sel[x.m + "|" + x.p.id] && okToSend(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
   $("#pgCrumb").textContent = "Property management · Money"; $("#pgTitle").textContent = "Owner payouts";

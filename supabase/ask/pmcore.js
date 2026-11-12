@@ -79,6 +79,11 @@ const PMCore = (function(){
     if(dueC > 0 && !recv && !row.locked && row.month <= thisM) flags.push({level:"info", text:"Rent not recorded yet"});
     // rent still to come this month isn't a shortfall: only say the owner owes once rent is in (or the month is over)
     const waiting = dueC > 0 && !recv && !row.locked && row.month >= thisM;
+    // a balance carried between months (repairs that ran past the rent): say where it went or came from
+    (row.adjustments || []).forEach(a => {
+      if(a.carryOut && cents(a.amount)) flags.push({level:"info", text:`${usd(cents(a.amount))} owed by the owner carried to ${monthLabel(a.to)} — repairs ran past the rent`});
+      if(a.carryIn && cents(a.amount)) flags.push({level:"info", text:`Includes ${usd(-cents(a.amount))} carried from ${monthLabel(a.from)}`});
+    });
     if(payoutC < 0 && !waiting) flags.push({level:"warn", text:`Owner owes ${usd(-payoutC)} this month — repairs exceed rent`});
     if(!has(row.pmFee) && rule.check) flags.push({level:"info", text:`Fee rule ${feeRuleText(rule)} came from the workbook — confirm it`});
     // MagicDoor's owner statement says what the owner is owed for the month; anything else here is a mistake somewhere

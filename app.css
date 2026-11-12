@@ -2735,3 +2735,6 @@ td>.tag+.st-rev{display:flex}
 .po-nr .po-nr-a .btn{margin-left:6px}
 .po-nr-t td{vertical-align:middle}
 .pm-item-tc .btn{margin-left:6px;vertical-align:middle}
+/* a balance carried between months */
+.pm-carry{color:var(--gold,#9A6B12);font-size:11.5px;white-space:nowrap}
+.pm-carry.in{color:var(--muted)}
