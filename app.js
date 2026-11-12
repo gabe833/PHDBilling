@@ -5293,6 +5293,28 @@ function mdAddBill(row, it){
   openPanel();
   mdCreateUI($("#mdcHost"), it, prop, res => { mdLinkMade(it, res); closeSheet(); render(); });
 }
+/* A bill the tenant pays: put it on the tenant's lease ledger in MagicDoor, as PHD's money (the owner isn't charged).
+   The line has to be saved first, so the charge is remembered on it and never made twice. */
+async function mdChargeTenant(m, pid, it, after){
+  const p = pmProp(pid), live = pmState().rows[pmKey(m, pid)], li = live && (live.repairItems || []).find(x => x === it || (it.id && x.id === it.id));
+  if(!li || li.payer !== "tenant") return toast("Save the month first, with this line set to Tenant pays");
+  if(li.tenantCharge) return toast("Already on the tenant's ledger in MagicDoor");
+  const L = typeof pmMdLease === "function" ? pmMdLease(p) : null; if(!L || !L.id) return toast("This rental has no MagicDoor lease to charge");
+  const desc = [li.memo || "Charge", li.vendor ? "(" + li.vendor + ")" : ""].filter(Boolean).join(" ").slice(0, 200), date = String(li.date || todayISO()).slice(0, 10);
+  if(!confirm(`Add ${usd(cents(li.amount))} to ${mdTenants(L) || "the tenant"}'s ledger in MagicDoor?\n\n"${desc}" · ${fdateS(date)}\nPHD's money (Others) — the owner isn't charged.\n\nThe tenant sees it as a charge they owe.`)) return;
+  try{
+    const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"chargeAdd", confirm:true, leaseId:L.id, amount:li.amount, date, description:desc, account:"Others", companyCharge:true, consoleRef:`${m}|${pid}|${li.id || ""}`}});
+    let err = data && data.error; if(error){ err = error.message; try{ const b = await error.context.json(); if(b && b.error) err = b.error; }catch(e){} }
+    if(err) throw new Error(err);
+    snapshot();
+    li.tenantCharge = {id:data.id || "", leaseId:L.id, amount:li.amount, date, at:new Date().toISOString(), by:(typeof Cloud !== "undefined" && (Cloud.name || Cloud.email)) || ""};
+    if(it !== li) it.tenantCharge = li.tenantCharge;
+    pmTouch(live); commit();
+    actLog("rentals", `${p.name}: ${usd(cents(li.amount))} "${desc}" added to the tenant's ledger in MagicDoor (PHD's money)`);
+    toast(`On the tenant's ledger in MagicDoor — ${usd(cents(li.amount))}`, true);
+  }catch(e){ toast("MagicDoor: " + e.message); }
+  if(after) after();
+}
 /* ---------------- one property, one month ---------------- */
 function pmRowSheet(m, pid, focus){
   const prop = pmProp(pid); if(!prop) return;
@@ -5336,7 +5358,9 @@ function pmRowSheet(m, pid, focus){
               <option value="none" ${it.payer !== "tenant" && it.feeMode === "none" ? "selected" : ""}>No fee</option>
               <option value="custom" ${it.payer !== "tenant" && (it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
             <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}" title="${it.mdLine ? "Take this MagicDoor bill off the statement" : "Remove"}">✕</button>`}</div>
-            ${it.payer === "tenant" ? `<div class="pm-item-who">Billed to the tenant — not on the owner's statement or payout</div>` : ""}
+            ${it.payer === "tenant" ? `<div class="pm-item-who pm-item-tc">Billed to the tenant — not on the owner's statement or payout${it.tenantCharge
+              ? ` · <b>On the tenant's ledger in MagicDoor</b> (${esc(fdateS(String(it.tenantCharge.at || "").slice(0, 10)))}${it.tenantCharge.by ? ", " + esc(it.tenantCharge.by) : ""})`
+              : ro ? "" : ` <button class="btn sm" type="button" data-tchg="${i}">Charge the tenant in MagicDoor</button>`}</div>` : ""}
             ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
             ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${(() => { const tw = mdItemTwin(it, prop); return tw ? mdTwinTag(tw) : ""; })()}${ro ? "" : mdItemState(it) === "missing"
               ? `<button class="btn sm" type="button" data-mdadd="${i}">${mdOpen === i ? "Hide" : "Add to MagicDoor"}</button>` : `<button class="btn sm ghost" type="button" data-mdundo="${i}">Not entered after all</button>`}</div>` : ""}
@@ -5414,6 +5438,7 @@ function pmRowSheet(m, pid, focus){
       if(del) del.onclick = () => {
         if(row.repairItems[i] && row.repairItems[i].mdLine){ ask = ask === i ? -1 : i; return draw(); }
         row.repairItems.splice(i, 1); if(has(row.repairs)) row.repairs = null; if(has(row.adminFee)) row.adminFee = null; draw(); };
+      const tc = el.querySelector("[data-tchg]"); if(tc) tc.onclick = () => mdChargeTenant(m, pid, row.repairItems[i], () => draw());
       const mda = el.querySelector("[data-mdadd]"); if(mda) mda.onclick = () => { mdOpen = mdOpen === i ? -1 : i; draw(); };
       const mdd = el.querySelector("[data-mddone]"); if(mdd) mdd.onclick = () => { row.repairItems[i].mdAdded = mdAddedStamp(); mdOpen = -1; draw(); };
       const mdu = el.querySelector("[data-mdundo]"); if(mdu) mdu.onclick = () => { delete row.repairItems[i].mdAdded; draw(); };

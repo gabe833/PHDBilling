@@ -233,6 +233,38 @@ async function billAdd(body: Obj, who: string) {
   } catch { /* the bill is made either way */ }
   return { ok: true, ...made };
 }
+// ---------- charge the tenant: a bill the tenant pays (a trip charge when they weren't home) goes on their lease ledger ----------
+// One charge on the lease, PHD's money (companyCharge — the owner isn't charged for the bill, so PHD is paid back), on the
+// "Others" income account unless another is named. Only a person on the team list, one at a time, confirmed in the console;
+// the console keeps the charge's id on the line so it's never charged twice. Written to the activity log.
+async function chargeAdd(body: Obj, who: string) {
+  if (body.confirm !== true) throw new Error("Confirm the charge first");
+  const leaseId = S(body.leaseId), amount = Math.round(Number(body.amount) * 100) / 100;
+  if (!/^\d+$/.test(leaseId)) throw new Error("No MagicDoor lease for this rental");
+  if (!(amount > 0) || amount > 10000) throw new Error("The amount has to be between $0.01 and $10,000");
+  const lr = await mdGet(`/company-app/leases/${leaseId}`);
+  if (lr.status !== 200) throw new Error(`MagicDoor answered ${lr.status} for that lease`);
+  const lease = lr.body as Obj; if (B(lease.ended) || B(lease.draft)) throw new Error("That lease has ended in MagicDoor");
+  const accounts: Obj[] = []; try { const r = await mdGet("/company-app/chart-of-accounts"); if (r.status === 200 && Array.isArray(r.body)) (r.body as Obj[]).forEach((a) => accounts.push(a)); } catch { /* "Others" by number */ }
+  const want = S(body.account || "Others").toLowerCase();
+  const acct = accounts.find((a) => S(a.type).toLowerCase() === "revenue" && S(a.name).toLowerCase() === want) || accounts.find((a) => S(a.id) === "490000") || { id: "490000", name: "Others" };
+  const date = D(body.date) || new Date().toISOString().slice(0, 10), desc = S(body.description).replace(/\s+/g, " ").trim().slice(0, 200) || "Charge";
+  // MagicDoor's lease charge, as its ledger shows them (date, account, description, amount, company charge); names it doesn't use are ignored
+  const payload: Obj = { amount, description: desc, chartOfAccountId: S(acct.id), transactionDate: date, dueDate: date, date, companyCharge: body.companyCharge !== false };
+  const t = await mdWriteToken();
+  const post = (url: string) => fetch(url, { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload), signal: AbortSignal.timeout(30000) });
+  let r = await post(`${API}/company-app/leases/${leaseId}/charges`);
+  if (r.status === 404 || r.status === 405) r = await post(`${ACCOUNTING}/leases/${leaseId}/charges`);
+  const txt = await r.text(); let j: Obj = {}; try { j = JSON.parse(txt); } catch { /* not JSON */ }
+  if (!r.ok) { const errs = j.errors ? Object.entries(j.errors as Obj).map(([k, v]) => `${k}: ${[].concat(v as never).join(" ")}`).join("; ") : S(j.title || j.message || txt).slice(0, 300); throw new Error(`MagicDoor didn't take the charge (${r.status}): ${errs}`); }
+  const id = S(j.id || (j.charge as Obj)?.id || j.chargeId);
+  try {
+    const srv = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    await fetch(Deno.env.get("SUPABASE_URL")! + "/rest/v1/audit_log", { method: "POST", headers: { apikey: srv, Authorization: "Bearer " + srv, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ actor: who || "console", kind: "md_charge", doc_id: id || leaseId, action: "create", data: { leaseId, amount, date, description: desc, account: S(acct.name), console: body.consoleRef || null } }) });
+  } catch { /* the charge is made either way */ }
+  return { ok: true, id, leaseId, amount, date, account: S(acct.name) };
+}
 const ACCOUNTING = "https://accounting.magicdoor.com/company-portal";   // owner statements and other reports live here
 // the read-only key on its own: used when the full-access key is refused something (a permission taken off it in MagicDoor
 // shows up as 404/403), so one key's settings never stop the sync
@@ -981,6 +1013,7 @@ Deno.serve(async (req) => {
     if (mode === "billSchema") return json(await billSchema(S(body.step)));
     if (mode === "billPreview") return json(await billPreview(body));
     if (mode === "billAdd") return json(await billAdd(body, await whoAmI(req)));
+    if (mode === "chargeAdd") return json(await chargeAdd(body, await whoAmI(req)));
     return json({ error: "Unknown mode" }, 400);
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 502);
