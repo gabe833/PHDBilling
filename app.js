@@ -5300,7 +5300,8 @@ async function mdChargeTenant(m, pid, it, after){
   if(!li || li.payer !== "tenant") return toast("Save the month first, with this line set to Tenant pays");
   if(li.tenantCharge) return toast("Already on the tenant's ledger in MagicDoor");
   const L = typeof pmMdLease === "function" ? pmMdLease(p) : null; if(!L || !L.id) return toast("This rental has no MagicDoor lease to charge");
-  const desc = [li.memo || "Charge", li.vendor ? "(" + li.vendor + ")" : ""].filter(Boolean).join(" ").slice(0, 200), date = String(li.date || todayISO()).slice(0, 10);
+  // dated today (the work's own date goes in the description): a charge dated in the past is overdue the moment it lands
+  const desc = [li.memo || "Charge", li.vendor ? "(" + li.vendor + ")" : "", li.date ? "· " + fdateS(String(li.date).slice(0, 10)) : ""].filter(Boolean).join(" ").slice(0, 200), date = todayISO();
   if(!confirm(`Add ${usd(cents(li.amount))} to ${mdTenants(L) || "the tenant"}'s ledger in MagicDoor?\n\n"${desc}" · ${fdateS(date)}\nPHD's money (Others) — the owner isn't charged.\n\nThe tenant sees it as a charge they owe.`)) return;
   try{
     const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"chargeAdd", confirm:true, leaseId:L.id, amount:li.amount, date, description:desc, account:"Others", companyCharge:true, consoleRef:`${m}|${pid}|${li.id || ""}`}});
