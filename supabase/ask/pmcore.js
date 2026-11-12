@@ -317,7 +317,7 @@ const PMCore = (function(){
        pmFee / leasing   MagicDoor's management fees, the PM fee being the one that matches the property's rate
        bills / admin     repairs paid and PHD's admin fee on them        other   anything else (signed)
        net      what the owner is owed for the month: MagicDoor's own number                           */
-  function mdStmtMonth(st, prop){
+  function mdStmtMonth(st, prop, creditsC){
     if(!st || st.pre == null) return null;
     const rule = (prop && prop.feeRule) || {type:"pct", rate:10}, rate = Number(rule.rate || 0);
     const fees = (st.fees || []).map(cents).filter(c => c);
@@ -331,7 +331,10 @@ const PMCore = (function(){
     const late = st.left > 0 && st.prevDist > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
-    const wantBase = feeFor(base), isLease = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
+    const wantBase = feeFor(base), isLease0 = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
+    // a tenant credit counts as rent paid: MagicDoor takes the PM fee on rent received plus the credit (6 Murray Hill,
+    // Nov 2026: $960.37 paid + $339.63 credit → $130 PM fee), so a fee that matches that is the PM fee, not a leasing fee
+    const credFee = creditsC > 0 ? feeFor(base + creditsC) : 0, isLease = c => isLease0(c) && !(credFee && Math.abs(c - credFee) <= 100);
     const best = {pm:fees.filter(c => !isLease(c)), recvC:base};
     const pmC = best.pm.reduce((a, c) => a + c, 0), leaseC = fees.reduce((a, c) => a + c, 0) - pmC;
     // the rent part of late money: what the PM fee was worked out on, above this month's own rent
