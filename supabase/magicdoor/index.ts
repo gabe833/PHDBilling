@@ -137,11 +137,23 @@ async function mdVendors(name = ""): Promise<{ id: string; name: string }[]> {
       if (!arr.length || page >= Number(b?.totalPages || 1)) break;
     }
   } catch (e) { vendorSrc["vendors(write key)"] = String(e).slice(0, 80); }
+  // MagicDoor's vendor list on its maintenance service (where vendors moved in Nov 2026)
+  if (!seen.size) {
+    try {
+      for (let page = 1; page <= 20; page++) {
+        const r = await mdGet(`/vendors?page=${page}&pageSize=100`, MAINTENANCE);
+        vendorSrc["vendors(maintenance)"] = r.status; if (r.status !== 200) break;
+        const b = r.body as Obj, arr = ((b?.items) as Obj[]) || [];
+        add(arr); vendorSrc.vendorCount = seen.size;
+        if (!arr.length || page >= Number(b?.totalPages || 1)) break;
+      }
+    } catch (e) { vendorSrc["vendors(maintenance)"] = String(e).slice(0, 80); }
+  }
   const k = vkey(name);
   if (!k || ![...seen.values()].some((n) => vkey(n) === k || vkey(n).startsWith(k.slice(0, 8)) || k.startsWith(vkey(n).slice(0, 8))) || ![...seen.values()].some((n) => /^phd property management$/i.test(n))) {
     if (!billVendors || Date.now() - billVendors.at > 2 * 60e3) {
       const m = new Map<string, string>();
-      await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => { if (S(v.id)) m.set(S(v.id), nameOf(v)); }));
+      await mdBillsList((body) => ((body.vendors as Obj[]) || []).forEach((v) => { if (S(v.id)) m.set(S(v.id), nameOf(v)); }));
       billVendors = { at: Date.now(), list: [...m].map(([id, nm]) => ({ id, name: nm })) };
     }
     billVendors.list.forEach((v) => seen.set(v.id, v.name)); vendorSrc.bills = billVendors.list.length;
@@ -174,13 +186,16 @@ async function whoAmI(req: Request): Promise<string> {
 }
 async function mdPostBill(payload: Obj): Promise<Obj> {
   const t = await mdWriteToken();
-  const r = await fetch(API + "/company-app/vendors/bills", { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload), signal: AbortSignal.timeout(30000) });
+  const post = (url: string) => fetch(url, { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload), signal: AbortSignal.timeout(30000) });
+  // MagicDoor moved bills to its accounting service; the old address answers 404 (nothing made there), so the new one is used
+  let r = await post(ACCOUNTING + "/vendor-bills");
+  if (r.status === 404 || r.status === 405) r = await post(API + "/company-app/vendors/bills");
   const txt = await r.text(); let j: Obj = {}; try { j = JSON.parse(txt); } catch { /* not JSON */ }
   if (!r.ok) { const errs = j.errors ? Object.entries(j.errors as Obj).map(([k, v]) => `${k}: ${[].concat(v as never).join(" ")}`).join("; ") : S(j.title || j.message || txt).slice(0, 300); throw new Error(`MagicDoor didn't take the bill (${r.status}): ${errs}`); }
   // the new bill's id (and its line ids, so the console links them and the sync never adds it twice)
   let id = S(j.id || (j.bill as Obj)?.id || j.billId);
   let lines = ((j.lineItems as Obj[]) || ((j.bill as Obj)?.lineItems as Obj[]) || []).map((l) => S(l.id)).filter(Boolean);
-  if (id && !lines.length) { try { const g = await mdGet(`/company-app/vendors/bills/${id}`); lines = ((((g.body as Obj)?.lineItems) as Obj[]) || []).map((l) => S(l.id)).filter(Boolean); } catch { /* the sync links it */ } }
+  if (id && !lines.length) { try { const g = await mdBillGet(id); lines = ((((g.body as Obj)?.lineItems) as Obj[]) || []).map((l) => S(l.id)).filter(Boolean); } catch { /* the sync links it */ } }
   return { id, lines };
 }
 async function billAdd(body: Obj, who: string) {
@@ -256,8 +271,8 @@ async function mdGetWith(path: string, base: string, tok: () => Promise<string>)
 // MagicDoor's page order isn't stable (a record can show up on two pages and another on none),
 // so records are kept by id and the pages are read again until every record has been seen.
 let pageParam = "";
-async function listAll(path: string, onPage?: (body: Obj) => void, maxPages = 60): Promise<Obj[]> {
-  const first = await mdGet(path);
+async function listAll(path: string, onPage?: (body: Obj) => void, maxPages = 60, base = API): Promise<Obj[]> {
+  const first = await mdGet(path, base);
   if (first.status !== 200) throw new Error(`MagicDoor ${path} answered ${first.status}`);
   const b = first.body as Obj;
   const seen = new Map<string, Obj>();
@@ -268,7 +283,7 @@ async function listAll(path: string, onPage?: (body: Obj) => void, maxPages = 60
   const sep = path.includes("?") ? "&" : "?";
   if (!pageParam) {
     for (const p of ["page", "pageNumber", "currentPage", "pageIndex"]) {
-      const r = await mdGet(`${path}${sep}${p}=2`);
+      const r = await mdGet(`${path}${sep}${p}=2`, base);
       if (r.status === 200 && Number((r.body as Obj)?.currentPage) === 2) { pageParam = p; break; }
     }
     if (!pageParam) throw new Error(`Couldn't page through ${path} (only the first ${seen.size} of ${want} came back)`);
@@ -278,7 +293,7 @@ async function listAll(path: string, onPage?: (body: Obj) => void, maxPages = 60
     const worker = async () => {
       while (pages.length) {
         const pg = pages.shift()!;
-        const r = await mdGet(`${path}${sep}${pageParam}=${pg}`);
+        const r = await mdGet(`${path}${sep}${pageParam}=${pg}`, base);
         if (r.status !== 200) throw new Error(`MagicDoor ${path} page ${pg} answered ${r.status}`);
         keep(r.body as Obj);
       }
@@ -289,6 +304,16 @@ async function listAll(path: string, onPage?: (body: Obj) => void, maxPages = 60
   return [...seen.values()];
 }
 
+// Vendor bills: MagicDoor moved them to its accounting service in Nov 2026 (accounting…/company-portal/vendor-bills);
+// the old portal address is tried only if the new one doesn't answer
+async function mdBillsList(onPage?: (body: Obj) => void): Promise<Obj[]> {
+  try { return await listAll("/vendor-bills?pageSize=100", onPage, 60, ACCOUNTING); }
+  catch (e) { try { return await listAll("/company-app/vendors/bills", onPage); } catch { throw e; } }
+}
+async function mdBillGet(id: string) {
+  const r = await mdGet(`/vendor-bills/${id}`, ACCOUNTING);
+  return r.status === 200 ? r : await mdGet(`/company-app/vendors/bills/${id}`);
+}
 // ---------- the allow-list: exactly what gets saved ----------
 const addr = (a: unknown) => {
   const o = (a || {}) as Obj;
@@ -354,10 +379,10 @@ function cleanBill(x: Obj, vendors: Record<string, string>, accounts: Record<str
   return {
     files: findFiles(x).slice(0, 10), ref: S(x.reference || x.billNumber || x.invoiceNumber || x.number || "").slice(0, 60),
     id: S(x.id), date: D(x.billDate), due: D(x.dueDate), status: S(x.status), company: B(x.companyBill),
-    vendor: vendors[S(x.vendorId)] || "", memo: S(x.memo).slice(0, 200), total: N(x.totalAmount), owed: N(x.dueAmount),
+    vendor: vendors[S(x.vendorId)] || S(x.vendorName).slice(0, 120), memo: S(x.memo).slice(0, 200), total: N(x.totalAmount), owed: N(x.dueAmount),
     // who entered it in MagicDoor (a staff id, resolved to a name from MagicDoor's team list when it's available) and when
     by: S(((x.creator || {}) as Obj).propertyManagerId || ((x.creator || {}) as Obj).id), byType: S(((x.creator || {}) as Obj).type), bySource: S(((x.creator || {}) as Obj).source).slice(0, 40), created: S(x.created).slice(0, 19),
-    lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), unitId: S(li.unitId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || "" })),
+    lines: ((x.lineItems as Obj[]) || []).map((li) => ({ id: S(li.id), propertyId: S(li.propertyId), unitId: S(li.unitId), amount: N(li.amount), text: S(li.description).slice(0, 200), account: accounts[S(li.chartOfAccountId)] || S(li.chartOfAccountName).slice(0, 80) })),
   };
 }
 function cleanDistribution(x: Obj) {
@@ -550,14 +575,14 @@ async function sync() {
   const cutDay = cut + "-01";
   const shapes: Obj = {};
   try {
-    const raw = await listAll("/company-app/vendors/bills", (body) => ((body.vendors as Obj[]) || []).forEach((v) => vendors[S(v.id)] = nameOf(v)));
+    const raw = await mdBillsList((body) => ((body.vendors as Obj[]) || []).forEach((v) => vendors[S(v.id)] = nameOf(v)));
     bills = raw.map((x) => cleanBill(x, vendors, accounts)).filter((x) => x.date && x.date >= cutDay && x.status !== "voided" && x.status !== "rejected");
     shapes.billList = mergeShapes(raw.slice(0, 40).map((x) => typeOf("", x)));
     // how one bill's attached files come back (field names only)
     const withFile = raw.find((x) => Array.isArray(x.files) && (x.files as unknown[]).length);
     if (withFile) {
       try {
-        const r = await mdGet(`/company-app/vendors/bills/${S(withFile.id)}`);
+        const r = await mdBillGet(S(withFile.id));
         const h = r.status === 200 ? ((r.body as Obj)?.hydratedFiles as unknown[]) : null;
         shapes.hydratedFiles = h ? mergeShapes(h.slice(0, 3).map((x) => typeOf("", x))) : { status: r.status };
       } catch { shapes.hydratedFiles = { status: "failed" }; }
@@ -863,7 +888,7 @@ async function fetchFile(url: string): Promise<{ ok: boolean; status: number; mi
 }
 async function billFile(billId: string, fileId: string) {
   if (!/^\d{1,20}$/.test(billId) || (fileId && !/^\d{1,20}$/.test(fileId))) return { error: "Bad bill or file id" };
-  const r = await mdGet(`/company-app/vendors/bills/${billId}`);
+  const r = await mdBillGet(billId);
   if (r.status !== 200) return { error: `MagicDoor answered ${r.status} for this bill` };
   const bill = r.body as Obj, list = ((bill.hydratedFiles as Obj[]) || []), plain = ((bill.files as Obj[]) || []);
   const pick = list.find((f) => !fileId || [f.id, f.fileId, (f.file as Obj | undefined)?.id].map(S).includes(fileId)) || list[0];
