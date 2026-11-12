@@ -19521,8 +19521,10 @@ function exqRemove(row, it){
   pmTouch(row);
 }
 function exqCard(m){
-  const F = exqFind(m), card = elm("div", "card exq-card");
+  const F = exqFind(m), card = elm("div", "card exq-card" + (F.length ? "" : " ok"));
   const closed = (pmState().meta[m] || {}).closed;
+  // nothing to decide: one quiet line, not a whole card
+  if(!F.length){ card.innerHTML = `<span class="exq-ok-i">✓</span><b>Expense check</b><span class="muted">No duplicate charges on ${esc(monthLabel(m))}'s statements — checked against the bills and the last three months</span>`; return card; }
   card.innerHTML = `<div class="dep-h"><div><h3>Expense check</h3><div class="muted" style="font-size:12.5px">Every repair and bill on ${esc(monthLabel(m))}'s statements, checked against the bills and the last three months, so nothing is charged twice. Exact copies are removed on their own.</div></div>
       <span class="tag ${F.length ? "red" : "green"}">${F.length ? F.length + " to decide" : "No duplicates"}</span></div>
     ${F.map((f, i) => `<div class="exq-r"><div><b>${esc(f.p ? f.p.name : "")}</b> · ${f.kind === "payreceipt" ? "payment confirmation entered as a bill" : f.kind === "inmd" ? "already charged in MagicDoor" : "charged twice?"}<div class="muted" style="font-size:12.5px;margin-top:2px">${esc(f.why)}</div>

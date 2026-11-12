@@ -2652,3 +2652,9 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 
 .rc-w.phd{opacity:.85}
 .rc-w.phd b{color:var(--muted);font-weight:500}
+
+/* Expense check and rent-deposit cards: padded like every other card */
+.exq-card,.dep-card{padding:16px 20px}
+.exq-card.ok{display:flex;align-items:center;gap:10px;padding:10px 16px;font-size:13px;flex-wrap:wrap}
+.exq-card.ok .muted{font-size:12.5px}
+.exq-ok-i{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--green-soft,#e6f2ea);color:var(--green);font-size:11px;font-weight:700}
