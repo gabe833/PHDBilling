@@ -5477,7 +5477,11 @@ function pmRowSheet(m, pid, focus){
       row.repairItems = row.repairItems.filter(it => has(it.amount) || it.vendor || it.memo);
       if(kept.length){ const L = mdLinks(), by = (typeof Cloud !== "undefined" && (Cloud.email || Cloud.name)) || "";
         kept.forEach(({it, why}) => { L.skip[it.mdLine] = {why, at:todayISO(), by, pid, month:m, vendor:it.vendor || "", amount:it.amount, memo:it.memo || "", billId:it.mdBill || ""}; }); }
-      pmCommitRow(m, pid, row, false); if(kept.length) commit(); closeSheet(); toast(`${prop.name} saved${kept.length ? ` · ${kept.length} kept off the statement` : ""}`, true);
+      // a line from a bill: Tenant pays here sets the bill's owner choice too (and back), so the two always agree
+      const billFix = []; { const BL = typeof billList === "function" ? billList() : []; row.repairItems.forEach(it => { if(!it.billId) return; const b = BL.find(x => x.id === it.billId); if(!b || !["deduct", "tenant"].includes(b.recover)) return;
+          const want = it.payer === "tenant" ? "tenant" : "deduct"; if(b.recover !== want) billFix.push([b, want]); }); }
+      if(billFix.length){ snapshot(); billFix.forEach(([b, want]) => { b.recover = want; b.updatedAt = new Date().toISOString(); }); }
+      pmCommitRow(m, pid, row, false); if(kept.length || billFix.length) commit(); closeSheet(); toast(`${prop.name} saved${kept.length ? ` · ${kept.length} kept off the statement` : ""}`, true);
     };
   };
   draw();
@@ -8523,7 +8527,7 @@ function stRecipientsSheet(oid){
    QuickBooks is kept up to date by Nickel. No key or bank number here.
    ===================================================================== */
 const BILL_CATS = ["Repairs", "Maintenance", "Plumbing", "HVAC", "Electrical", "Appliances", "Landscaping", "Pest control", "Cleaning", "Turnover", "Utilities", "Supplies", "Inspection", "Other"];
-const BILL_REC = {deduct:"Deduct from owner payout", invoice:"Invoice the owner", phd:"PHD expense (not billed)"};
+const BILL_REC = {deduct:"Deduct from owner payout", invoice:"Invoice the owner", tenant:"Tenant pays (not the owner)", phd:"PHD expense (not billed)"};
 const BILL_PAYM = ["Nickel", "Check", "ACH / bank transfer", "Card", "MagicDoor", "Cash", "Other"];
 const billList = () => Object.values(pmState().bills).filter(b => b && !b.deleted);
 const invList = () => Object.values(pmState().invoices).filter(v => v && !v.deleted);
@@ -8547,6 +8551,7 @@ function billOwnerTag(b){
   if(b.status === "void") return "";
   if(b.recover === "phd") return `<span class="muted">PHD expense</span>`;
   if(b.recover === "deduct") return b.deduct && b.deduct.month ? `<span class="muted">From ${esc(monthShort(b.deduct.month))} payout</span>` : `<span class="tag gold">Not deducted yet</span>`;
+  if(b.recover === "tenant"){ const it = billTenantItem(b); return it && it.tenantCharge ? `<span class="muted">Tenant pays · on their MagicDoor ledger</span>` : `<span class="tag gold">Tenant pays · not charged yet</span>`; }
   const v = b.invoiceId && invById(b.invoiceId);
   if(!v) return `<span class="tag gold">To invoice</span>`;
   return v.status === "paid" ? `<span class="muted">${esc(v.no)} · paid</span>` : `<span class="muted">On ${esc(v.no)}</span>`;
@@ -8575,6 +8580,8 @@ function vendorSuggestions(){
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
+// the month line a tenant-pays bill sits on (kept off the owner's statement), for its MagicDoor charge
+function billTenantItem(b){ const r = b.deduct && b.deduct.month ? pmState().rows[b.deduct.month + "|" + (b.deduct.pid || b.propertyId)] : null; return r ? (r.repairItems || []).find(i => i.billId === b.id) || null : null; }
 /* ---------- the owner side of a bill: deduction lines in Month close ---------- */
 // PHD's rule: an expense dated after the 15th goes on the following month's statement (Alert rules can change the day)
 const pmExpenseCutoff = () => { const d = Number((typeof pmSettings === "function" && pmSettings() || {}).expenseCutoff); return d >= 1 && d <= 31 ? d : 15; };
@@ -8594,7 +8601,8 @@ function billSyncDeduction(b){
   if(b.charged && b.charged.month) return;
   const drop = () => { if(!b.deduct || !b.deduct.month) return; const r = P2.rows[b.deduct.month + "|" + (b.deduct.pid || b.propertyId)];
     if(r && !(P2.meta[b.deduct.month] || {}).closed){ r.repairItems = (r.repairItems || []).filter(i => i.billId !== b.id); pmTouch(r); } b.deduct = null; };
-  if(b.status === "void" || b.recover !== "deduct" || !b.propertyId){ drop(); return; }
+  // a bill the tenant pays keeps its line in the month too (marked Tenant pays: off the owner's statement and payout)
+  if(b.status === "void" || !["deduct", "tenant"].includes(b.recover) || !b.propertyId){ drop(); return; }
   const m = billDeductMonth(b);
   if(b.deduct && (b.deduct.month !== m || (b.deduct.pid && b.deduct.pid !== b.propertyId))){
     if((P2.meta[b.deduct.month] || {}).closed) return;           // already in a closed month: leave it where it is
@@ -8605,6 +8613,7 @@ function billSyncDeduction(b){
   let it = row.repairItems.find(i => i.billId === b.id);
   if(!it){ it = {id:uid(), billId:b.id, source:"Bill"}; row.repairItems.push(it); }
   Object.assign(it, {date:b.date || "", vendor:b.vendor || "", memo:b.memo || b.category || "Bill", amount:Number(b.amount) || 0, feeMode:b.feeMode === "none" ? "none" : "auto", link:(b.receipt && b.receipt.url) || it.link || ""});
+  if(b.recover === "tenant") it.payer = "tenant"; else delete it.payer;
   if(row.locked){ row.repairs = null; row.adminFee = null; }
   pmTouch(row);
   b.deduct = {month:m, pid:b.propertyId};
@@ -8613,7 +8622,7 @@ let PM_CUTOFF_DONE = false;
 function pmApplyExpenseCutoff(){
   if(PM_CUTOFF_DONE || typeof pmState !== "function") return; const P2 = pmState(); if(!P2.properties.length || !P2.bills) return;
   PM_CUTOFF_DONE = true;
-  const move = billList().filter(b => b.status !== "void" && b.recover === "deduct" && b.propertyId && b.deduct && b.deduct.month && b.deduct.month !== billDeductMonth(b) && !(P2.meta[b.deduct.month] || {}).closed);
+  const move = billList().filter(b => b.status !== "void" && (b.recover === "deduct" || b.recover === "tenant") && b.propertyId && b.deduct && b.deduct.month && b.deduct.month !== billDeductMonth(b) && !(P2.meta[b.deduct.month] || {}).closed);
   if(!move.length) return;
   snapshot(); move.forEach(billSyncDeduction); commit();
   toast(`${move.length} bill${move.length === 1 ? "" : "s"} dated after the ${pmExpenseCutoff()}th moved to the next month's statement`);
@@ -8935,6 +8944,7 @@ function billSheet(id, preset){
         <p class="help" style="margin-top:6px">${!p ? "" : !o ? "This property has no owner on file, so the bill is a PHD expense until one is added." :
           b.charged && b.charged.month ? `Already charged to ${esc(ownerLabel(o) || "the owner")} on the <b>${esc(monthLabel(b.charged.month))}</b> statement${b.charged.note ? ` (${esc(b.charged.note)})` : ""} — this bill only tracks paying the vendor.` :
           b.recover === "deduct" ? `Taken out of ${esc(ownerLabel(o))}'s payout${b.deduct && b.deduct.month ? ` for <b>${esc(monthLabel(b.deduct.month))}</b>` : ` for ${esc(monthLabel(billDeductMonth(b)))}`} — it shows in Month close as a repair line.` :
+          b.recover === "tenant" ? `Charged to the tenant, not ${esc(ownerLabel(o))}: it stays on ${esc(monthLabel(b.deduct && b.deduct.month || billDeductMonth(b)))} marked Tenant pays, off the owner's statement and payout.${(it0 => it0 && it0.tenantCharge ? " It's on the tenant's ledger in MagicDoor." : " Put it on the tenant's ledger with “Charge the tenant in MagicDoor” on that month's line.")(billTenantItem(b))}` :
           b.recover === "invoice" ? (inv ? `On owner invoice <b>${esc(inv.no)}</b> (${esc(inv.status)}).` : `Goes on ${esc(ownerLabel(o))}'s next owner invoice.`) : "PHD pays this and doesn't bill the owner."}</p>
 
         ${isNew ? "" : billPayBlock(b)}
