@@ -395,7 +395,8 @@ const PMCore = (function(){
         const c = calc(r, p, today);
         const late = (m < curM || day > S.lateAfterDay) && !(mdOf(p.id) && mdOf(p.id).lease);   // MagicDoor's balance decides instead
         const own = ownerName(p.ownerId);
-        if(c.dueC > 0 && !c.recv && late){
+        // a vacant or marketing rental has no tenant to be late: no rent-late alert
+        if(c.dueC > 0 && !c.recv && late && p.status !== "vacant" && p.status !== "marketing"){
           const days = tn - dayNum(m + "-01");
           add({key:`late|${p.id}|${m}`, type:"late", level:"urgent", propId:p.id, month:m, title:`Rent late · ${p.name}`,
                detail:`${usd(c.dueC)} due ${shortDate(m + "-01")} — nothing recorded (${days} day${days === 1 ? "" : "s"})${p.tenants ? " · " + p.tenants : ""}`, action:"openRow"});
