@@ -748,9 +748,9 @@ function mdProjectMatch(p, li, b, used){
   return null;
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], unlinks:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], unlinks:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -826,7 +826,17 @@ function mdPlan(){
           const pm = mdProjectMatch(p, Object.assign({date:f.b.date}, f.li), f.b, usedTx);
           if(pm){ out.skips.push({p, row:rr, it, why:"project", auto:true, pj:pm.pj, t:pm.t, li:f.li, b:f.b}); return; }
         }
-        if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it); return; }
+        if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it);
+          // a bill made here and added to MagicDoor that MagicDoor no longer has (deleted or voided there, 7620 Stargazer's
+          // Dominion $241.20): it's still the owner's bill here, just not in MagicDoor — unless it was re-entered there
+          // (same vendor and amount on this property, not linked to anything), then it's linked to that one instead
+          else if(it.source !== "MagicDoor" && (S.md.bills || []).length && S.md.syncedAt && !(it.mdAdded && it.mdAdded.at && Date.parse(it.mdAdded.at) > Date.parse(S.md.syncedAt) - 5 * 60 * 1000)){
+            const linked = new Set(); Object.values(pmState().rows).forEach(r0 => (r0.repairItems || []).forEach(i => { if(i.mdLine) linked.add(i.mdLine); }));
+            let re = null;
+            for(const b of (S.md.bills || [])){ if(re) break; for(const li of (b.lines || [])){ if(li.propertyId === m.property.id && !linked.has(li.id) && cents(li.amount) === cents(it.amount) && mdVendorKey(b.vendor).slice(0, 5) === mdVendorKey(it.vendor).slice(0, 5)){ re = {li, b}; break; } } }
+            out.unlinks.push({p, row:rr, it, re});
+          }
+          return; }
         // a MagicDoor bill the sync put in this month that MagicDoor counts in another month: take it back out
         if(it.source === "MagicDoor" && PMCore.mdStmt(S.md, m.property.id, mm)){
           const paidMap = PMCore.mdBillMonths(S.md, m.property.id), want = (paidMap && paidMap.get(it.mdLine)) || String(f.b.date || "").slice(0, 7);
@@ -1074,6 +1084,13 @@ function mdApply(opts){
     if(memo){ keep.memo = memo; keep.mdMemo = memo; }
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} removed a duplicate ${keep.vendor || "bill"} ${usd(cents(keep.amount))} (edited in MagicDoor, not a new bill)${memo && memo !== was ? " · " + memoTxt(was, memo) : ""}`});
+  });
+  (plan.unlinks || []).forEach(({p, row, it, re}) => {
+    const was = it.mdBill || "";
+    if(re){ it.mdLine = re.li.id; it.mdBill = re.b.id; }
+    else { delete it.mdLine; delete it.mdBill; delete it.mdAdded; it.mdGone = {bill:was, at:today}; }
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:re ? `${monthLabel(row.month)} ${it.vendor || "bill"} ${usd(cents(it.amount))} — linked to the MagicDoor bill it was re-entered as` : `${monthLabel(row.month)} ${it.vendor || "bill"} ${usd(cents(it.amount))} isn't in MagicDoor any more (deleted or voided there) — marked "Not in MagicDoor" so it can be added again`});
   });
   (plan.gone || []).forEach(({p, row, it}) => {
     row.repairItems = row.repairItems.filter(i => i !== it);

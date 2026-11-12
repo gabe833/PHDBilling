@@ -6883,9 +6883,9 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
   });
 }
 function mdPlan(){
-  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]};
+  const x = mdx(); if(!x) return {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], unlinks:[], skips:[], exact:[], diffs:[]};
   const today = todayISO(), curM = today.slice(0, 7), meta = pmState().meta[curM] || {};
-  const out = {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], skips:[], exact:[], diffs:[]}, newOwners = {};
+  const out = {props:[], owners:[], rows:[], bills:[], moves:[], misplaced:[], payouts:[], unpays:[], unbills:[], filters:[], memos:[], relinks:[], dupes:[], gone:[], unlinks:[], skips:[], exact:[], diffs:[]}, newOwners = {};
   const SK = mdLinks().skip, usedTx = new Set(Object.values(SK).filter(x => x && x.pjTxn).map(x => x.pjId + "|" + x.pjTxn));
   const ownerFor = mo => {
     const em = String(mo.email || "").toLowerCase(), nm = String(mo.name || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -6961,7 +6961,17 @@ function mdPlan(){
           const pm = mdProjectMatch(p, Object.assign({date:f.b.date}, f.li), f.b, usedTx);
           if(pm){ out.skips.push({p, row:rr, it, why:"project", auto:true, pj:pm.pj, t:pm.t, li:f.li, b:f.b}); return; }
         }
-        if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it); return; }
+        if(!f){ if(it.source === "MagicDoor" && (S.md.bills || []).length) orphans.push(it);
+          // a bill made here and added to MagicDoor that MagicDoor no longer has (deleted or voided there, 7620 Stargazer's
+          // Dominion $241.20): it's still the owner's bill here, just not in MagicDoor — unless it was re-entered there
+          // (same vendor and amount on this property, not linked to anything), then it's linked to that one instead
+          else if(it.source !== "MagicDoor" && (S.md.bills || []).length && S.md.syncedAt && !(it.mdAdded && it.mdAdded.at && Date.parse(it.mdAdded.at) > Date.parse(S.md.syncedAt) - 5 * 60 * 1000)){
+            const linked = new Set(); Object.values(pmState().rows).forEach(r0 => (r0.repairItems || []).forEach(i => { if(i.mdLine) linked.add(i.mdLine); }));
+            let re = null;
+            for(const b of (S.md.bills || [])){ if(re) break; for(const li of (b.lines || [])){ if(li.propertyId === m.property.id && !linked.has(li.id) && cents(li.amount) === cents(it.amount) && mdVendorKey(b.vendor).slice(0, 5) === mdVendorKey(it.vendor).slice(0, 5)){ re = {li, b}; break; } } }
+            out.unlinks.push({p, row:rr, it, re});
+          }
+          return; }
         // a MagicDoor bill the sync put in this month that MagicDoor counts in another month: take it back out
         if(it.source === "MagicDoor" && PMCore.mdStmt(S.md, m.property.id, mm)){
           const paidMap = PMCore.mdBillMonths(S.md, m.property.id), want = (paidMap && paidMap.get(it.mdLine)) || String(f.b.date || "").slice(0, 7);
@@ -7241,6 +7251,13 @@ function mdApply(opts){
     if(typeof pmTouch === "function") pmTouch(row);
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} removed a duplicate ${keep.vendor || "bill"} ${usd(cents(keep.amount))} (edited in MagicDoor, not a new bill)${memo && memo !== was ? " · " + memoTxt(was, memo) : ""}`});
   });
+  (plan.unlinks || []).forEach(({p, row, it, re}) => {
+    const was = it.mdBill || "";
+    if(re){ it.mdLine = re.li.id; it.mdBill = re.b.id; }
+    else { delete it.mdLine; delete it.mdBill; delete it.mdAdded; it.mdGone = {bill:was, at:today}; }
+    if(typeof pmTouch === "function") pmTouch(row);
+    lines.push({prop:p.name, pid:p.id, what:re ? `${monthLabel(row.month)} ${it.vendor || "bill"} ${usd(cents(it.amount))} — linked to the MagicDoor bill it was re-entered as` : `${monthLabel(row.month)} ${it.vendor || "bill"} ${usd(cents(it.amount))} isn't in MagicDoor any more (deleted or voided there) — marked "Not in MagicDoor" so it can be added again`});
+  });
   (plan.gone || []).forEach(({p, row, it}) => {
     row.repairItems = row.repairItems.filter(i => i !== it);
     if(typeof pmTouch === "function") pmTouch(row);
@@ -7318,7 +7335,7 @@ function pgPmMd(){
 
   // automatic updates + log
   const org = mdOrganizePlan(), orgN = mdOrganizeCount();
-  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length, pend = plan.props.length + plan.rows.length + (plan.exact || []).filter(x => !x.quiet).length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
+  const plan = mdPlan(), nEd = plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + (plan.unlinks || []).length + plan.skips.filter(x => x.it).length, pend = plan.props.length + plan.rows.length + (plan.exact || []).filter(x => !x.quiet).length + plan.bills.length + plan.payouts.length + plan.unbills.length + plan.filters.length + nEd + orgN;
   const au = elm("div","card"); au.style.marginTop = "16px";
   au.innerHTML = `<div class="card-h"><h3>Keep property details up to date</h3>
       <label class="md-tog"><input type="checkbox" id="mdAuto" ${L.auto !== false ? "checked" : ""}> Automatic</label></div>
@@ -7460,11 +7477,12 @@ function mdPreviewSheet(plan){
     ${(plan.exact || []).filter(x => !x.quiet).length ? `<div class="label" style="margin-top:12px">From MagicDoor's ledger</div>${plan.exact.filter(x => !x.quiet).map(x => `<div class="md-pv-r"><span>${esc(x.p.name)} · ${esc(monthLabel(x.row.month))}</span><span class="muted">${esc(mdExactLabels()[x.k])}${PMCore.has(x.from) ? " " + usd(cents(x.from)) : ""}</span><span class="num">→ ${x.to == null ? "none" : usd(cents(typeof x.to === "object" ? x.to.amount : x.to))}</span></div>`).join("")}` : ""}
     ${(plan.diffs || []).length ? `<div class="label" style="margin-top:12px">Typed by hand, different in MagicDoor — not changed</div>${plan.diffs.map(x => `<div class="md-pv-r"><span>${esc(x.p.name)} · ${esc(monthLabel(x.row.month))}</span><span class="muted">${esc(mdExactLabels()[x.k])} ${usd(cents(x.from))}</span><span class="num">MagicDoor ${usd(cents(x.to))}</span></div>`).join("")}<p class="help">Change the number on the month's row if MagicDoor is right.</p>` : ""}
     ${plan.rows.length ? `<div class="label" style="margin-top:12px">Rent to record</div>${plan.rows.map(r => `<div class="md-pv-r"><span>${esc(r.p.name)}</span><span class="muted">${r.lastPayment ? "paid " + esc(fdateS(r.lastPayment)) : "credit"}</span><span class="num">${usd(cents(r.amount))}</span></div>`).join("")}` : ""}
-    ${(plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + plan.skips.filter(x => x.it).length) ? `<div class="label" style="margin-top:12px">Bills edited in MagicDoor</div>${[
+    ${(plan.memos.length + plan.relinks.length + plan.dupes.length + plan.gone.length + (plan.unlinks || []).length + plan.skips.filter(x => x.it).length) ? `<div class="label" style="margin-top:12px">Bills edited in MagicDoor</div>${[
         ...plan.memos.map(x => [x.p.name, `${x.it.vendor || ""} · “${x.memo}”`, x.it.amount]),
         ...plan.relinks.map(x => [x.p.name, `${x.it.vendor || ""} · ${x.memo ? "“" + x.memo + "”" : "relinked"}`, x.li.amount]),
         ...plan.dupes.map(x => [x.p.name, `${x.keep.vendor || ""} · duplicate removed${x.memo ? " · “" + x.memo + "”" : ""}`, x.keep.amount]),
         ...plan.gone.map(x => [x.p.name, `${x.it.vendor || ""} · deleted in MagicDoor`, x.it.amount]),
+        ...(plan.unlinks || []).map(x => [x.p.name, `${x.it.vendor || ""} · ${x.re ? "re-entered in MagicDoor — relink" : "no longer in MagicDoor — mark not entered"}`, x.it.amount]),
         ...plan.skips.filter(x => x.it).map(x => [x.p.name, `${x.it.vendor || ""} · off the owner statement (${x.why === "project" ? "project expense" : "not the owner's"})`, x.it.amount])
       ].map(([a, b, c]) => `<div class="md-pv-r"><span>${esc(a)}</span><span class="muted">${esc(b)}</span><span class="num">${usd(cents(c))}</span></div>`).join("")}` : ""}
     ${plan.bills.length ? `<div class="label" style="margin-top:12px">Vendor bills to add as repairs</div>${plan.bills.map(b => `<div class="md-pv-r"><span>${esc(b.p.name)}</span><span class="muted">${esc(fdateS(b.li.date))} · ${esc(b.li.vendor || "")}${b.twin ? " · matches one already entered" : ""}</span><span class="num">${usd(cents(b.li.amount))}</span></div>`).join("")}` : ""}
