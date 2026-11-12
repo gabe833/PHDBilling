@@ -7599,22 +7599,24 @@ function stmtCompose(m, x){
   const e = ((pmState().meta[m] || {}).emailEdits || {})[x.p.id] || {}, addr = stmtAddr(x.p);
   return {to:e.to || x.to, cc:e.cc != null ? e.cc : x.cc.join(", "), subject:e.subject || STMT_SUBJECT(addr, m), body:e.body || STMT_BODY(x.first, addr, m), edited:!!(e.subject || e.body)};
 }
-/* Statements that go to exactly the same people go out as one email (Susan Reed & Stephen Welt: 12 Bee St #D,
-   31 Radcliffe and 90 Radcliffe #B), unless switched off on the statements screen */
-const stmtCombineOn = () => (pmSettings() || {}).stmtCombine !== false;
+/* Statements that go to exactly the same people can go out as one email, switched on for each set of recipients
+   (Susan Reed & Stephen Welt: 12 Bee St #D, 31 Radcliffe and 90 Radcliffe #B). Kept as pmSettings.stmtOneEmail[recipients]. */
 const stmtRecipKey = x => [...new Set(x.toList.concat(x.cc).map(e => e.toLowerCase()))].sort().join(",");
+const stmtOneOn = k => !!((pmSettings() || {}).stmtOneEmail || {})[k];
+function stmtSetOne(k, on){ snapshot(); const cur = Object.assign({}, (S.pmSettings || {}).stmtOneEmail || {}); if(on) cur[k] = true; else delete cur[k]; S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtOneEmail:cur}); commit(); }
 function stmtGroups(list){
-  if(!stmtCombineOn()) return list.map(x => [x]);
-  const g = new Map(); list.forEach(x => { const k = x.why || !x.toList.length ? "solo:" + x.p.id : stmtRecipKey(x); if(!g.has(k)) g.set(k, []); g.get(k).push(x); });
+  const g = new Map(); list.forEach(x => { const r = !x.why && x.toList.length ? stmtRecipKey(x) : "", k = r && stmtOneOn(r) ? r : "solo:" + x.p.id; if(!g.has(k)) g.set(k, []); g.get(k).push(x); });
   return [...g.values()];
 }
-// the others that share an email with this property this month (ready ones, not yet sent)
-function stmtGroupFor(m, x, cands){
+// the statements this month that go to the same people as this one (ready ones, not yet sent), whether or not they're combined
+function stmtSameTo(m, x, cands){
   cands = cands || stmtCandidates(m);
-  if(!stmtCombineOn() || x.why) return [x];
+  if(x.why || !x.toList.length) return [x];
   const k = stmtRecipKey(x), same = cands.filter(c => !c.why && stmtRecipKey(c) === k && (c.p.id === x.p.id || !(c.done && c.done.state === "sent")));
   return same.length ? same : [x];
 }
+// the ones that actually share an email with it
+function stmtGroupFor(m, x, cands){ const same = stmtSameTo(m, x, cands); return same.length > 1 && stmtOneOn(stmtRecipKey(x)) ? same : [x]; }
 const stmtGroupKey = xs => "g:" + xs.map(x => x.p.id).sort().join("+");
 const stmtJoin = a => a.length <= 2 ? a.join(" and ") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
 function stmtComposeGroup(m, xs){
@@ -7623,7 +7625,7 @@ function stmtComposeGroup(m, xs){
   const names = xs.map(x => x.p.name), first = xs.map(x => x.first).find(Boolean) || "";
   const to = [...new Set(xs.flatMap(x => x.toList))], cc = [...new Set(xs.flatMap(x => x.cc))].filter(c => !to.includes(c));
   const std = {subject:`Owner Statements – ${stmtJoin(names)} – ${monthLabel(m)}`,
-    body:STMT_BODY(first, "\u0000", m).replace("statement for \u0000", "statements for " + stmtJoin(names)).replace(/\u0000/g, stmtJoin(names))
+    body:STMT_BODY(first, "\u0000", m).replace(/is your owner statement for \u0000/, "are your owner statements for " + stmtJoin(names)).replace("statement for \u0000", "statements for " + stmtJoin(names)).replace(/\u0000/g, stmtJoin(names))
       .replace(/It includes the income, expenses, and activity for the property this month\./, "They include the income, expenses, and activity for each property this month.")
       .replace(/It includes the income, expenses, and activity for the property that month\./, "They include the income, expenses, and activity for each property that month.")};
   return {to:e.to || to.join(", "), cc:e.cc != null ? e.cc : cc.join(", "), subject:e.subject || std.subject, body:e.body || std.body, std, edited:!!(e.subject || e.body), group:true};
@@ -7884,14 +7886,13 @@ function pmStatementMailSheet(m){
         ${note ? `<div class="pm-banner">${note}</div>` : ""}
         <div class="sm-list">${ready.map(x => `<label class="sm-r">
             <input type="checkbox" data-s="${x.p.id}" ${sel[x.p.id] ? "checked" : ""} ${busy ? "disabled" : ""}>
-            <div class="sm-t"><b>${esc(x.p.name)}</b><span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span>${(g => g.length > 1 ? `<span class="sm-grp">One email with ${esc(stmtJoin(g.filter(y => y !== x).map(y => y.p.name)))}</span>` : "")(stmtGroupFor(m, x, cands))}</div>
+            <div class="sm-t"><b>${esc(x.p.name)}</b><span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span>${(g => g.length > 1 ? `<span class="sm-grp">${stmtOneOn(stmtRecipKey(x)) ? `One email with ${esc(stmtJoin(g.filter(y => y !== x).map(y => y.p.name)))} · <a href="#" data-one="${esc(stmtRecipKey(x))}" data-on="0">send separately</a>` : `Same people as ${esc(stmtJoin(g.filter(y => y !== x).map(y => y.p.name)))} · <a href="#" data-one="${esc(stmtRecipKey(x))}" data-on="1">send as one email</a>`}</span>` : "")(stmtSameTo(m, x, cands))}</div>
             <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" value="${esc(x.first)}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
             ${x.done ? (x.done.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
                 : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(x.done.at.slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
             <span class="sm-acts">${x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm ghost" data-pv="${x.p.id}" type="button">${stmtCompose(m, x).edited ? "Edited · open" : "Preview & edit"}</button></span></label>`).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
           <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
-        <label class="sm-auto"><input type="checkbox" id="smCombine" ${stmtCombineOn() ? "checked" : ""}> One email when several statements go to the same people (e.g. 12 Bee St #D, 31 Radcliffe and 90 Radcliffe #B)</label>
         <label class="sm-auto"><input type="checkbox" id="smAttach" ${stmtAttachOn() ? "checked" : ""}> Attach the vendors' invoices from MagicDoor to each statement</label>
         <label class="sm-auto"><input type="checkbox" id="smAuto" ${set.autoDrafts !== false ? "checked" : ""}> Make these drafts automatically when a month is closed</label>
       </div>
@@ -7933,7 +7934,7 @@ function pmStatementMailSheet(m){
     };
     const chg = $("#smChange"); if(chg) chg.onclick = e => { e.preventDefault(); if(confirm("Disconnect the statements mailbox? You can paste a new URL and key afterwards.")){ setStmtConn(null); draw(); } };
     $("#smAuto").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {autoDrafts:e.target.checked}); commit(); };
-    $("#smCombine").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtCombine:e.target.checked}); commit(); draw(); };
+    sh.querySelectorAll("[data-one]").forEach(a => a.onclick = e => { e.preventDefault(); e.stopPropagation(); stmtSetOne(a.dataset.one, a.dataset.on === "1"); draw(); });
     $("#smAttach").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtAttach:e.target.checked}); commit(); };
     const run = async send => {
       const list = cands.filter(x => !x.why && sel[x.p.id]);
@@ -8246,8 +8247,8 @@ function pgPmStatements(){
     const status = st === "sent" ? `<span class="tag green" title="${esc("Sent to " + (x.done.to || x.to))}">Sent ${esc(fdateS(String(x.done.sentAt || x.done.at).slice(0, 10)))}</span>`
       : st === "draft" ? `<span class="tag gold" title="${esc("Made " + fdateS(String(x.done.at).slice(0, 10)) + (x.done.by ? " by " + x.done.by : ""))}">Draft in Gmail</span>`
       : st === "blocked" ? `<span class="tag red">${esc(x.why)}</span>` : `<span class="tag grey">Not sent</span>`;
-    const grpW = st !== "sent" ? stmtGroupFor(m, x, cands).filter(y => y !== x) : [];
-    const to = x.toList.length ? `<div class="st-to">${x.toList.map(e => `<span>${esc(e)}</span>`).join("")}</div>${x.cc.length ? `<div class="item-s">cc ${esc(x.cc.join(", "))}</div>` : ""}${grpW.length ? `<div class="item-s st-grp">One email with ${esc(stmtJoin(grpW.map(y => y.p.name)))}</div>` : ""}` : `<span class="muted">—</span>`;
+    const grpW = st !== "sent" ? stmtSameTo(m, x, cands).filter(y => y !== x) : [], one = grpW.length && stmtOneOn(stmtRecipKey(x));
+    const to = x.toList.length ? `<div class="st-to">${x.toList.map(e => `<span>${esc(e)}</span>`).join("")}</div>${x.cc.length ? `<div class="item-s">cc ${esc(x.cc.join(", "))}</div>` : ""}${grpW.length ? `<div class="item-s st-grp">${one ? "One email with " : "Same people as "}${esc(stmtJoin(grpW.map(y => y.p.name)))} · <a href="#" data-one="${esc(stmtRecipKey(x))}" data-on="${one ? 0 : 1}">${one ? "send separately" : "send as one email"}</a></div>` : ""}` : `<span class="muted">—</span>`;
     tr.innerHTML = `<td><div class="item-t">${esc(x.p.name)}</div><div class="item-s">${x.o ? esc(ownerLabel(x.o)) : `<span style="color:var(--red)">No owner on file</span>`}</div></td>
       <td>${to}</td>
       <td class="r num"><b${c.payoutC < 0 ? ' style="color:var(--red)"' : ""}>${usd(c.payoutC)}</b></td>
@@ -8264,6 +8265,7 @@ function pgPmStatements(){
   t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
   t.querySelectorAll("[data-pv]").forEach(b => b.onclick = () => stmtEmailSheet(m, b.dataset.pv));
   t.querySelectorAll("[data-pdf]").forEach(b => b.onclick = () => downloadPdf(pmStatementPdfHTML(m, b.dataset.pdf), stmtFileName(pmProp(b.dataset.pdf), m)));
+  t.querySelectorAll("[data-one]").forEach(a => a.onclick = e => { e.preventDefault(); stmtSetOne(a.dataset.one, a.dataset.on === "1"); render(); });
 
   // ask Gmail once a minute which drafts were sent or deleted
   if(stmtConn() && Date.now() - (STP.ref[m] || 0) > 60000){
