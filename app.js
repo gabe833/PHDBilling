@@ -8054,7 +8054,7 @@ function stmtEmailSheet(m, pid){
       ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !(Number(conn.version) >= 2) ? `<div class="pm-banner">Update the pm@ script (apps-script/Statements.gs) so the summary table shows as a table — until then owners get it as plain lines.</div>` : ""}
       ${stmtConn() && !sig ? `<p class="help" id="seSigNote">${esc(conn.sigNote || "No Gmail signature found for pm@ yet.")}</p>` : ""}
     </div>
-    <div class="sheet-f se-foot"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><span id="seRevBox"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
+    <div class="sheet-f se-foot"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><span id="seRevBox"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"} title="Save it in pm@'s Gmail Drafts">Save draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
   openPanel();
   $("#shClose").onclick = closeSheet; $("#seBack").onclick = () => pmStatementMailSheet(m);
   // pick up a signature or script update made since connecting (once per session)
@@ -8114,7 +8114,7 @@ function stmtEmailSheet(m, pid){
       if(done.length && done[0].r.note) toast("Sent without the invoices — update the pm@ script to attach them");
       if(failed.length) throw new Error(/unknown action/i.test(failed[0].error) ? "Update the pm@ script to the new version (apps-script/Statements.gs) to send from the console." : failed[0].error);
       toast(send ? `Sent to ${to.join(", ")}` : "Draft saved in pm@'s Gmail"); pmStatementMailSheet(m);
-    }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from pm@" : "Save as Gmail draft"; }
+    }catch(e){ toast(e.message); b.disabled = false; b.textContent = send ? "Send from pm@" : "Save draft"; }
   };
   $("#seSend").onclick = () => go(true); $("#seDraft").onclick = () => go(false);
 }
