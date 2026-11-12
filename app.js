@@ -7996,9 +7996,14 @@ function pmStatementMailSheet(m){
     sh.querySelectorAll("[data-one]").forEach(a => a.onclick = e => { e.preventDefault(); e.stopPropagation(); stmtSetOne(a.dataset.one, a.dataset.on === "1"); draw(); });
     $("#smAttach").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtAttach:e.target.checked}); commit(); };
     const run = async send => {
-      const list = cands.filter(x => !x.why && sel[x.p.id]);
-      const gs = stmtGroups(list), unrev = gs.filter(g => { const r = stmtReview(m, g); return !r || r.stale; }).length;
-      if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} in ${gs.length} email${gs.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?${unrev ? `\n\n${unrev} of them ${unrev === 1 ? "hasn't" : "haven't"} been marked reviewed.` : "\n\nAll of them are marked reviewed."}\n\nEach goes to its owner with the statement PDF attached. Open "Preview & edit" first if you want to check one.`)) return;
+      let list = cands.filter(x => !x.why && sel[x.p.id]);
+      const gs = stmtGroups(list), un = gs.filter(g => { const r = stmtReview(m, g); return !r || r.stale; });
+      if(send && un.length){
+        // heads up: some of these haven't been checked yet
+        const pick = await stmtUnrevAsk(m, gs, un); if(pick === "back") return;
+        if(pick === "reviewed") list = gs.filter(g => !un.includes(g)).flat();
+        if(!list.length) return;
+      } else if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} in ${gs.length} email${gs.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?\n\nAll of them are marked reviewed. Each goes to its owner with the statement PDF attached.`)) return;
       draw(send ? "Sending…" : "Creating drafts…");
       try{
         const {done, failed} = await stmtMakeDrafts(m, list, {send, progress:(i, t) => { const b = $(send ? "#smSend" : "#smGo"); if(b) b.textContent = `${send ? "Sending" : "Creating"} ${i + 1}–${Math.min(i + 10, t)} of ${t}…`; }});
@@ -8017,6 +8022,32 @@ function pmStatementMailSheet(m){
   // check Gmail: drafts someone deleted are freed up, sent ones say "Sent"
   stmtRefresh(m).then(changed => { if(changed && $("#smGo")){ const keep = sel; cands = stmtCandidates(m).map(x => Object.assign(x, {first:(cands.find(c => c.p.id === x.p.id) || x).first})); sel = keep; draw(); } })
     .catch(e => { if(/unknown action/i.test(e.message) && $("#smGo")) draw(null, "To see which drafts were sent or deleted, update the pm@ script (apps-script/Statements.gs) and deploy a new version."); });
+}
+
+/* Before sending several statement emails: which ones nobody has marked reviewed (or changed since), and what to do —
+   send only the reviewed ones, send everything anyway, or go back. Resolves "reviewed" | "all" | "back". */
+function stmtUnrevAsk(m, gs, un){
+  return new Promise(done => {
+    const okN = gs.length - un.length, okS = gs.filter(g => !un.includes(g)).reduce((a, g) => a + g.length, 0), allS = gs.reduce((a, g) => a + g.length, 0);
+    const name = g => g.length > 1 ? `${esc(g[0].o ? ownerLabel(g[0].o) : g[0].to)} · ${g.length} statements` : esc(g[0].p.name);
+    const wrap = elm("div", "se-ask");
+    wrap.innerHTML = `<div class="se-ask-box" role="alertdialog" aria-modal="true" aria-labelledby="seAskH">
+      <h3 id="seAskH">${un.length} of ${gs.length} email${gs.length === 1 ? "" : "s"} ${un.length === 1 ? "hasn't" : "haven't"} been reviewed</h3>
+      <p class="muted">These haven't been marked reviewed${un.some(g => stmtReview(m, g)) ? ", or their numbers changed after they were" : ""}:</p>
+      <ul class="se-ask-l">${un.map(g => { const r = stmtReview(m, g); return `<li><span>${name(g)}</span>${r && r.stale ? `<span class="tag gold">Changed since review</span>` : `<span class="muted">Not reviewed</span>`}</li>`; }).join("")}</ul>
+      <div class="se-ask-f">
+        <button class="btn ghost" type="button" data-k="back">Go back</button><span style="flex:1"></span>
+        <button class="btn" type="button" data-k="all">Send all ${gs.length} anyway</button>
+        <button class="btn primary" type="button" data-k="reviewed" ${okN ? "" : "disabled"}>${okN ? `Send the ${okN} reviewed (${okS} statement${okS === 1 ? "" : "s"})` : "None reviewed yet"}</button>
+      </div></div>`;
+    const end = k => { wrap.remove(); document.removeEventListener("keydown", esc0); done(k); };
+    const esc0 = e => { if(e.key === "Escape"){ e.stopPropagation(); end("back"); } };
+    wrap.querySelectorAll("[data-k]").forEach(b => b.onclick = () => end(b.dataset.k));
+    wrap.onclick = e => { if(e.target === wrap) end("back"); };
+    document.addEventListener("keydown", esc0, true);
+    document.body.appendChild(wrap); (wrap.querySelector('[data-k="reviewed"]:not([disabled])') || wrap.querySelector('[data-k="back"]')).focus();
+    void allS;
+  });
 }
 
 /* closing a month makes the drafts that aren't made yet (unless switched off) */
@@ -8106,7 +8137,8 @@ function stmtEmailSheet(m, pid){
   const go = async send => {
     clearTimeout(saveT); keep(true);
     const to = $("#seTo").value.split(/[,;\s]+/).filter(stmtEmailOk); if(!to.length) return toast("Add the owner's email");
-    if(send && !confirm(`Send this statement to ${to.join(", ")} from ${conn.mailbox || "pm@"} now?`)) return;
+    const rv0 = stmtReview(m, xs);
+    if(send && !confirm(`Send ${grp ? `these ${xs.length} statements` : "this statement"} to ${to.join(", ")} from ${conn.mailbox || "pm@"} now?${rv0 && !rv0.stale ? "" : rv0 ? "\n\nHeads up: the numbers changed after it was marked reviewed." : "\n\nHeads up: it hasn't been marked reviewed."}`)) return;
     const b = $(send ? "#seSend" : "#seDraft"); b.disabled = true; b.textContent = send ? "Sending…" : "Saving…";
     try{
       const items = grp ? xs : [Object.assign({}, x, {to:to.join(",")})];
