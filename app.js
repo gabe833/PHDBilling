@@ -17100,7 +17100,11 @@ async function wbLiveSync(opts){
   if(WBL.busy || !wbLiveId() || typeof inboxConn !== "function" || !inboxConn()) return null;
   WBL.busy = true; WBL.at = Date.now();
   try{
-    const cur = todayISO().slice(0, 7), want = opts.months || [monthAdd(cur, -1), cur];
+    // only the months the office chose to bring in from the workbook (PM settings: S.pmSettings.wbMonths) — October 2026 only,
+    // unless someone adds another. The console is the book for every other month.
+    const allow = (S.pmSettings && Array.isArray(S.pmSettings.wbMonths)) ? S.pmSettings.wbMonths : ["2026-10"];
+    const want = (opts.months || allow).filter(m => allow.includes(m));
+    if(!want.length){ if(!opts.quiet) toast("The workbook isn't set to update any month"); return null; }
     const meta = await inboxPost({action:"workbookRead", sheetId:wbLiveId()});
     const tabs = (meta.sheets || []).filter(t => want.includes(wbSheetMonth(t)));
     if(!tabs.length){ if(!opts.quiet) toast(`The workbook has no tab for ${want.map(monthLabel).join(" or ")} yet`); return null; }
