@@ -6063,7 +6063,7 @@ function wbImportSheet(m){
   sh.innerHTML = `<div class="sheet-h"><h3>Import from the workbook</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
       <p class="muted" style="margin-top:0">Choose your <b>TOTAL MONTHLY PM INCOME REPORTING</b> workbook (.xlsx). The month's tab is read here in your browser; each property's numbers are written to ${esc(monthLabel(m))} exactly as the sheet has them.</p>
-      <div class="wb-live"><label class="fld"><span>Google Sheet link — read it live instead of uploading a file</span><input id="wbUrl" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(pmSettings().workbookUrl || "")}"></label>
+      <div class="wb-live"><label class="fld"><span>Google Sheet link — read it live instead of uploading a file</span><input id="wbUrl" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(pmSettings().workbookLive || pmSettings().workbookUrl || "")}"></label>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px"><button class="btn primary" id="wbLiveGo">Save link and read it now</button><span class="muted">The console then re-reads it every 15 minutes and whenever you open Rentals. billing@ needs view access to the sheet.</span></div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn" id="wbFile">Choose .xlsx file</button><input type="file" id="wbPick" accept=".xlsx" style="display:none"><span class="muted" id="wbName"></span></div>
       <div id="wbBody"></div>
@@ -6072,7 +6072,7 @@ function wbImportSheet(m){
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
   $("#wbLiveGo").onclick = async () => {
     const u = $("#wbUrl").value.trim();
-    S.pmSettings = Object.assign({}, S.pmSettings || {}, {workbookUrl:u}); commit();
+    S.pmSettings = Object.assign({}, S.pmSettings || {}, {workbookLive:u}); delete S.pmSettings.workbookUrl; commit();
     if(!wbLiveId()){ toast(u ? "That isn't a Google Sheets link" : "Workbook link removed"); return; }
     if(!inboxConn()){ toast("Connect the receipt inbox first — the workbook is read through it"); return; }
     closeSheet(); await wbLiveSync({months:[m, monthAdd(m, -1)]});
@@ -17087,7 +17087,7 @@ if(typeof render === "function"){
    Every change is listed in MagicDoor → Recent updates as "Workbook".
    ===================================================================== */
 function wbLiveId(){
-  const u = String((pmSettings() || {}).workbookUrl || "").trim();
+  const u = String((pmSettings() || {}).workbookLive || "").trim();
   const m = u.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/) || u.match(/^([A-Za-z0-9_-]{30,})$/);
   return m ? m[1] : "";
 }
