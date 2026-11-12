@@ -4270,7 +4270,8 @@ const PMCore = (function(){
 
   /* one row's numbers, all in cents */
   function calc(row, prop, today){
-    const items = row.repairItems || [];
+    // a charge the tenant pays (a trip charge when they weren't home) stays on record but never comes out of the owner's payout
+    const items = (row.repairItems || []).filter(it => it.payer !== "tenant");
     const itemsC = items.reduce((a, it) => a + cents(it.amount), 0);
     const itemsFeeC = items.reduce((a, it) => a + itemFee(it, prop), 0);
     const recv = nz(row.rentReceived);
@@ -5140,7 +5141,7 @@ function pmCloseMonth(m, close){
    exactly what to enter and lets you mark it entered. The next sync then finds the MagicDoor bill and links it, and
    the label goes away. When the write key arrives, mdAddBill() is the one place to make the button do it for you. */
 function mdItemState(it){
-  if(!it || !(cents(it.amount) > 0)) return null;
+  if(!it || !(cents(it.amount) > 0) || it.payer === "tenant") return null;
   if(it.mdLine || it.mdBill) return "in";
   return it.mdAdded ? "added" : "missing";
 }
@@ -5317,10 +5318,11 @@ function pmRowSheet(m, pid, focus){
             <input type="text" data-ik="vendor" value="${esc(it.vendor || "")}" placeholder="Vendor" ${ro ? "disabled" : ""}>
             <input type="text" data-ik="memo" value="${esc(it.memo || "")}" placeholder="What was done" ${ro ? "disabled" : ""}>
             <input type="number" step="0.01" data-ik="amount" value="${it.amount ?? ""}" placeholder="0.00" ${ro ? "disabled" : ""}>
-            <select data-ik="feeMode" ${ro ? "disabled" : ""}><option value="auto" ${(it.feeMode || (it.fee != null ? "custom" : "auto")) === "auto" ? "selected" : ""}>${prop.adminRate ?? 10}% fee</option>
-              <option value="none" ${it.feeMode === "none" ? "selected" : ""}>No fee</option>
-              <option value="custom" ${(it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
+            <select data-ik="feeMode" ${ro ? "disabled" : ""}><option value="tenant" ${it.payer === "tenant" ? "selected" : ""}>Tenant pays</option><option value="auto" ${it.payer !== "tenant" && (it.feeMode || (it.fee != null ? "custom" : "auto")) === "auto" ? "selected" : ""}>${prop.adminRate ?? 10}% fee</option>
+              <option value="none" ${it.payer !== "tenant" && it.feeMode === "none" ? "selected" : ""}>No fee</option>
+              <option value="custom" ${it.payer !== "tenant" && (it.feeMode === "custom" || (it.feeMode == null && it.fee != null)) ? "selected" : ""}>Fee ${usd(itemFeeC(it, prop))}</option></select>
             <div class="pm-item-x">${stmtInvLink(stmtLine(it), "btn sm ghost")}${ro ? "" : `<button class="btn sm ghost" data-del="${i}" title="${it.mdLine ? "Take this MagicDoor bill off the statement" : "Remove"}">✕</button>`}</div>
+            ${it.payer === "tenant" ? `<div class="pm-item-who">Billed to the tenant — not on the owner's statement or payout</div>` : ""}
             ${it.mdLine && typeof mdBillWho === "function" && mdBillWho(it.mdLine) ? `<div class="pm-item-who">${esc(mdBillWho(it.mdLine))}</div>` : ""}
             ${mdItemState(it) === "missing" || mdItemState(it) === "added" ? `<div class="pm-item-md">${mdItemTag(it)}${(() => { const tw = mdItemTwin(it, prop); return tw ? mdTwinTag(tw) : ""; })()}${ro ? "" : mdItemState(it) === "missing"
               ? `<button class="btn sm" type="button" data-mdadd="${i}">${mdOpen === i ? "Hide" : "Add to MagicDoor"}</button>` : `<button class="btn sm ghost" type="button" data-mdundo="${i}">Not entered after all</button>`}</div>` : ""}
@@ -5384,8 +5386,9 @@ function pmRowSheet(m, pid, focus){
       el.querySelectorAll("[data-ik]").forEach(inp => inp.onchange = () => {
         const k = inp.dataset.ik, it = row.repairItems[i];
         if(k === "amount") it.amount = inp.value === "" ? null : Math.round(Number(inp.value) * 100) / 100;
+        else if(k === "feeMode" && inp.value === "tenant"){ it.payer = "tenant"; }
         else if(k === "feeMode"){
-          it.feeMode = inp.value;
+          delete it.payer; it.feeMode = inp.value;
           if(inp.value === "custom"){ const f = prompt("Admin fee for this item ($)", it.fee != null ? it.fee : (itemFeeC(Object.assign({}, it, {feeMode:"auto"}), prop) / 100).toFixed(2)); if(f === null){ it.feeMode = "auto"; } else it.fee = Math.round(Number(f) * 100) / 100; }
         } else it[k] = inp.value;
         if(has(row.repairs)) row.repairs = null;    // itemised detail now drives the total
@@ -5905,7 +5908,7 @@ function pmStatementHTML(m, ids, groupsList){
     const blocks = props.map(p => {
       const row = pmRow(m, p.id); if(!row) return "";
       const c = pmCalc(row, p); totalC += c.payoutC;
-      const items = (row.repairItems || []), D = pmStmtDates(p, m, row), dd = iso => iso ? docShort(iso) : "";
+      const items = (row.repairItems || []).filter(it => it.payer !== "tenant"), D = pmStmtDates(p, m, row), dd = iso => iso ? docShort(iso) : "";
       return `<h3 class="unit">${esc(p.name)}</h3>
         <table class="zebra"><thead><tr><th style="width:92px">Date</th><th>Description</th><th style="width:150px">Vendor</th><th class="r" style="width:110px">Amount</th></tr></thead>
         <tbody>
@@ -7649,7 +7652,7 @@ function pmRentDate(p, m, unitId){
 }
 function pmStmtDates(p, m, row){
   const rent = Number(row.rentReceived) > 0 ? pmRentDate(p, m) : "";
-  const reps = (row.repairItems || []).map(it => String(it.date || "").slice(0, 10)).filter(Boolean).sort();
+  const reps = (row.repairItems || []).filter(it => it.payer !== "tenant").map(it => String(it.date || "").slice(0, 10)).filter(Boolean).sort();
   const today = todayISO(), endM = m + "-" + String(new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).getDate()).padStart(2, "0");
   const fallback = rent || (today.slice(0, 7) === m ? today : today > endM ? endM : m + "-01");
   return {rent, fee:rent || fallback, admin:reps.length ? reps[reps.length - 1] : fallback, adj:a => String((a && a.date) || "").slice(0, 10) || fallback, other:fallback};
@@ -7696,7 +7699,7 @@ function pmStmtUnits(p, m, c){
 function pmStatementPdfHTML(m, pid, opts){
   opts = opts || {};
   const p = pmProp(pid), row = pmRow(m, pid), c = pmCalc(row, p), o = p.ownerId ? ownerById(p.ownerId) : null;
-  const items = row.repairItems || [], addr = o ? ownerAddressLines(o) : [];
+  const items = (row.repairItems || []).filter(it => it.payer !== "tenant"), addr = o ? ownerAddressLines(o) : [];
   const d = iso => iso ? docShort(String(iso).slice(0, 10)) : "";
   const neg = x => "−" + usd(Math.abs(x));
   const line = (date, what, vendor, amt, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td class="dt">${date}</td><td>${what}</td><td class="vn">${vendor}</td><td class="r">${amt}</td></tr>`;

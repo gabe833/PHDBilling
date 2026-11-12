@@ -41,7 +41,8 @@ const PMCore = (function(){
 
   /* one row's numbers, all in cents */
   function calc(row, prop, today){
-    const items = row.repairItems || [];
+    // a charge the tenant pays (a trip charge when they weren't home) stays on record but never comes out of the owner's payout
+    const items = (row.repairItems || []).filter(it => it.payer !== "tenant");
     const itemsC = items.reduce((a, it) => a + cents(it.amount), 0);
     const itemsFeeC = items.reduce((a, it) => a + itemFee(it, prop), 0);
     const recv = nz(row.rentReceived);
