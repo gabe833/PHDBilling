@@ -20,6 +20,7 @@
    Updating an existing install: paste the new version, then Deploy → Manage
    deployments → edit (pencil) → Version: New version → Deploy. The URL stays.
    ===================================================================== */
+const SCRIPT_VERSION = 2;   // v2: the email body comes as HTML from the console (the statement breakdown table); ping says why there's no signature
 const CFG = {
   FROM_NAME: 'PHD Property Management',   // the name owners see next to pm@'s address
   LABEL: 'AutoDraft/Owner Statements',     // every statement draft gets this Gmail label (it stays on after sending)
@@ -45,7 +46,7 @@ function newKey_(){ return Utilities.getUuid().replace(/-/g, '') + Utilities.get
 function doGet(e){
   const p = (e && e.parameter) || {};
   if(!keyOk_(p.token)) return json_({ok:false, error:'unauthorized'});
-  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail(), fromName:CFG.FROM_NAME, signature:signature_(), canSend:true, multiTo:true});
+  if(p.action === 'ping') return json_({ok:true, mailbox:Session.getEffectiveUser().getEmail(), fromName:CFG.FROM_NAME, signature:signature_(), sigNote:sigNote_(), canSend:true, multiTo:true, version:SCRIPT_VERSION});
   return json_({ok:false, error:'unknown action'});
 }
 function doPost(e){
@@ -87,7 +88,7 @@ function makeDrafts_(items, send){
         return Utilities.newBlob(bytes, mime, safeName_(String(f.name || 'Invoice').replace(/\.[a-z0-9]{2,5}$/i, '')) + ext);
       }).filter(Boolean);
       const sig = signature_();
-      const opts = {attachments:[pdf].concat(extra), name:CFG.FROM_NAME, htmlBody:bodyHtml_(body) + (sig ? '<br>' + sig : '')};
+      const opts = {attachments:[pdf].concat(extra), name:CFG.FROM_NAME, htmlBody:(it.bodyHtml ? String(it.bodyHtml).slice(0, 20000) : bodyHtml_(body)) + (sig ? '<br>' + sig : '')};
       if(cc) opts.cc = cc;
       if(send) count_();
       const d = GmailApp.createDraft(to, subject, body, opts);
@@ -120,6 +121,13 @@ function signature_(){
     const s = list.find(x => String(x.sendAsEmail).toLowerCase() === me.toLowerCase()) || list.find(x => x.isDefault) || {};
     return String(s.signature || '');
   }catch(e){ return ''; }
+}
+// why there's no signature, in words (for the console)
+function sigNote_(){
+  if(typeof Gmail === 'undefined') return 'The Gmail API service isn\'t added to this script (Services + → Gmail API), or the script wasn\'t redeployed after adding it.';
+  try{ Gmail.Users.Settings.SendAs.list('me'); }
+  catch(e){ return 'The Gmail API needs permission: in the script, run setup() once and allow access, then redeploy. (' + String(e.message || e).slice(0, 150) + ')'; }
+  return signature_() ? '' : 'pm@ has no signature set in Gmail (Gmail → Settings → General → Signature, and choose it for new emails).';
 }
 function count_(){
   const props = PropertiesService.getScriptProperties(), day = Utilities.formatDate(new Date(), 'America/New_York', 'yyyy-MM-dd');

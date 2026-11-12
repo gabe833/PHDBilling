@@ -7531,9 +7531,11 @@ async function stmtCall(body, get){
   if(!j.ok) throw new Error(j.error === "unauthorized" ? "The statements key wasn't accepted — paste it again from the script's log" : (j.error || "Statements script error"));
   return j;
 }
-const STMT_TPL_DEFAULT = {subject:"Owner Statement – {address} – {month}", body:`Hello {first},
+const STMT_TPL_DEFAULT = {subject:"Owner Statement – {address} – {month}", body:`{greeting} {first},
 
-Attached is your owner statement for {address} for {month}. It includes the income, expenses, and activity for the property that month.
+Attached is your owner statement for {address} for {month}. It includes the income, expenses, and activity for the property this month.
+
+{breakdown}
 
 Please let us know if you have any questions. Thank you for your continued business. 
 
@@ -7541,12 +7543,44 @@ Sincerely,
 
 PHD Property Management`};
 const stmtTpl = () => Object.assign({}, STMT_TPL_DEFAULT, (pmSettings() || {}).stmtTpl || {});
-const stmtFill = (t, first, addr, m) => String(t || "").replace(/Hello \{first\},/g, first ? `Hello ${first},` : "Hello,").replace(/\{first\}/g, first || "").replace(/\{address\}/g, addr).replace(/\{month\}/g, m ? monthLabel(m) : "");
+// "Good morning" / "Good afternoon" / "Good evening" by the time in Charleston when the email is written
+function stmtGreeting(){ const h = Number(new Intl.DateTimeFormat("en-US", {hour:"numeric", hourCycle:"h23", timeZone:"America/New_York"}).format(new Date())); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; }
+const stmtFill = (t, first, addr, m) => String(t || "").replace(/\{greeting\} \{first\},/g, first ? `${stmtGreeting()} ${first},` : `${stmtGreeting()},`).replace(/\{greeting\}/g, stmtGreeting()).replace(/Hello \{first\},/g, first ? `Hello ${first},` : "Hello,").replace(/\{first\}/g, first || "").replace(/\{address\}/g, addr).replace(/\{month\}/g, m ? monthLabel(m) : "");
 // the subject always says which month (a saved wording without {month} gets it added)
 const STMT_SUBJECT = (addr, m) => { const s = stmtFill(stmtTpl().subject, "", addr, m); return m && !s.includes(monthLabel(m)) ? `${s} – ${monthLabel(m)}` : s; };
 const STMT_BODY = (first, addr, m) => stmtFill(stmtTpl().body, first, addr, m);
 // this month's email for one property: the standard wording, or what was typed for it in the console
 function stmtEdits(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.emailEdits = mm.emailEdits || {}; return mm.emailEdits; }
+/* The simple statement breakdown that goes in the email where {breakdown} is: rent, what came out, what the owner gets.
+   text for the plain-text copy of the email, html (inline styles, for Gmail) for the one owners see. */
+function stmtBreakdown(m, pid){
+  const p = pmProp(pid), row = p && pmRow(m, pid); if(!row) return {text:"", html:""};
+  const c = pmCalc(row, p), R = [];
+  R.push(["Rent received", c.recv, c.creditC ? `${usd(c.rentDueC)} rent less a ${usd(c.creditC)} tenant credit` : c.dueC && c.recv < c.dueC ? `of ${usd(c.dueC)} due` : ""]);
+  if(c.otherC) R.push(["Other income", c.otherC, ""]);
+  if(c.repairsC) R.push(["Repairs and maintenance", -c.repairsC, ""]);
+  if(c.adminC) R.push(["Admin fee on repairs", -c.adminC, ""]);
+  if(c.pmFeeC) R.push(["Management fee", -c.pmFeeC, ""]);
+  if(c.leasingC) R.push(["Leasing fee", -c.leasingC, ""]);
+  (row.adjustments || []).filter(a => cents(a.amount)).forEach(a => R.push([String(a.note || "Adjustment").replace(/\s+/g, " ").slice(0, 90), cents(a.amount), ""]));
+  const owe = c.payoutC < 0, totL = owe ? "Balance due from you" : "Paid to you", totC = Math.abs(c.payoutC);
+  const sg = v => v < 0 ? "−" + usd(-v) : usd(v);
+  const text = R.map(([l, v, n]) => `${l}: ${sg(v)}${n ? " (" + n + ")" : ""}`).concat([`${totL}: ${usd(totC)}`]).join("\n");
+  const td = "padding:7px 0;border-bottom:1px solid #E6EAE9;font-size:14px;color:#222", tr = td + ";text-align:right;white-space:nowrap;padding-left:24px";
+  const html = `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:440px;margin:4px 0 18px;font-family:Arial,Helvetica,sans-serif">`
+    + `<tr><td colspan="2" style="padding:0 0 6px;font-size:12px;color:#6B7775;border-bottom:2px solid #1D5C57">${esc(monthLabel(m))} summary</td></tr>`
+    + R.map(([l, v, n]) => `<tr><td style="${td}">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr}">${sg(v)}</td></tr>`).join("")
+    + `<tr><td style="padding:9px 0 0;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:9px 0 0 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(totC)}</td></tr></table>`;
+  return {text, html};
+}
+// the email as sent: {breakdown} filled in, plain and HTML
+function stmtBodyOut(body, m, pid){
+  const B = stmtBreakdown(m, pid), esc2 = t => esc(t).replace(/\n/g, "<br>");
+  const text = String(body || "").replace(/\{breakdown\}/g, B.text);
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">` + String(body || "").split(/\n{2,}/).map(par =>
+    par.trim() === "{breakdown}" ? B.html : `<p style="margin:0 0 14px">${esc2(par).replace(/\{breakdown\}/g, B.html)}</p>`).join("") + `</div>`;
+  return {text, html};
+}
 function stmtCompose(m, x){
   const e = ((pmState().meta[m] || {}).emailEdits || {})[x.p.id] || {}, addr = stmtAddr(x.p);
   return {to:e.to || x.to, cc:e.cc != null ? e.cc : x.cc.join(", "), subject:e.subject || STMT_SUBJECT(addr, m), body:e.body || STMT_BODY(x.first, addr, m), edited:!!(e.subject || e.body)};
@@ -7747,7 +7781,7 @@ async function stmtMakeDrafts(m, list, opts){
       // takes one To, so the rest ride along in Cc there — everyone still gets it
       const toL = [...new Set(stmtSplit(c.to).filter(stmtEmailOk).map(e => e.toLowerCase()))];
       const ccL = [...new Set(toL.slice(1).concat(stmtSplit(c.cc).filter(stmtEmailOk).map(e => e.toLowerCase())))].filter(e => e !== toL[0]);
-      items.push({id:x.p.id, to:toL[0] || "", toAll:toL.join(","), cc:ccL.join(","), subject:c.subject, body:c.body, html:pmStatementPdfHTML(m, x.p.id, {attach:extra.length > 0}), fileName:stmtFileName(x.p, m), extra});
+      items.push({id:x.p.id, to:toL[0] || "", toAll:toL.join(","), cc:ccL.join(","), subject:c.subject, body:stmtBodyOut(c.body, m, x.p.id).text, bodyHtml:stmtBodyOut(c.body, m, x.p.id).html, html:pmStatementPdfHTML(m, x.p.id, {attach:extra.length > 0}), fileName:stmtFileName(x.p, m), extra});
     }
     let res;
     try{ res = await stmtCall({action:opts.send ? "send" : "drafts", items}); }
@@ -7843,7 +7877,7 @@ function pmStatementMailSheet(m){
       if(token.length < 32){ msg.textContent = "The key looks too short."; return; }
       msg.textContent = "Checking…";
       const prev = stmtConn(); setStmtConn({url, token});
-      try{ const j = await stmtCall({action:"ping"}, true); setStmtConn({url, token, mailbox:j.mailbox || "", signature:j.signature || "", fromName:j.fromName || "", canSend:!!j.canSend}); toast(`Connected — drafts will be saved in ${j.mailbox}`, true); draw(); }
+      try{ const j = await stmtCall({action:"ping"}, true); setStmtConn({url, token, mailbox:j.mailbox || "", signature:j.signature || "", fromName:j.fromName || "", canSend:!!j.canSend, version:Number(j.version) || 0, sigNote:j.sigNote || "", multiTo:!!j.multiTo}); toast(`Connected — drafts will be saved in ${j.mailbox}`, true); draw(); }
       catch(e){ setStmtConn(prev); msg.textContent = e.message; }
     };
     const chg = $("#smChange"); if(chg) chg.onclick = e => { e.preventDefault(); if(confirm("Disconnect the statements mailbox? You can paste a new URL and key afterwards.")){ setStmtConn(null); draw(); } };
@@ -7895,21 +7929,29 @@ function stmtEmailSheet(m, pid){
       ${x.why ? `<div class="pm-banner">${esc(x.why)}</div>` : ""}
       <div class="f2"><label class="fld"><span>To</span><input type="text" id="seTo" value="${esc(c.to)}"></label><label class="fld"><span>Cc</span><input type="text" id="seCc" value="${esc(c.cc)}"></label></div>
       <label class="fld"><span>Subject</span><input type="text" id="seSub" value="${esc(c.subject)}"></label>
-      <label class="fld"><span>Message</span><textarea id="seBody" rows="11">${esc(c.body)}</textarea></label>
+      <label class="fld"><span>Message</span><textarea id="seBody" rows="13">${esc(c.body)}</textarea><span class="help">{breakdown} becomes the month's summary table: rent, what came out, and what's paid to the owner.</span></label>
       <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
       <div class="bm-prev" id="sePrev"></div>
       <div class="se-att">${icon("file")} <a href="#" id="sePdf">${esc(stmtFileName(x.p, m))}</a><span class="muted">attached</span></div>
       ${stmtMdFiles(x.row).length ? `<label class="se-att"><input type="checkbox" id="seAttach" ${stmtAttachOn() ? "checked" : ""}> Also attach ${stmtMdFiles(x.row).length} vendor invoice${stmtMdFiles(x.row).length === 1 ? "" : "s"} from MagicDoor</label>` : ""}
       ${stmtLinesBlock(x.row)}
       <label class="ps-chk"><input type="checkbox" id="seTpl"> Use this subject and message for every owner statement from now on</label>
-      ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !sig ? `<p class="help">No Gmail signature found for pm@ — add the Gmail API service in the script to include it.</p>` : ""}
+      ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !(Number(conn.version) >= 2) ? `<div class="pm-banner">Update the pm@ script (apps-script/Statements.gs) so the summary table shows as a table — until then owners get it as plain lines.</div>` : ""}
+      ${stmtConn() && !sig ? `<p class="help" id="seSigNote">${esc(conn.sigNote || "No Gmail signature found for pm@ yet.")}</p>` : ""}
     </div>
     <div class="sheet-f"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
   openPanel();
   $("#shClose").onclick = closeSheet; $("#seBack").onclick = () => pmStatementMailSheet(m);
+  // pick up a signature or script update made since connecting (once per session)
+  if(stmtConn() && (!sig || !(Number(conn.version) >= 2)) && !stmtEmailSheet._pinged){
+    stmtEmailSheet._pinged = true;
+    stmtCall({action:"ping"}, true).then(j => { const c0 = stmtConn() || {};
+      if((j.signature || "") !== (c0.signature || "") || Number(j.version || 0) !== Number(c0.version || 0) || (j.sigNote || "") !== (c0.sigNote || "")){
+        setStmtConn(Object.assign({}, c0, {signature:j.signature || "", version:Number(j.version) || 0, sigNote:j.sigNote || "", multiTo:!!j.multiTo})); if($("#seBody")) stmtEmailSheet(m, pid); } }).catch(() => {});
+  }
   const sub = $("#seSub"), body = $("#seBody"), prev = $("#sePrev");
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
-  const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${html(body.value)}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
+  const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${stmtBodyOut(body.value, m, pid).html}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
   [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
   $("#sePdf").onclick = e => { e.preventDefault(); downloadPdf(pmStatementPdfHTML(m, pid, {attach:!!($("#seAttach") && $("#seAttach").checked)}), stmtFileName(pmProp(pid), m)); };
   stmtWireLines(sh, x.row);
@@ -7919,10 +7961,11 @@ function stmtEmailSheet(m, pid){
     // only what was changed here is kept for this month, so later changes to the owner's addresses still apply
     const e = {}, toV = $("#seTo").value.trim(), ccV = $("#seCc").value.trim(), norm = v => stmtSplit(v).map(x => x.toLowerCase()).join(",");
     if(norm(toV) !== norm(x.to)) e.to = toV; if(norm(ccV) !== norm(x.cc.join(", "))) e.cc = ccV;
-    if(sub.value !== std.subject) e.subject = sub.value; if(body.value !== std.body) e.body = body.value;
+    if(sub.value !== std.subject) e.subject = sub.value; const noG = t => String(t).replace(/^(Good (morning|afternoon|evening)|Hello)\b/, "");
+    if(noG(body.value) !== noG(std.body)) e.body = body.value;
     E[pid] = e;
     if($("#seTpl").checked){
-      const un = t => String(t).split(addr).join("{address}").split(monthLabel(m)).join("{month}").replace(x.first ? new RegExp("Hello " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^$/, "Hello {first},");
+      const un = t => String(t).split(addr).join("{address}").split(monthLabel(m)).join("{month}").replace(x.first ? new RegExp("(Hello|Good morning|Good afternoon|Good evening) " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^(Hello|Good morning|Good afternoon|Good evening),/, "{greeting} {first},");
       S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtTpl:{subject:un(sub.value), body:un(body.value)}});
       delete e.subject; delete e.body;
     }
