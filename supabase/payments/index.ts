@@ -479,7 +479,10 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
         if (row.paidOut) { bad = `${p.name} is already paid`; break; }
         if (holds.some((h) => h && h.status === "active" && (h.propIds || []).includes(pid) && (!h.from || h.from <= month) && (!h.to || h.to >= month))) { bad = `${p.name} is on hold`; break; }
         if (!(amounts[pid] > 0)) { bad = `Nothing to pay for ${p.name}`; break; }
-        if (amounts[pid] > Math.round(Number(row.rentReceived || 0) * 100) + Math.round(Number(row.otherIncome || 0) * 100) + 100) { bad = `${p.name}: more than the month took in — check the month first`; break; }
+        // what the month took in: rent, other income, and money added by an adjustment with a reason (October rent that
+        // came in after October's payout — 432 Coopers Hawk, Nov 2026 — or a balance carried in)
+        const plusC = ((row.adjustments || []) as Obj[]).reduce((a: number, x: Obj) => a + Math.max(0, Math.round(Number(x.amount) * 100) || 0), 0);
+        if (amounts[pid] > Math.round(Number(row.rentReceived || 0) * 100) + Math.round(Number(row.otherIncome || 0) * 100) + plusC + 100) { bad = `${p.name}: more than the month took in — check the month first`; break; }
         ps.push(p);
       }
       if (bad) { say(bad); continue; }
