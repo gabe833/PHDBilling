@@ -57,7 +57,9 @@ const PMCore = (function(){
     const payoutC = recordedC != null ? recordedC : calcC;
     const extrasC = EXTRA.reduce((a, k) => a + nz(row[k]), 0);
     const phdC = pmFeeC + adminC + leasingC + extrasC;
-    const dueC = nz(row.rentDue);
+    // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
+    const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
+    const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
     const thisM = (today || new Date().toISOString().slice(0, 10)).slice(0, 7);
     const flags = [];
     if(recordedC != null && Math.abs(recordedC - calcC) > 1)
@@ -91,7 +93,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */

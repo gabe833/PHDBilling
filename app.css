@@ -2658,3 +2658,17 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .exq-card.ok{display:flex;align-items:center;gap:10px;padding:10px 16px;font-size:13px;flex-wrap:wrap}
 .exq-card.ok .muted{font-size:12.5px}
 .exq-ok-i{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--green-soft,#e6f2ea);color:var(--green);font-size:11px;font-weight:700}
+/* credits to the tenant, in the month editor */
+.pm-cr{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.pm-cr-r{display:grid;grid-template-columns:140px 1fr 120px 32px;gap:8px;align-items:center}
+.pm-cr-r input{height:34px;min-width:0}
+.pm-cr-r.md{padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper,#fff)}
+.pm-cr-r.md .d{font-size:12.5px;color:var(--muted)}
+.pm-cr-r .t{font-size:13.5px;line-height:1.35}
+.pm-cr-r .t .sub{display:block;font-size:11.5px;color:var(--muted)}
+.pm-cr-r .num{text-align:right;color:var(--green)}
+.pm-cr-sum{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;font-size:12.5px;color:var(--muted);padding:2px 2px 0}
+.pm-cr-sum b{color:var(--ink)}
+.pm-cr-sum .ok{color:var(--green)}
+.pm-cr-sum .short{color:var(--gold)}
+@media (max-width:640px){.pm-cr-r{grid-template-columns:1fr 100px 32px}.pm-cr-r input[type=date],.pm-cr-r.md .d{grid-column:1/-1}}

@@ -58,7 +58,9 @@ const PMCore = (function(){
     const payoutC = recordedC != null ? recordedC : calcC;
     const extrasC = EXTRA.reduce((a, k) => a + nz(row[k]), 0);
     const phdC = pmFeeC + adminC + leasingC + extrasC;
-    const dueC = nz(row.rentDue);
+    // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
+    const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
+    const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
     const thisM = (today || new Date().toISOString().slice(0, 10)).slice(0, 7);
     const flags = [];
     if(recordedC != null && Math.abs(recordedC - calcC) > 1)
@@ -92,7 +94,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */
@@ -547,8 +549,8 @@ function mdFillMonth(m, lines){
   return n;
 }
 function mdExactLabels(){ return {rentDue:"rent due", rentReceived:"rent received", otherIncome:"other owner income", filters:"filter fee", lateFee:"late fee", applications:"application fee", reimbursement:"reimbursement (PHD)",
-  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout", mdCarried:"MagicDoor bills carried over"}; }
-function mdOwned(k){ return k === "mdNet" || k === "mdAdj" || k === "mdCarried"; }
+  pmFee:"PM fee", leasingFee:"leasing fee", adminFee:"admin fee on repairs", mdAdj:"other owner-statement lines", mdNet:"MagicDoor owner payout", mdCarried:"MagicDoor bills carried over", credits:"credits to the tenant"}; }
+function mdOwned(k){ return k === "mdNet" || k === "mdAdj" || k === "mdCarried" || k === "credits"; }
 function mdExactWant(g){
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   const rent = r2(g.rent), other = r2(g.other), credits = r2(g.credits), paid = r2(g.paid);
@@ -560,7 +562,9 @@ function mdExactWant(g){
   const settled = paid >= firstC, phdSettled = paid >= r2(firstC + rent - credits + other + lastC) - 0.005;
   return {rentDue:rent || null, rentReceived:paid > 0 ? r2(rentPaid) : null, otherIncome:otherPaid > 0 ? otherPaid : null,
     filters:settled && g.filters ? r2(g.filters) : null, lateFee:settled && g.lateFee ? r2(g.lateFee) : null, applications:settled && g.applications ? r2(g.applications) : null, reimbursement:phdSettled && g.phd ? r2(g.phd) : null,
-    pending:r2(g.pending)};
+    pending:r2(g.pending),
+    // credits MagicDoor gave the tenant this month (6 Murray Hill, Nov 2026: $339.63 for work done, owner approved) — each with its day and reason
+    credits:credits > 0 ? {amount:credits, lines:(Array.isArray(g.cr) && g.cr.length ? g.cr.map(([d, a, t]) => ({d:d || null, a:r2(a), t:String(t || "")})) : [{d:null, a:credits, t:""}])} : null};
 }
 function mdStmtCap(x, g, st){
   if(!x || !g || !st || !(st.pre > 0)) return x;
@@ -650,11 +654,13 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
     Object.keys(mdExactLabels()).forEach(k => {
       const v = want[k];
       // something MagicDoor filled in earlier that its data no longer shows (a charge moved to PHD's side, say) comes off
+      if(v == null && k === "credits"){ if(g && (rr.credits || []).some(x => x.md)) out.exact.push({p, row:rr, k, from:"", to:null}); return; }
       if(v == null){ if(g && /^(otherIncome|reimbursement|lateFee|filters|applications)$/.test(k) && was[k] != null && PMCore.has(rr[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
       if(mdOwned(k)){
         const adjKey = x => x ? Math.round((Number(x.amount) || 0) * 100) + "|" + (x.lines || []).map(l => [Math.round((Number(l.a) || 0) * 100), l.d || "", l.k || "", l.t || ""].join("~")).join(";") + "|" + (x.returned || []).map(l => Math.round((Number(l.a) || 0) * 100) + "~" + (l.d || "")).join(";") : "";   // key order changes in storage
-        const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
-        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried"});
+        const crKey = x => x ? (x.lines || []).map(l => Math.round((Number(l.a) || 0) * 100) + "~" + (l.d || "") + "~" + (l.t || "")).join(";") : "";
+        const same = k === "mdAdj" ? adjKey(was.mdAdj) === adjKey(v) : k === "credits" ? crKey(was.credits) === crKey(v) && (rr.credits || []).some(x => x.md) : PMCore.has(rr[k]) && cents(rr[k]) === cents(v);
+        if(!same) out.exact.push({p, row:rr, k, from:k === "mdAdj" ? (was.mdAdj ? was.mdAdj.amount : "") : k === "credits" ? (was.credits ? was.credits.amount : "") : (rr[k] ?? ""), to:v, quiet:k === "mdNet" || k === "mdCarried"});
         return;
       }
       if(v === "clear"){ if(PMCore.has(rr[k]) && PMCore.has(was[k]) && cents(rr[k]) === cents(was[k])) out.exact.push({p, row:rr, k, from:rr[k], to:null}); return; }
@@ -969,6 +975,16 @@ function mdApply(opts){
     lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} rent ${usd(cents(amount))} recorded (paid in MagicDoor${lastPayment ? " " + fdateS(lastPayment) : ""})`});
   });
   (plan.exact || []).forEach(({p, row, k, from, to, quiet}) => {
+    if(k === "credits"){
+      // credits MagicDoor gave the tenant: kept in step with MagicDoor; ones added here by hand are left alone
+      row.credits = (row.credits || []).filter(a => !a.md);
+      ((to && to.lines) || []).forEach(l => row.credits.push({id:uid(), md:true, date:l.d || null, amount:l.a, note:l.t || "Credit in MagicDoor"}));
+      if(!row.credits.length) delete row.credits;
+      const md = Object.assign({}, row.md, {at:today}); if(to) md.credits = to; else delete md.credits; row.md = md;
+      if(typeof pmTouch === "function") pmTouch(row);
+      lines.push({prop:p.name, pid:p.id, what:`${monthLabel(row.month)} ${to ? `credit to the tenant ${usd(cents(to.amount))}${to.lines && to.lines[0] && to.lines[0].t ? " — " + to.lines[0].t : ""}` : "MagicDoor credit removed"} (MagicDoor ledger)`});
+      return;
+    }
     if(k === "mdAdj"){
       // other lines on MagicDoor's owner statement (an owner contribution, a refund): one adjustment the sync keeps in step
       row.adjustments = (row.adjustments || []).filter(a => !a.md);

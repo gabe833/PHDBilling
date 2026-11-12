@@ -398,7 +398,12 @@ function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string)
       } else if (!/fail|return|declin/.test(st)) add(m, "pending", amt);
       continue;
     }
-    if (type === "credit") { add(m, "credits", amt); continue; }
+    if (type === "credit") {
+      add(m, "credits", amt);
+      // each credit's day, amount and what it was for ("Credit for work done previously - Owner Approved"), for the console's Credits section
+      const o = out[m] as Obj; (o.cr = (o.cr as unknown[] as [string, number, string][]) || []).push([S(D(e.transactionDate)).slice(0, 10), Math.round(amt * 100) / 100, S(e.description).replace(/\s+/g, " ").trim().slice(0, 100)]);
+      continue;
+    }
     if (type === "lateFee" || /late/i.test(acct)) { add(m, "lateFee", amt); continue; }
     if (type !== "charge") continue;
     if (B(e.companyCharge)) add(m, /filter|hvac/i.test(acct + " " + S(e.description)) ? "filters" : /applic/i.test(acct) ? "applications" : "phd", amt);
