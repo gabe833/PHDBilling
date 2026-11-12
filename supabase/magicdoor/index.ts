@@ -907,7 +907,8 @@ Deno.serve(async (req) => {
       }
       return json({ at: new Date().toISOString(), auth: "ok", endpoints: out });
     }
-    if (mode === "probe") return json({ at: new Date().toISOString(), endpoints: await probe(MORE) });
+    // read-only look at other MagicDoor addresses (GET only, /company-app/ only): finds where an endpoint moved to
+    if (mode === "probe") { const ask = Array.isArray(body.paths) ? (body.paths as unknown[]).map(S).filter((x) => /^\/company-app\/[A-Za-z0-9/_{}?=&.-]{1,120}$/.test(x)).slice(0, 40) : []; return json({ at: new Date().toISOString(), endpoints: await probe(ask.length ? ask : MORE) }); }
     if (mode === "billFile") return json(await billFile(S(body.billId), S(body.fileId)));
     if (mode === "billSchema") return json(await billSchema(S(body.step)));
     if (mode === "billPreview") return json(await billPreview(body));
