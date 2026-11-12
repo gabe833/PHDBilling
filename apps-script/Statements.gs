@@ -20,7 +20,7 @@
    Updating an existing install: paste the new version, then Deploy → Manage
    deployments → edit (pencil) → Version: New version → Deploy. The URL stays.
    ===================================================================== */
-const SCRIPT_VERSION = 2;   // v2: the email body comes as HTML from the console (the statement breakdown table); several statements in one email; ping says why there's no signature
+const SCRIPT_VERSION = 3;   // v3: a sent message in the thread counts as sent even with a newer draft there; v2: the email body comes as HTML from the console (the statement breakdown table); several statements in one email; ping says why there's no signature
 const CFG = {
   FROM_NAME: 'PHD Property Management',   // the name owners see next to pm@'s address
   LABEL: 'AutoDraft/Owner Statements',     // every statement draft gets this Gmail label (it stays on after sending)
@@ -147,9 +147,11 @@ function status_(items){
         let th = null; try{ th = GmailApp.getThreadById(String(it.threadId)); }catch(e){}
         if(!th || th.isInTrash()) return {id:it.id, state:'deleted'};
         const ms = th.getMessages().filter(m => !m.isInTrash());
-        if(ms.some(m => m.isDraft())) return {id:it.id, state:'draft'};
+        // a message in the thread that went out means the statement was sent — even if a newer draft sits in the same
+        // thread (an updated statement not sent yet)
         const sent = ms.filter(m => !m.isDraft());
-        return sent.length ? {id:it.id, state:'sent', at:sent[0].getDate().toISOString()} : {id:it.id, state:'deleted'};
+        if(sent.length) return {id:it.id, state:'sent', at:sent[sent.length - 1].getDate().toISOString(), draftToo:ms.some(m => m.isDraft())};
+        return ms.some(m => m.isDraft()) ? {id:it.id, state:'draft'} : {id:it.id, state:'deleted'};
       }
       if(it.draftId){ try{ GmailApp.getDraft(String(it.draftId)).getMessage(); return {id:it.id, state:'draft'}; }catch(e){ return {id:it.id, state:'gone'}; } }
       return {id:it.id, state:'gone'};

@@ -8501,6 +8501,9 @@ function pgPmStatements(){
   const m = stMonth(), meta = P2.meta[m] || {};
   const months = [...new Set(pmMonths().filter(mm => pmMonthRows(mm).some(x => !x.row.detailOnly)).concat([m]))].sort().reverse();
   const cands = stmtCandidates(m);
+  // drafts sent straight from Gmail: ask pm@ where each one stands (once a minute while this page is open)
+  if(stmtConn() && Date.now() - (pgPmStatements._chk || 0) > 60000){ pgPmStatements._chk = Date.now();
+    stmtRefresh(m).then(ch => { if(ch && S.ui.view === "pmStatements"){ toast("Statements sent from Gmail are marked sent"); render(); } }).catch(() => {}); }
   const by = {todo:[], draft:[], sent:[], blocked:[]}; cands.forEach(x => by[stState(x)].push(x));
   // reviewed: the email this statement goes out in was checked (and its numbers haven't changed since)
   const revOf = new Map(); cands.forEach(x => { const rv = x.why ? null : stmtReview(m, stmtGroupFor(m, x, cands)); revOf.set(x.p.id, rv); });
@@ -8566,11 +8569,20 @@ function pgPmStatements(){
         : `<span class="st-rev" title="${esc("Reviewed by " + (r.by || "someone") + " · " + fdateS(String(r.at).slice(0, 10)))}">${icon("check")} Reviewed</span>`) : "")(revOf.get(x.p.id))}</td>
       <td class="st-acts">${x.o ? `<button class="btn sm ghost" data-strc="${x.o.id}" type="button">Recipients</button>` : `<button class="btn sm" data-pp="${x.p.id}" type="button">Add owner</button>`}
         <button class="btn sm" data-pv="${x.p.id}" type="button" ${x.why ? "disabled" : ""}>${st === "sent" ? "View" : "Preview & send"}</button>
-        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button></td>`;
+        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button>${st === "draft" || st === "todo" ? `<button class="btn sm ghost" data-mksent="${x.p.id}" type="button" title="Sent some other way (from Gmail, or another mailbox): record it as sent">Mark sent</button>` : ""}</td>`;
     tb.appendChild(tr);
   });
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
   if(!vis.length) card.appendChild(elm("div", "empty", `<b>Nothing here</b><p>No statements match this filter.</p>`));
+  tb.querySelectorAll("[data-mksent]").forEach(b => b.onclick = () => {
+    const x = cands.find(y => y.p.id === b.dataset.mksent); if(!x) return;
+    const xs = stmtGroupFor(m, x, cands), names = xs.map(y => y.p.name);
+    const day = prompt(`Record ${xs.length > 1 ? "these " + xs.length + " statements (" + stmtJoin(names) + ")" : x.p.name + "'s statement"} as sent?\n\nDate sent (YYYY-MM-DD):`, todayISO()); if(day == null) return;
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(day.trim()) ? day.trim() : todayISO();
+    snapshot(); const D = stmtDrafted(m), who = (typeof Cloud !== "undefined" && Cloud.email) || "";
+    xs.forEach(y => { D[y.p.id] = Object.assign({}, D[y.p.id] || {}, {state:"sent", sentAt:d + "T12:00:00.000Z", at:(D[y.p.id] || {}).at || new Date().toISOString(), to:(D[y.p.id] || {}).to || y.to, by:(D[y.p.id] || {}).by || who, markedBy:who}); });
+    commit(); actLog("statements", `${stmtJoin(names)} — ${monthLabel(m)} statement${xs.length > 1 ? "s" : ""} marked sent (${d})`); render(); toast("Marked sent", true);
+  });
   v.appendChild(card);
   t.querySelectorAll("[data-strc]").forEach(b => b.onclick = () => stRecipientsSheet(b.dataset.strc));
   t.querySelectorAll("[data-pp]").forEach(b => b.onclick = () => pmPropSheet(b.dataset.pp));
