@@ -19379,7 +19379,9 @@ function pgPayouts(){
   const revOk = x => { const r = revOf(x); return !!(r && !r.stale); };
   const notRev = ready.filter(x => !revOk(x)); ready = ready.filter(revOk);
   const noPay = rows.filter(x => x.k === "none" && x.p.status === "active" && !(x.row && x.row.paidOut)).map(x => { const c = x.s.c || pmCalc(x.row, x.p);
-    return Object.assign({}, x, {why:c.recv <= 0 ? "Rent not in yet" : c.payoutC < 0 ? `Owner owes ${usd(-c.payoutC)}` : "$0 to pay"}); });
+    // a payout kept back to win back a double payout (October paid twice) — the workbook still lists it as a payment
+    const rec = (x.row.adjustments || []).filter(a => a.recov && cents(a.amount) < 0), recC = rec.reduce((a, r) => a + cents(r.amount), 0);
+    return Object.assign({}, x, {amountC:c.payoutC, why:rec.length && c.recv > 0 ? `Kept back: recovering a double payout (${usd(-recC)} of ${usd(c.payoutC - recC)})` : c.recv <= 0 ? "Rent not in yet" : c.payoutC < 0 ? `Owner owes ${usd(-c.payoutC)}` : "$0 to pay"}); });
   ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = !!okToSend(x); });
   const picked = ready.filter(x => sel[x.m + "|" + x.p.id] && okToSend(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
   $("#pgCrumb").textContent = "Property management · Money"; $("#pgTitle").textContent = "Owner payouts";
