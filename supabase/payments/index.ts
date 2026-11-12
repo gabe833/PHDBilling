@@ -1319,6 +1319,8 @@ async function ownerPayouts(): Promise<number> {
     const ref = refOf(b), m = ref.match(OWN_RE); if (!m) { left.push(b); continue; }
     const month = `${m[1]}-${m[2]}`, key = alnum(m[3]), amt = cAmt(b);
     let hits = props.filter((p) => key && [...nameForms(p.name), ...nameForms(p.address)].some((f) => f && f.startsWith(key)));
+    // "1635MEMMINGERA" also starts "1635 Memminger Avenue #B": a rental whose name matches the key exactly wins
+    { const exact = hits.filter((p) => [...nameForms(p.name), ...nameForms(p.address)].some((f) => f === key)); if (exact.length) hits = exact; }
     if (hits.length > 1) { const h = hits.filter((p) => ownerHit(b, ownerOf(p))); if (h.length) hits = h; }
     if (hits.length > 1) { const h: Obj[] = []; for (const p of hits) if (owedOf(await rowOf(month, p.id)) === amt) h.push(p); if (h.length === 1) hits = h; }
     if (hits.length !== 1) { (b as Obj)._month = month; left.push(b); continue; }
@@ -1394,7 +1396,9 @@ async function ownerBillsList(): Promise<Obj> {
     const status = /FAIL|REJECT|CANCEL|RETURN/.test(ms) ? "failed" : st === "PAID" && !(Number(b.amountScheduled) > 0) ? (/PEND|PROCESS/.test(ms) ? "pending" : "paid")
       : (st === "SCHEDULED" || sch.length || Number(b.amountScheduled) > 0) ? "scheduled" : st === "UNPAID" ? "unpaid" : st.toLowerCase() || "unknown";
     let pids = byBill.get(S(b.id)) || [];
-    if (!pids.length) pids = props.filter((p) => key && [...nameForms(p.name), ...nameForms(p.address)].some((f) => f && f.startsWith(key))).map((p) => S(p.id)).slice(0, 1);
+    if (!pids.length) { const forms = (p: Obj) => [...nameForms(p.name), ...nameForms(p.address)];
+      const exact = props.filter((p) => key && forms(p).some((f) => f === key)), loose = props.filter((p) => key && forms(p).some((f) => f && f.startsWith(key)));
+      pids = (exact.length ? exact : loose.length === 1 ? loose : []).map((p) => S(p.id)).slice(0, 1); }
     return { id: S(b.id), ref, month, amountC: cAmt(b), status, vendor: S(b.vendorName || (b.vendor || {}).name), due: day(b.dueDate), created: day(b.createdAt || b.invoiceDate), paidDate: day(b.paidDate),
       when: day(((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate) || ""), pids };
   }).sort((a, b) => b.month.localeCompare(a.month) || a.ref.localeCompare(b.ref));
