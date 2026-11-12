@@ -7599,11 +7599,12 @@ function stmtCompose(m, x){
   const e = ((pmState().meta[m] || {}).emailEdits || {})[x.p.id] || {}, addr = stmtAddr(x.p);
   return {to:e.to || x.to, cc:e.cc != null ? e.cc : x.cc.join(", "), subject:e.subject || STMT_SUBJECT(addr, m), body:e.body || STMT_BODY(x.first, addr, m), edited:!!(e.subject || e.body)};
 }
-/* Statements that go to exactly the same people can go out as one email, switched on for each set of recipients
-   (Susan Reed & Stephen Welt: 12 Bee St #D, 31 Radcliffe and 90 Radcliffe #B). Kept as pmSettings.stmtOneEmail[recipients]. */
+/* Statements that go to exactly the same people go out as one email by default (Susan Reed & Stephen Welt: 12 Bee St #D,
+   31 Radcliffe and 90 Radcliffe #B; all of Lee Judy's rentals). "Send separately" turns it off for that set of recipients:
+   pmSettings.stmtOneEmail[recipients] = false. */
 const stmtRecipKey = x => [...new Set(x.toList.concat(x.cc).map(e => e.toLowerCase()))].sort().join(",");
-const stmtOneOn = k => !!((pmSettings() || {}).stmtOneEmail || {})[k];
-function stmtSetOne(k, on){ snapshot(); const cur = Object.assign({}, (S.pmSettings || {}).stmtOneEmail || {}); if(on) cur[k] = true; else delete cur[k]; S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtOneEmail:cur}); commit(); }
+const stmtOneOn = k => ((pmSettings() || {}).stmtOneEmail || {})[k] !== false;
+function stmtSetOne(k, on){ snapshot(); const cur = Object.assign({}, (S.pmSettings || {}).stmtOneEmail || {}); cur[k] = !!on; S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtOneEmail:cur}); commit(); }
 function stmtGroups(list){
   const g = new Map(); list.forEach(x => { const r = !x.why && x.toList.length ? stmtRecipKey(x) : "", k = r && stmtOneOn(r) ? r : "solo:" + x.p.id; if(!g.has(k)) g.set(k, []); g.get(k).push(x); });
   return [...g.values()];

@@ -87,8 +87,8 @@ function makeDrafts_(items, send){
         const ext = mime === 'application/pdf' ? '.pdf' : '.' + mime.split('/')[1].replace('jpeg', 'jpg');
         return Utilities.newBlob(bytes, mime, safeName_(String(f.name || 'Invoice').replace(/\.[a-z0-9]{2,5}$/i, '')) + ext);
       }).filter(Boolean);
-      // more statements in the same email (one owner with several properties): each becomes its own PDF, up to 8
-      const more = (Array.isArray(it.statements) ? it.statements : []).slice(0, 8).map(x => Utilities.newBlob(String(x && x.html || ''), MimeType.HTML, 'statement.html').getAs(MimeType.PDF)
+      // more statements in the same email (one owner with several properties): each becomes its own PDF, up to 30
+      const more = (Array.isArray(it.statements) ? it.statements : []).slice(0, 30).map(x => Utilities.newBlob(String(x && x.html || ''), MimeType.HTML, 'statement.html').getAs(MimeType.PDF)
         .setName(safeName_(String(x && x.fileName || 'Owner Statement').replace(/\.pdf$/i, '')) + '.pdf'));
       const sig = signature_();
       const opts = {attachments:[pdf].concat(more, extra), name:CFG.FROM_NAME, htmlBody:(it.bodyHtml ? String(it.bodyHtml).slice(0, 20000) : bodyHtml_(body)) + (sig ? '<br>' + sig : '')};
