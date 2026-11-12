@@ -17463,7 +17463,11 @@ function pmLateRentCarry(){
       const mdRecvC = mdNow != null ? mdNow : r.md && has(r.md.rentReceived) ? cents(r.md.rentReceived) : null;
       let unpaidC = 0, shownC = 0;
       if(pays && paid != null && day){
-        const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
+        // what came in on or after the payout day FOR THIS MONTH's rent: MagicDoor's allocation says which month each payment
+        // went to, so next month's rent paid early (31 Radcliffe: Oct 30–31, all November's) isn't mistaken for late rent
+        const afterC = Array.isArray(L.alloc) && L.alloc.length
+          ? L.alloc.filter(a => String(a[0]) >= day).reduce((t, a) => t + (a[2] || []).filter(x => x[0] === m && x[1] === "rent").reduce((u, x) => u + Number(x[2] || 0), 0), 0)
+          : pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
         const gap = calcC - paid;
         if(gap > 100){
           const owed = mdRecvC != null && has(r.rentReceived) ? Math.max(0, cents(r.rentReceived) - mdRecvC) : 0;
