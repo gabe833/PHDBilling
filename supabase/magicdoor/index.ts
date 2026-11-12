@@ -30,7 +30,7 @@ import { runApply } from "./engine.js";
 const AUTH_URL = "https://auth.magicdoor.com/api-keys/token";
 const API = "https://api.portal.magicdoor.com";
 // MagicDoor split vendors, work orders and accounting off the portal host (Nov 2026); those answer under company-portal
-const ACCOUNTING = "https://accounting.magicdoor.com/company-portal", MAINTENANCE = "https://services.magicdoor.com/maintenance/company-portal";
+const MAINTENANCE = "https://services.magicdoor.com/maintenance/company-portal";   // MagicDoor moved vendors and work orders here (Nov 2026)
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
