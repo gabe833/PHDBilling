@@ -2672,3 +2672,5 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 .pm-cr-sum .ok{color:var(--green)}
 .pm-cr-sum .short{color:var(--gold)}
 @media (max-width:640px){.pm-cr-r{grid-template-columns:1fr 100px 32px}.pm-cr-r input[type=date],.pm-cr-r.md .d{grid-column:1/-1}}
+/* statements that share one email */
+.sm-t .sm-grp,.st-grp{display:block;font-size:12px;color:var(--teal,#1D5C57);margin-top:2px}

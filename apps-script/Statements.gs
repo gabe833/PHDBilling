@@ -20,7 +20,7 @@
    Updating an existing install: paste the new version, then Deploy → Manage
    deployments → edit (pencil) → Version: New version → Deploy. The URL stays.
    ===================================================================== */
-const SCRIPT_VERSION = 2;   // v2: the email body comes as HTML from the console (the statement breakdown table); ping says why there's no signature
+const SCRIPT_VERSION = 2;   // v2: the email body comes as HTML from the console (the statement breakdown table); several statements in one email; ping says why there's no signature
 const CFG = {
   FROM_NAME: 'PHD Property Management',   // the name owners see next to pm@'s address
   LABEL: 'AutoDraft/Owner Statements',     // every statement draft gets this Gmail label (it stays on after sending)
@@ -87,8 +87,11 @@ function makeDrafts_(items, send){
         const ext = mime === 'application/pdf' ? '.pdf' : '.' + mime.split('/')[1].replace('jpeg', 'jpg');
         return Utilities.newBlob(bytes, mime, safeName_(String(f.name || 'Invoice').replace(/\.[a-z0-9]{2,5}$/i, '')) + ext);
       }).filter(Boolean);
+      // more statements in the same email (one owner with several properties): each becomes its own PDF, up to 8
+      const more = (Array.isArray(it.statements) ? it.statements : []).slice(0, 8).map(x => Utilities.newBlob(String(x && x.html || ''), MimeType.HTML, 'statement.html').getAs(MimeType.PDF)
+        .setName(safeName_(String(x && x.fileName || 'Owner Statement').replace(/\.pdf$/i, '')) + '.pdf'));
       const sig = signature_();
-      const opts = {attachments:[pdf].concat(extra), name:CFG.FROM_NAME, htmlBody:(it.bodyHtml ? String(it.bodyHtml).slice(0, 20000) : bodyHtml_(body)) + (sig ? '<br>' + sig : '')};
+      const opts = {attachments:[pdf].concat(more, extra), name:CFG.FROM_NAME, htmlBody:(it.bodyHtml ? String(it.bodyHtml).slice(0, 20000) : bodyHtml_(body)) + (sig ? '<br>' + sig : '')};
       if(cc) opts.cc = cc;
       if(send) count_();
       const d = GmailApp.createDraft(to, subject, body, opts);
