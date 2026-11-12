@@ -8569,7 +8569,7 @@ function pgPmStatements(){
         : `<span class="st-rev" title="${esc("Reviewed by " + (r.by || "someone") + " · " + fdateS(String(r.at).slice(0, 10)))}">${icon("check")} Reviewed</span>`) : "")(revOf.get(x.p.id))}</td>
       <td class="st-acts">${x.o ? `<button class="btn sm ghost" data-strc="${x.o.id}" type="button">Recipients</button>` : `<button class="btn sm" data-pp="${x.p.id}" type="button">Add owner</button>`}
         <button class="btn sm" data-pv="${x.p.id}" type="button" ${x.why ? "disabled" : ""}>${st === "sent" ? "View" : "Preview & send"}</button>
-        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button>${st === "draft" || st === "todo" ? `<button class="btn sm ghost" data-mksent="${x.p.id}" type="button" title="Sent some other way (from Gmail, or another mailbox): record it as sent">Mark sent</button>` : ""}</td>`;
+        <button class="btn sm ghost" data-pdf="${x.p.id}" type="button" title="Download the statement PDF">PDF</button>${st === "draft" ? `<button class="btn sm ghost" data-mksent="${x.p.id}" type="button" title="Sent some other way (from Gmail, or another mailbox): record it as sent">Mark sent</button>` : ""}</td>`;
     tb.appendChild(tr);
   });
   t.appendChild(tb); wrap.appendChild(t); card.appendChild(wrap);
