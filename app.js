@@ -7575,14 +7575,31 @@ function stmtBreakdown(m, pid){
     + `<tr><td style="padding:9px 0 0;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:9px 0 0 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(totC)}</td></tr></table>`;
   return {text, html};
 }
-// several properties in one email: a table for each, headed by the property, and the total across them
+// several properties in one email: the totals across all of them first (rental income, other income, repairs, fees,
+// adjustments, tenant credits, what's paid), then a table for each property
 function stmtBreakdownMany(m, pids){
   if(pids.length === 1) return stmtBreakdown(m, pids[0]);
   const parts = pids.map(pid => ({p:pmProp(pid), B:stmtBreakdown(m, pid), c:pmCalc(pmRow(m, pid), pmProp(pid))}));
-  const totC = parts.reduce((a, x) => a + x.c.payoutC, 0);
-  const text = parts.map(x => `${x.p.name}\n${x.B.text}`).join("\n\n") + `\n\n${totC < 0 ? "Balance due from you" : "Total paid to you"}, all ${parts.length} properties: ${usd(Math.abs(totC))}`;
-  const html = parts.map(x => `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#1A2322;margin:6px 0 2px">${esc(x.p.name)}</div>` + x.B.html).join("")
-    + `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:440px;margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;background:#EEF4F3"><tr><td style="padding:10px 12px;font-size:15px;font-weight:bold;color:#1A2322">${totC < 0 ? "Balance due from you" : "Total paid to you"} · ${parts.length} properties</td><td style="padding:10px 12px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(Math.abs(totC))}</td></tr></table>`;
+  const T = k => parts.reduce((a, x) => a + (x.c[k] || 0), 0);
+  const tot = {recv:T("recv"), other:T("otherC"), rep:T("repairsC"), admin:T("adminC"), pm:T("pmFeeC"), lease:T("leasingC"), adj:T("adjC"), cred:T("creditC"), pay:T("payoutC")};
+  const R = [["Rental income", tot.recv, tot.cred ? `after ${usd(tot.cred)} in tenant credits` : ""]];
+  if(tot.other) R.push(["Other income", tot.other, ""]);
+  if(tot.rep) R.push(["Maintenance and repairs", -tot.rep, ""]);
+  if(tot.admin) R.push(["Admin fees on repairs", -tot.admin, ""]);
+  if(tot.pm) R.push(["Management fees", -tot.pm, ""]);
+  if(tot.lease) R.push(["Leasing fees", -tot.lease, ""]);
+  if(tot.adj) R.push(["Adjustments", tot.adj, ""]);
+  if(tot.cred) R.push(["Tenant credits", 0, `${usd(tot.cred)} given to tenants, already left out of rental income`]);
+  const owe = tot.pay < 0, totL = owe ? "Balance due from you" : "Total paid to you";
+  const sg = v => v < 0 ? "−" + usd(-v) : usd(v);
+  const td = "padding:7px 0;border-bottom:1px solid #D5E2DF;font-size:14px;color:#222", tr = td + ";text-align:right;white-space:nowrap;padding-left:24px";
+  const sumText = `${monthLabel(m)} totals, all ${parts.length} properties\n` + R.map(([l, v, n]) => `${l}: ${l === "Tenant credits" ? usd(tot.cred) : sg(v)}${n && l !== "Tenant credits" ? " (" + n + ")" : ""}`).join("\n") + `\n${totL}: ${usd(Math.abs(tot.pay))}`;
+  const sumHtml = `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:440px;margin:4px 0 22px;font-family:Arial,Helvetica,sans-serif;background:#EEF4F3">`
+    + `<tr><td colspan="2" style="padding:10px 14px 6px;font-size:12px;color:#4A5957;border-bottom:2px solid #1D5C57">${esc(monthLabel(m))} totals · all ${parts.length} properties</td></tr>`
+    + R.map(([l, v, n]) => `<tr><td style="${td};padding-left:14px">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr};padding-right:14px">${l === "Tenant credits" ? usd(tot.cred) : sg(v)}</td></tr>`).join("")
+    + `<tr><td style="padding:10px 14px;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:10px 14px 10px 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(Math.abs(tot.pay))}</td></tr></table>`;
+  const text = sumText + "\n\n" + parts.map(x => `${x.p.name}\n${x.B.text}`).join("\n\n");
+  const html = sumHtml + parts.map(x => `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#1A2322;margin:6px 0 2px">${esc(x.p.name)}</div>` + x.B.html).join("");
   return {text, html};
 }
 // the greeting as of right now (a draft written in the morning and sent after lunch says "Good afternoon")
@@ -7619,6 +7636,38 @@ function stmtSameTo(m, x, cands){
 // the ones that actually share an email with it
 function stmtGroupFor(m, x, cands){ const same = stmtSameTo(m, x, cands); return same.length > 1 && stmtOneOn(stmtRecipKey(x)) ? same : [x]; }
 const stmtGroupKey = xs => "g:" + xs.map(x => x.p.id).sort().join("+");
+/* "Reviewed": someone checked this email and it's good to send. Kept per email for the month (meta.reviewed), with the
+   numbers it was checked against: if a statement's money changes afterwards it shows "Changed since review". */
+const stmtRevKey = xs => xs.length > 1 ? stmtGroupKey(xs) : "p:" + xs[0].p.id;
+const stmtRevSig = (m, xs) => xs.map(x => { const c = pmCalc(x.row, x.p); return [c.recv, c.repairsC, c.adminC, c.pmFeeC, c.leasingC, c.adjC, c.otherC, c.payoutC].join("."); }).join("|");
+function stmtReview(m, xs){
+  const r = (((pmState().meta[m] || {}).reviewed) || {})[stmtRevKey(xs)];
+  return r ? Object.assign({}, r, {stale:r.sig !== stmtRevSig(m, xs)}) : null;
+}
+function stmtSetReview(m, xs, on){
+  snapshot(); const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.reviewed = mm.reviewed || {};
+  if(on) mm.reviewed[stmtRevKey(xs)] = {by:(typeof Cloud !== "undefined" && (Cloud.name || Cloud.email)) || "", at:new Date().toISOString(), sig:stmtRevSig(m, xs)};
+  else delete mm.reviewed[stmtRevKey(xs)];
+  commit();
+}
+const stmtRevTag = rv => rv ? (rv.stale ? `<span class="tag gold" title="${esc("Reviewed by " + (rv.by || "someone") + " — the numbers changed after that")}">Changed since review</span>`
+  : `<span class="tag green" title="${esc("Reviewed by " + (rv.by || "someone") + " · " + fdateS(String(rv.at).slice(0, 10)))}">✓ Reviewed</span>`) : "";
+// one box per address, with a button to add another
+function stmtAddrBoxes(host, list, onChange){
+  let L = list.length ? list.slice() : [""];
+  const draw = () => {
+    host.innerHTML = L.map((e, i) => `<div class="se-addr"><input type="email" value="${esc(e)}" data-ai="${i}" placeholder="name@example.com" autocomplete="off">${L.length > 1 || e ? `<button class="btn sm ghost" type="button" data-ax="${i}" title="Remove" aria-label="Remove ${esc(e || "this address")}">✕</button>` : ""}</div>`).join("")
+      + `<button class="btn sm ghost se-add" type="button">${icon("plus")} Add another</button>`;
+    host.querySelectorAll("[data-ai]").forEach(inp => {
+      inp.oninput = () => { L[+inp.dataset.ai] = inp.value.trim(); inp.classList.toggle("bad", !!inp.value.trim() && !stmtEmailOk(inp.value)); onChange(); };
+      inp.onpaste = ev => { const t = (ev.clipboardData || window.clipboardData).getData("text"), parts = stmtSplit(t); if(parts.length > 1){ ev.preventDefault(); L.splice(+inp.dataset.ai, 1, ...parts); draw(); onChange(); } };
+    });
+    host.querySelectorAll("[data-ax]").forEach(b => b.onclick = () => { L.splice(+b.dataset.ax, 1); if(!L.length) L = [""]; draw(); onChange(); });
+    host.querySelector(".se-add").onclick = () => { L.push(""); draw(); const ins = host.querySelectorAll("[data-ai]"); ins[ins.length - 1].focus(); };
+  };
+  draw();
+  return () => L.map(x => x.trim()).filter(Boolean).join(", ");
+}
 const stmtJoin = a => a.length <= 2 ? a.join(" and ") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
 function stmtComposeGroup(m, xs){
   if(xs.length === 1) return stmtCompose(m, xs[0]);
@@ -7888,15 +7937,16 @@ function pmStatementMailSheet(m){
         <div class="sm-list">${stmtGroups(ready).map(g => {
             // one row per email: statements that go to the same people are one row, with every property listed
             const x = g[0], many = g.length > 1, ids = g.map(y => y.p.id).join(","), can = stmtSameTo(m, x, cands).length > 1, d = g.find(y => y.done) && g.find(y => y.done).done;
+            const rv = stmtReview(m, g), revOn = rv && !rv.stale;
             return `<div class="sm-r${many ? " grp" : ""}">
             <input type="checkbox" data-sg="${ids}" ${g.every(y => sel[y.p.id]) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="Include ${esc(many ? g.length + " statements" : x.p.name)}">
-            <div class="sm-t"><b>${many ? `${g.length} statements · one email` : esc(x.p.name)}</b>${many ? `<ul class="sm-props">${g.map(y => `<li>${esc(y.p.name)}</li>`).join("")}</ul>` : ""}<span>To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span></div>
-            <div class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" data-fng="${ids}" value="${esc(g.map(y => y.first).find(Boolean) || "")}" placeholder="(no name)" ${busy ? "disabled" : ""}></div>
-            ${d ? (d.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(d.sentAt || d.at).slice(0, 10)))}</span>`
-                : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(d.at.slice(0, 10)) + (d.by ? " by " + d.by : ""))}">Draft in Gmail</span>`) : `<span></span>`}
-            <span class="sm-acts">${can ? `<button class="btn sm" data-one="${esc(stmtRecipKey(x))}" data-on="${many ? 0 : 1}" type="button" ${busy ? "disabled" : ""}>${many ? "Split into separate emails" : "Combine into one email"}</button>` : ""}${!many && x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}<button class="btn sm" data-pv="${x.p.id}" type="button">${(many ? stmtComposeGroup(m, g) : stmtCompose(m, x)).edited ? "Edited · open" : "Preview & edit"}</button></span></div>`; }).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
+            <div class="sm-t"><b>${many ? `${g.length} statements · one email` : esc(x.p.name)}</b>${many ? `<ul class="sm-props">${g.map(y => `<li>${esc(y.p.name)}</li>`).join("")}</ul>` : ""}<span class="sm-to">To ${esc(x.to)}${x.cc.length ? " · cc " + esc(x.cc.join(", ")) : ""}</span>
+              <label class="sm-hi"><span class="muted">Hello</span> <input type="text" data-fn="${x.p.id}" data-fng="${ids}" value="${esc(g.map(y => y.first).find(Boolean) || "")}" placeholder="(no name)" ${busy ? "disabled" : ""}></label></div>
+            <div class="sm-side"><div class="sm-tags">${d ? (d.state === "sent" ? `<span class="tag green" title="Sent from Gmail">Sent ${esc(fdateS(String(d.sentAt || d.at).slice(0, 10)))}</span>`
+                : `<span class="tag gold" title="${esc("Waiting in Gmail Drafts — made " + fdateS(d.at.slice(0, 10)) + (d.by ? " by " + d.by : ""))}">Draft in Gmail</span>`) : ""}${stmtRevTag(rv)}</div>
+            <div class="sm-acts"><button class="btn sm${revOn ? " rev-on" : ""}" data-rev="${ids}" type="button" ${busy ? "disabled" : ""}>${revOn ? icon("check") + " Reviewed" : "Mark reviewed"}</button><button class="btn sm" data-pv="${x.p.id}" type="button">${(many ? stmtComposeGroup(m, g) : stmtCompose(m, x)).edited ? "Edited · open" : "Preview & edit"}</button>${!many && x.done && x.done.state === "draft" && x.done.draftId ? `<button class="btn sm" data-sd="${x.p.id}" type="button" ${busy ? "disabled" : ""}>Send draft</button>` : ""}${can ? `<button class="btn sm ghost sm-split" data-one="${esc(stmtRecipKey(x))}" data-on="${many ? 0 : 1}" type="button" ${busy ? "disabled" : ""}>${many ? "Split into separate emails" : "Combine into one email"}</button>` : ""}</div></div></div>`; }).join("") || `<p class="muted">No statements for ${monthLabel(m)} yet.</p>`}</div>
         ${blocked.length ? `<div class="label" style="margin:16px 0 6px">Can't draft yet · ${blocked.length}</div>
-          <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div><span></span><span></span>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
+          <div class="sm-list">${blocked.map(x => `<div class="sm-r off"><span></span><div class="sm-t"><b>${esc(x.p.name)}</b><span>${esc(x.why)}</span></div>${x.o ? `<button class="btn sm ghost" data-ow="${x.o.id}" type="button">Open owner</button>` : `<button class="btn sm ghost" data-pp="${x.p.id}" type="button">Set owner</button>`}</div>`).join("")}</div>` : ""}
         <label class="sm-auto"><input type="checkbox" id="smAttach" ${stmtAttachOn() ? "checked" : ""}> Attach the vendors' invoices from MagicDoor to each statement</label>
         <label class="sm-auto"><input type="checkbox" id="smAuto" ${set.autoDrafts !== false ? "checked" : ""}> Make these drafts automatically when a month is closed</label>
       </div>
@@ -7904,6 +7954,7 @@ function pmStatementMailSheet(m){
         <button class="btn" id="shCancel">Close</button><button class="btn" id="smGo" ${!n || busy || !stmtConn() ? "disabled" : ""}>${busy ? esc(busy) : `Save ${n} as Gmail draft${n === 1 ? "" : "s"}`}</button><button class="btn primary" id="smSend" ${!n || busy || !stmtConn() ? "disabled" : ""}>${(k => k < n ? `Send ${n} in ${k} email${k === 1 ? "" : "s"}` : `Send ${n} now`)(stmtGroups(ready.filter(x => sel[x.p.id])).length)}</button></div>`;
     $("#shClose").onclick = $("#shCancel").onclick = closeSheet;
     $("#smMonth").onchange = e => pmStatementMailSheet(e.target.value);
+    sh.querySelectorAll("[data-rev]").forEach(b => b.onclick = () => { const xs = b.dataset.rev.split(",").map(id => cands.find(c => c.p.id === id)).filter(Boolean); const rv = stmtReview(m, xs); stmtSetReview(m, xs, !(rv && !rv.stale)); draw(); });
     sh.querySelectorAll("[data-sg]").forEach(i => i.onchange = () => { i.dataset.sg.split(",").forEach(id => sel[id] = i.checked); draw(); });
     sh.querySelectorAll("[data-fn]").forEach(i => {
       i.oninput = () => { const x = cands.find(c => c.p.id === i.dataset.fn); if(x) x.first = i.value.trim(); };
@@ -7945,7 +7996,8 @@ function pmStatementMailSheet(m){
     $("#smAttach").onchange = e => { snapshot(); S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtAttach:e.target.checked}); commit(); };
     const run = async send => {
       const list = cands.filter(x => !x.why && sel[x.p.id]);
-      if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?\n\nEach goes to its owner with the statement PDF attached. Open "Preview & edit" first if you want to check one.`)) return;
+      const gs = stmtGroups(list), unrev = gs.filter(g => { const r = stmtReview(m, g); return !r || r.stale; }).length;
+      if(send && !confirm(`Send ${list.length} owner statement${list.length === 1 ? "" : "s"} in ${gs.length} email${gs.length === 1 ? "" : "s"} now from ${(stmtConn() || {}).mailbox || "pm@"}?${unrev ? `\n\n${unrev} of them ${unrev === 1 ? "hasn't" : "haven't"} been marked reviewed.` : "\n\nAll of them are marked reviewed."}\n\nEach goes to its owner with the statement PDF attached. Open "Preview & edit" first if you want to check one.`)) return;
       draw(send ? "Sending…" : "Creating drafts…");
       try{
         const {done, failed} = await stmtMakeDrafts(m, list, {send, progress:(i, t) => { const b = $(send ? "#smSend" : "#smGo"); if(b) b.textContent = `${send ? "Sending" : "Creating"} ${i + 1}–${Math.min(i + 10, t)} of ${t}…`; }});
@@ -7989,7 +8041,7 @@ function stmtEmailSheet(m, pid){
     <div class="sheet-b">
       ${rec ? `<div class="pm-banner" style="background:var(--panel-2)">${rec.state === "sent" ? `Sent ${esc(fdateS(String(rec.sentAt || rec.at).slice(0, 10)))} to ${esc(rec.to)}.` : `A draft is waiting in Gmail (made ${esc(fdateS(String(rec.at).slice(0, 10)))}). Sending from here makes a fresh email with what's below.`}</div>` : ""}
       ${x.why ? `<div class="pm-banner">${esc(x.why)}</div>` : ""}
-      <div class="f2"><label class="fld"><span>To</span><input type="text" id="seTo" value="${esc(c.to)}"></label><label class="fld"><span>Cc</span><input type="text" id="seCc" value="${esc(c.cc)}"></label></div>
+      <div class="f2"><div class="fld"><span>To</span><div class="se-addrs" id="seToBox"></div><input type="hidden" id="seTo" value="${esc(c.to)}"></div><div class="fld"><span>Cc</span><div class="se-addrs" id="seCcBox"></div><input type="hidden" id="seCc" value="${esc(c.cc)}"></div></div>
       <label class="fld"><span>Subject</span><input type="text" id="seSub" value="${esc(c.subject)}"></label>
       <label class="fld"><span>Message</span><textarea id="seBody" rows="13">${esc(c.body)}</textarea><span class="help">{breakdown} becomes the month's summary table: rent, what came out, and what's paid to the owner.</span></label>
       <div class="bm-prev-h"><b>Preview</b><span class="muted">what the owner will see</span></div>
@@ -8001,7 +8053,7 @@ function stmtEmailSheet(m, pid){
       ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !(Number(conn.version) >= 2) ? `<div class="pm-banner">Update the pm@ script (apps-script/Statements.gs) so the summary table shows as a table — until then owners get it as plain lines.</div>` : ""}
       ${stmtConn() && !sig ? `<p class="help" id="seSigNote">${esc(conn.sigNote || "No Gmail signature found for pm@ yet.")}</p>` : ""}
     </div>
-    <div class="sheet-f"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
+    <div class="sheet-f"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><span id="seRevBox"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
   openPanel();
   $("#shClose").onclick = closeSheet; $("#seBack").onclick = () => pmStatementMailSheet(m);
   // pick up a signature or script update made since connecting (once per session)
@@ -8014,7 +8066,15 @@ function stmtEmailSheet(m, pid){
   const sub = $("#seSub"), body = $("#seBody"), prev = $("#sePrev");
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${stmtBodyOut(body.value, m, grp ? pids : pid).html}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
-  [sub, body, $("#seTo")].forEach(i => i.oninput = draw); draw();
+  const toGet = stmtAddrBoxes($("#seToBox"), stmtSplit(c.to), () => { $("#seTo").value = toGet(); draw(); });
+  const ccGet = stmtAddrBoxes($("#seCcBox"), stmtSplit(c.cc), () => { $("#seCc").value = ccGet(); });
+  [sub, body].forEach(i => i.oninput = draw); draw();
+  // reviewed: checked and good to send
+  const revDraw = () => { const rv = stmtReview(m, xs), bx = $("#seRevBox"); if(!bx) return;
+    bx.innerHTML = rv && !rv.stale ? `<button class="btn se-rev on" type="button" title="${esc("Reviewed by " + (rv.by || "someone") + " · " + fdateS(String(rv.at).slice(0, 10)) + " — click to undo")}">${icon("check")} Reviewed</button>`
+      : `<button class="btn se-rev" type="button">${rv ? "Changed since review · mark reviewed again" : "Mark reviewed"}</button>`;
+    bx.querySelector("button").onclick = () => { stmtSetReview(m, xs, !(rv && !rv.stale)); revDraw(); }; };
+  revDraw();
   sh.querySelectorAll("[data-sepdf]").forEach(a => a.onclick = e => { e.preventDefault(); const id = a.dataset.sepdf; downloadPdf(pmStatementPdfHTML(m, id, {attach:!!($("#seAttach") && $("#seAttach").checked)}), stmtFileName(pmProp(id), m)); });
   stmtWireLines(sh, x.row);
   const keep = () => {

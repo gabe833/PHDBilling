@@ -2674,13 +2674,35 @@ input[type=search]:focus,.act-q:focus{outline:none;border-color:var(--accent-3);
 @media (max-width:640px){.pm-cr-r{grid-template-columns:1fr 100px 32px}.pm-cr-r input[type=date],.pm-cr-r.md .d{grid-column:1/-1}}
 /* statements that share one email */
 .sm-t .sm-grp,.st-grp{display:block;font-size:12px;color:var(--teal,#1D5C57);margin-top:2px}
-/* bulk statement email list: one row per email */
-.sm-r{cursor:default;grid-template-columns:20px minmax(0,1fr) 170px auto auto}
-.sm-r.grp{align-items:start;background:var(--panel-2,#F5F8F7)}
-.sm-r.grp>input,.sm-r.grp>.sm-hi,.sm-r.grp>.tag,.sm-r.grp>.sm-acts{margin-top:2px}
-.sm-props{list-style:none;margin:4px 0 4px;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:2px 14px;font-size:12.5px;color:var(--ink)}
-.sm-props li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sm-props li::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--teal,#1D5C57);margin:0 7px 2px 0;vertical-align:middle}
-.sm-acts{flex-wrap:wrap}
+/* bulk statement emails: one row per email — checkbox | who and what (with the greeting under it) | status and buttons */
+.sm-r{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:6px 18px;align-items:start;padding:14px 16px;cursor:default}
+.sm-r>input[type=checkbox]{margin-top:3px}
+.sm-r.grp{background:var(--panel-2,#F5F8F7)}
+.sm-r.off{align-items:center}
+.sm-t b{white-space:normal;line-height:1.35}
+.sm-t .sm-to{margin-top:3px}
+.sm-props{list-style:none;margin:6px 0 2px;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:3px 18px;font-size:12.5px;color:var(--ink)}
+.sm-props li{line-height:1.4;padding-left:12px;position:relative}
+.sm-props li::before{content:"";position:absolute;left:0;top:.55em;width:5px;height:5px;border-radius:50%;background:var(--teal,#1D5C57)}
+.sm-t .sm-hi{display:inline-flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px}
+.sm-t .sm-hi input{width:150px;padding:5px 8px;font-size:13px}
+.sm-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.sm-tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.sm-tags:empty{display:none}
+.sm-acts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:340px}
 .sm-acts .btn{white-space:nowrap}
-@media (max-width:900px){ .sm-r{grid-template-columns:20px minmax(0,1fr) auto} .sm-r>.sm-hi{display:flex;grid-column:2/-1} .sm-r>.tag:empty,.sm-r>span:empty{display:none} .sm-acts{grid-column:2/-1;justify-content:flex-start} }
+.sm-acts .btn.rev-on,.se-rev.on{background:var(--green-bg,#E7F3EC);border-color:var(--green,#2F7A4F);color:var(--green,#2F7A4F)}
+.sm-acts .sm-split{color:var(--muted)}
+@media (max-width:720px){
+  .sm-r{grid-template-columns:22px minmax(0,1fr)}
+  .sm-side{grid-column:2;align-items:flex-start}
+  .sm-tags,.sm-acts{justify-content:flex-start;max-width:none}
+}
+/* one box per email address */
+.se-addrs{display:flex;flex-direction:column;gap:6px}
+.se-addr{display:flex;gap:6px;align-items:center}
+.se-addr input{flex:1;min-width:0}
+.se-addr input.bad{border-color:var(--red,#B4412E)}
+.se-addrs .se-add{align-self:flex-start;padding-left:4px;color:var(--muted)}
+.fld>.se-addrs{margin-top:6px}
+.sheet-f #seRevBox:empty{display:none}
