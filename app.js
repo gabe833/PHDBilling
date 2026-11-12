@@ -5212,7 +5212,14 @@ async function mdCreateUI(host, it, prop, done){
   host.innerHTML = `<div class="mdc"><span class="mdc-wait">Finding ${esc(it.vendor || "the vendor")} in MagicDoor…</span></div>`;
   let pv;
   try{ const {data, error} = await Cloud.sb.functions.invoke("magicdoor", {body:{mode:"billPreview", vendor:it.vendor || ""}}); if(error) throw await fnErr(error); if(data && data.error) throw new Error(data.error); pv = data; }
-  catch(e){ host.innerHTML = `<p class="help" style="color:var(--red)">Couldn't reach MagicDoor: ${esc(e.message)}</p>`; return; }
+  catch(e){
+    // MagicDoor's API reads bills but has no way to add one (it answers 404): say so plainly and open the by-hand steps
+    const no = /\b404\b/.test(String(e.message));
+    host.innerHTML = no ? `<p class="help">MagicDoor doesn't let the console add bills, so enter this one by hand — the details are below, each with Copy. Then press <b>I've entered it in MagicDoor</b>.</p>`
+      : `<p class="help" style="color:var(--red)">Couldn't reach MagicDoor: ${esc(e.message)} — enter it by hand below.</p>`;
+    const d = host.parentElement && host.parentElement.querySelector("details.mda-hand"); if(d) d.open = true;
+    return;
+  }
   if(!pv.writeKey){ host.innerHTML = `<p class="help">The MagicDoor write key isn't set up, so enter it by hand with the details above.</p>`; return; }
   const b = it.billId && typeof billList === "function" ? billList().find(z => z.id === it.billId) : null;
   const feeC = itemFeeC(it, prop), acctGuess = mdAccountGuess(it);
