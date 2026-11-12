@@ -333,7 +333,9 @@ async function projCustomer(p: Obj, number: string, map: Obj): Promise<Obj> {
    ==================================================================== */
 // AUTOMATIC: the console may create project invoices and vendor bills without the confirm click, when the office
 // turned that on (Payments setup → Automatic). Only these creates qualify — never paying, sending, deleting or changing.
-const AUTO_OPS: Record<string, string> = { "project.invoice": "invoices", "owner.create": "invoices", "bill.create": "bills", "txn.bill": "bills" };
+const AUTO_OPS: Record<string, string> = { "project.invoice": "invoices", "owner.create": "invoices", "bill.create": "bills", "txn.bill": "bills", "payout.billUpdate": "payouts" };
+// automatic without a setting: keeping an UNPAID owner payout bill's amount in step with the month's payout (no money moves)
+const AUTO_ALWAYS = new Set(["payout.billUpdate"]);
 const autoYes: Ask = async (params: Obj) => {
   const props = (params.requestedSchema && params.requestedSchema.properties) || {};
   return { action: "accept", content: { [Object.keys(props)[0] || "confirm"]: true } };
@@ -501,7 +503,11 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       let found: Obj | null = null;
       try { found = items(await read("search_bills", { invoiceNumbers: [x.ref] })).find((b) => b.vendorId === x.nv.id) || null; } catch { /* make one */ }
       if (found && S(found.paidStatus).toUpperCase() !== "UNPAID") { u.skip = `Nickel already shows ${x.ref}`; break; }
-      if (found && cAmt(found) !== x.amt) { u.skip = `Nickel has ${x.ref} for a different amount — fix it there first`; break; }
+      if (found && cAmt(found) !== x.amt) {
+        // the payout changed since this bill was made: bring the unpaid bill up to date first
+        const up = await tool("update_bill", { billId: S(found.id), amountInCents: x.amt }, autoYes);
+        if (!up.ok) { u.skip = `Nickel has ${x.ref} for ${money(cAmt(found))} and wouldn't take the new amount — ${S(up.error && up.error.message).slice(0, 120)}`; break; }
+      }
       if (found) { x.billId = S(found.id); continue; }
       const r = await tool("create_bill", { vendorId: x.nv.id, amountInCents: x.amt, dueDate: arrival || today(), invoiceNumber: x.ref, description: `Owner distribution · ${u.ps.map((p: Obj) => S(p.name)).join(", ")} · ${u.month}`.slice(0, 200) }, autoYes);
       if (!r.ok) { u.skip = r.error.message; break; }
@@ -537,6 +543,10 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     // 3) record each property's payout — only when every share of it is on its way
     for (const u of units.filter((u) => !u.skip)) {
       const notYet = u.recips.filter((x: Obj) => !x.moving);
+      if (notYet.length && u.recips.length === 1 && u.pids.length === 1) {
+        // the bill is in Nickel but wasn't paid: remember it, so a change to the payout updates it
+        const x0 = u.recips[0]; await updateDoc("pm_row", `${u.month}|${u.pids[0]}`, (r) => { if (r.paidOut) return false; r.nkOpen = { billId: x0.billId, ref: x0.ref, amountC: x0.amt, at: new Date().toISOString() }; });
+      }
       if (notYet.length) { u.pids.forEach((pid: string) => results.push({ month: u.month, pid, ok: false, partial: notYet.length < u.recips.length, why: notYet.length < u.recips.length ? `Only part of the split went (${u.recips.filter((x: Obj) => x.moving).map((x: Obj) => x.nv.name).join(", ")}) — finish ${notYet.map((x: Obj) => x.nv.name).join(", ")} in Nickel` : (notYet[0].err || "Nickel didn't start this payment") })); continue; }
       const group = u.recips.length > 1 || u.pids.length > 1 ? { ids: u.recips.map((x: Obj) => x.billId), refs: u.recips.map((x: Obj) => x.ref), props: u.ps.map((p: Obj) => S(p.name)), totalC: u.totC } : null;
       for (const pid of u.pids) {
@@ -743,6 +753,33 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     let url = S(r.data && r.data.url); if (!url) { try { url = S((await read("get_invoice", { invoiceId: iid }) || {}).url); } catch { /* shown as missing */ } }
     await updateDoc("pj_property", pid, (x) => { x.register = x.register || {}; const g = x.register[key] = x.register[key] || {}; g.nickel = { invoiceId: iid, url, number, customer: c.name || "", customerId: c.id, amountC: totalC, at: new Date().toISOString(), by, qb: !!args.lines, qbWhy }; if (url && !g.link) g.link = url; });
     return { ok: true, url, qb: !!args.lines, qbWhy };
+  }
+
+  /* ---- an owner payout bill that's in Nickel but not paid yet: its amount follows the month's payout ----
+     Only the one bill a month's row remembers (nkOpen), only while Nickel shows it unpaid with nothing scheduled,
+     only an OWN- bill for that month, and never more than the month took in. No money moves. */
+  if (op === "payout.billUpdate") {
+    const month = S(body.month), pid = S(body.pid), amountC = Math.round(Number(body.amountC) || 0);
+    if (!/^\d{4}-\d{2}$/.test(month) || !pid) throw new Error("Which month?");
+    const row = await docData("pm_row", `${month}|${pid}`), open = row && row.nkOpen;
+    if (!row || !open || !S(open.billId)) throw new Error("No unpaid Nickel bill is on this month");
+    if (row.paidOut) throw new Error("This month is already paid");
+    if (!(amountC > 0)) throw new Error("The payout is $0 or less — delete the bill in Nickel instead");
+    if (amountC > Math.round(Number(row.rentReceived || 0) * 100) + Math.round(Number(row.otherIncome || 0) * 100) + 100 + Math.max(0, (row.adjustments || []).reduce((a: number, x: Obj) => a + Math.round(Number(x.amount) * 100 || 0), 0)))
+      throw new Error("More than the month took in — check the month first");
+    const nb: Obj = (await read("get_bill", { billId: S(open.billId) })) || {};
+    const ref = refOf(nb), m = ref.match(OWN_RE);
+    if (!m || `${m[1]}-${m[2]}` !== month) throw new Error(`Nickel's bill ${ref || S(open.billId)} isn't this month's owner payout`);
+    const sched = ((nb.scheduledPayments as Obj[]) || []).length || Number(nb.amountScheduled) > 0 || Number((nb.amountScheduled || {}).amountInCents) > 0;
+    if (S(nb.paidStatus).toUpperCase() !== "UNPAID" || sched) {
+      await patch("pm_row", `${month}|${pid}`, (x) => { delete x.nkOpen; });
+      throw new Error(`${ref} is already being paid in Nickel — it can't be changed now`);
+    }
+    if (cAmt(nb) === amountC) { await patch("pm_row", `${month}|${pid}`, (x) => { x.nkOpen = { ...(x.nkOpen || {}), amountC }; }); return { ok: true, same: true, ref }; }
+    const r = await tool("update_bill", { billId: S(open.billId), amountInCents: amountC }, ask(`Change the owner payout bill ${ref} to ${money(amountC)}`));
+    if (!r.ok) return refused(r, "Updating the owner payout bill");
+    await patch("pm_row", `${month}|${pid}`, (x) => { x.nkOpen = { ...(x.nkOpen || {}), amountC, updatedAt: new Date().toISOString(), was: cAmt(nb) }; });
+    return { ok: true, ref, from: cAmt(nb), to: amountC };
   }
 
   /* ---- fixing things after the fact: change, cancel, delete, record, charge, remind ---- */
@@ -1242,6 +1279,10 @@ async function ownerPayouts(): Promise<number> {
     if (hits.length > 1) { const h: Obj[] = []; for (const p of hits) if (owedOf(await rowOf(month, p.id)) === amt) h.push(p); if (h.length === 1) hits = h; }
     if (hits.length !== 1) { (b as Obj)._month = month; left.push(b); continue; }
     const p = hits[0], s0 = stateOf(b);
+    { const unpaid = !s0 && S(b.paidStatus).toUpperCase() === "UNPAID", cur = await rowOf(month, p.id);
+      if (cur && !cur.paidOut && unpaid && !(cur.nkOpen && S(cur.nkOpen.billId) === S(b.id) && cur.nkOpen.amountC === amt)) {
+        await updateDoc("pm_row", `${month}|${p.id}`, (r) => { if (r.paidOut) return false; r.nkOpen = { ...(r.nkOpen || {}), billId: S(b.id), ref, amountC: amt, at: (r.nkOpen && r.nkOpen.at) || new Date().toISOString() }; }); changed++; }
+      else if (cur && cur.nkOpen && S(cur.nkOpen.billId) === S(b.id) && !unpaid) { await updateDoc("pm_row", `${month}|${p.id}`, (r) => { delete r.nkOpen; }); changed++; } }
     await write(month, p, s0 ? { date: s0.date, method: "Nickel", by: "Nickel", amount: amt / 100, nickelBillId: S(b.id), ref, ...(s0.pending ? { pending: true } : {}), ...(s0.scheduled ? { scheduled: true, arrives: s0.arrives } : {}) } : null, [S(b.id)]);
     done.add(`${month}|${p.id}`);
   }
@@ -1448,11 +1489,11 @@ async function handle(req: Request): Promise<Response> {
       case "nk.do": {
         const runId = S(body.runId); if (!/^[A-Za-z0-9_-]{8,64}$/.test(runId)) throw new Error("Missing run id");
         if (body.auto === true) {
-          const op = S(body.op), grp = AUTO_OPS[op], on = !!(((await accounting()).nkAuto || {}) as Obj)[grp];
+          const op = S(body.op), grp = AUTO_OPS[op], on = AUTO_ALWAYS.has(op) || !!(((await accounting()).nkAuto || {}) as Obj)[grp];
           if (!grp || !on) return json({ ok: false, error: "Automatic creation isn't turned on for this (Payments setup → Automatic)" });
           if (op === "project.invoice" && body.requireQb !== true) return json({ ok: false, error: "Automatic invoices always go into QuickBooks" });
           // one automatic try per item at a time, even with the console open in several places
-          const claim = "nkauto:" + op + ":" + [body.propertyId, body.unitId, body.no, body.billId, body.txnId, body.ownerId].map(S).join("|");
+          const claim = "nkauto:" + op + ":" + [body.propertyId, body.unitId, body.no, body.billId, body.txnId, body.ownerId, body.pid, body.month, body.amountC].map(S).join("|");
           const prev = Number(await getSetting(claim)) || 0;
           if (Date.now() - prev < 10 * 60 * 1000) return json({ ok: false, busy: true, error: "Already being created" });
           await setSetting(claim, String(Date.now()));

@@ -5353,6 +5353,7 @@ function pmRowSheet(m, pid, focus){
           <span class="help">Blank uses the rule: ${feeRuleText(prop.feeRule)} of rent received = ${usd(c.ruleFeeC)}</span></label>
           <label class="fld"><span>Notes</span><input type="text" data-k="notes" value="${esc(row.notes || "")}" ${ro ? "disabled" : ""}></label></div>
         <div class="sectl" style="margin-top:6px">Owner payout</div>
+        ${row.nkOpen && !row.paidOut ? `<p class="help" style="margin:-2px 0 8px">Nickel bill ${esc(row.nkOpen.ref || "")} is waiting, unpaid, for ${usd(Math.round(Number(row.nkOpen.amountC) || 0))}${Math.round(Number(row.nkOpen.amountC) || 0) !== c.payoutC && c.payoutC > 0 ? ` — it's updated to ${usd(c.payoutC)} after you save` : " — it follows the payout if this month changes"}.</p>` : ""}
         <div class="f2"><label class="fld"><span>Sent on</span><input type="date" id="poD" value="${esc((row.paidOut || {}).date || "")}" ${ro ? "disabled" : ""}></label>
           <label class="fld"><span>How</span><select id="poM" ${ro ? "disabled" : ""}>${["","ACH","Nickel","Check","Zelle","Other"].map(x => `<option ${((row.paidOut || {}).method || "") === x ? "selected" : ""} value="${x}">${x || "—"}</option>`).join("")}</select></label></div>
         <label class="switchbox"><input type="checkbox" id="shortOk" ${row.shortOk ? "checked" : ""} ${ro ? "disabled" : ""}> Partial rent is expected this month — don't raise a "rent short" alert</label>
@@ -17606,6 +17607,37 @@ if(typeof render === "function"){
     try{ if(cloudChores() && nickelOn() && (nkAutoOn("invoices") || nkAutoOn("bills")) && !NKA.busy && Date.now() - NKA.at > 3 * 60 * 1000) setTimeout(nkAutoPass, 2500); }catch(e){}
     return r;
   };
+}
+/* An owner payout bill already in Nickel but not paid yet (row.nkOpen, kept by the Nickel sync): when the month's
+   payout changes, the bill's amount follows it. The server checks Nickel still shows it unpaid with nothing scheduled;
+   no money moves. Run by one console (the leader), a minute or so after a change. */
+const NKP = {busy:false, at:0, tried:{}};
+async function nkPayoutBillPass(){
+  if(NKP.busy || !cloudChores() || !(typeof nickelOn === "function" && nickelOn())) return;
+  NKP.busy = true; NKP.at = Date.now();
+  try{
+    const P2 = pmState(), todo = [];
+    Object.values(P2.rows).forEach(r => {
+      if(r.deleted || !r.nkOpen || !r.nkOpen.billId || r.paidOut || r.detailOnly) return;
+      const p = pmProp(r.propertyId); if(!p) return;
+      const c = pmCalc(r, p), k = `${r.month}|${r.propertyId}|${c.payoutC}`;
+      if(c.payoutC > 0 && c.payoutC !== Math.round(Number(r.nkOpen.amountC) || 0) && !(NKP.tried[k] && Date.now() - NKP.tried[k] < 30 * 60 * 1000)) todo.push({r, p, c, k});
+    });
+    for(const {r, p, c, k} of todo.slice(0, 5)){
+      NKP.tried[k] = Date.now();
+      try{
+        const res = await nkAutoRun("payout.billUpdate", {month:r.month, pid:p.id, amountC:c.payoutC});
+        if(res && res.ok && !res.same){
+          toast(`${p.name}: Nickel bill ${res.ref || r.nkOpen.ref || ""} updated to ${usd(c.payoutC)}`, true);
+          try{ actLog("nickel", `${p.name} · ${monthLabel(r.month)}: owner payout bill ${res.ref || ""} in Nickel ${usd(res.from || 0)} → ${usd(c.payoutC)} (payout changed)`); }catch(e){}
+        } else if(res && !res.ok && res.error && !res.busy) console.warn("Owner payout bill", p.name, res.error);
+      }catch(e){ console.warn("Owner payout bill", p.name, e.message); }
+    }
+  } finally { NKP.busy = false; }
+}
+if(typeof render === "function"){
+  const nkpRender0 = render;
+  render = function(){ const r = nkpRender0.apply(this, arguments); try{ if(!NKP.busy && Date.now() - NKP.at > 60 * 1000 && Object.values(pmState().rows).some(x => x.nkOpen && !x.paidOut)) setTimeout(nkPayoutBillPass, 4000); }catch(e){} return r; };
 }
 // Payments setup → Automatic
 if(typeof paySetupInto === "function"){
