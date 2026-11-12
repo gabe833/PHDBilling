@@ -6724,6 +6724,10 @@ function mdStmtWant(p, rr, mpId, mm, g){
     const line = {d:null, k:"carry", t:"Owed from earlier months (MagicDoor balance)", a:r2(st.left)};
     x = Object.assign({}, x, {other:r2(x.other + st.left), otherLines:[...(x.otherLines || []), line], net:r2(x.net + st.left)});
   }
+  // a payment that bounced (NSF / returned) was never received: it comes off rent received, not shown as a separate line
+  // (342 King #A: $1,460 on Nov 5 returned Nov 10 — rent received is the $2,900 that stayed, not $4,360)
+  const retC = (x.otherLines || []).filter(l => l.k === "return").reduce((a, l) => a + cents(l.a), 0);
+  if(retC) x = Object.assign({}, x, {recv:r2(x.recv + retC / 100), other:r2(x.other - retC / 100), otherLines:(x.otherLines || []).filter(l => l.k !== "return")});
   const other = r2(Math.min(r2(led.otherIncome || 0), x.recv) + (x.lateOther || 0)), rent = r2(x.recv - Math.min(r2(led.otherIncome || 0), x.recv));
   // admin fee: the console's own 10% of each bill MagicDoor paid this month, unless MagicDoor charged something else
   // bills and admin fees MagicDoor carries over unpaid from last month's statement were already charged on last month's
