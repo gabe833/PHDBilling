@@ -19574,6 +19574,10 @@ function poPayeeFor(x){
   const k = poKey(x.p.name), unit = (String(x.p.name).match(/#\s*([A-Za-z0-9]+)/) || [])[1];
   if(k.length >= 5){
     let hits = list.filter(v => String(v.name || "").toUpperCase().replace(/[^A-Z0-9]/g, "").includes(k));
+    // several payees named after the property (a former tenant's refund payee, say): the owner's own wins
+    // (350 King St #307: "Dixie Dunbar - 350 King St 307" is the owner; "Marie Mcclurg - 350 King St #307" a former tenant)
+    if(hits.length > 1 && x.o){ const own = poPayee(x.o.id), sur = String(ownerLabel(x.o) || "").toUpperCase().split(/[^A-Z]+/).filter(w => w.length >= 3 && !/^(LLC|INC|THE|AND|DBA|TRUST|JOINT|ACCOUNT)$/.test(w));
+      const h = hits.filter(v => v.id === own.id || sur.some(w => String(v.name || "").toUpperCase().includes(w))); if(h.length) hits = h; }
     if(hits.length > 1 && unit) { const h = hits.filter(v => new RegExp("(#|UNIT\\s*)" + unit + "\\b", "i").test(v.name)); if(h.length) hits = h; }
     if(hits.length === 1) return {id:hits[0].id, name:hits[0].name, payout:hits[0].payout || [], how:"name"};
   }
