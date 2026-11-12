@@ -17422,7 +17422,13 @@ function pmLateRentCarry(){
       let carryC = 0;
       // rent MagicDoor says the tenant still owes (its rent received is below the console's): not collected yet, so it
       // can't be paid with next month — it waits until the tenant pays it
-      const mdRecvC = r.md && has(r.md.rentReceived) ? cents(r.md.rentReceived) : null;
+      // MagicDoor's statement as it stands today (a locked month keeps the figures from the day it was locked, and a late
+      // fee MagicDoor later took off turns back into rent — 432 Coopers Hawk, Oct 2026); the saved figure only when the
+      // MagicDoor property is shared with other rentals here (its statement is the whole building's)
+      const mdNow = (() => { const f = typeof mdFor === "function" ? mdFor(p.id) : null; if(!f || !f.property) return null;
+        if(P2.properties.filter(q => !q.deleted && q.id !== p.id && (mdFor(q.id) || {}).property && mdFor(q.id).property.id === f.property.id).length) return null;
+        const st = PMCore.mdStmt(S.md, f.property.id, m), x = st && PMCore.mdStmtMonth(st, p); return x && x.recv > 0 ? cents(x.recv) : null; })();
+      const mdRecvC = mdNow != null ? mdNow : r.md && has(r.md.rentReceived) ? cents(r.md.rentReceived) : null;
       let unpaidC = 0;
       if(pays && paid != null && day){
         const afterC = pays.filter(([d]) => String(d) >= day).reduce((a, [, x]) => a + cents(x), 0);
