@@ -2728,3 +2728,4 @@ td>.tag+.st-rev{display:flex}
 .se-ask-l li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 12px;border-top:1px solid var(--line-2);font-size:13px}
 .se-ask-l li:first-child{border-top:0}
 .se-ask-f{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:16px}
+.se-ask-l li>span:last-child{white-space:nowrap;flex:none}
