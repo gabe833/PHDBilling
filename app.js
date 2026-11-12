@@ -20350,10 +20350,12 @@ function mdAdjNote(lines){
 function stmtRentDetail(p, m, row){
   const out = [], L = typeof pmMdLease === "function" ? pmMdLease(p) : null;
   if(L && Array.isArray(L.alloc)){
-    const pays = L.alloc.map(([day, , parts]) => [day, (parts || []).filter(([cm, k]) => cm === m && k === "rent").reduce((a, x) => a + Math.round(Number(x[2]) || 0), 0)]).filter(x => x[1] > 0);
-    if(pays.length) out.push("Paid " + pays.map(([day, c]) => `${docShort(String(day).slice(0, 10))} ${usd(c)}`).join(", "));
+    const by = new Map();      // one amount per day (two payments the same day read as one)
+    L.alloc.forEach(([day, , parts]) => { const c = (parts || []).filter(([cm, k]) => cm === m && k === "rent").reduce((a, x) => a + Math.round(Number(x[2]) || 0), 0); if(c > 0){ const d = String(day).slice(0, 10); by.set(d, (by.get(d) || 0) + c); } });
+    const md = d => { const [, mo, dd] = d.split("-").map(Number); return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][mo - 1] + " " + dd; };
+    if(by.size) out.push((by.size === 1 ? "Paid " : "Paid in parts: ") + [...by].sort((a, b) => a[0].localeCompare(b[0])).map(([d, c]) => `${md(d)} ${usd(c)}`).join(", "));
   }
   const ret = row.md && row.md.mdAdj && row.md.mdAdj.returned;
-  (ret || []).forEach(x => out.push(`a ${usd(cents(x.a))} payment was returned (bounced)${x.d ? " " + docShort(String(x.d).slice(0, 10)) : ""} and isn't counted`));
+  (ret || []).forEach(x => out.push(`a ${usd(cents(x.a))} payment was returned (bounced)${x.d ? " on " + docShort(String(x.d).slice(0, 10)).replace(/, \d{4}$/, "") : ""} and isn't counted`));
   return out.join(" · ");
 }
