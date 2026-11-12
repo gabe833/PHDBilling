@@ -19613,7 +19613,13 @@ function pgPayouts(){
   const sc = typeof stmtCandidates === "function" ? stmtCandidates(m) : [];
   const revOf = x => { if(x.split){ const rs = x.rows.map(r => revOf(r)); return rs.every(r => r && !r.stale) ? rs[0] : (rs.find(r => r && r.stale) || null); }
     const cx = sc.find(c => c.p.id === x.p.id); return cx && !cx.why ? stmtReview(m, stmtGroupFor(m, cx, sc)) : null; };
-  const revOk = x => { const r = revOf(x); return !!(r && !r.stale); };
+  // the owner statement was emailed: the owner has seen this amount, so it's ready to pay too
+  const sentOf = x => { if(x.split) return x.rows.every(r => sentOf(r)) ? sentOf(x.rows[0]) : null;
+    const cx = sc.find(c => c.p.id === x.p.id); return cx && cx.done && cx.done.state === "sent" ? cx.done : null; };
+  const revOk = x => { const r = revOf(x); return !!(r && !r.stale) || !!sentOf(x); };
+  const poTag = x => { const r = revOf(x), sd = sentOf(x);
+    return r && !r.stale ? `<span class="po-rev" title="${esc("Statement reviewed by " + (r.by || "someone") + " · " + fdateS(String(r.at).slice(0, 10)) + " — locked at this amount")}">🔒 Reviewed</span>`
+      : sd ? `<span class="po-rev" title="${esc("Owner statement emailed " + fdateS(String(sd.sentAt || sd.at).slice(0, 10)))}">✉ Statement sent</span>` : ""; };
   const notRev = ready.filter(x => !revOk(x)); ready = ready.filter(revOk);
   const noPay = rows.filter(x => x.k === "none" && x.p.status === "active" && !(x.row && x.row.paidOut)).map(x => { const c = x.s.c || pmCalc(x.row, x.p);
     // a payout kept back to win back a double payout (October paid twice) — the workbook still lists it as a payment
@@ -19656,11 +19662,11 @@ function pgPayouts(){
       : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · no bank on file</span> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
       : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.p.id)}" class="muted" style="font-size:12px">change</a>`;
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
-      <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""} <span class="po-rev" title="${esc((r => r ? "Statement reviewed by " + (r.by || "someone") + " · " + fdateS(String(r.at).slice(0, 10)) + " — locked at this amount" : "")(revOf(x)))}">🔒 Reviewed</span></div></td>
+      <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""} ${poTag(x)}</div></td>
       <td class="po-who">${who}</td><td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
   const splitLine = x => { const k = x.m + "|" + x.p.id, ok = okToSend(x);
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
-      <td><b>${esc(x.split.name)}</b> <span class="tag">split</span> <span class="po-rev">🔒 Reviewed</span><div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
+      <td><b>${esc(x.split.name)}</b> <span class="tag">split</span> ${poTag(x)}<div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
       <td class="po-who">${x.shares.map(sh => { const nv = poNv(sh.vendorId), b = nv && (nv.payout || [])[0]; return `<div class="po-sh"><span>${esc(nv ? nv.name : sh.name || "Pick a payee")}${b ? ` · <span class="muted">${esc(b.label || b.type)}</span>` : nv ? ` · <span class="po-no">no bank on file</span>` : ""}</span><b class="num">${usd(sh.amountC)}</b></div>`; }).join("")}
         <a href="#" data-psplit="${esc(x.split.id)}" class="muted" style="font-size:12px">edit split</a></td>
       <td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
@@ -19679,7 +19685,7 @@ function pgPayouts(){
     const revRow = x => { const r = revOf(x), pid = x.split ? x.rows[0].p.id : x.p.id;
       return `<tr><td>${nm(x)}</td><td>${r && r.stale ? `<span class="tag gold">Statement changed since review</span>` : `<span class="tag grey">Statement not reviewed</span>`}</td>
         <td class="po-nr-a"><button class="btn sm" data-prev="${esc(pid)}" type="button">Mark reviewed</button><button class="btn sm ghost" data-pstmt="${esc(pid)}" type="button">Open statement</button></td><td class="r num">${usd(x.amountC)}</td></tr>`; };
-    c.innerHTML = `<div class="card-h"><h3>Not ready · ${notRev.length + noPay.length}</h3><span class="muted" style="margin-left:auto;font-size:12.5px">Ready once the owner statement is marked reviewed</span></div>
+    c.innerHTML = `<div class="card-h"><h3>Not ready · ${notRev.length + noPay.length}</h3><span class="muted" style="margin-left:auto;font-size:12.5px">Ready once the owner statement is reviewed or sent</span></div>
       <div class="tbl-wrap"><table class="tbl po-nr-t"><tbody>${notRev.map(revRow).join("")}${noPay.map(x => `<tr class="off"><td>${nm(x)}</td><td><span class="tag ${/owes/.test(x.why) ? "red" : "grey"}">${esc(x.why)}</span></td><td></td><td class="r num">${usd(x.amountC)}</td></tr>`).join("")}</tbody></table></div>`;
     v.appendChild(c);
     c.querySelectorAll("[data-prev]").forEach(b => b.onclick = () => { const cx = sc.find(y => y.p.id === b.dataset.prev); if(!cx) return toast("This statement can't be reviewed yet — the owner needs an email"); stmtSetReview(m, stmtGroupFor(m, cx, sc), true); toast("Marked reviewed — it's ready to send", true); render(); });
