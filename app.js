@@ -7625,7 +7625,7 @@ function stmtComposeGroup(m, xs){
   const e = ((pmState().meta[m] || {}).emailEdits || {})[stmtGroupKey(xs)] || {};
   const names = xs.map(x => x.p.name), first = xs.map(x => x.first).find(Boolean) || "";
   const to = [...new Set(xs.flatMap(x => x.toList))], cc = [...new Set(xs.flatMap(x => x.cc))].filter(c => !to.includes(c));
-  const std = {subject:`Owner Statements – ${stmtJoin(names)} – ${monthLabel(m)}`,
+  const std = {subject:`Owner Statements – ${names.length > 3 ? names.length + " properties" : stmtJoin(names)} – ${monthLabel(m)}`,
     body:STMT_BODY(first, "\u0000", m).replace(/is your owner statement for \u0000/, "are your owner statements for " + stmtJoin(names)).replace("statement for \u0000", "statements for " + stmtJoin(names)).replace(/\u0000/g, stmtJoin(names))
       .replace(/It includes the income, expenses, and activity for the property this month\./, "They include the income, expenses, and activity for each property this month.")
       .replace(/It includes the income, expenses, and activity for the property that month\./, "They include the income, expenses, and activity for each property that month.")};
