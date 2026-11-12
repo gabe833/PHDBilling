@@ -19307,12 +19307,8 @@ function pgHelp(){
    unless you switch them to Nickel. */
 const PO = {plan:null, loading:false, at:0};
 // how a rental's owner is paid: the property's setting, else what the income report said last
-function poVia(p){
-  if(p.payVia === "nickel" || p.payVia === "magicdoor") return p.payVia;
-  const rows = Object.values(pmState().rows).filter(r => r.propertyId === p.id && r.wbStatus).sort((a, b) => b.month.localeCompare(a.month));
-  const w = rows.length ? String(rows[0].wbStatus) : "";
-  return /^\s*MD\b/i.test(w) ? "magicdoor" : "nickel";
-}
+// every owner is paid through Nickel, unless someone set a rental to MagicDoor on its page (the workbook's old "MD" status no longer decides it)
+function poVia(p){ return p.payVia === "magicdoor" ? "magicdoor" : "nickel"; }
 function poRows(m){
   const out = [];
   pmState().properties.filter(p => !p.deleted && p.ownerId).forEach(p => {
@@ -19515,7 +19511,7 @@ async function poSend(list, o){
       const c = elm("div", "card"); const via = poVia(p);
       c.innerHTML = `<div class="card-h"><h3>Owner payouts</h3></div><div class="card-b" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <label class="fld" style="margin:0"><span>Paid through</span><select id="poVia"><option value="nickel" ${via === "nickel" ? "selected" : ""}>Nickel (sent from the console)</option><option value="magicdoor" ${via === "magicdoor" ? "selected" : ""}>MagicDoor</option></select></label>
-        <span class="muted" style="font-size:12.5px">${p.payVia ? "Set here" : "From the income report"} · <a href="#" id="poGo">Owner payouts →</a></span></div>`;
+        <span class="muted" style="font-size:12.5px">${p.payVia ? "Set here" : "Nickel unless set here"} · <a href="#" id="poGo">Owner payouts →</a></span></div>`;
       $("#view").appendChild(c);
       c.querySelector("#poVia").onchange = e => { snapshot(); p.payVia = e.target.value; commit(); render(); };
       c.querySelector("#poGo").onclick = e => { e.preventDefault(); go("payouts"); };
