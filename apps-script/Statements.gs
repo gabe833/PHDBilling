@@ -20,7 +20,7 @@
    Updating an existing install: paste the new version, then Deploy → Manage
    deployments → edit (pencil) → Version: New version → Deploy. The URL stays.
    ===================================================================== */
-const SCRIPT_VERSION = 3;   // v3: a sent message in the thread counts as sent even with a newer draft there; v2: the email body comes as HTML from the console (the statement breakdown table); several statements in one email; ping says why there's no signature
+const SCRIPT_VERSION = 3;   // v3: sentList (statements sent from Gmail); a sent message in the thread counts as sent even with a newer draft there; v2: the email body comes as HTML from the console (the statement breakdown table); several statements in one email; ping says why there's no signature
 const CFG = {
   FROM_NAME: 'PHD Property Management',   // the name owners see next to pm@'s address
   LABEL: 'AutoDraft/Owner Statements',     // every statement draft gets this Gmail label (it stays on after sending)
@@ -57,6 +57,7 @@ function doPost(e){
   if(b.action === 'send') return json_(makeDrafts_(b.items, true));
   if(b.action === 'sendDraft') return json_(sendDraft_(b.items));
   if(b.action === 'status') return json_({ok:true, results:status_(b.items)});
+  if(b.action === 'sentList') return json_({ok:true, sent:sentList_(b.after, b.query)});
   return json_({ok:false, error:'unknown action'});
 }
 
@@ -157,6 +158,18 @@ function status_(items){
       return {id:it.id, state:'gone'};
     }catch(err){ return {id:it.id, state:'unknown', error:String(err.message || err).slice(0, 200)}; }
   });
+}
+// owner statements that went out from this mailbox since a date (sent from Gmail, not just from the console), so the
+// console can mark them sent: [{threadId, subject, to, at}]
+function sentList_(after, query){
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(String(after || '')) ? String(after).replace(/-/g, '/') : '';
+  const q = 'in:sent subject:"Owner Statement"' + (d ? ' after:' + d : '') + (query ? ' ' + String(query).slice(0, 200) : '');
+  const out = [];
+  GmailApp.search(q, 0, 300).forEach(th => th.getMessages().forEach(m => {
+    if(m.isDraft() || m.isInTrash()) return;
+    out.push({threadId:th.getId(), subject:m.getSubject(), to:m.getTo(), cc:m.getCc(), at:m.getDate().toISOString()});
+  }));
+  return out;
 }
 // the same text as HTML, so Gmail shows the paragraphs the way they were written
 function bodyHtml_(text){

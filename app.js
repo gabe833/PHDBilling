@@ -8093,9 +8093,32 @@ async function stmtMakeDrafts(m, list, opts){
 }
 
 // ask pm@'s Gmail where each statement email stands; deleted drafts are forgotten so they can be made again
+// statements sent from pm@'s Gmail directly (drafts sent there, or written by hand): find them in Sent and mark them sent
+async function stmtSyncSent(m){
+  if(!stmtConn()) return 0;
+  let res; try{ res = await stmtCall({action:"sentList", after:m + "-01"}); }catch(e){ return 0; }
+  if(!res || !Array.isArray(res.sent)) return 0;                     // the pm@ script is older than v3
+  const cands = stmtCandidates(m).filter(x => !x.why && !(x.done && x.done.state === "sent"));
+  const mails = res.sent.filter(e => String(e.subject || "").includes(monthLabel(m))).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const addrs = t => String(t || "").toLowerCase().match(/[^\s<>,;"]+@[^\s<>,;"]+/g) || [];
+  const D = stmtDrafted(m); let n = 0, snap = false;
+  mails.forEach(e => {
+    const to = new Set(addrs(e.to)); if(!to.size) return;
+    const mine = cands.filter(x => !(D[x.p.id] && D[x.p.id].state === "sent") && x.toList.length && x.toList.every(a => to.has(a.toLowerCase())));
+    if(!mine.length) return;
+    const subj = String(e.subject || "").toLowerCase(), named = mine.filter(x => subj.includes(stmtAddr(x.p).toLowerCase()) || subj.includes(String(x.p.name).toLowerCase()));
+    const hit = /owner statements\b/i.test(e.subject) ? (named.length ? named.concat(mine.filter(x => !named.includes(x) && /\d+ properties/i.test(e.subject))) : mine)
+      : named.length ? named.slice(0, 1) : mine.length === 1 ? mine : [];
+    hit.forEach(x => { if(!snap){ snapshot(); snap = true; }
+      D[x.p.id] = Object.assign({}, D[x.p.id] || {}, {state:"sent", sentAt:e.at, at:(D[x.p.id] || {}).at || e.at, to:e.to, threadId:e.threadId, from:(stmtConn() || {}).mailbox || "", foundInGmail:true}); n++; });
+  });
+  if(snap){ commit(); actLog("statements", `${n} ${monthLabel(m)} statement${n === 1 ? "" : "s"} found in pm@'s Sent mail and marked sent`); }
+  return n;
+}
 async function stmtRefresh(m){
+  const n0 = await stmtSyncSent(m).catch(() => 0);
   const D = ((pmState().meta[m] || {}).drafts) || {}, ids = Object.keys(D).filter(k => D[k] && D[k].state !== "sent");
-  if(!ids.length || !stmtConn()) return false;
+  if(!ids.length || !stmtConn()) return n0 > 0;
   const res = await stmtCall({action:"status", items:ids.map(id => ({id, draftId:D[id].draftId || "", threadId:D[id].threadId || ""}))});
   let changed = false;
   (res.results || []).forEach(x => {
@@ -8104,7 +8127,7 @@ async function stmtRefresh(m){
     else if(x.state === "sent" && rec.state !== "sent"){ if(!changed) snapshot(); rec.state = "sent"; rec.sentAt = x.at || new Date().toISOString(); changed = true; }
   });
   if(changed) commit();
-  return changed;
+  return changed || n0 > 0;
 }
 function pmStatementMailSheet(m){
   const sh = $("#sheet"), set = pmSettings();
