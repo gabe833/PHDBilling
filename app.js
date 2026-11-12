@@ -4858,6 +4858,21 @@ function pmMonthRoll(m){
     if(c.dueNowC > 0 && c.recv < c.dueNowC) t.short += c.dueNowC - c.recv;
   });
   ["repairsC","adminC"].forEach(k => { if(rawHit[k]){ const d = Math.round(raw[k]) - t[k]; t[k] += d; if(k === "adminC") t.phdC += d; } });
+  // repairs and admin fees count in the month they're actually taken from the owner: when repairs run past the rent and
+  // the rest carries to next month, only the part applied this month counts here, and the carried part (repairs and its
+  // share of the admin fee) counts in the month it comes off. Only the totals change — no row is touched.
+  t.repairsAllC = t.repairsC; t.adminAllC = t.adminC; t.carriedOutC = 0; t.carriedInC = 0;
+  const split = (row, prop, xC) => { const c = pmCalc(row, prop), base = c.repairsC + c.adminC; if(base <= 0 || xC <= 0) return [0, 0];
+    const x = Math.min(xC, base), adm = Math.round(x * c.adminC / base); return [x - adm, adm]; };
+  pmMonthRows(m).forEach(({row, prop}) => {
+    if(row.detailOnly) return;
+    const adj = row.adjustments || [];
+    let outC = adj.filter(a => a.carryOut).reduce((a, x) => a + cents(x.amount), 0);
+    if(!outC){ const c = pmCalc(row, prop); if(c.payoutC < 0 && !row.paidOut) outC = -c.payoutC; }   // will carry once the month ends
+    if(outC > 0){ const [r, a] = split(row, prop, outC); t.repairsC -= r; t.adminC -= a; t.phdC -= a; t.carriedOutC += r + a; }
+    adj.filter(a => a.carryIn && a.from).forEach(a => { const src = pmRow(a.from, prop.id); if(!src) return;
+      const [r, ad] = split(src, prop, -cents(a.amount)); t.repairsC += r; t.adminC += ad; t.phdC += ad; t.carriedInC += r + ad; });
+  });
   const meta = pmState().meta[m] || {};
   t.deductC = (meta.deductions || []).reduce((a, d) => a + cents(d.amount), 0);   // stored negative
   t.netC = t.phdC + t.deductC;
@@ -4946,7 +4961,7 @@ function pgPmMonth(){
   tiles.innerHTML = `
     <div class="pf-cell"><div class="label">Rent collected</div><div class="pf-v">${usd(R.recv)}</div>
       <div class="pf-note">${R.dueC ? `${pct}% of ${usd(R.dueC)} due` : ""}${R.short ? ` · <span style="color:var(--gold)">${usd(R.short)} short</span>` : ""}</div></div>
-    <div class="pf-cell"><div class="label">Repairs + admin fee</div><div class="pf-v">${usd(R.repairsC + R.adminC)}</div><div class="pf-note">${usd(R.repairsC)} repairs · ${usd(R.adminC)} admin</div></div>
+    <div class="pf-cell"><div class="label">Repairs + admin fee</div><div class="pf-v">${usd(R.repairsC + R.adminC)}</div><div class="pf-note">${usd(R.repairsC)} repairs · ${usd(R.adminC)} admin${R.carriedOutC ? ` · ${usd(R.carriedOutC)} carries to ${esc(monthShort(PMCore.monthAdd(m, 1)))}` : ""}${R.carriedInC ? ` · incl. ${usd(R.carriedInC)} from ${esc(monthShort(PMCore.monthAdd(m, -1)))}` : ""}</div></div>
     <div class="pf-cell"><div class="label">Owner payouts</div><div class="pf-v g">${usd(R.payoutC)}</div><div class="pf-note">${R.rows} propert${R.rows === 1 ? "y" : "ies"}</div></div>
     <div class="pf-cell"><div class="label">PHD income</div><div class="pf-v a">${usd(R.netC)}</div><div class="pf-note">${usd(R.pmFeeC)} PM fees${R.deductC ? ` · ${usd(-R.deductC)} deductions` : ""}</div></div>
     <div class="pf-cell"><div class="label">Needs a look</div><div class="pf-v"${R.flags ? ' style="color:var(--gold)"' : ""}>${R.flags}</div><div class="pf-note">${R.flags ? "rows with a warning" : "Everything adds up"}</div></div>`;
@@ -5010,7 +5025,7 @@ function pgPmMonth(){
   });
   const foot = elm("tr","ow-tot");
   // totals of the rows on screen (a filter shows its own total, not the whole month's)
-  const T = vis.length === counts.all ? R : vis.reduce((t, {row, prop}) => { const c = pmCalc(row, prop);
+  const T = vis.reduce((t, {row, prop}) => { const c = pmCalc(row, prop);
     ["dueC", "recv", "repairsC", "adminC", "pmFeeC", "leasingC", "payoutC"].forEach(k => t[k] += c[k] || 0); t.otherC += (c.otherC || 0) + (c.adjC || 0); return t; },
     {dueC:0, recv:0, repairsC:0, adminC:0, pmFeeC:0, leasingC:0, otherC:0, payoutC:0});
   foot.innerHTML = `<td><b>${vis.length === counts.all ? "All properties" : vis.length + " shown"}</b></td><td class="r num"><b>${usd(T.dueC)}</b></td><td class="r num"><b>${usd(T.recv)}</b></td>
