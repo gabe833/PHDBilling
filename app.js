@@ -7537,11 +7537,7 @@ Attached is your owner statement for {address} for {month}. It includes the inco
 
 {breakdown}
 
-Please let us know if you have any questions. Thank you for your continued business. 
-
-Sincerely,
-
-PHD Property Management`};
+Please let us know if you have any questions. Thank you for your continued business.`};   // the sign-off is pm@'s Gmail signature
 const stmtTpl = () => Object.assign({}, STMT_TPL_DEFAULT, (pmSettings() || {}).stmtTpl || {});
 // "Good morning" / "Good afternoon" / "Good evening" by the time in Charleston when the email is written
 function stmtGreeting(){ const h = Number(new Intl.DateTimeFormat("en-US", {hour:"numeric", hourCycle:"h23", timeZone:"America/New_York"}).format(new Date())); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; }

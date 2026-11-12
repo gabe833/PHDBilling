@@ -29,6 +29,8 @@ import { runApply } from "./engine.js";
 
 const AUTH_URL = "https://auth.magicdoor.com/api-keys/token";
 const API = "https://api.portal.magicdoor.com";
+// MagicDoor split vendors, work orders and accounting off the portal host (Nov 2026); those answer under company-portal
+const ACCOUNTING = "https://accounting.magicdoor.com/company-portal", MAINTENANCE = "https://services.magicdoor.com/maintenance/company-portal";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -938,7 +940,7 @@ Deno.serve(async (req) => {
     // read-only look at other MagicDoor addresses (GET only, /company-app/ only): finds where an endpoint moved to
     if (mode === "probe") {
       // GET only. Any path on MagicDoor's API host (no "..") — or one of a few MagicDoor hosts — to find where an address moved
-      const BASES = [API, API + "/api", API + "/api/v1", API + "/v1", API + "/v2", "https://api.magicdoor.com", "https://api.magicdoor.com/api"];
+      const BASES = [API, API + "/api", API + "/api/v1", API + "/v1", API + "/v2", "https://api.magicdoor.com", "https://api.magicdoor.com/api", ACCOUNTING, MAINTENANCE];
       const base = BASES.includes(S(body.base)) ? S(body.base) : API;
       const ask = Array.isArray(body.paths) ? (body.paths as unknown[]).map(S).filter((x) => /^\/[A-Za-z0-9/_{}?=&.-]{1,120}$/.test(x) && !x.includes("..")).slice(0, 40) : [];
       if (!ask.length) return json({ at: new Date().toISOString(), endpoints: await probe(MORE) });
