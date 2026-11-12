@@ -7706,7 +7706,7 @@ const STMT_BODY = (first, addr, m) => stmtFill(stmtTpl().body, first, addr, m);
 function stmtEdits(m){ const mm = pmState().meta[m] = pmState().meta[m] || {month:m, deductions:[], withdrawals:[]}; mm.emailEdits = mm.emailEdits || {}; return mm.emailEdits; }
 /* The simple statement breakdown that goes in the email where {breakdown} is: rent, what came out, what the owner gets.
    text for the plain-text copy of the email, html (inline styles, for Gmail) for the one owners see. */
-function stmtBreakdown(m, pid){
+function stmtBreakdown(m, pid, inGroup){
   const p = pmProp(pid), row = p && pmRow(m, pid); if(!row) return {text:"", html:""};
   const c = pmCalc(row, p), R = [];
   R.push(["Rent received", c.recv, c.creditC ? `${usd(c.rentDueC)} rent less a ${usd(c.creditC)} tenant credit` : c.dueC && c.recv < c.dueC ? `of ${usd(c.dueC)} due` : ""]);
@@ -7729,13 +7729,39 @@ function stmtBreakdown(m, pid){
       ? `<tr><td style="padding:3px 0 3px 16px;font-size:12.5px;color:#4A5957">${esc(l)}${n ? ` <span style="color:#8A6A1C">· ${esc(n)}</span>` : ""}</td><td style="padding:3px 0 3px 24px;font-size:12.5px;color:#4A5957;text-align:right;white-space:nowrap">${sg(v)}</td></tr>`
       : `<tr><td style="${td}">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr}">${sg(v)}</td></tr>`).join("")
     + `<tr><td style="padding:9px 0 0;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:9px 0 0 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(totC)}</td></tr></table>`;
+  if(!inGroup){ const SPR = stmtSplitRows(stmtSplitShares(m, [pid]), sg); return {text:text + SPR.text, html:html + SPR.html}; }
+  return {text, html};
+}
+/* how the payout is shared when these properties pay out through a split (Susan Reed & Stephen Welt: $6,500 to the joint
+   account, the rest half each) — the same amounts the Owner payouts page sends */
+function stmtSplitShares(m, pids){
+  if(typeof poSplits !== "function") return null;
+  const sp = poSplits().find(x => pids.some(id => x.pids.includes(id))); if(!sp) return null;
+  const mine = sp.pids.filter(id => pids.includes(id));
+  const totC = mine.reduce((a, id) => { const r = pmRow(m, id), p = pmProp(id); return a + (r && p ? Math.max(0, pmCalc(r, p).payoutC) : 0); }, 0);
+  if(totC <= 0) return null;
+  const shares = poSplitAmounts(totC, sp.to).filter(x => x.amountC > 0).map((x, i) => {
+    const t = sp.to.find(y => (y.key && y.key === x.key) || y.vendorId === x.vendorId) || {};
+    const how = typeof poFixed === "function" && poFixed(t) ? `set amount of ${usd(Math.round(+t.fixedC))}` : t.pct != null ? `${+t.pct}% of the rest` : "";
+    return {name:x.name || t.name || "Payee", amountC:x.amountC, how, joint:/\bjoint\b|&| and /i.test(x.name || t.name || "") && x.key === "JOINT"};
+  });
+  return {totC, shares, partial:mine.length < sp.pids.length};
+}
+function stmtSplitRows(SP, sg){
+  if(!SP) return {text:"", html:""};
+  const lbl = s => s.name + (s.joint ? " (joint account)" : "");
+  const text = `\nHow it's paid out\n` + SP.shares.map(s => `${lbl(s)}: ${usd(s.amountC)}${s.how ? " (" + s.how + ")" : ""}`).join("\n");
+  const html = `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:440px;margin:0 0 22px;font-family:Arial,Helvetica,sans-serif">`
+    + `<tr><td colspan="2" style="padding:0 0 6px;font-size:12px;color:#4A5957;border-bottom:2px solid #1D5C57">How it's paid out</td></tr>`
+    + SP.shares.map(s => `<tr><td style="padding:7px 0;border-bottom:1px solid #E6EAE9;font-size:14px;color:#222">${esc(lbl(s))}${s.how ? `<div style="font-size:12px;color:#6B7775">${esc(s.how)}</div>` : ""}</td><td style="padding:7px 0 7px 24px;border-bottom:1px solid #E6EAE9;font-size:14px;color:#222;text-align:right;white-space:nowrap">${usd(s.amountC)}</td></tr>`).join("")
+    + `</table>`;
   return {text, html};
 }
 // several properties in one email: the totals across all of them first (rental income, other income, repairs, fees,
 // adjustments, tenant credits, what's paid), then a table for each property
 function stmtBreakdownMany(m, pids){
   if(pids.length === 1) return stmtBreakdown(m, pids[0]);
-  const parts = pids.map(pid => ({p:pmProp(pid), B:stmtBreakdown(m, pid), c:pmCalc(pmRow(m, pid), pmProp(pid))}));
+  const parts = pids.map(pid => ({p:pmProp(pid), B:stmtBreakdown(m, pid, true), c:pmCalc(pmRow(m, pid), pmProp(pid))}));
   const T = k => parts.reduce((a, x) => a + (x.c[k] || 0), 0);
   const tot = {recv:T("recv"), other:T("otherC"), rep:T("repairsC"), admin:T("adminC"), pm:T("pmFeeC"), lease:T("leasingC"), adj:T("adjC"), cred:T("creditC"), pay:T("payoutC")};
   const R = [["Rental income", tot.recv, tot.cred ? `after ${usd(tot.cred)} in tenant credits` : ""]];
@@ -7754,8 +7780,9 @@ function stmtBreakdownMany(m, pids){
     + `<tr><td colspan="2" style="padding:10px 14px 6px;font-size:12px;color:#4A5957;border-bottom:2px solid #1D5C57">${esc(monthLabel(m))} totals · all ${parts.length} properties</td></tr>`
     + R.map(([l, v, n]) => `<tr><td style="${td};padding-left:14px">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr};padding-right:14px">${l === "Tenant credits" ? usd(tot.cred) : sg(v)}</td></tr>`).join("")
     + `<tr><td style="padding:10px 14px;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:10px 14px 10px 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(Math.abs(tot.pay))}</td></tr></table>`;
-  const text = sumText + "\n\n" + parts.map(x => `${x.p.name}\n${x.B.text}`).join("\n\n");
-  const html = sumHtml + parts.map(x => `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#1A2322;margin:6px 0 2px">${esc(x.p.name)}</div>` + x.B.html).join("");
+  const SPR = stmtSplitRows(stmtSplitShares(m, pids), sg);
+  const text = sumText + SPR.text + "\n\n" + parts.map(x => `${x.p.name}\n${x.B.text}`).join("\n\n");
+  const html = sumHtml + SPR.html + parts.map(x => `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#1A2322;margin:6px 0 2px">${esc(x.p.name)}</div>` + x.B.html).join("");
   return {text, html};
 }
 // the greeting as of right now (a draft written in the morning and sent after lunch says "Good afternoon")
@@ -8228,7 +8255,15 @@ function stmtEmailSheet(m, pid){
   const sh = $("#sheet"), cands = stmtCandidates(m), x = cands.find(c => c.p.id === pid); if(!x) return;
   // statements going to the same people go as one email: this window shows and sends that one email
   const xs = stmtGroupFor(m, x, cands), grp = xs.length > 1, pids = xs.map(y => y.p.id);
-  const c = grp ? stmtComposeGroup(m, xs) : stmtCompose(m, x), conn = stmtConn() || {}, rec = x.done;
+  const c = grp ? stmtComposeGroup(m, xs) : stmtCompose(m, x), conn = stmtConn() || {}, rec = x.done || (xs.find(y => y.done) || {}).done;
+  // already sent: the next one is an update — say so in the subject and first line (only while the wording is the standard one)
+  if(rec && rec.state === "sent" && !c.edited){
+    const when = fdateS(String(rec.sentAt || rec.at).slice(0, 10));
+    if(!/^Updated/i.test(c.subject)) c.subject = "Updated: " + c.subject;
+    const paras = String(c.body).split(/\n{2,}/);
+    const note = `This is an updated statement that replaces the one we sent on ${when}.`;
+    if(!c.body.includes(note)) c.body = (paras.length > 1 ? [paras[0], note].concat(paras.slice(1)) : [note].concat(paras)).join("\n\n");
+  }
   const sig = conn.signature || "";
   sh.innerHTML = `<div class="sheet-h"><div><h3>${grp ? `Owner statements · ${xs.length} properties, one email` : `Owner statement · ${esc(x.p.name)}`}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${grp ? esc(stmtJoin(xs.map(y => y.p.name))) + " · " : ""}${monthLabel(m)} · from ${esc(conn.mailbox || "pm@phdproperties.realestate")}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">
