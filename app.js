@@ -16428,10 +16428,16 @@ function rcRow(m, row, prop, ledger){
     const adjs = row.adjustments || [];
     const lateInC = adjs.filter(a => String(a.lateRent || "").startsWith("in")).reduce((t, a) => t + cents(a.amount), 0);
     const recovC = adjs.filter(a => a.recov).reduce((t, a) => t - cents(a.amount), 0);
-    const carry = rcCarried(prop, m), mdC = cents(row.mdNet), d = c.calcC + heldC - lateInC + recovC - (mdC + carry.c);
+    // a balance carried between months (repairs that ran past the rent): MagicDoor keeps it in its own running balance
+    const carryAdjC = adjs.filter(a => a.carryOut || a.carryIn).reduce((t, a) => t + cents(a.amount), 0);
+    const carry = rcCarried(prop, m), mdC = cents(row.mdNet), d = c.calcC + heldC - lateInC + recovC - carryAdjC - (mdC + carry.c);
     const known = [heldC ? `${usd(heldC)} collected after the payout` : "", lateInC ? `${usd(lateInC)} of last month's rent collected late` : "", recovC ? `${usd(recovC)} being won back from a double payout` : "",
+      carryAdjC > 0 ? `${usd(carryAdjC)} carried to next month` : carryAdjC < 0 ? `${usd(-carryAdjC)} carried from last month` : "",
       carry.c ? `${usd(carry.c)} of bills and admin fees last month's payout already took off (${carry.n} carried over unpaid in MagicDoor)` : ""].filter(Boolean);
+    // the month's own check (Month close) already explains it, or the payout equals MagicDoor's net owner funds: the same answer here
+    const fl = (c.flags || []).find(f => f.level === "info" && (/^Matches MagicDoor's owner statement/.test(f.text) || /^MagicDoor's statement says .* here is right\.$/.test(f.text)));
     st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)}${known.length ? " — the same once you allow for " + known.join(", ") : ""}`}
+      : fl ? {s:"ok", a:mdC, t:fl.text}
       : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
     // the usual reason: bills entered here (receipt inbox, Bills page) that aren't in MagicDoor yet
     // and the management fee, which MagicDoor only charges around the payout (the 14th)
