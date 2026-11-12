@@ -758,6 +758,41 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
   /* ---- an owner payout bill that's in Nickel but not paid yet: its amount follows the month's payout ----
      Only the one bill a month's row remembers (nkOpen), only while Nickel shows it unpaid with nothing scheduled,
      only an OWN- bill for that month, and never more than the month took in. No money moves. */
+  // delete owner payout bills (OWN-…) that haven't been paid or scheduled, several at once, with ONE confirmation for
+  // the whole batch. Anything paid, scheduled or not an OWN- bill is skipped and reported, never touched.
+  if (op === "payout.delete") {
+    if (!(await payers()).includes(by)) throw new Error("Only people on the payments list can delete owner payout bills.");
+    const want = ((body.billIds || []) as unknown[]).map(S).filter(Boolean).slice(0, 60);
+    if (!want.length) throw new Error("Pick the bills to delete");
+    const ok: Obj[] = [], skipped: Obj[] = [];
+    for (const id of want) {
+      let nb: Obj = {}; try { nb = (await read("get_bill", { billId: id })) || {}; } catch (_) { skipped.push({ id, why: "Nickel couldn't find it" }); continue; }
+      const ref = refOf(nb), sched = ((nb.scheduledPayments as Obj[]) || []).length || Number(nb.amountScheduled) > 0 || Number((nb.amountScheduled || {}).amountInCents) > 0;
+      const paidC = Number((nb.amountPaid || {}).amountInCents) || Number(nb.amountPaid) || 0;
+      if (!OWN_RE.test(ref)) { skipped.push({ id, ref, why: "Not an owner payout bill" }); continue; }
+      if (S(nb.paidStatus).toUpperCase() !== "UNPAID" || sched || paidC > 0) { skipped.push({ id, ref, why: "Already paid or scheduled" }); continue; }
+      ok.push({ id, ref, amountC: cAmt(nb), vendor: S(nb.vendorName || (nb.vendor || {}).name) });
+    }
+    if (!ok.length) return { ok: false, error: "None of these can be deleted — they're paid, scheduled or not owner payout bills", skipped };
+    const totC = ok.reduce((a, x) => a + x.amountC, 0);
+    let yes = false; const first = confirmer(runId, by, `Delete ${ok.length} unpaid owner payout bill${ok.length === 1 ? "" : "s"} in Nickel (${money(totC)})`);
+    const once: Ask = async (params) => { if (yes) return autoYes(params); const r = await first(params); if (r.action === "accept") yes = true; return r; };
+    const deleted: Obj[] = [];
+    for (const x of ok) {
+      const r = await tool("delete_bill", { billId: x.id }, once);
+      if (!r.ok) { if (!yes) return refused(r, "Deleting the bills"); skipped.push({ ...x, why: S(r.error && r.error.message).slice(0, 160) || "Nickel refused" }); continue; }
+      deleted.push(x);
+    }
+    // the console stops pointing at the deleted bills
+    const months = [...new Set(deleted.map((x) => { const m = S(x.ref).match(OWN_RE); return m ? `${m[1]}-${m[2]}` : ""; }).filter(Boolean))];
+    const gone = new Set(deleted.map((x) => x.id));
+    for (const m of months) {
+      const rows = (await (await rest(`docs?select=id,data&kind=eq.pm_row&id=like.${m}*`)).json()) as Obj[];
+      for (const r of rows) if (r.data && r.data.nkOpen && gone.has(S(r.data.nkOpen.billId))) await patch("pm_row", S(r.id), (d) => { delete d.nkOpen; });
+    }
+    return { ok: true, deleted, skipped };
+  }
+
   if (op === "payout.billUpdate") {
     const month = S(body.month), pid = S(body.pid), amountC = Math.round(Number(body.amountC) || 0);
     if (!/^\d{4}-\d{2}$/.test(month) || !pid) throw new Error("Which month?");
@@ -1335,6 +1370,36 @@ async function ownerPayouts(): Promise<number> {
   try { await setSetting("nk_owner_unmatched", JSON.stringify({ at: new Date().toISOString(), bills: unmatched })); } catch (_) { /* only for checking */ }
   return changed;
 }
+// every owner payout bill (OWN-…) in Nickel from the last 90 days, where its money stands, and which rental it pays
+async function ownerBillsList(): Promise<Obj> {
+  const from = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
+  const bills = (await readAll("search_bills", { query: "OWN-", invoiceDateAfter: from }, 10)).filter((b) => OWN_RE.test(refOf(b)));
+  const moneyState: Record<string, string> = {};
+  try {
+    const acts = await readAll("search_payment_activities", { source: "PAYABLE", startDate: from, endDate: today() }, 10);
+    acts.sort((x, y) => S(x.createdAt).localeCompare(S(y.createdAt))).forEach((r) => { const k = S(r.billNumber || r.invoiceLabel).toUpperCase(); if (k) moneyState[k] = S(r.status).toUpperCase(); });
+  } catch (_) { /* the bill's own status */ }
+  const props = ((await (await rest("docs?select=id,data&kind=eq.pm_property&deleted=is.false")).json()) as Obj[]).map((r) => r.data).filter((p) => p && p.id && !p.deleted);
+  const months = [...new Set(bills.map((b) => { const m = refOf(b).match(OWN_RE)!; return `${m[1]}-${m[2]}`; }))];
+  const byBill = new Map<string, string[]>();
+  for (const m of months) {
+    const rows = (await (await rest(`docs?select=id,data&kind=eq.pm_row&id=like.${m}*`)).json()) as Obj[];
+    for (const r of rows) { const d = r.data || {}, pid = S(d.propertyId); if (!pid) continue;
+      const ids = [S((d.nkOpen || {}).billId), S((d.paidOut || {}).nickelBillId), ...(((d.paidOut || {}).group || {}).ids || []).map(S)].filter(Boolean);
+      ids.forEach((id) => byBill.set(id, [...new Set([...(byBill.get(id) || []), pid])])); }
+  }
+  const out = bills.map((b) => {
+    const ref = refOf(b), m = ref.match(OWN_RE)!, month = `${m[1]}-${m[2]}`, key = alnum(m[3]);
+    const st = S(b.paidStatus).toUpperCase(), sch = (b.scheduledPayments as Obj[]) || [], ms = moneyState[ref] || "";
+    const status = /FAIL|REJECT|CANCEL|RETURN/.test(ms) ? "failed" : st === "PAID" && !(Number(b.amountScheduled) > 0) ? (/PEND|PROCESS/.test(ms) ? "pending" : "paid")
+      : (st === "SCHEDULED" || sch.length || Number(b.amountScheduled) > 0) ? "scheduled" : st === "UNPAID" ? "unpaid" : st.toLowerCase() || "unknown";
+    let pids = byBill.get(S(b.id)) || [];
+    if (!pids.length) pids = props.filter((p) => key && [...nameForms(p.name), ...nameForms(p.address)].some((f) => f && f.startsWith(key))).map((p) => S(p.id)).slice(0, 1);
+    return { id: S(b.id), ref, month, amountC: cAmt(b), status, vendor: S(b.vendorName || (b.vendor || {}).name), due: day(b.dueDate), created: day(b.createdAt || b.invoiceDate), paidDate: day(b.paidDate),
+      when: day(((sch[0] || {}).withdrawalDate || (sch[0] || {}).scheduledDate) || ""), pids };
+  }).sort((a, b) => b.month.localeCompare(a.month) || a.ref.localeCompare(b.ref));
+  return { at: new Date().toISOString(), bills: out };
+}
 async function refresh(only?: Obj) {
   if (!TOKEN) return { changed: 0, skipped: "no token" };
   if (!only) { try { await saveToolSchemas(); } catch (_) { /* next hour */ } }
@@ -1523,6 +1588,7 @@ async function handle(req: Request): Promise<Response> {
       }
       case "nickel.refresh": return done(await refresh());
       case "nk.ledger": return json({ items: await ledgerSync() });
+      case "nk.ownerBills": return json(await ownerBillsList());
       case "nk.sync": return done(await refresh({ kind: S(body.kind), id: S(body.id), key: S(body.key) || undefined }));
       case "nk.linkProject": return done(await linkProject(body));
       case "nk.activity": return json(await activity(body));

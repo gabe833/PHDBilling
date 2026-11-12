@@ -19601,6 +19601,7 @@ function pgPayouts(){
     c.querySelectorAll("[data-pstmt]").forEach(b => b.onclick = () => stmtEmailSheet(m, b.dataset.pstmt));
   }
   shut("Held", held, x => `<span class="tag red">${esc((x.s.hold && x.s.hold.title) || "Held")}</span>`);
+  if(nickelOn()) poNickelCard(v, m, rows);
   shut("Paid or scheduled", done, x => `<span class="tag ${x.k === "paid" ? "green" : "gold"}">${x.k === "paid" ? "Paid" : "Scheduled"}${x.s.date ? " · " + esc(fdateS(x.s.date)) : ""}${x.s.how ? " · " + esc(x.s.how) : ""}</span>`);
 
   // send bar
@@ -19620,6 +19621,64 @@ function pgPayouts(){
   v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); const p = pmProp(b.dataset.ppick); if(p) poPickSheet(p); });
   v.querySelectorAll("[data-psplit]").forEach(b => b.onclick = e => { e.preventDefault(); poSplitSheet(b.dataset.psplit); });
   $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : ""});
+}
+/* Owner payout bills in Nickel (OWN-…): every one for the month, what Nickel says about its money, which rental it pays,
+   and whether its amount still matches the console. Unpaid ones can be deleted together (one confirmation) and sent again. */
+const NKOB = {at:0, busy:false, data:null, err:""};
+async function poNickelLoad(force){
+  if(NKOB.busy || (!force && NKOB.data && Date.now() - NKOB.at < 120000)) return;
+  NKOB.busy = true;
+  try{ NKOB.data = await payCall("nk.ownerBills", {}, {noSave:true}); NKOB.err = ""; }catch(e){ NKOB.err = e.message; }
+  NKOB.busy = false; NKOB.at = Date.now();
+  if(S.ui.view === "payouts") render();
+}
+function poNickelCard(v, m, rows){
+  poNickelLoad(false);
+  const sel = S.ui.nkobSel = S.ui.nkobSel || {};
+  const all = ((NKOB.data && NKOB.data.bills) || []), list = S.ui.nkobAll ? all : all.filter(b => b.month === m);
+  const STAT = {unpaid:["grey", "Unpaid — not sent"], scheduled:["gold", "Scheduled"], pending:["gold", "On its way"], paid:["green", "Paid"], failed:["red", "Failed"]};
+  const consoleC = b => { const rs = rows.filter(x => b.pids.includes(x.p.id) && b.month === m); return rs.length ? rs.reduce((a, x) => a + x.amountC, 0) : null; };
+  const unpaid = list.filter(b => b.status === "unpaid"), picked = unpaid.filter(b => sel[b.id]);
+  const c = elm("div", "card po-nk");
+  const head = `<div class="card-h"><h3>Owner payout bills in Nickel · ${list.length}</h3>
+    <span class="muted" style="font-size:12.5px">${NKOB.busy && !NKOB.data ? "Reading Nickel…" : NKOB.err ? esc(NKOB.err) : NKOB.at ? "Checked " + esc(new Date(NKOB.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})) : ""}</span>
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <a href="#" id="nkobAll" style="font-size:12.5px">${S.ui.nkobAll ? "Only " + esc(monthLabel(m)) : "All months"}</a>
+      <button class="btn sm ghost" id="nkobRe" type="button">${NKOB.busy ? "Checking…" : "Check Nickel"}</button>
+      ${unpaid.length ? `<button class="btn sm ghost" id="nkobPick" type="button">${picked.length === unpaid.length ? "Clear" : "Select all unpaid"}</button>` : ""}
+      <button class="btn sm danger" id="nkobDel" type="button" ${picked.length ? "" : "disabled"}>Delete ${picked.length || ""} unpaid</button></span></div>`;
+  const rowsH = list.map(b => {
+    const cc = b.month === m ? consoleC(b) : null, off = cc != null && b.status === "unpaid" && Math.abs(cc - b.amountC) > 1;
+    const names = b.pids.map(id => (pmProp(id) || {}).name).filter(Boolean);
+    const [cls, lbl] = STAT[b.status] || ["grey", b.status];
+    return `<tr${b.status === "unpaid" ? "" : ' class="off"'}><td style="width:28px">${b.status === "unpaid" ? `<input type="checkbox" data-nkob="${esc(b.id)}" ${sel[b.id] ? "checked" : ""}>` : ""}</td>
+      <td><b>${names.length ? names.map(esc).join(" · ") : `<span class="muted">No rental matched</span>`}</b><div class="sub">${esc(b.ref)} · ${esc(b.vendor || "—")}${S.ui.nkobAll ? " · " + esc(monthLabel(b.month)) : ""}</div></td>
+      <td><span class="tag ${cls}">${esc(lbl)}${b.status === "paid" && b.paidDate ? " · " + esc(fdateS(b.paidDate)) : b.status === "scheduled" && b.when ? " · " + esc(fdateS(b.when)) : ""}</span>${off ? `<div class="sub" style="color:var(--gold)">Console says ${usd(cc)}</div>` : ""}</td>
+      <td class="muted" style="font-size:12.5px">${b.created ? "Made " + esc(fdateS(b.created)) : ""}</td>
+      <td class="r num">${usd(b.amountC)}</td></tr>`; }).join("");
+  const unpaidC = unpaid.reduce((a, b) => a + b.amountC, 0);
+  c.innerHTML = head + (list.length ? `<div class="tbl-wrap"><table class="tbl"><tbody>${rowsH}</tbody></table></div>
+    <div class="card-b muted" style="font-size:12.5px">${unpaid.length ? `${unpaid.length} unpaid · ${usd(unpaidC)} — made in Nickel but not sent. Delete them here to remake them; paid and scheduled ones can't be deleted.` : "Nothing unpaid in Nickel."}</div>`
+    : `<div class="card-b muted">${NKOB.data ? `No owner payout bills in Nickel for ${esc(monthLabel(m))}.` : NKOB.busy ? "Reading Nickel…" : ""}</div>`);
+  v.appendChild(c);
+  c.querySelectorAll("[data-nkob]").forEach(i => i.onchange = () => { sel[i.dataset.nkob] = i.checked; render(); });
+  c.querySelector("#nkobAll").onclick = e => { e.preventDefault(); S.ui.nkobAll = !S.ui.nkobAll; persistUi(); render(); };
+  c.querySelector("#nkobRe").onclick = () => poNickelLoad(true);
+  const pk = c.querySelector("#nkobPick"); if(pk) pk.onclick = () => { const on = picked.length !== unpaid.length; unpaid.forEach(b => sel[b.id] = on); render(); };
+  c.querySelector("#nkobDel").onclick = async () => {
+    if(!picked.length) return;
+    const totC = picked.reduce((a, b) => a + b.amountC, 0);
+    if(!confirm(`Delete ${picked.length} unpaid owner payout bill${picked.length === 1 ? "" : "s"} in Nickel — ${usd(totC)}?\n\n${picked.slice(0, 25).map(b => `· ${b.ref} · ${usd(b.amountC)}`).join("\n")}${picked.length > 25 ? `\n… and ${picked.length - 25} more` : ""}\n\nNo money moves. The payouts go back to "Ready to send" so you can send them again.`)) return;
+    try{
+      const r = await nkRun("payout.delete", {billIds:picked.map(b => b.id)}, `Delete ${picked.length} owner payout bill${picked.length === 1 ? "" : "s"} in Nickel`);
+      if(r && r.ok){
+        actLog("finance", `Deleted ${r.deleted.length} unpaid owner payout bill${r.deleted.length === 1 ? "" : "s"} in Nickel (${usd(r.deleted.reduce((a, x) => a + x.amountC, 0))}): ${r.deleted.map(x => x.ref).join(", ")}`, {side:"pm"});
+        toast(`Deleted ${r.deleted.length} in Nickel${r.skipped && r.skipped.length ? ` · ${r.skipped.length} left alone (${r.skipped.slice(0, 2).map(x => (x.ref || "") + ": " + x.why).join("; ")})` : ""}`, true);
+        S.ui.nkobSel = {}; if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
+      }
+    }catch(e){ toast(e.message); }
+    poNickelLoad(true);
+  };
 }
 function poPickSheet(p){
   const o = ownerById(p.ownerId), sh = $("#sheet"), others = o ? ownerPmProps(o).filter(x => x.id !== p.id) : [];
