@@ -7560,6 +7560,9 @@ function stmtBreakdown(m, pid){
   const p = pmProp(pid), row = p && pmRow(m, pid); if(!row) return {text:"", html:""};
   const c = pmCalc(row, p), R = [];
   R.push(["Rent received", c.recv, c.creditC ? `${usd(c.rentDueC)} rent less a ${usd(c.creditC)} tenant credit` : c.dueC && c.recv < c.dueC ? `of ${usd(c.dueC)} due` : ""]);
+  // a building with several units (1 Carriage Ln E's 17 suites): each unit's rent, under the total
+  const UN = typeof pmStmtUnits === "function" ? pmStmtUnits(p, m, c) : null;
+  if(UN) UN.rent.forEach(u => R.push([u.label, u.c, u.c === 0 ? "nothing received" : u.c < u.dueC - 100 ? `of ${usd(u.dueC)} due` : "", "unit"]));
   if(c.otherC) R.push(["Other income", c.otherC, ""]);
   if(c.repairsC) R.push(["Repairs and maintenance", -c.repairsC, ""]);
   if(c.adminC) R.push(["Admin fee on repairs", -c.adminC, ""]);
@@ -7568,11 +7571,13 @@ function stmtBreakdown(m, pid){
   (row.adjustments || []).filter(a => cents(a.amount)).forEach(a => R.push([String(a.note || "Adjustment").replace(/\s+/g, " ").slice(0, 90), cents(a.amount), ""]));
   const owe = c.payoutC < 0, totL = owe ? "Balance due from you" : "Paid to you", totC = Math.abs(c.payoutC);
   const sg = v => v < 0 ? "−" + usd(-v) : usd(v);
-  const text = R.map(([l, v, n]) => `${l}: ${sg(v)}${n ? " (" + n + ")" : ""}`).concat([`${totL}: ${usd(totC)}`]).join("\n");
+  const text = R.map(([l, v, n, k]) => `${k === "unit" ? "  " : ""}${l}: ${sg(v)}${n ? " (" + n + ")" : ""}`).concat([`${totL}: ${usd(totC)}`]).join("\n");
   const td = "padding:7px 0;border-bottom:1px solid #E6EAE9;font-size:14px;color:#222", tr = td + ";text-align:right;white-space:nowrap;padding-left:24px";
   const html = `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:440px;margin:4px 0 18px;font-family:Arial,Helvetica,sans-serif">`
     + `<tr><td colspan="2" style="padding:0 0 6px;font-size:12px;color:#6B7775;border-bottom:2px solid #1D5C57">${esc(monthLabel(m))} summary</td></tr>`
-    + R.map(([l, v, n]) => `<tr><td style="${td}">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr}">${sg(v)}</td></tr>`).join("")
+    + R.map(([l, v, n, k]) => k === "unit"
+      ? `<tr><td style="padding:3px 0 3px 16px;font-size:12.5px;color:#4A5957">${esc(l)}${n ? ` <span style="color:#8A6A1C">· ${esc(n)}</span>` : ""}</td><td style="padding:3px 0 3px 24px;font-size:12.5px;color:#4A5957;text-align:right;white-space:nowrap">${sg(v)}</td></tr>`
+      : `<tr><td style="${td}">${esc(l)}${n ? `<div style="font-size:12px;color:#6B7775">${esc(n)}</div>` : ""}</td><td style="${tr}">${sg(v)}</td></tr>`).join("")
     + `<tr><td style="padding:9px 0 0;font-size:15px;font-weight:bold;color:#1A2322">${totL}</td><td style="padding:9px 0 0 24px;font-size:15px;font-weight:bold;color:#1A2322;text-align:right;white-space:nowrap">${usd(totC)}</td></tr></table>`;
   return {text, html};
 }
@@ -18513,8 +18518,14 @@ function pmUnitLines(p, m){
   return x.units.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, {numeric:true})).map(u => {
     const gs = leases.filter(l => l.unitId === u.id).map(l => ({l, g:(l.months || {})[m]})).filter(y => y.g);
     let rentC = 0, credC = 0, paidC = 0, date = "";
-    gs.forEach(({g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived);
-      (g.pays || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d > date) date = d; }); });
+    gs.forEach(({l, g}) => { const w = mdExactWant(g); rentC += cents(g.rent); credC += cents(g.credits); paidC += cents(w.rentReceived);
+      (g.pays || []).forEach(pp => { const d = String(pp[0] || "").slice(0, 10); if(d > date) date = d; });
+      // rent paid early, before the month started (Suite 103 paid November on Oct 30): MagicDoor's payment links say
+      // which month's rent a payment went to, and the owner statement counts it in this month
+      if(Array.isArray(l.alloc)) l.alloc.forEach(([day, , parts]) => { const d = String(day || "").slice(0, 10); if(!d || d >= m + "-01") return;
+        const c = (parts || []).filter(([cm, k]) => cm === m && k === "rent").reduce((a, x) => a + Math.round(Number(x[2]) || 0), 0);
+        if(c > 0){ paidC += c; if(!date) date = d; } }); });
+    if(rentC) paidC = Math.min(paidC, Math.max(0, rentC - credC));   // an early payment and this month's can't both be this month's rent
     if(!paidC) date = ""; else if(!date) date = pmRentDate(p, m, u.id);
     const cur = gs.find(y => !y.l.ended) || gs[0];
     return {unit:u.name || "Unit", tenant:cur ? mdTenants(cur.l) : "", rentC, creditsC:credC, paidC, feeC:Math.round(paidC * rate / 100), rate, date};
