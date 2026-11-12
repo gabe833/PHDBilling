@@ -217,9 +217,28 @@ async function billAdd(body: Obj, who: string) {
   return { ok: true, ...made };
 }
 const ACCOUNTING = "https://accounting.magicdoor.com/company-portal";   // owner statements and other reports live here
+// the read-only key on its own: used when the full-access key is refused something (a permission taken off it in MagicDoor
+// shows up as 404/403), so one key's settings never stop the sync
+let rtoken = "", rtokenUntil = 0;
+async function mdReadOnlyToken(): Promise<string> {
+  if (rtoken && Date.now() < rtokenUntil) return rtoken;
+  const key = (Deno.env.get("MAGICDOOR_API_KEY") || "").trim(); if (!key) return "";
+  const d = await mdSignIn(key); if (!d) return "";
+  rtoken = d.accessToken; rtokenUntil = Date.now() + Math.max(60, Number(d.expiresIn || 900) - 60) * 1000;
+  return rtoken;
+}
+const keyFallback: Obj = {};
 async function mdGet(path: string, base = API): Promise<{ status: number; body: unknown; text: string }> {
+  const r0 = await mdGetWith(path, base, mdToken);
+  if ((r0.status === 404 || r0.status === 403) && readKeyUsed === "full") {
+    const r1 = await mdGetWith(path, base, mdReadOnlyToken);
+    if (r1.status === 200) { keyFallback[path.split("?")[0]] = `full-access key ${r0.status}, read key 200`; return r1; }
+  }
+  return r0;
+}
+async function mdGetWith(path: string, base: string, tok: () => Promise<string>): Promise<{ status: number; body: unknown; text: string }> {
   for (let attempt = 0; ; attempt++) {
-    const t = await mdToken();
+    const t = await tok(); if (!t) return { status: 401, body: null, text: "" };
     const r = await fetch(base + path, { headers: { Authorization: "Bearer " + t, Accept: "application/json" }, signal: AbortSignal.timeout(25000) });
     if (r.status === 401 && attempt === 0) { token = ""; continue; }                     // token expired early: sign in again once
     if ((r.status === 429 || r.status >= 500) && attempt < 2) { await new Promise((ok) => setTimeout(ok, 1500 * (attempt + 1))); continue; }
@@ -895,7 +914,11 @@ Deno.serve(async (req) => {
     const mode = S(body.mode);
     if (mode === "sync" && await isSchedule(req)) return json(await sync());
     if (!(await isStaff(req))) return json({ error: "Not on the team list" }, 403);
-    if (mode === "ping") { await mdToken(); return json({ ok: true, key: readKeyUsed }); }
+    if (mode === "ping") { await mdToken(); return json({ ok: true, key: readKeyUsed, fellBack: keyFallback }); }
+    // which key MagicDoor accepts for an address (GET only): full-access vs read-only
+    if (mode === "keys") { const ps = Array.isArray(body.paths) ? (body.paths as unknown[]).map(S).filter((x) => /^\/company-app\/[A-Za-z0-9/_?=&.-]{1,120}$/.test(x)).slice(0, 10) : ["/company-app/vendors/bills"]; const out: Obj = {};
+      for (const p of ps) { const f = await mdGetWith(p, API, mdToken), r = await mdGetWith(p, API, mdReadOnlyToken), w = await mdGetWith(p, API, mdWriteToken); out[p] = { fullAsRead: f.status, readKey: r.status, writeKey: w.status }; }
+      return json({ at: new Date().toISOString(), key: readKeyUsed, out }); }
     if (mode === "sync") return json(await sync());
     if (mode === "discover") {
       await mdToken();
