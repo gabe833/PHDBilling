@@ -1826,7 +1826,8 @@ function openPanel(){ const sh=$("#sheet");
   // contents settle in only when the panel slides open, not each time an open panel redraws
   if(!sh.classList.contains("on")){ sh.classList.remove("sh-enter"); void sh.offsetWidth; sh.classList.add("sh-enter"); clearTimeout(sh._se); sh._se = setTimeout(() => sh.classList.remove("sh-enter"), 700); }
   sh.classList.add("on"); $("#scrim").classList.add("on"); sh.setAttribute("aria-hidden","false"); }
-function closeSheet(){ $("#sheet").onkeydown = null; $("#sheet").classList.remove("on"); $("#scrim").classList.remove("on"); $("#sheet").setAttribute("aria-hidden","true"); }
+function closeSheet(){ const bc = closeSheet.before; closeSheet.before = null; if(bc) try{ bc(); }catch(e){ console.error(e); }
+  $("#sheet").onkeydown = null; $("#sheet").classList.remove("on"); $("#scrim").classList.remove("on"); $("#sheet").setAttribute("aria-hidden","true"); }
 
 function openSheet(id, preset){
   const p = P();
@@ -8053,7 +8054,7 @@ function stmtEmailSheet(m, pid){
       ${!stmtConn() ? `<div class="pm-banner">Connect pm@ first (back on the list).</div>` : !(Number(conn.version) >= 2) ? `<div class="pm-banner">Update the pm@ script (apps-script/Statements.gs) so the summary table shows as a table — until then owners get it as plain lines.</div>` : ""}
       ${stmtConn() && !sig ? `<p class="help" id="seSigNote">${esc(conn.sigNote || "No Gmail signature found for pm@ yet.")}</p>` : ""}
     </div>
-    <div class="sheet-f"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><span id="seRevBox"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
+    <div class="sheet-f se-foot"><button class="btn ghost" id="seBack">← All statements</button><span style="flex:1"></span><span id="seRevBox"></span><button class="btn" id="seDraft" ${stmtConn() && !x.why ? "" : "disabled"}>Save as Gmail draft</button><button class="btn primary" id="seSend" ${stmtConn() && !x.why ? "" : "disabled"}>Send from pm@</button></div>`;
   openPanel();
   $("#shClose").onclick = closeSheet; $("#seBack").onclick = () => pmStatementMailSheet(m);
   // pick up a signature or script update made since connecting (once per session)
@@ -8066,8 +8067,8 @@ function stmtEmailSheet(m, pid){
   const sub = $("#seSub"), body = $("#seBody"), prev = $("#sePrev");
   const html = t => t.split(/\n{2,}/).map(par => `<p style="margin:0 0 14px">${esc(par).replace(/\n/g, "<br>")}</p>`).join("");
   const draw = () => prev.innerHTML = `<div class="bm-sub">${esc(sub.value)}</div><div class="bm-from">${esc(conn.fromName || "PHD Property Management")} &lt;${esc(conn.mailbox || "pm@phdproperties.realestate")}&gt; · to ${esc($("#seTo").value)}</div><div class="bm-body">${stmtBodyOut(body.value, m, grp ? pids : pid).html}${sig ? `<div class="bm-sig">${sig}</div>` : ""}</div>`;
-  const toGet = stmtAddrBoxes($("#seToBox"), stmtSplit(c.to), () => { $("#seTo").value = toGet(); draw(); });
-  const ccGet = stmtAddrBoxes($("#seCcBox"), stmtSplit(c.cc), () => { $("#seCc").value = ccGet(); });
+  const toGet = stmtAddrBoxes($("#seToBox"), stmtSplit(c.to), () => { $("#seTo").value = toGet(); draw(); saveSoon(); });
+  const ccGet = stmtAddrBoxes($("#seCcBox"), stmtSplit(c.cc), () => { $("#seCc").value = ccGet(); saveSoon(); });
   [sub, body].forEach(i => i.oninput = draw); draw();
   // reviewed: checked and good to send
   const revDraw = () => { const rv = stmtReview(m, xs), bx = $("#seRevBox"); if(!bx) return;
@@ -8077,8 +8078,8 @@ function stmtEmailSheet(m, pid){
   revDraw();
   sh.querySelectorAll("[data-sepdf]").forEach(a => a.onclick = e => { e.preventDefault(); const id = a.dataset.sepdf; downloadPdf(pmStatementPdfHTML(m, id, {attach:!!($("#seAttach") && $("#seAttach").checked)}), stmtFileName(pmProp(id), m)); });
   stmtWireLines(sh, x.row);
-  const keep = () => {
-    snapshot();
+  // what's typed here is kept as you go (and when the window closes), not only when it's sent
+  const keep = final => {
     const E = stmtEdits(m), addr = stmtAddr(x.p), std = grp ? c.std : {subject:STMT_SUBJECT(addr, m), body:STMT_BODY(x.first, addr, m)};
     // only what was changed here is kept for this month, so later changes to the owner's addresses still apply
     const e = {}, toV = $("#seTo").value.trim(), ccV = $("#seCc").value.trim(), norm = v => stmtSplit(v).map(x => x.toLowerCase()).join(",");
@@ -8086,16 +8087,24 @@ function stmtEmailSheet(m, pid){
     if(norm(toV) !== norm(to0)) e.to = toV; if(norm(ccV) !== norm(cc0)) e.cc = ccV;
     if(sub.value !== std.subject) e.subject = sub.value; const noG = t => String(t).replace(/^(Good (morning|afternoon|evening)|Hello)\b/, "");
     if(noG(body.value) !== noG(std.body)) e.body = body.value;
-    E[grp ? stmtGroupKey(xs) : pid] = e;
-    if($("#seTpl") && $("#seTpl").checked){
+    const key = grp ? stmtGroupKey(xs) : pid, tpl = final && $("#seTpl") && $("#seTpl").checked;
+    if(!tpl && JSON.stringify(E[key] || {}) === JSON.stringify(e)) return false;
+    snapshot(); E[key] = e;
+    if(tpl){
       const un = t => String(t).split(addr).join("{address}").split(monthLabel(m)).join("{month}").replace(x.first ? new RegExp("(Hello|Good morning|Good afternoon|Good evening) " + x.first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",") : /^(Hello|Good morning|Good afternoon|Good evening),/, "{greeting} {first},");
       S.pmSettings = Object.assign({}, S.pmSettings || {}, {stmtTpl:{subject:un(sub.value), body:un(body.value)}});
       delete e.subject; delete e.body;
     }
-    commit();
+    commit(); return true;
   };
+  let saveT = 0;
+  const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => { if($("#seBody") === body) keep(false); }, 700); };
+  const flush = () => { clearTimeout(saveT); if(keep(false)) toast("Email changes saved"); };
+  closeSheet.before = flush;
+  [sub, body].forEach(i => i.addEventListener("input", saveSoon));
+  $("#seBack").onclick = () => { flush(); closeSheet.before = null; pmStatementMailSheet(m); };
   const go = async send => {
-    keep();
+    clearTimeout(saveT); keep(true);
     const to = $("#seTo").value.split(/[,;\s]+/).filter(stmtEmailOk); if(!to.length) return toast("Add the owner's email");
     if(send && !confirm(`Send this statement to ${to.join(", ")} from ${conn.mailbox || "pm@"} now?`)) return;
     const b = $(send ? "#seSend" : "#seDraft"); b.disabled = true; b.textContent = send ? "Sending…" : "Saving…";
