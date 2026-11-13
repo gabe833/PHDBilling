@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 15;   // 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 16;   // 16: "to be paid" reads as unpaid; "Responsibility: Tenant" / "from the tenant's payout" → tenant pays · 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -934,7 +934,7 @@ function fileNote_(name){
 function noteFlags_(note){
   const t = ' ' + String(note || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
   const f = {};
-  if(/\b(un-?paid|not (been |yet )?paid|hasn'?t been paid|needs? (to be )?paid|needs? payment|to pay|please pay|pay (this|it|him|her|them|the invoice|asap)|balance due|still owe|payment due)\b/.test(t)) f.pay_status = 'to_pay';
+  if(/\b(un-?paid|not (been |yet )?paid|hasn'?t been paid|needs? (to be )?paid|(is |are )?to be paid|needs? payment|to pay|please pay|pay (this|it|him|her|them|the invoice|asap)|balance due|still owe|payment due)\b/.test(t)) f.pay_status = 'to_pay';
   else if(/\b(already paid|paid (it|this|with|by|on|in full)|was paid|is paid|i paid|we paid|paid\b(?! by owner| directly))/.test(t) && !/\bun-?paid\b/.test(t)) f.pay_status = 'paid';
   if(/\b(refund(ed)?|return(ed|s)?|credit( memo)?|store credit|money back)\b/.test(t)) f.is_credit = true;
   if(/\b(on hold|hold (it|this|off)|final bill(ing)?|don'?t bill (it |this )?yet|bill (it )?later)\b/.test(t)) f.hold = true;
@@ -943,6 +943,8 @@ function noteFlags_(note){
   else if(/\b(back-?charge|charge (it |this )?(back )?to (the )?(contractor|sub|vendor|[a-z]+)|bill (it |this )?(back )?to (the )?(contractor|sub|(?!owner\b)[a-z]{3,})|contractor (pays|is paying|owes|will pay)|deduct (it )?from (the )?(contractor|sub))\b/.test(t) && !/\b(bill|charge) (it |this )?to (the )?owner\b/.test(t)) f.bill_to = 'contractor';
   else if(/\b(phd (pays|absorbs|covers|eats)|we (absorb|eat|cover) (it|this)|not billable|don'?t bill( it| this)?( to)?( the)? owner|do not bill|internal|our (own )?cost|office (supplies|expense))\b/.test(t)) f.bill_to = 'phd';
   else if(/\b(bill|charge|invoice) (it |this )?(to )?(the )?owner\b/.test(t)) f.bill_to = 'owner';
+  // the tenant pays it (charged to their ledger, or taken from what they get back at move-out) — PHD pays the vendor first
+  if(!f.bill_to && /\b(responsibility:? tenant|tenant (pays|is paying|will pay|owes|responsib\w*)|(bill|charge) (it |this )?(back )?to (the )?tenant|from (the )?tenant'?s (payout|deposit|security deposit|refund))\b/.test(t)) f.bill_to = 'tenant';
   const who = String(note || '').match(/(?:[Bb]ack-?charge|(?:[Cc]harge|[Bb]ill)(?: it| this)?(?: back)? to)\s+(?!the owner\b|owner\b|the contractor\b|contractor\b|the sub\b)([A-Z][\w&'-]*(?:[ \t]+[A-Z][\w&'-]*){0,3})/);
   if(who && f.bill_to === 'contractor') f.party = who[1].trim();
   if(f.bill_to === 'owner_paid_direct' && f.pay_status === 'paid') delete f.pay_status;
@@ -970,7 +972,7 @@ function applyNote_(row, note, side){
   if(f.is_credit){ row.is_credit = true; said.push('refund/return'); }
   if(f.hold){ row.hold = true; said.push('hold'); }
   if(f.no_fee){ row.no_fee = true; said.push('no fee'); }
-  if(f.bill_to){ row.bill_to = f.bill_to; said.push({contractor:'bill the contractor', owner_paid_direct:'owner paid directly', phd:'PHD pays', owner:'bill the owner'}[f.bill_to]); }
+  if(f.bill_to){ row.bill_to = f.bill_to; said.push({contractor:'bill the contractor', owner_paid_direct:'owner paid directly', phd:'PHD pays', owner:'bill the owner', tenant:'tenant pays'}[f.bill_to]); }
   if(f.party) row.party = f.party;
   const pr = noteProperty_(note, side);
   if(pr){ Object.assign(row, pr); row.confidence = 'high'; row.reason = 'Named in the note: ' + pr.property_name + (pr.unit_name ? ' · ' + pr.unit_name : ''); said.unshift(pr.property_name); }

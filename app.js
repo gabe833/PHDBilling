@@ -3974,7 +3974,7 @@ function inboxDraft(it, propId){
     amount: it.total ? String(it.total) : "", credit: !!it.is_credit,
     pmPaid: it.pay_status === "to_pay" ? "topay" : "paid", toPay: it.pay_status === "to_pay", due: it.due_date || "",
     billTo: {contractor:"contractor", phd:"phd", owner_paid_direct:"direct"}[it.bill_to] || (it.hold ? "hold" : it.no_fee ? "nofee" : "owner"),
-    party: it.party || "", pmRec: it.bill_to === "phd" ? "phd" : ""
+    party: it.party || "", pmRec: it.bill_to === "phd" ? "phd" : it.bill_to === "tenant" ? "tenant" : ""
   };
   const sp = Array.isArray(it.splits) ? it.splits : [];
   if(sp.length > 1 && !propId){ d.splitOn = true; d.parts = ibPartsFrom(it); }
