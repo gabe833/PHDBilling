@@ -19736,6 +19736,7 @@ function pgPayouts(){
     c.querySelectorAll("[data-pstmt]").forEach(b => b.onclick = () => stmtEmailSheet(m, b.dataset.pstmt));
   }
   shut("Held", held, x => `<span class="tag red">${esc((x.s.hold && x.s.hold.title) || "Held")}</span>`);
+  if(nickelOn()) poZeroCard(v, m);
   if(nickelOn()) poNickelCard(v, m, rows);
   shut("Paid or scheduled", done, x => `<span class="tag ${x.k === "paid" ? "green" : "gold"}">${x.k === "paid" ? "Paid" : "Scheduled"}${x.s.date ? " · " + esc(fdateS(x.s.date)) : ""}${x.s.how ? " · " + esc(x.s.how) : ""}</span>`);
 
@@ -19756,6 +19757,62 @@ function pgPayouts(){
   v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); const p = pmProp(b.dataset.ppick); if(p) poPickSheet(p); });
   v.querySelectorAll("[data-psplit]").forEach(b => b.onclick = e => { e.preventDefault(); poSplitSheet(b.dataset.psplit); });
   $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : ""});
+}
+/* The rental income account should end each month at $0: everything in it is either an owner's money still to be paid,
+   PHD's income still to be moved out, a vendor still to be paid for repairs already taken from owners, or money owed back
+   (Payabli, for October's duplicate payouts). This card adds those up against Nickel's live balance — what's left over is
+   money nothing in the console accounts for. */
+const NKBAL = {at:0, busy:false, c:null, err:""};
+async function poBalLoad(force){
+  if(NKBAL.busy || (!force && NKBAL.c != null && Date.now() - NKBAL.at < 120000)) return;
+  NKBAL.busy = true;
+  try{ const a = await payCall("nk.activity", {source:"OWNERPAY", page:1}, {noSave:true}); const b = (a.balances || []).find(x => /rental income/i.test(x.name));
+    NKBAL.c = b ? b.balanceC : null; NKBAL.name = b ? `${b.name} ····${b.last4}` : ""; NKBAL.err = b ? "" : "No rental income account in Nickel"; }
+  catch(e){ NKBAL.err = e.message; }
+  NKBAL.busy = false; NKBAL.at = Date.now(); if(S.ui.view === "payouts") render();
+}
+function poZeroData(m){
+  const meta = pmState().meta[m] || {}, z = meta.zero || {};
+  // owner payouts not sent yet: this month's, and any earlier month's still owed (held ones included — the money waits here)
+  const owed = [], held = [];
+  [PMCore.monthAdd(m, -1), m].forEach(mm => poRows(mm).forEach(x => { if(x.amountC <= 0 || x.row.paidOut) return;
+    if(x.k === "held" || (x.s.hold && x.k !== "owed")) held.push(x); else if(x.k === "owed") owed.push(x); }));
+  const sum = xs => xs.reduce((a, x) => a + x.amountC, 0);
+  const R = pmMonthRoll(m), movedC = cents(z.moved || 0), incomeC = Math.max(0, R.netC - movedC);
+  const pb = (S.recov || {}).payabli || {}, payabliC = Math.max(0, (pb.owedC || 0) - (pb.paid || []).reduce((a, x) => a + cents(x.amount), 0));
+  const bills = billList().filter(b => b.status === "open" && b.recover === "deduct"), billsC = bills.reduce((a, b) => a + cents(b.amount), 0);
+  const transitC = cents(z.transit || 0);
+  return {z, owed, held, owedC:sum(owed), heldC:sum(held), R, movedC, incomeC, payabliC, bills, billsC, transitC};
+}
+function poZeroCard(v, m){
+  poBalLoad(false);
+  const d = poZeroData(m), balC = NKBAL.c;
+  const outC = d.owedC + d.heldC + d.incomeC + d.payabliC + d.billsC;
+  const leftC = balC == null ? null : balC + d.transitC - outC;
+  const line = (label, c, sub, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${label}${sub ? `<div class="sub">${sub}</div>` : ""}</td><td class="r num">${c == null ? "—" : (c < 0 ? "−" : "") + usd(Math.abs(c))}</td></tr>`;
+  const names = xs => xs.slice(0, 6).map(x => esc(x.p.name) + (x.m !== m ? ` (${esc(monthShort(x.m))})` : "")).join(", ") + (xs.length > 6 ? ` +${xs.length - 6} more` : "");
+  const c = elm("div", "card po-zero");
+  c.innerHTML = `<div class="card-h"><h3>Rental income account → $0</h3>
+      <span class="muted" style="font-size:12.5px">${esc(NKBAL.name || "")}${NKBAL.at ? " · checked " + esc(new Date(NKBAL.at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})) : ""}${NKBAL.err ? " · " + esc(NKBAL.err) : ""}</span>
+      <button class="btn sm ghost" id="pzRe" type="button" style="margin-left:auto">${NKBAL.busy ? "Checking…" : "Check balance"}</button></div>
+    <div class="tbl-wrap"><table class="tbl po-zt"><tbody>
+      ${line("In Nickel now", balC)}
+      ${line(`Rent MagicDoor collected, still on its way <a href="#" id="pzT">${d.transitC ? "change" : "enter"}</a>`, d.transitC, d.z.transitAt ? `MagicDoor's Funding activity, "In transit" · entered ${esc(fdateS(String(d.z.transitAt).slice(0, 10)))}` : "From MagicDoor → Funding activity, the payments still \"In transit\"")}
+      ${line("Owner payouts still to send", -d.owedC, d.owed.length ? names(d.owed) : "None")}
+      ${line("Owner payouts held", -d.heldC, d.held.length ? names(d.held) : "None")}
+      ${line(`PHD income to move to operating <a href="#" id="pzM">${d.movedC ? "change" : "already moved some?"}</a>`, -d.incomeC, `${esc(monthLabel(m))} PHD income ${usd(d.R.netC)}${d.movedC ? ` · ${usd(d.movedC)} already moved` : ""}`)}
+      ${line("Vendors still to be paid for repairs taken from owners", -d.billsC, `${d.bills.length} open bill${d.bills.length === 1 ? "" : "s"}`)}
+      ${line("Owed back to Payabli (October's duplicate payouts)", -d.payabliC, "")}
+      ${line("<b>Left over</b>", leftC, leftC == null ? "" : Math.abs(leftC) <= 100 ? "Comes to $0 — everything in the account is accounted for." : leftC > 0 ? "Money in the account nothing here accounts for — rent paid ahead for next month, an earlier month's PHD income not moved yet, or a deposit that belongs elsewhere." : "The account is short of what's owed out of it.", "due")}
+    </tbody></table></div>`;
+  v.appendChild(c);
+  c.querySelector("#pzRe").onclick = () => poBalLoad(true);
+  const ask = (k, q) => { const cur = d.z[k] != null ? String(d.z[k]) : ""; const val = prompt(q, cur); if(val == null) return;
+    const n = Math.round(Number(String(val).replace(/[$,\s]/g, "")) * 100) / 100; if(!isFinite(n)) return toast("Enter an amount");
+    snapshot(); const mt = pmState().meta[m] = pmState().meta[m] || {}; mt.zero = Object.assign({}, mt.zero || {}, {[k]:n, [k + "At"]:new Date().toISOString(), [k + "By"]:(typeof Cloud !== "undefined" && Cloud.email) || ""});
+    commit(); actLog("finance", `${monthLabel(m)} rental income account: ${k === "transit" ? "rent in transit from MagicDoor" : "PHD income already moved to operating"} set to ${usd(cents(n))}`, {side:"pm"}); render(); };
+  c.querySelector("#pzT").onclick = e => { e.preventDefault(); ask("transit", "Rent MagicDoor collected that hasn't reached Nickel yet (MagicDoor → Funding activity, everything \"In transit\"):"); };
+  c.querySelector("#pzM").onclick = e => { e.preventDefault(); ask("moved", `PHD income for ${monthLabel(m)} already moved out of the rental income account:`); };
 }
 /* Owner payout bills in Nickel (OWN-…): every one for the month, what Nickel says about its money, which rental it pays,
    and whether its amount still matches the console. Unpaid ones can be deleted together (one confirmation) and sent again. */
