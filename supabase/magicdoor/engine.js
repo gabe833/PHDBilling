@@ -688,8 +688,8 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
     // filter fees: what was paid toward this month's filter charges, whichever month the payment came in (PHD's money)
     { const fp = mdFeesPaid(L, mm); if(fp != null){ const f = Math.round(Math.max(0, fp - (Number(want.applications) || 0)) * 100) / 100;
       want = Object.assign({}, want, {filters:f > 0 ? f : null}); } }
-    // November 2026 and before are finalized: their filter and reimbursement figures stay as recorded
-    if(mm < "2026-12"){ want = Object.assign({}, want); delete want.filters; delete want.reimbursement; }
+    // October 2026 and before stay as recorded (November was brought in line on Nov 12 — owner payouts unchanged)
+    if(mm < "2026-11"){ want = Object.assign({}, want); delete want.filters; delete want.reimbursement; }
     // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
     // month's statement) belongs to this month's owner payout
     const pm0 = PMCore.monthAdd(mm, -1), g0 = L && L.months ? L.months[pm0] : null, st0 = mdPid ? PMCore.mdStmt(S.md, mdPid, pm0) : null;
