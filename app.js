@@ -8766,11 +8766,25 @@ const pmExpenseCutoff = () => { const d = Number((typeof pmSettings === "functio
 function pmExpenseMonth(date){ const d = String(date || todayISO()); return +d.slice(8, 10) > pmExpenseCutoff() ? monthAdd(d.slice(0, 7), 1) : d.slice(0, 7); }
 // the month a deduction lands in: the bill's statement month (or the month picked for it), or the next open month when that one is closed
 function billDeductMonth(b){
-  const m = b.deductMonth || pmExpenseMonth(b.date);
   const closed = mm => (pmState().meta[mm] || {}).closed;
-  if(!closed(m)) return m;
-  let x = thisMonth(); while(closed(x)) x = monthAdd(x, 1);
-  return x;
+  let m = b.deductMonth || pmExpenseMonth(b.date);
+  if(closed(m)){ let x = thisMonth(); while(closed(x)) x = monthAdd(x, 1); m = x; }
+  // the owner's payout for that month already went out (the month is locked): a bill that isn't on it yet is carried to the
+  // next month's statement (201 Cherry Grove's $115 cleaning and 12 Bee #D's $289 HVAC visit came in after Nov 12's payouts)
+  for(let n = 0; b.propertyId && n < 12; n++){
+    const r = pmState().rows[m + "|" + b.propertyId], on = r && (r.repairItems || []).some(i => i.billId === b.id);
+    if(r && !on && (r.locked || r.paidOut) && !b.deductMonth){ m = monthAdd(m, 1); continue; }
+    if(closed(m)){ m = monthAdd(m, 1); continue; }
+    break;
+  }
+  return m;
+}
+// a month that hasn't been started yet (no rows): don't start it just for a bill — the bill waits and lands when it starts
+const pmMonthStarted = m => Object.keys(pmState().rows).some(k => k.startsWith(m + "|"));
+function pmBillsWaiting(){
+  const w = billList().filter(b => b.deduct && b.deduct.waiting && pmMonthStarted(b.deduct.month));
+  if(!w.length) return;
+  snapshot(); w.forEach(b => { b.deduct = null; billSyncDeduction(b); }); commit();
 }
 // keep the repair line in Month close in step with the bill (added, changed, moved or removed)
 function billSyncDeduction(b){
@@ -8786,12 +8800,14 @@ function billSyncDeduction(b){
     if((P2.meta[b.deduct.month] || {}).closed) return;           // already in a closed month: leave it where it is
     drop();
   }
+  if(!pmMonthStarted(m)){ drop(); b.deduct = {month:m, pid:b.propertyId, waiting:true}; return; }
   const row = pmEnsureRow(m, b.propertyId);
   row.repairItems = row.repairItems || [];
   let it = row.repairItems.find(i => i.billId === b.id);
   if(!it){ it = {id:uid(), billId:b.id, source:"Bill"}; row.repairItems.push(it); }
   Object.assign(it, {date:b.date || "", vendor:b.vendor || "", memo:b.memo || b.category || "Bill", amount:Number(b.amount) || 0, feeMode:b.feeMode === "none" ? "none" : "auto", link:(b.receipt && b.receipt.url) || it.link || ""});
   if(b.recover === "tenant") it.payer = "tenant"; else delete it.payer;
+  { const own = b.deductMonth || pmExpenseMonth(b.date); if(own < m) it.lateFrom = own; else delete it.lateFrom; }   // came in after that month's payout
   if(row.locked){ row.repairs = null; row.adminFee = null; }
   pmTouch(row);
   b.deduct = {month:m, pid:b.propertyId};
@@ -15317,6 +15333,13 @@ function finReconRow(m, row, prop, ctx){
   if(!ctx.noGroup){ const g = finGroupMatches(m).get(prop.id); if(g && !attempts.some(a => a.sys === "Nickel" && !a.inferred && a.st === "completed")){
     for(let i = attempts.length - 1; i >= 0; i--) if(attempts[i].inferred) attempts.splice(i, 1);
     attempts.push(Object.assign({}, g, {amountC:owedC})); } }
+  // a group payout (one owner paid for several rentals, or a split across payees — Susan Reed & Stephen Welt's three) is
+  // several Nickel payments that together pay every rental in it: for this rental they count once, as its share
+  { const gi = attempts.map((a, i) => a.group ? i : -1).filter(i => i >= 0);
+    if(gi.length > 1){ const gs = gi.map(i => attempts[i]), live = gs.filter(a => !finBad(a.st));
+      const st = !live.length ? gs[0].st : live.every(a => a.st === "completed") ? "completed" : "processing";
+      const one = Object.assign({}, live[0] || gs[0], {st, raw:`${gs.length} payments together (${gs.map(a => a.ref).filter(Boolean).join(", ")})`});
+      for(let k = gi.length - 1; k >= 0; k--) attempts.splice(gi[k], 1); attempts.push(one); } }
   // a group payout's share for this property is what the console recorded
   attempts.forEach(a => { if(a.amountC == null) a.amountC = po && po.amount != null ? cents(po.amount) : owedC; });
   const done = attempts.filter(a => a.st === "completed"), proc = attempts.filter(a => a.st === "processing" || a.st === "partial"), bad = attempts.filter(a => finBad(a.st));
@@ -17606,7 +17629,7 @@ function ofRunMarkPaid(r, on, method){
 /* expenses after the 15th: put bills placed under the old rule in the right month, once, when Rentals opens */
 if(typeof render === "function"){
   const cutRender0 = render;
-  render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size) && cloudChores()) try{ pmApplyExpenseCutoff(); }catch(e){ console.error(e); } return r; };
+  render = function(){ const r = cutRender0.apply(this, arguments); if(S.ui.mode === "pm" && (!(typeof Cloud !== "undefined") || !Cloud.ready || Cloud.synced.size) && cloudChores()) try{ pmApplyExpenseCutoff(); pmBillsWaiting(); }catch(e){ console.error(e); } return r; };
 }
 
 /* =====================================================================
