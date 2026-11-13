@@ -290,7 +290,7 @@ function brCashTab(v, D){
   c.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Description</th><th>What it is</th><th>Matches</th><th class="r">Amount</th><th class="r">Balance</th></tr></thead><tbody>
     ${list.map(t => { const x = D.M.get(t.id) || {}, s = ST[x.st] || ["", "grey"], cat = BR_CATS[brCat(D.k, t)] || ["Other"], n = BR().notes[brNoteKey(D.k, t.id)];
       return `<tr data-brt="${esc(t.id)}" class="br-r ${x.st}"><td class="muted nowrap">${esc(fdateS(t.date))}</td>
-        <td><div class="item-t">${esc(t.cp || t.desc)}</div><div class="item-s">${esc(t.cp ? t.desc : "")}${t.ref ? ` · <span class="mono-s">${esc(t.ref)}</span>` : ""}</div></td>
+        <td><div class="item-t">${esc(t.cp || t.desc)}</div><div class="item-s">${esc(t.cp ? t.desc : "")}${t.ref && !String(t.desc).toUpperCase().includes(String(t.ref).toUpperCase()) ? ` · <span class="mono-s">${esc(t.ref)}</span>` : ""}</div></td>
         <td><span class="br-cat">${esc(cat[0])}</span></td>
         <td><span class="tag ${s[1]}">${s[0]}</span>${n && n.assignee && !n.done ? ` <span class="tag grey" title="Assigned">${esc(String(n.assignee).split("@")[0])}</span>` : ""}<div class="item-s">${esc(x.why || "")}${x.recs && x.recs.length ? "<br>" + brRecLinks(x) : ""}</div></td>
         <td class="r num ${t.amtC < 0 ? "neg" : "pos"}">${t.amtC < 0 ? "−" : ""}${usd(Math.abs(t.amtC))}</td><td class="r num muted">${t.balC == null ? "" : usd(t.balC)}</td></tr>`; }).join("")}
@@ -432,11 +432,8 @@ if(typeof cloudDocs === "function"){ const d0 = cloudDocs; cloudDocs = function(
 if(typeof cloudApply === "function"){ const a0 = cloudApply; cloudApply = function(kind, id, data, deleted){ if(kind === "shared" && id === "bank"){ S.bank = deleted ? null : data; return; } return a0.apply(this, arguments); }; }
 if(typeof cloudLabel === "function"){ const l0 = cloudLabel; cloudLabel = function(kind, id){ if(kind === "shared" && id === "bank") return "bank reconciliation"; return l0.apply(this, arguments); }; }
 if(typeof ACT_PM_DOCS !== "undefined") ACT_PM_DOCS.add("bank");
-// the menu: under Money, after Cash & payouts
-if(typeof navMoney === "function"){ const n0 = navMoney; navMoney = function(n, mk){ n0.apply(this, arguments);
-  if(S.ui.mode !== "pm") return;
-  const cash = [...n.querySelectorAll("button")].find(b => b.dataset.fin === "1");
-  const b = mk("bankrec", "Bank reconciliation", "recon");
-  if(cash && cash.nextSibling) n.insertBefore(b, cash.nextSibling); }; }
+// the menu badge: lines still to explain in the latest imported month of the rental income account
+window.brNavBadge = () => { try{ const k = "nk-6588", ms = [...new Set(brTx(k).map(t => String(t.date).slice(0, 7)))].sort(), m = ms[ms.length - 1]; if(!m) return null;
+  const D = brMonth(k, m); if(D.rec && D.rec.status === "final") return null; const n = D.ex.length + D.outstanding.length; return n ? navBadge(n, null, `${n} to explain · ${monthLabel(m)}`) : null; }catch(e){ return null; } };
 window.brMonth = brMonth; window.brAlloc = brAlloc; window.brParse = brParse; window.brImport = brImport; window.brMatchAll = brMatchAll;
 })();

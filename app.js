@@ -19559,6 +19559,7 @@ renderNavPM = function(){
   head("Money");
   { let n = 0; try{ n = poRows(pmCurrentMonth()).filter(x => x.k === "owed" && x.via === "nickel").length; }catch(e){} mk("payouts", "Owner payouts", "card", n ? navBadge(n, "goldfill", "Ready to send") : null); }
   { const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
+  if(typeof pgBankRec === "function") mk("bankrec", "Bank reconciliation", "recon", typeof brNavBadge === "function" ? brNavBadge() : null);
   mk("payments", "Nickel", "sync", typeof payNavBadge === "function" ? payNavBadge() : null);
 
   head("Setup");
