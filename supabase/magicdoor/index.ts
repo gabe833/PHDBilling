@@ -437,7 +437,8 @@ function cleanRenewal(x: Obj) {
 }
 // A lease ledger, summed by month (amounts only — no tenant, bank or payment-method details):
 //   rent        rent charged (Rent Income)            other     other charges the owner keeps
-//   filters / lateFee / applications / phd           charges PHD keeps (MagicDoor "company" charges and late fees)
+//   filters / lateFee / applications / phd           charges PHD keeps (MagicDoor "company" charges and late fees;
+//                                                    the Resident Benefit Package — $54.95 on the Judy rentals — counts as filters)
 //   credits     credits given to the tenant           paid      payments that cleared    pending   payments still processing
 function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string) {
   const out: Record<string, Record<string, number>> = {};
@@ -465,7 +466,7 @@ function ledgerMonths(body: Obj, accounts: Record<string, string>, from: string)
     }
     if (type === "lateFee" || /late/i.test(acct)) { add(m, "lateFee", amt); continue; }
     if (type !== "charge") continue;
-    if (B(e.companyCharge)) add(m, /filter|hvac/i.test(acct + " " + S(e.description)) ? "filters" : /applic/i.test(acct) ? "applications" : "phd", amt);
+    if (B(e.companyCharge)) add(m, /filter|hvac|resident benefit/i.test(acct + " " + S(e.description)) ? "filters" : /applic/i.test(acct) ? "applications" : "phd", amt);
     else add(m, S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other", amt);
   }
   return out;
@@ -523,7 +524,7 @@ function ledgerAlloc(body: Obj, accounts: Record<string, string>, from: string) 
     if (type !== "charge" && type !== "lateFee" && !(N(e.amount) > 0)) continue;
     const kind = type !== "charge" && type !== "lateFee" ? "xfer"
       : type === "lateFee" || /late/i.test(acct) ? "late"
-      : B(e.companyCharge) ? (/filter|hvac|applic/i.test(acct + " " + S(e.description)) ? "fees" : "phd")
+      : B(e.companyCharge) ? (/filter|hvac|applic|resident benefit/i.test(acct + " " + S(e.description)) ? "fees" : "phd")
       : (S(((e.chartOfAccountIds as unknown[]) || [])[0]) === "410000" || /^rent/i.test(acct) ? "rent" : "other");
     const ch: Ch = { id: S(e.id), month: day.slice(0, 7), kind, left: C(e.amount) };
     charges.set(ch.id, ch); open.push(ch); sweep();

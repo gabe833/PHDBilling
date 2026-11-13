@@ -673,11 +673,23 @@ function mdStmtWant(p, rr, mpId, mm, g){
     // the bottom line of MagicDoor's owner statement: everything since its last payout, less the bills it still owes
     mdFunds:st.net != null && isFinite(Number(st.net)) ? r2(st.net) : null});      // unpaid bills are already among the bills
 }
+// filter fees the tenant actually paid FOR a month, from MagicDoor's payment-to-charge links (l.alloc) — paid early
+// at the end of last month counts too (889 Ashley and 31 Radcliffe paid November's filters on Oct 28–30); null when unknown
+function mdFeesPaid(L, mm){
+  if(!L || !Array.isArray(L.alloc)) return null;
+  let c = 0; L.alloc.forEach(([, , parts]) => (parts || []).forEach(([cm, kind, amt]) => { if(cm === mm && kind === "fees") c += Math.round(Number(amt) || 0); }));
+  return c / 100;
+}
 function mdExactMonths(p, L, curM, out, mpId, mdPid){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
     const g = L && L.months ? L.months[mm] : null, rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
     if(!rr || rr.locked || rr.detailOnly || rr.deleted || mt.closed) return;
     let want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
+    // filter fees: what was paid toward this month's filter charges, whichever month the payment came in (PHD's money)
+    { const fp = mdFeesPaid(L, mm); if(fp != null){ const f = Math.round(Math.max(0, fp - (Number(want.applications) || 0)) * 100) / 100;
+      want = Object.assign({}, want, {filters:f > 0 ? f : null}); } }
+    // November 2026 and before are finalized: their filter and reimbursement figures stay as recorded
+    if(mm < "2026-12"){ want = Object.assign({}, want); delete want.filters; delete want.reimbursement; }
     // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
     // month's statement) belongs to this month's owner payout
     const pm0 = PMCore.monthAdd(mm, -1), g0 = L && L.months ? L.months[pm0] : null, st0 = mdPid ? PMCore.mdStmt(S.md, mdPid, pm0) : null;

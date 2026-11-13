@@ -6943,6 +6943,13 @@ function mdLatePaid(L, mm){
   let c = 0; L.alloc.forEach(([, , parts]) => (parts || []).forEach(([cm, kind, amt]) => { if(cm === mm && kind === "late") c += Math.round(Number(amt) || 0); }));
   return c / 100;
 }
+// filter fees the tenant actually paid FOR a month, from MagicDoor's payment-to-charge links (l.alloc) — paid early
+// at the end of last month counts too (889 Ashley and 31 Radcliffe paid November's filters on Oct 28–30); null when unknown
+function mdFeesPaid(L, mm){
+  if(!L || !Array.isArray(L.alloc)) return null;
+  let c = 0; L.alloc.forEach(([, , parts]) => (parts || []).forEach(([cm, kind, amt]) => { if(cm === mm && kind === "fees") c += Math.round(Number(amt) || 0); }));
+  return c / 100;
+}
 function mdExactMonths(p, L, curM, out, mpId, mdPid){
   [PMCore.monthAdd(curM, -1), curM].forEach(mm => {
     const g = L && L.months ? L.months[mm] : null, rr = pmRow(mm, p.id), mt = pmState().meta[mm] || {};
@@ -6955,6 +6962,11 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       return;
     }
     let want = (mpId && mdStmtWant(p, rr, mpId, mm, g)) || (g ? mdExactWant(g) : null); if(!want) return;
+    // filter fees: what was paid toward this month's filter charges, whichever month the payment came in (PHD's money)
+    { const fp = mdFeesPaid(L, mm); if(fp != null){ const f = Math.round(Math.max(0, fp - (Number(want.applications) || 0)) * 100) / 100;
+      want = Object.assign({}, want, {filters:f > 0 ? f : null}); } }
+    // November 2026 and before are finalized: their filter and reimbursement figures stay as recorded
+    if(mm < "2026-12"){ want = Object.assign({}, want); delete want.filters; delete want.reimbursement; }
     // late fees: exactly what was paid toward them (MagicDoor keeps them for PHD — not owner money, no 10% fee on them)
     { const lp = mdLatePaid(L, mm); if(lp != null) want = Object.assign({}, want, {lateFee:lp > 0 ? lp : (PMCore.has(rr.lateFee) && rr.md && PMCore.has(rr.md.lateFee) ? null : undefined)}); if(want.lateFee === undefined) delete want.lateFee; }
     // new to the console this month: what the tenant paid last month that MagicDoor never paid out (it starts this
