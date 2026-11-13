@@ -9535,7 +9535,7 @@ function pgPmVendors(){
   if(nkImportVendors()){ nkMatchAt = 0; setTimeout(render, 0); return; }   // new ones are drawn (and linked) on the next pass
   const allV = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
   const used = new Set(billList().map(b => b.vendorId)), vq = (S.ui.vnQ || "").toLowerCase(), vf = S.ui.vnF || (used.size ? "used" : "all");   // opens on the vendors you actually bill, not all 750 in Nickel
-  const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id]];
+  const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id], ["w9","No W-9", x => used.has(x.id) && !vdW9(x)], ["coi","Insurance to check", x => vdCoiState(x).warn]];
   const vs = allV.filter((VF.find(f => f[0] === vf) || VF[0])[2]).filter(x => !vq || `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(vq));
   $("#pgSub").textContent = `${allV.length} vendor${allV.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
   actions([["Check Nickel", async () => { try{ await payCall("nk.match"); const n = nkImportVendors(); const r = n ? await payCall("nk.match") : (S.nk || {}).counts || {};
@@ -9555,22 +9555,77 @@ function pgPmVendors(){
   if(allV.length && !vs.length){ card.innerHTML = `<div class="empty"><b>No vendors match</b><p>Try another filter or search.</p></div>`; v.appendChild(card); return; }
   if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>${nickelOn() ? "Bringing in your vendors from Nickel…" : "They're added automatically the first time you enter a bill from them, or from Nickel once it's connected."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl pm-plist");
-  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Nickel</th><th></th></tr></thead><tbody>
+  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Paperwork</th><th>Nickel</th><th></th></tr></thead><tbody>
     ${vs.slice(0, 300).map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
       return `<tr data-v="${x.id}"><td><div class="item-t">${esc(x.name)}</div><div class="item-s">${bs.length} bill${bs.length === 1 ? "" : "s"}</div></td><td class="muted" style="font-size:12.5px">${esc([x.email, x.phone].filter(Boolean).join(" · ") || "—")}</td>
-        <td class="r num">${paid ? usd(paid) : "—"}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
+        <td class="r num">${paid ? usd(paid) : "—"}</td><td>${vdTags(x)}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-v]").forEach(tr => tr.onclick = () => vendorSheet(tr.dataset.v));
   const w = elm("div","tbl-wrap vn-ok"); w.appendChild(t); card.appendChild(w);
   if(vs.length > 300) card.appendChild(elm("div","muted", `<div style="padding:10px 16px;font-size:12.5px">Showing 300 of ${vs.length}. Search to find the rest.</div>`));
   v.appendChild(card);
 }
+/* Vendor paperwork: W-9s, insurance certificates, licenses, contracts. The files live in Drive (billing@'s "Vendor documents"
+   folder, one folder per vendor) — the console keeps only what each one is, when it came in, when it expires and the link.
+   Nothing is read out of the files: a W-9's tax ID stays in the W-9. */
+const VD_KINDS = [["w9","W-9"], ["coi","Insurance certificate (COI)"], ["license","License"], ["contract","Contract / agreement"], ["other","Other"]];
+const VD_ENTITY = [["","—"], ["individual","Individual / sole proprietor"], ["llc","LLC"], ["scorp","S corporation"], ["ccorp","C corporation"], ["partnership","Partnership"], ["other","Other"]];
+const vdKindLabel = k => (VD_KINDS.find(x => x[0] === k) || [, "Document"])[1];
+const vdDocs = v => (v && Array.isArray(v.docs) ? v.docs : []);
+const vdW9 = v => vdDocs(v).filter(d => d.kind === "w9").sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null;
+// 1099s go to individuals, sole proprietors, LLCs and partnerships — not corporations (unless they're set by hand)
+const vd1099 = v => { const t = (v && v.tax) || {}; if(t.f1099 === "yes") return true; if(t.f1099 === "no") return false; return !/corp$/.test(t.entity || ""); };
+function vdCoiState(v){
+  const d = vdDocs(v).filter(x => x.kind === "coi").sort((a, b) => String(b.expires || "").localeCompare(String(a.expires || "")))[0];
+  if(!d) return {d:null, warn:false};
+  if(!d.expires) return {d, warn:false, txt:"Insurance on file"};
+  const days = Math.round((new Date(d.expires + "T12:00:00") - new Date(todayISO() + "T12:00:00")) / 864e5);
+  return {d, days, warn:days <= 30, txt:days < 0 ? `Insurance expired ${fdateS(d.expires)}` : days <= 30 ? `Insurance expires ${fdateS(d.expires)}` : `Insured to ${fdateS(d.expires)}`};
+}
+function vdTags(v){
+  const w = vdW9(v), c = vdCoiState(v);
+  return (w ? `<span class="tag green" title="${esc("W-9 received " + fdateS(String(w.at).slice(0, 10)))}">W-9</span>` : `<span class="tag grey">No W-9</span>`)
+    + (c.d ? ` <span class="tag ${c.warn ? (c.days < 0 ? "red" : "gold") : "green"}">${esc(c.days != null && c.days >= 0 && !c.warn ? "COI" : c.warn ? (c.days < 0 ? "COI expired" : "COI expiring") : "COI")}</span>` : "");
+}
+async function vdUpload(v, file, kind, expires){
+  const mime = String(file.type || "").toLowerCase();
+  if(!BU_TYPES[mime]) throw new Error("Upload a PDF, JPG or PNG");
+  const sm = await shrinkPhoto(file, mime);
+  if(sm.file.size > BU_TYPES[sm.mime] * 1024 * 1024) throw new Error(`That file is over ${BU_TYPES[sm.mime]} MB`);
+  const ext = (String(sm.name || file.name).match(/\.[a-z0-9]{2,5}$/i) || [".pdf"])[0];
+  const name = `${v.name} - ${vdKindLabel(kind).replace(/ \(.*\)$/, "")}${expires ? " (exp " + expires + ")" : ""} - ${todayISO()}${ext}`;
+  const r = await inboxPost({action:"vendorDoc", vendor:v.name, kind:vdKindLabel(kind), name, mime:sm.mime, data:await buBase64(sm.file), by:billWho()});
+  if(!r || !r.ok || !r.file) throw new Error((r && r.error) || "Drive didn't take the file — is the receipt inbox script on version 17?");
+  return {id:"vd_" + uid(), kind, name:r.file.name, fileId:r.file.id, url:r.file.url, folderUrl:r.file.folderUrl, expires:expires || "", at:new Date().toISOString(), by:billWho()};
+}
 function vendorSheet(id){
   const isNew = !id, v = isNew ? {id:"vn_" + uid(), name:"", email:"", phone:"", address:"", city:"", state:"SC", zip:"", notes:""} : JSON.parse(JSON.stringify(pmVendors().find(x => x.id === id)));
-  const sh = $("#sheet"), F = [["name","Name"],["email","Billing email"],["phone","Phone"],["address","Street"],["city","City"],["state","State"],["zip","ZIP"]];
+  const sh = $("#sheet"), F = [["name","Name"],["contact","Contact person"],["trade","What they do (trade)"],["email","Billing email"],["phone","Phone"],["address","Street"],["city","City"],["state","State"],["zip","ZIP"]];
+  v.docs = vdDocs(v).slice(); v.tax = Object.assign({}, v.tax || {});
+  const w9 = vdW9(v), coi = vdCoiState(v), yr = todayISO().slice(0, 4);
+  const paidYr = billList().filter(b => (b.vendorId === v.id || vendorKey(b.vendor) === vendorKey(v.name)) && b.status === "paid" && String((b.pay || {}).date || b.date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
+  const docsH = `<div class="sectl">Tax and 1099</div>
+      <div class="f2"><label class="fld"><span>Business type (from the W-9)</span><select data-t="entity">${VD_ENTITY.map(([k, l]) => `<option value="${k}" ${(v.tax.entity || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="fld"><span>Gets a 1099</span><select data-t="f1099"><option value="" ${!v.tax.f1099 ? "selected" : ""}>Work it out (${vd1099(Object.assign({}, v, {tax:Object.assign({}, v.tax, {f1099:""})})) ? "yes" : "no"})</option><option value="yes" ${v.tax.f1099 === "yes" ? "selected" : ""}>Yes</option><option value="no" ${v.tax.f1099 === "no" ? "selected" : ""}>No</option></select></label></div>
+      <div class="ps-kv"><span>W-9</span><b>${w9 ? `On file · received ${esc(fdateS(String(w9.at).slice(0, 10)))}` : v.tax.w9Asked ? `Asked for ${esc(fdateS(v.tax.w9Asked))}` : "Missing"}</b></div>
+      <div class="ps-kv"><span>Paid in ${yr}</span><b>${usd(paidYr)}${vd1099(v) && paidYr >= 60000 ? " · needs a 1099" : vd1099(v) ? " · 1099 once it reaches $600" : ""}</b></div>
+      ${!w9 ? `<label class="fld"><span>W-9 asked for on</span><input type="date" data-t="w9Asked" value="${esc(v.tax.w9Asked || "")}"></label>` : ""}
+      <p class="help">The tax ID stays in the W-9 file — it's never typed in or stored here.</p>
+      <div class="sectl">Documents</div>
+      ${v.docs.length ? `<div class="vd-list">${v.docs.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).map(d => `<div class="vd-row">
+          <div class="vd-k">${esc(vdKindLabel(d.kind))}${d.kind === "coi" && d === coi.d && coi.txt ? ` <span class="tag ${coi.warn ? (coi.days < 0 ? "red" : "gold") : "green"}">${esc(coi.txt)}</span>` : d.expires ? ` <span class="muted">expires ${esc(fdateS(d.expires))}</span>` : ""}
+            <div class="sub">${esc(d.name || "")} · ${esc(fdateS(String(d.at).slice(0, 10)))}${d.by ? " · " + esc(String(d.by).split("@")[0]) : ""}</div></div>
+          <a class="btn sm ghost" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a><button class="btn sm ghost" data-vdx="${esc(d.id)}" type="button" title="Remove (the file goes to Drive's trash)">✕</button></div>`).join("")}</div>`
+        : `<p class="help" style="margin-top:0">No documents yet.</p>`}
+      ${isNew ? `<p class="help">Save the vendor first, then add documents.</p>` : `<div class="vd-add">
+        <select id="vdKind">${VD_KINDS.map(([k, l]) => `<option value="${k}" ${k === (w9 ? "coi" : "w9") ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <label class="vd-exp" id="vdExpL"><span>Expires</span><input type="date" id="vdExp"></label>
+        <button class="btn sm" id="vdPick" type="button">Upload file…</button><input type="file" id="vdFile" accept="application/pdf,image/jpeg,image/png" hidden></div>
+        <p class="help">Saved to Drive in “Vendor documents / ${esc(v.name || "this vendor")}”. Only people with access to that folder can open them.</p>`}`;
   const nk = nkVendor(v.id);
   sh.innerHTML = `<div class="sheet-h"><h3>${isNew ? "New vendor" : esc(v.name)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
     <div class="sheet-b">${F.map(([k, l]) => `<label class="fld"><span>${l}</span><input type="text" data-k="${k}" value="${esc(v[k] || "")}"></label>`).join("")}
       <label class="fld"><span>Notes</span><textarea data-k="notes" rows="2">${esc(v.notes || "")}</textarea></label>
+      ${docsH}
       ${isNew ? "" : `<div class="sectl">Nickel</div>
         ${!nickelOn() ? `<p class="help" style="margin-top:0">Nickel isn't connected (Payments setup).</p>`
         : !nk.id ? `<p class="help" style="margin-top:0">Not in Nickel yet${v.email ? "" : ". Add a billing email first so Nickel can send payment notices"}.</p><div class="bl-pay"><button class="btn sm" id="vnAdd">Add to Nickel</button></div>`
@@ -9583,6 +9638,7 @@ function vendorSheet(id){
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
   const saveForm = () => {
     sh.querySelectorAll("[data-k]").forEach(i => v[i.dataset.k] = i.value.trim());
+    sh.querySelectorAll("[data-t]").forEach(i => { if(i.value) v.tax[i.dataset.t] = i.value; else delete v.tax[i.dataset.t]; });
     if(!v.name){ toast("Enter the vendor's name"); return false; }
     const dup = vendorFind(v.name); if(dup && dup.id !== v.id){ toast("There's already a vendor with that name"); return false; }
     snapshot(); const L = pmVendors(), i = L.findIndex(x => x.id === v.id);
@@ -9594,6 +9650,30 @@ function vendorSheet(id){
   const push = $("#vnPush"); if(push) push.onclick = async () => { if(!saveForm()) return;
     try{ const r = await nkRun("vendor.update", {vendorId:v.id}, `Update ${v.name} in Nickel`); if(r.nothing) toast("Nickel already has these details"); else if(r.ok) toast(`${v.name} updated in Nickel`); }catch(e){ toast(e.message); } vendorSheet(v.id); };
   $("#vnSave").onclick = () => { if(!saveForm()) return; closeSheet(); toast("Vendor saved", true); render(); };
+  // documents
+  const kindSel = $("#vdKind"), expL = $("#vdExpL");
+  const expShow = () => { if(expL) expL.style.display = kindSel && /^(coi|license|contract)$/.test(kindSel.value) ? "" : "none"; };
+  if(kindSel){ kindSel.onchange = expShow; expShow(); }
+  const pick = $("#vdPick"), fi = $("#vdFile");
+  if(pick) pick.onclick = () => { if(kindSel.value === "coi" && !$("#vdExp").value && !confirm("No expiry date for this insurance certificate — add it anyway?")) return; fi.click(); };
+  if(fi) fi.onchange = async () => {
+    const f = fi.files && fi.files[0]; if(!f) return;
+    if(!saveForm()) return;
+    pick.disabled = true; pick.textContent = "Uploading…";
+    try{
+      const d = await vdUpload(v, f, kindSel.value, $("#vdExp").value);
+      snapshot(); const L = pmVendors(), x = L.find(y => y.id === v.id); x.docs = vdDocs(x).concat([d]); commit();
+      actLog("vendors", `${v.name}: ${vdKindLabel(d.kind)} added${d.expires ? " (expires " + fdateS(d.expires) + ")" : ""}`, {side:"pm"});
+      toast(`${vdKindLabel(d.kind)} saved to Drive`, true); vendorSheet(v.id);
+    }catch(e){ toast(e.message); pick.disabled = false; pick.textContent = "Upload file…"; }
+  };
+  sh.querySelectorAll("[data-vdx]").forEach(b => b.onclick = async () => {
+    const L = pmVendors(), x = L.find(y => y.id === v.id), d = vdDocs(x).find(y => y.id === b.dataset.vdx); if(!d) return;
+    if(!confirm(`Remove ${vdKindLabel(d.kind)} “${d.name}”? The file goes to Drive's trash.`)) return;
+    if(d.fileId) try{ await inboxPost({action:"vendorDocTrash", fileId:d.fileId}); }catch(e){}
+    snapshot(); x.docs = vdDocs(x).filter(y => y.id !== d.id); commit();
+    actLog("vendors", `${v.name}: ${vdKindLabel(d.kind)} removed`, {side:"pm"}); vendorSheet(v.id);
+  });
 }
 async function vendorAskDetails(vendorId){
   const v = pmVendors().find(x => x.id === vendorId); if(!v) return;

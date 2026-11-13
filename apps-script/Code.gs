@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 16;   // 16: "to be paid" reads as unpaid; "Responsibility: Tenant" / "from the tenant's payout" → tenant pays · 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 17;   // 17: vendor documents (W-9, insurance, licenses) kept in Drive · 16: "to be paid" reads as unpaid; "Responsibility: Tenant" / "from the tenant's payout" → tenant pays · 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -583,6 +583,28 @@ function doPostBody_(b, lock){
         context:'Uploaded by hand in the billing console as ' + kind + '. File name: ' + name, officeNote:String(b.note || '').slice(0, 500)});
       if(!row) return json_({ok:true, duplicate:true, item:null});
       return json_({ok:true, item:publicRow_(row)});
+    }
+    if(b.action === 'vendorDoc'){
+      // a vendor's paperwork (W-9, insurance certificate, license, contract…) kept in Drive under "Vendor documents / <vendor>".
+      // Only the file goes to Drive — nothing is read out of it (a W-9's tax ID stays in the file, never in the console).
+      const vname = safeName_(String(b.vendor || 'Vendor').slice(0, 80));
+      const name = fileNm_(String(b.name || 'Document'));
+      const mime = String(b.mime || '').toLowerCase();
+      if(!MIME_OK[mime]) return json_({ok:false, error:'Upload a PDF, JPG or PNG'});
+      const blob = Utilities.newBlob(Utilities.base64Decode(String(b.data || '')), mime, name);
+      if(!blob.getBytes().length) return json_({ok:false, error:'The file was empty'});
+      const folder = folderByName_(folderByName_(rootFolder_(), 'Vendor documents'), vname);
+      const f = folder.createFile(blob);
+      f.setDescription(String(b.kind || '') + ' · uploaded by ' + String(b.by || '').slice(0, 80) + ' from the billing console');
+      return json_({ok:true, file:{id:f.getId(), name:f.getName(), url:f.getUrl(), folderUrl:folder.getUrl()}});
+    }
+    if(b.action === 'vendorDocTrash'){
+      // a document removed from a vendor in the console goes to Drive's trash (only inside "Vendor documents")
+      const f = DriveApp.getFileById(String(b.fileId)); let ok = false, ps = f.getParents();
+      while(ps.hasNext()){ const p = ps.next(), gp = p.getParents(); if(gp.hasNext() && gp.next().getName() === 'Vendor documents'){ ok = true; break; } }
+      if(!ok) return json_({ok:false, error:'Not a vendor document'});
+      f.setTrashed(true);
+      return json_({ok:true});
     }
     if(b.action === 'folderFind'){
       // folders billing@ can see whose name contains the words, e.g. "27 Smith"
