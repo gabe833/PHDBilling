@@ -16671,6 +16671,7 @@ function rcRow(m, row, prop, ledger){
     const fl = (c.flags || []).find(f => f.level === "info" && (/^Matches MagicDoor's owner statement/.test(f.text) || /^MagicDoor's statement says .* here is right\.$/.test(f.text)));
     st.md = Math.abs(d) <= 1 ? {s:"ok", a:mdC, t:`MagicDoor's owner statement says ${usd(mdC)}${known.length ? " — the same once you allow for " + known.join(", ") : ""}`}
       : fl ? {s:"ok", a:mdC, t:fl.text}
+      : PMCore.has(row.mdFunds) && Math.abs(c.calcC - cents(row.mdFunds)) <= 1 ? {s:"ok", a:mdC, t:`Matches MagicDoor's net owner funds, ${usd(cents(row.mdFunds))} (its statement's ${usd(mdC)} before last month's balance)`}
       : {s:"bad", a:mdC, d:Math.abs(d), t:`MagicDoor's owner statement says ${usd(mdC)}; the console works out ${usd(c.calcC)} (${usd(Math.abs(d))} ${d > 0 ? "more" : "less"})`};
     // the usual reason: bills entered here (receipt inbox, Bills page) that aren't in MagicDoor yet
     // and the management fee, which MagicDoor only charges around the payout (the 14th)
