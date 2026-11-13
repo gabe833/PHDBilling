@@ -2747,3 +2747,27 @@ td>.tag+.st-rev{display:flex}
 .vd-add{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:2px 0 4px}
 .vd-add select,.vd-add input[type=date]{height:34px;border:1px solid var(--line,#D5DCDA);border-radius:8px;padding:0 8px;font:inherit;font-size:13px;background:var(--card,#fff)}
 .vd-exp{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted,#6B7775)}
+
+/* ---------- bank reconciliation: a financial workspace ---------- */
+.br-bar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin:0 0 14px}
+.br-sel{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.br-sel select,.br-sel input{height:36px;border:1px solid var(--line);border-radius:9px;padding:0 10px;font:inherit;font-size:13.5px;background:var(--panel);color:var(--ink);min-width:150px}
+.br-tabs{margin-left:auto}
+.br-sum{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:0 0 16px}
+.br-box{background:var(--panel);padding:13px 16px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.br-box span{font-size:12px;color:var(--muted)}
+.br-box b{font-size:19px;font-weight:600;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.br-box em{font-style:normal;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.br-box.bad b,.br-box.bad em{color:var(--red)} .br-box.warn b{color:var(--gold)} .br-box.ok b{color:var(--green)}
+.br-led .tbl td{vertical-align:top}
+.br-r{cursor:pointer} .br-r:hover td{background:var(--panel-2)}
+.br-r.unmatched td:first-child{box-shadow:inset 3px 0 0 var(--red)} .br-r.review td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
+.br-cat{font-size:12.5px;color:var(--ink-2,#3A4745)}
+.num.neg{color:var(--ink)} .num.pos{color:var(--green)}
+.mono-s{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.br-exh{font-size:12.5px;font-weight:600;color:var(--muted);padding:14px 16px 6px}
+.br-part{display:inline-block;font-size:11.5px;padding:2px 7px;border-radius:6px;background:var(--panel-2);margin:1px 2px 1px 0;white-space:nowrap}
+.br-part.here{background:color-mix(in srgb,var(--green) 14%,transparent);color:var(--green)}
+.nowrap{white-space:nowrap}
+@media (max-width:1100px){.br-sum{grid-template-columns:repeat(3,minmax(0,1fr))}.br-tabs{margin-left:0}}
+@media (max-width:640px){.br-sum{grid-template-columns:repeat(2,minmax(0,1fr))}}
