@@ -19778,9 +19778,11 @@ function poZeroData(m){
   [PMCore.monthAdd(m, -1), m].forEach(mm => poRows(mm).forEach(x => { if(x.amountC <= 0 || x.row.paidOut) return;
     if(x.k === "held" || (x.s.hold && x.k !== "owed")) held.push(x); else if(x.k === "owed") owed.push(x); }));
   const sum = xs => xs.reduce((a, x) => a + x.amountC, 0);
-  const R = pmMonthRoll(m), movedC = cents(z.moved || 0), incomeC = Math.max(0, R.netC - movedC);
+  // PHD's income and the repairs taken from owners this month both go to operating (vendors are paid from there) — one
+  // transfer; "already moved" counts against the two together. Repairs count as applied this month (carried ones next month).
+  const R = pmMonthRoll(m), movedC = cents(z.moved || 0), toOpC = R.netC + R.repairsC, incomeC = Math.max(0, toOpC - movedC);
   const pb = (S.recov || {}).payabli || {}, payabliC = Math.max(0, (pb.owedC || 0) - (pb.paid || []).reduce((a, x) => a + cents(x.amount), 0));
-  const bills = billList().filter(b => b.status === "open" && b.recover === "deduct"), billsC = bills.reduce((a, b) => a + cents(b.amount), 0);
+  const bills = [], billsC = 0;   // vendor bills are paid from operating, so they never leave this account themselves
   const transitC = cents(z.transit || 0);
   return {z, owed, held, owedC:sum(owed), heldC:sum(held), R, movedC, incomeC, payabliC, bills, billsC, transitC};
 }
@@ -19800,8 +19802,7 @@ function poZeroCard(v, m){
       ${line(`Rent MagicDoor collected, still on its way <a href="#" id="pzT">${d.transitC ? "change" : "enter"}</a>`, d.transitC, d.z.transitAt ? `MagicDoor's Funding activity, "In transit" · entered ${esc(fdateS(String(d.z.transitAt).slice(0, 10)))}` : "From MagicDoor → Funding activity, the payments still \"In transit\"")}
       ${line("Owner payouts still to send", -d.owedC, d.owed.length ? names(d.owed) : "None")}
       ${line("Owner payouts held", -d.heldC, d.held.length ? names(d.held) : "None")}
-      ${line(`PHD income to move to operating <a href="#" id="pzM">${d.movedC ? "change" : "already moved some?"}</a>`, -d.incomeC, `${esc(monthLabel(m))} PHD income ${usd(d.R.netC)}${d.movedC ? ` · ${usd(d.movedC)} already moved` : ""}`)}
-      ${line("Vendors still to be paid for repairs taken from owners", -d.billsC, `${d.bills.length} open bill${d.bills.length === 1 ? "" : "s"}`)}
+      ${line(`To move to operating <a href="#" id="pzM">${d.movedC ? "change" : "already moved some?"}</a>`, -d.incomeC, `${esc(monthLabel(m))} PHD income ${usd(d.R.netC)} + repairs taken from owners ${usd(d.R.repairsC)} (vendors are paid from operating)${d.movedC ? ` · ${usd(d.movedC)} already moved` : ""}`)}
       ${line("Owed back to Payabli (October's duplicate payouts)", -d.payabliC, "")}
       ${line("<b>Left over</b>", leftC, leftC == null ? "" : Math.abs(leftC) <= 100 ? "Comes to $0 — everything in the account is accounted for." : leftC > 0 ? "Money in the account nothing here accounts for — rent paid ahead for next month, an earlier month's PHD income not moved yet, or a deposit that belongs elsewhere." : "The account is short of what's owed out of it.", "due")}
     </tbody></table></div>`;
@@ -19810,9 +19811,9 @@ function poZeroCard(v, m){
   const ask = (k, q) => { const cur = d.z[k] != null ? String(d.z[k]) : ""; const val = prompt(q, cur); if(val == null) return;
     const n = Math.round(Number(String(val).replace(/[$,\s]/g, "")) * 100) / 100; if(!isFinite(n)) return toast("Enter an amount");
     snapshot(); const mt = pmState().meta[m] = pmState().meta[m] || {}; mt.zero = Object.assign({}, mt.zero || {}, {[k]:n, [k + "At"]:new Date().toISOString(), [k + "By"]:(typeof Cloud !== "undefined" && Cloud.email) || ""});
-    commit(); actLog("finance", `${monthLabel(m)} rental income account: ${k === "transit" ? "rent in transit from MagicDoor" : "PHD income already moved to operating"} set to ${usd(cents(n))}`, {side:"pm"}); render(); };
+    commit(); actLog("finance", `${monthLabel(m)} rental income account: ${k === "transit" ? "rent in transit from MagicDoor" : "already moved to operating"} set to ${usd(cents(n))}`, {side:"pm"}); render(); };
   c.querySelector("#pzT").onclick = e => { e.preventDefault(); ask("transit", "Rent MagicDoor collected that hasn't reached Nickel yet (MagicDoor → Funding activity, everything \"In transit\"):"); };
-  c.querySelector("#pzM").onclick = e => { e.preventDefault(); ask("moved", `PHD income for ${monthLabel(m)} already moved out of the rental income account:`); };
+  c.querySelector("#pzM").onclick = e => { e.preventDefault(); ask("moved", `Already moved to operating for ${monthLabel(m)} (PHD income and repairs):`); };
 }
 /* Owner payout bills in Nickel (OWN-…): every one for the month, what Nickel says about its money, which rental it pays,
    and whether its amount still matches the console. Unpaid ones can be deleted together (one confirmation) and sent again. */
