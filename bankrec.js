@@ -407,8 +407,9 @@ function brLineSheet(k, id){
       ${(n.history || []).length ? `<div class="item-s">${n.history.slice(-6).map(h => `${esc(h.what)} · ${esc(String(h.by || "").split("@")[0])} · ${esc(fdateS(String(h.at).slice(0, 10)))}`).join("<br>")}</div>` : ""}
       <p class="help">A note explains the line for this reconciliation — it never changes a month's figures or a payout.</p>
     </div>
-    <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="brSave">Save</button></div>`;
+    <div class="sheet-f">${typeof tkSheet === "function" ? `<button class="btn ghost sm" id="brTask">New task${typeof tkFor === "function" && tkFor("bank", key).length ? ` (${tkFor("bank", key).length})` : ""}</button>` : ""}<span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="brSave">Save</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  const bt = $("#brTask"); if(bt) bt.onclick = () => tkSheet(null, {title:`Explain ${t.amtC < 0 ? "−" : ""}${usd(Math.abs(t.amtC))} on ${fdateS(t.date)} — ${String(t.desc || t.ref).slice(0, 60)}`, link:{t:"bank", id:key, k, m:String(t.date).slice(0, 7), label:`${brAcct(k).name} · ${fdateS(t.date)} ${usd(t.amtC)}`}, assignee:$("#brWho").value.trim().toLowerCase() || undefined});
   $("#brSave").onclick = () => {
     const B = BR(), who = billWho(), now = new Date().toISOString(), newCat = $("#brCat").value, note = $("#brNote").value.trim(), as = $("#brWho").value.trim(), done = !!$("#brDone").value;
     snapshot();

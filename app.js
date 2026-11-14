@@ -19532,6 +19532,7 @@ renderNavPM = function(){
   const urgent = al.filter(a => a.level === "urgent").length, act = al.filter(a => a.level !== "info").length;
   mk("today", "Today", "bolt");
   mk("pmAlerts", "Action center", "check", act ? `<i class="badge alert"${urgent ? "" : ' style="background:var(--gold)"'}>${act}</i>` : null);
+  if(typeof pgTasks === "function") mk("tasks", "Team tasks", "check", typeof tkNavBadge === "function" ? tkNavBadge() : null);
   mk("help", "How do I…", "list");
 
   head(`This month · ${monthShort(m)}`);
