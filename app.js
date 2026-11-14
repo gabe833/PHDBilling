@@ -4846,6 +4846,22 @@ function pmMonthRows(m){
     .map(r => ({row:r, prop:pmProp(r.propertyId)})).filter(x => x.prop && (!x.prop.skipClose || x.row.source === "workbook"))   // the sheet's lines always count
     .sort((a, b) => a.prop.name.localeCompare(b.prop.name, undefined, {numeric:true}));
 }
+/* One row's repairs and admin fee as they count in its month: when repairs run past the rent and the rest carries to
+   next month, only the part applied this month counts here; the carried part (repairs and its share of the admin fee)
+   counts in the month it comes off. Used by the month totals and the month CSV. Only reads — no row is touched. */
+function pmRowApplied(row, prop){
+  const c = pmCalc(row, prop);
+  const split = (r, xC) => { const cc = r === row ? c : pmCalc(r, prop), base = cc.repairsC + cc.adminC; if(base <= 0 || xC <= 0) return [0, 0];
+    const x = Math.min(xC, base), adm = Math.round(x * cc.adminC / base); return [x - adm, adm]; };
+  const adj = row.adjustments || [];
+  let outC = adj.filter(a => a.carryOut).reduce((a, x) => a + cents(x.amount), 0);
+  if(!outC && c.payoutC < 0 && !row.paidOut) outC = -c.payoutC;   // will carry once the month ends
+  const [outRepC, outAdmC] = outC > 0 ? split(row, outC) : [0, 0];
+  let inRepC = 0, inAdmC = 0;
+  adj.filter(a => a.carryIn && a.from).forEach(a => { const src = pmRow(a.from, prop.id); if(!src) return; const [r, ad] = split(src, -cents(a.amount)); inRepC += r; inAdmC += ad; });
+  return {repairsAllC:c.repairsC, adminAllC:c.adminC, outRepC, outAdmC, inRepC, inAdmC,
+    repairsC:c.repairsC - outRepC + inRepC, adminC:c.adminC - outAdmC + inAdmC};
+}
 function pmMonthRoll(m){
   const t = {dueC:0, recv:0, repairsC:0, adminC:0, pmFeeC:0, leasingC:0, otherC:0, payoutC:0, extrasC:0, phdC:0, flags:0, rows:0, short:0};
   const extras = {}; PM_EXTRA.forEach(([k]) => extras[k] = 0);
@@ -4865,16 +4881,11 @@ function pmMonthRoll(m){
   // the rest carries to next month, only the part applied this month counts here, and the carried part (repairs and its
   // share of the admin fee) counts in the month it comes off. Only the totals change — no row is touched.
   t.repairsAllC = t.repairsC; t.adminAllC = t.adminC; t.carriedOutC = 0; t.carriedInC = 0;
-  const split = (row, prop, xC) => { const c = pmCalc(row, prop), base = c.repairsC + c.adminC; if(base <= 0 || xC <= 0) return [0, 0];
-    const x = Math.min(xC, base), adm = Math.round(x * c.adminC / base); return [x - adm, adm]; };
   pmMonthRows(m).forEach(({row, prop}) => {
     if(row.detailOnly) return;
-    const adj = row.adjustments || [];
-    let outC = adj.filter(a => a.carryOut).reduce((a, x) => a + cents(x.amount), 0);
-    if(!outC){ const c = pmCalc(row, prop); if(c.payoutC < 0 && !row.paidOut) outC = -c.payoutC; }   // will carry once the month ends
-    if(outC > 0){ const [r, a] = split(row, prop, outC); t.repairsC -= r; t.adminC -= a; t.phdC -= a; t.carriedOutC += r + a; }
-    adj.filter(a => a.carryIn && a.from).forEach(a => { const src = pmRow(a.from, prop.id); if(!src) return;
-      const [r, ad] = split(src, prop, -cents(a.amount)); t.repairsC += r; t.adminC += ad; t.phdC += ad; t.carriedInC += r + ad; });
+    const a = pmRowApplied(row, prop);
+    t.repairsC += a.repairsC - a.repairsAllC; t.adminC += a.adminC - a.adminAllC; t.phdC += a.adminC - a.adminAllC;
+    t.carriedOutC += a.outRepC + a.outAdmC; t.carriedInC += a.inRepC + a.inAdmC;
   });
   const meta = pmState().meta[m] || {};
   t.deductC = (meta.deductions || []).reduce((a, d) => a + cents(d.amount), 0);   // stored negative
@@ -6001,11 +6012,13 @@ function pmImportSheet(m){
    EXPORTS — month CSV and owner statements
    ==================================================================== */
 function pmExportCsv(m){
-  const head = ["Property","Owner","Rent due","Rent received","Repairs","Admin fee","PM fee","Leasing fee","Other owner income","Adjustments","Owner payout","Applications","Late fees","Reimbursements","Filters","Notes"];
+  // "Repairs" and "Admin fee" are everything charged on the row; the "this month" columns are what actually came off this
+  // month (repairs carried to next month taken out, repairs carried in from last month added) — the same split as the totals
+  const head = ["Property","Owner","Rent due","Rent received","Repairs","Admin fee","Repairs this month","Admin fee this month","Carried to next month","Carried from last month","PM fee","Leasing fee","Other owner income","Adjustments","Owner payout","Applications","Late fees","Reimbursements","Filters","Notes"];
   const out = [head];
-  pmMonthRows(m).forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop);
-    out.push([prop.address || prop.name, ownerLabel(ownerById(prop.ownerId)), c.dueC, c.recv, c.repairsC, c.adminC, c.pmFeeC, c.leasingC, c.otherC, c.adjC, c.payoutC, ...PM_EXTRA.map(([k]) => nz(row[k])), row.notes || ""]
-      .map((x, i) => i >= 2 && i <= 14 ? (x / 100).toFixed(2) : x)); });
+  pmMonthRows(m).forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop), a = pmRowApplied(row, prop);
+    out.push([prop.address || prop.name, ownerLabel(ownerById(prop.ownerId)), c.dueC, c.recv, c.repairsC, c.adminC, a.repairsC, a.adminC, a.outRepC + a.outAdmC, a.inRepC + a.inAdmC, c.pmFeeC, c.leasingC, c.otherC, c.adjC, c.payoutC, ...PM_EXTRA.map(([k]) => nz(row[k])), row.notes || ""]
+      .map((x, i) => i >= 2 && i <= 18 ? (x / 100).toFixed(2) : x)); });
   download(`PHD PM ${monthLabel(m)}.csv`, out.map(r => r.map(c => /[",\n]/.test(String(c)) ? `"${String(c).replace(/"/g, '""')}"` : c).join(",")).join("\n"));
 }
 function pmStatementSheet(m){
