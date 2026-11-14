@@ -19774,8 +19774,13 @@ function pgPayouts(){
     // a payout kept back to win back a double payout (October paid twice) — the workbook still lists it as a payment
     const rec = (x.row.adjustments || []).filter(a => a.recov && cents(a.amount) < 0), recC = rec.reduce((a, r) => a + cents(r.amount), 0);
     return Object.assign({}, x, {amountC:c.payoutC, why:(x.row.adjustments || []).some(a => a.carryOut) ? `Owner owed ${usd(cents((x.row.adjustments || []).find(a => a.carryOut).amount))} — carried to ${monthLabel((x.row.adjustments || []).find(a => a.carryOut).to)}` : rec.length && c.recv > 0 ? `Kept back: recovering a double payout (${usd(-recC)} of ${usd(c.payoutC - recC)})` : c.recv <= 0 ? "Rent not in yet" : c.payoutC < 0 ? `Owner owes ${usd(-c.payoutC)}` : "$0 to pay"}); });
-  ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = !!okToSend(x); });
-  const picked = ready.filter(x => sel[x.m + "|" + x.p.id] && okToSend(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
+  // Distribution control (distrib.js): approvals and the pre-send check list; a payout that fails a check can't be picked
+  // canPick: it can be ticked (approval aside); picked: ticked and ready to go now (approved, if approval is required)
+  const dcB = (x, noAppr) => typeof dcBlocked === "function" && dcBlocked(x, noAppr);
+  const canPick = x => !!okToSend(x) && !dcB(x, true);
+  ready.forEach(x => { const k = x.m + "|" + x.p.id; if(!(k in sel)) sel[k] = canPick(x); });
+  const chosen = ready.filter(x => sel[x.m + "|" + x.p.id] && canPick(x));
+  const picked = chosen.filter(x => !dcB(x)), totC = picked.reduce((a, x) => a + x.amountC, 0);
   $("#pgCrumb").textContent = "Property management · Money"; $("#pgTitle").textContent = "Owner payouts";
   $("#pgSub").textContent = `${monthLabel(m)} · due the ${pmSettings().payoutDay || 15}th · ${ready.length} ready${notRev.length + noPay.length ? ` · ${notRev.length + noPay.length} not ready` : ""}${held.length ? ` · ${held.length} held` : ""}${done.length ? ` · ${done.length} paid or scheduled` : ""}`;
   const due15 = `${m}-${String(pmSettings().payoutDay || 15).padStart(2, "0")}`, minDate = poBusinessDays(today, 1);
@@ -19804,28 +19809,30 @@ function pgPayouts(){
 
   // the list
   const card = elm("div", "card");
-  const line = x => { if(x.split) return splitLine(x); const k = x.m + "|" + x.p.id, pe = payee(x), ok = okToSend(x), oneB = (pe.payout || [])[0];
+  const dcC = x => typeof dcChip === "function" ? dcChip(x) : "";
+  const line = x => { if(x.split) return splitLine(x); const k = x.m + "|" + x.p.id, pe = payee(x), ok = canPick(x), oneB = (pe.payout || [])[0];
     const who = !nickelOn() ? `<span class="muted">Nickel isn't connected</span>`
       : !PO.plan ? `<span class="muted">Checking Nickel…</span>`
       : !pe.id ? `<span class="po-no">Not a payee in Nickel</span> <button class="btn sm" data-padd="${esc(x.o.id)}">Add to Nickel</button> <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
       : !(pe.payout || []).length ? `<span class="po-no">${esc(pe.name)} · ${pe.checkOnly ? "only a check address in Nickel — owner payouts go by bank transfer" : "no bank on file"}</span> <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button> ${x.o.email ? `<button class="btn sm" data-pask="${esc(x.o.id)}">${pe.asked ? "Email the form again" : "Email bank-details form"}</button>` : `<span class="muted">add the owner's email first</span>`} <button class="btn sm ghost" data-ppick="${esc(x.p.id)}">Pick payee</button>`
       : `<span>${esc(pe.name)} · <span class="muted">${esc(oneB.label || oneB.type || "")}</span></span> <a href="#" data-ppick="${esc(x.p.id)}" class="muted" style="font-size:12px">change</a>`;
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
-      <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""} ${poTag(x)}</div></td>
+      <td><b>${esc(ownerLabel(x.o))}</b><div class="sub"><a href="#" data-pp="${esc(x.p.id)}">${esc(x.p.name)}</a>${x.via === "magicdoor" ? ` · <span class="tag">MagicDoor pays this one</span>` : ""} ${poTag(x)} ${dcC(x)}</div></td>
       <td class="po-who">${who}</td><td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
-  const splitLine = x => { const k = x.m + "|" + x.p.id, ok = okToSend(x);
+  const splitLine = x => { const k = x.m + "|" + x.p.id, ok = canPick(x);
     return `<tr class="${ok ? "" : "off"}"><td><input type="checkbox" data-po="${esc(k)}" ${sel[k] && ok ? "checked" : ""} ${ok ? "" : "disabled"}></td>
-      <td><b>${esc(x.split.name)}</b> <span class="tag">split</span> ${poTag(x)}<div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
+      <td><b>${esc(x.split.name)}</b> <span class="tag">split</span> ${poTag(x)} ${dcC(x)}<div class="sub">${x.rows.map(r => `<a href="#" data-pp="${esc(r.p.id)}">${esc(r.p.name)}</a> ${usd(r.amountC)}`).join(" · ")}</div>${x.waiting.length ? `<div class="sub po-no">Waiting on ${x.waiting.map(r => esc(r.p.name) + " (" + (r.k === "held" ? "held" : "paid") + ")").join(", ")}</div>` : ""}</td>
       <td class="po-who">${x.shares.map(sh => { const nv = poNv(sh.vendorId), b = nv && (nv.payout || []).find(m => String(m.type || "").toUpperCase() !== "CHECK"); return `<div class="po-sh"><span>${esc(nv ? nv.name : sh.name || "Pick a payee")}${b ? ` · <span class="muted">${esc(b.label || b.type)}</span>` : nv ? ` · <span class="po-no">no bank on file</span>` : ""}</span><b class="num">${usd(sh.amountC)}</b></div>`; }).join("")}
         <a href="#" data-psplit="${esc(x.split.id)}" class="muted" style="font-size:12px">edit split</a></td>
       <td class="r num"><b>${usd(x.amountC)}</b></td></tr>`; };
   card.innerHTML = `<div class="card-h"><h3>Ready to send · ${ready.length}</h3>
-      ${ready.length ? `<a href="#" id="poAll" style="margin-left:auto;font-size:13px">${picked.length === ready.filter(okToSend).length ? "Clear" : "Select all"}</a>` : ""}</div>
+      ${ready.length ? `<a href="#" id="poAll" style="margin-left:auto;font-size:13px">${picked.length === ready.filter(canPick).length ? "Clear" : "Select all"}</a>` : ""}</div>
     ${ready.length ? `<div class="tbl-wrap"><table class="tbl po-tbl"><thead><tr><th></th><th>Owner · property</th><th>Paid to</th><th class="r">Payout</th></tr></thead><tbody>${ready.map(line).join("")}</tbody></table></div>`
       : `<div class="empty"><b>${notRev.length ? "Nothing reviewed yet" : "Nothing waiting"}</b><p>${notRev.length ? "A payout is ready once its owner statement is marked reviewed — see Not ready below." : `${monthLabel(m)} payouts are all paid, scheduled or held.`}</p></div>`}
     <p class="help" style="padding:8px 16px 0"><a href="#" id="poNewSplit">Split a payout between several bank accounts…</a></p>
     ${mdRows.length ? `<p class="help" style="padding:0 16px 12px">${mdRows.length} rental${mdRows.length === 1 ? " is" : "s are"} paid by MagicDoor and left out. <a href="#" id="poMd">${S.ui.poMd ? "Leave them out" : "Show them here too"}</a></p>` : ""}`;
   v.appendChild(card);
+  if(nickelOn() && typeof dcCard === "function" && ready.length) dcCard(v, m, ready, chosen, picked);
   const shut = (h, list, tagf) => { if(!list.length) return; const c = elm("div", "card"); c.innerHTML = `<div class="card-h"><h3>${h} · ${list.length}</h3></div><div class="tbl-wrap"><table class="tbl"><tbody>${list.map(x => `<tr class="off"><td><b>${esc(ownerLabel(x.o))}</b><div class="sub">${esc(x.p.name)}</div></td><td>${tagf(x)}</td><td class="r num">${usd(x.amountC)}</td></tr>`).join("")}</tbody></table></div>`; v.appendChild(c); };
   // not ready: statements still to review (or changed after review), and rentals with nothing to pay yet
   if(notRev.length || noPay.length){
@@ -19843,17 +19850,19 @@ function pgPayouts(){
   shut("Held", held, x => `<span class="tag red">${esc((x.s.hold && x.s.hold.title) || "Held")}</span>`);
   if(nickelOn()) poZeroCard(v, m);
   if(nickelOn()) poNickelCard(v, m, rows);
-  shut("Paid or scheduled", done, x => `<span class="tag ${x.k === "paid" ? "green" : "gold"}">${x.k === "paid" ? "Paid" : "Scheduled"}${x.s.date ? " · " + esc(fdateS(x.s.date)) : ""}${x.s.how ? " · " + esc(x.s.how) : ""}</span>`);
+  shut("Paid or scheduled", done, x => `<span class="tag ${x.k === "paid" ? "green" : "gold"}">${x.k === "paid" ? "Paid" : "Scheduled"}${x.s.date ? " · " + esc(fdateS(x.s.date)) : ""}${x.s.how ? " · " + esc(x.s.how) : ""}</span>${typeof dcDoneTag === "function" ? " " + dcDoneTag(x) : ""}`);
 
   // send bar
   const bar = elm("div", "po-bar");
-  bar.innerHTML = `<span>${picked.length ? `<b>${picked.length}</b> payout${picked.length === 1 ? "" : "s"} · <b class="num">${usd(totC)}</b> · ${when === "asap" ? "as soon as possible" : "arrives " + esc(fdateS(date))}` : "Pick the payouts to send"}</span>
+  bar.innerHTML = `<span>${picked.length ? `<b>${picked.length}</b> payout${picked.length === 1 ? "" : "s"} · <b class="num">${usd(totC)}</b> · ${when === "asap" ? "as soon as possible" : "arrives " + esc(fdateS(date))}` : chosen.length ? "The picked payouts need approval first" : "Pick the payouts to send"}</span>
     ${plan.canPay === false ? `<span class="muted" style="font-size:12px">Only people on the payments list can send (${esc((plan.payers || []).join(", "))})</span>` : ""}
+    ${picked.length ? `<label class="po-batch" title="Recorded on each payout in this send"><span class="muted">Batch</span> <input type="text" id="poBatch" maxlength="80" value="${esc(S.ui.poBatch || (typeof dcBatchDefault === "function" ? dcBatchDefault(m) : ""))}"></label>` : ""}
     <button class="btn primary" id="poSend" ${!picked.length || !acct || plan.canPay === false ? "disabled" : ""}>Send ${picked.length || ""} payout${picked.length === 1 ? "" : "s"}</button>`;
   v.appendChild(bar);
 
   v.querySelectorAll("[data-po]").forEach(i => i.onchange = () => { sel[i.dataset.po] = i.checked; render(); });
-  const all = $("#poAll"); if(all) all.onclick = e => { e.preventDefault(); const on = picked.length !== ready.filter(okToSend).length; ready.forEach(x => { if(okToSend(x)) sel[x.m + "|" + x.p.id] = on; }); render(); };
+  const all = $("#poAll"); if(all) all.onclick = e => { e.preventDefault(); const on = picked.length !== ready.filter(canPick).length; ready.forEach(x => { if(canPick(x)) sel[x.m + "|" + x.p.id] = on; }); render(); };
+  const pb = $("#poBatch"); if(pb) pb.onchange = () => { S.ui.poBatch = pb.value.trim(); };
   const ns = $("#poNewSplit"); if(ns) ns.onclick = e => { e.preventDefault(); poSplitSheet(null); };
   const md = $("#poMd"); if(md) md.onclick = e => { e.preventDefault(); S.ui.poMd = !S.ui.poMd; persistUi(); render(); };
   v.querySelectorAll("[data-pp]").forEach(a2 => a2.onclick = e => { e.preventDefault(); S.ui.pmPropId = a2.dataset.pp; S.ui.pmPropM = m; go("pmProperty"); });
@@ -19861,7 +19870,7 @@ function pgPayouts(){
   v.querySelectorAll("[data-pask]").forEach(b => b.onclick = async () => { const o = ownerById(b.dataset.pask); try{ const r = await nkRun("owner.ask", {ownerId:o.id, nickelVendorId:poPayee(o.id).id}, `Email ${ownerLabel(o)} Nickel's bank-details form`); if(r.ok) toast(`Sent to ${o.email}`, true); }catch(e){ toast(e.message); } await poLoadPlan(ownerIds, true); render(); });
   v.querySelectorAll("[data-ppick]").forEach(b => b.onclick = e => { e.preventDefault(); const p = pmProp(b.dataset.ppick); if(p) poPickSheet(p); });
   v.querySelectorAll("[data-psplit]").forEach(b => b.onclick = e => { e.preventDefault(); poSplitSheet(b.dataset.psplit); });
-  $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : ""});
+  $("#poSend").onclick = () => poSend(picked, {when, date, from:(top.querySelector("#poF") || {}).value, acctLabel:acct ? acct.label : "", batchName:(($("#poBatch") || {}).value || "").trim()});
 }
 /* The rental income account should end each month at $0: everything in it is either an owner's money still to be paid,
    PHD's income still to be moved out, a vendor still to be paid for repairs already taken from owners, or money owed back
@@ -19869,7 +19878,7 @@ function pgPayouts(){
    money nothing in the console accounts for. */
 const NKBAL = {at:0, busy:false, c:null, err:""};
 async function poBalLoad(force){
-  if(NKBAL.busy || (!force && NKBAL.c != null && Date.now() - NKBAL.at < 120000)) return;
+  if(NKBAL.busy || (!force && NKBAL.at && Date.now() - NKBAL.at < 120000)) return;   // also when Nickel had no balance to give: no reload loop
   NKBAL.busy = true;
   try{ const a = await payCall("nk.activity", {source:"OWNERPAY", page:1}, {noSave:true}); const b = (a.balances || []).find(x => /rental income/i.test(x.name));
     NKBAL.c = b ? b.balanceC : null; NKBAL.name = b ? `${b.name} ····${b.last4}` : ""; NKBAL.err = b ? "" : "No rental income account in Nickel"; }
@@ -20007,11 +20016,11 @@ async function poSend(list, o){
   const chunks = []; let cur = [], n = 0;
   list.forEach(x => { const k = x.split ? Math.max(1, x.shares.filter(sh => sh.amountC > 0).length) : 1; if(cur.length && n + k > 25){ chunks.push(cur); cur = []; n = 0; } cur.push(x); n += k; });
   if(cur.length) chunks.push(cur);
-  let sent = 0; const bad = [];
+  let sent = 0; const bad = [], batchId = "pb_" + Date.now().toString(36);
   for(let i = 0; i < chunks.length; i++){
     const ch = chunks[i], chC = ch.reduce((a, x) => a + x.amountC, 0);
     let r = null;
-    try{ r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:ch.map(item)},
+    try{ r = await nkRun("payout.send", {payFrom:o.from, arrivalDate:o.when === "date" ? o.date : "", items:ch.map(item), batchName:o.batchName || "", batchId},
       `${chunks.length > 1 ? `Batch ${i + 1} of ${chunks.length} · ` : ""}Send ${ch.length} owner payout${ch.length === 1 ? "" : "s"} · ${usd(chC)}`); }
     catch(e){ toast(e.message); break; }
     if(!r || !r.results){ if(chunks.length > 1 && i < chunks.length - 1) toast(`Stopped after batch ${i}. Nothing else was sent.`); break; }
@@ -20019,7 +20028,8 @@ async function poSend(list, o){
     if(r.declined) break;
   }
   if(sent || bad.length){
-    actLog("finance", `Owner payouts sent from the console: ${sent} of ${list.length}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
+    actLog("finance", `Owner payouts sent from the console: ${sent} of ${list.length}${o.batchName ? ` · batch "${o.batchName}"` : ""}${o.when === "date" ? " · arriving " + o.date : ""}`, {side:"pm"});
+    S.ui.poBatch = "";
     if(typeof Cloud !== "undefined" && Cloud.pull) try{ await Cloud.pull(); }catch(e){}
     toast(`${sent} payout${sent === 1 ? "" : "s"} sent${bad.length ? ` · ${bad.length} didn't go: ${bad.slice(0, 3).map(x => `${(pmProp(x.pid) || {}).name}: ${x.why}`).join("; ")}` : ""}`, true);
     S.ui.poSel = {};

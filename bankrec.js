@@ -435,5 +435,16 @@ if(typeof ACT_PM_DOCS !== "undefined") ACT_PM_DOCS.add("bank");
 // the menu badge: lines still to explain in the latest imported month of the rental income account
 window.brNavBadge = () => { try{ const k = "nk-6588", ms = [...new Set(brTx(k).map(t => String(t.date).slice(0, 7)))].sort(), m = ms[ms.length - 1]; if(!m) return null;
   const D = brMonth(k, m); if(D.rec && D.rec.status === "final") return null; const n = D.ex.length + D.outstanding.length; return n ? navBadge(n, null, `${n} to explain · ${monthLabel(m)}`) : null; }catch(e){ return null; } };
+// the bank line(s) for a payout's references, from every imported account: {date, amtC, desc, reversed, why} or null
+window.brFindRef = refs => { try{
+  const want = new Set((refs || []).map(r => String(r || "").toUpperCase()).filter(Boolean)); if(!want.size) return null;
+  for(const a of BR_ACCTS){ const all = brTx(a.key), hits = all.filter(t => want.has(String(t.ref || "").toUpperCase())); if(!hits.length) continue;
+    const out = hits.filter(t => t.amtC < 0), back = hits.filter(t => t.amtC > 0);
+    if(!out.length) continue;
+    const amtC = out.reduce((s, t) => s + t.amtC, 0) + back.reduce((s, t) => s + t.amtC, 0), last = out[out.length - 1];
+    if(back.length && Math.abs(amtC) <= 1) return {date:back[back.length - 1].date, amtC:0, reversed:true, why:`Paid ${fdateS(last.date)}, cancelled ${fdateS(back[back.length - 1].date)} (${a.name})`};
+    return {date:last.date, amtC, desc:`${a.name}: ${last.desc || last.ref}`, reversed:false};
+  }
+  return null; }catch(e){ return null; } };
 window.brMonth = brMonth; window.brAlloc = brAlloc; window.brParse = brParse; window.brImport = brImport; window.brMatchAll = brMatchAll;
 })();

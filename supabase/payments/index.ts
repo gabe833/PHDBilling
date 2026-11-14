@@ -105,6 +105,69 @@ async function isSchedule(req: Request): Promise<boolean> {
 }
 async function payers(): Promise<string[]> { return S(await getSetting("payers")).split(/[,;\s]+/).map((x) => x.trim().toLowerCase()).filter((x) => x.includes("@")); }
 
+/* ---- Owner payout approvals (Distribution control) ----
+   Approval is a separate step from sending and from Nickel's own status. Approvals are kept in private_settings, which
+   only this function can write, so nobody can mark a payout approved by writing to the database from the browser.
+   po_policy:  {require, twoPerson, history[]}   — require: payout.send refuses anything not approved at its current
+               amount and payee(s); twoPerson: the approver can't be the person who sends it.
+   approvers:  comma-separated emails (falls back to the payments list).
+   po_appr:<month>: {<key>: {status, amountC, payees[], pids[], by, at, note, history[]}}  key = property id, or
+               "split:<group key>" for a split payout. */
+async function approvers(): Promise<string[]> { const a = S(await getSetting("approvers")).split(/[,;\s]+/).map((x) => x.trim().toLowerCase()).filter((x) => x.includes("@")); return a.length ? a : await payers(); }
+async function poPolicy(): Promise<Obj> { try { return JSON.parse(S(await getSetting("po_policy")) || "{}") || {}; } catch { return {}; } }
+async function poApprovals(month: string): Promise<Obj> { try { return JSON.parse(S(await getSetting("po_appr:" + month)) || "{}") || {}; } catch { return {}; } }
+const poApprKey = (it: Obj) => it.splits ? "split:" + S(it.groupKey) : S(it.pid || ((it.pids || [])[0]));
+// does this approval still cover the payout as it is now? → "" or why not
+function poApprOk(rec: Obj | null, amountC: number, payees: string[], sender: string, pol: Obj): string {
+  if (!rec || rec.status !== "approved") return "not approved yet";
+  if (Math.round(Number(rec.amountC)) !== Math.round(amountC)) return `approved at $${(Number(rec.amountC) / 100).toFixed(2)}, now $${(amountC / 100).toFixed(2)} — approve it again`;
+  const a = [...(rec.payees || [])].map(S).sort().join(","), b = [...payees].map(S).sort().join(",");
+  if (a !== b) return "the payee changed since it was approved — approve it again";
+  if (pol.twoPerson && S(rec.by).toLowerCase() === sender.toLowerCase()) return "approved by the same person sending it — a second person has to approve";
+  return "";
+}
+async function poApprovalOp(mode: string, body: Obj, email: string): Promise<Obj> {
+  const [aps, ps, pol] = await Promise.all([approvers(), payers(), poPolicy()]);
+  const canApprove = aps.includes(email), canPay = ps.includes(email), now = new Date().toISOString();
+  if (mode === "po.approvals") {
+    const months = ((body.months || [body.month]) as unknown[]).map(S).filter((m) => /^\d{4}-\d{2}$/.test(m)).slice(0, 4), out: Obj = {};
+    for (const m of months) out[m] = await poApprovals(m);
+    return { approvals: out, policy: { require: !!pol.require, twoPerson: !!pol.twoPerson, history: (pol.history || []).slice(-20) }, approvers: aps, canApprove, canPay, me: email };
+  }
+  if (mode === "po.policy") {
+    if (!canPay) throw new Error("Only people on the payments list can change the approval rules.");
+    const next: Obj = { require: body.require === true, twoPerson: body.twoPerson === true };
+    next.history = [...(pol.history || []), { at: now, by: email, require: next.require, twoPerson: next.twoPerson, why: S(body.why).slice(0, 300) }].slice(-100);
+    await setSetting("po_policy", JSON.stringify(next));
+    if (Array.isArray(body.approvers)) {
+      const list = (body.approvers as unknown[]).map((x) => S(x).trim().toLowerCase()).filter((x) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(x)).slice(0, 20);
+      if (list.length) await setSetting("approvers", list.join(",")); else await delSetting("approvers");
+    }
+    return { ok: true };
+  }
+  const month = S(body.month); if (!/^\d{4}-\d{2}$/.test(month)) throw new Error("No month");
+  if (!canApprove) throw new Error("You're not on the approvers list, so you can't approve owner payouts.");
+  const all = await poApprovals(month), done: string[] = [];
+  for (const it of ((body.items || []) as Obj[]).slice(0, 120)) {
+    const key = S(it.key); if (!key || key.length > 80) continue;
+    const prev: Obj = all[key] || { history: [] }, hist = [...(prev.history || [])];
+    if (mode === "po.approve") {
+      const amountC = Math.round(Number(it.amountC) || 0); if (!(amountC > 0)) continue;
+      const rec = { status: "approved", amountC, payees: ((it.payees || []) as unknown[]).map(S).filter(Boolean).slice(0, 10), pids: ((it.pids || []) as unknown[]).map(S).slice(0, 20), label: S(it.label).slice(0, 160), by: email, at: now, note: S(body.note).slice(0, 300) };
+      hist.push({ at: now, by: email, did: "approved", amountC, payees: rec.payees, note: rec.note });
+      all[key] = { ...rec, history: hist.slice(-30) };
+    } else if (mode === "po.unapprove") {
+      if (!prev.status) continue;
+      const why = S(body.why).slice(0, 300); if (!why) throw new Error("Say why the approval is being taken back");
+      hist.push({ at: now, by: email, did: "revoked", why });
+      all[key] = { ...prev, status: "revoked", revokedBy: email, revokedAt: now, why, history: hist.slice(-30) };
+    } else throw new Error("Unknown approval action");
+    done.push(key);
+  }
+  await setSetting("po_appr:" + month, JSON.stringify(all));
+  return { ok: true, done };
+}
+
 /* ====================================================================
    NICKEL MCP CLIENT
    ==================================================================== */
@@ -466,6 +529,8 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const nvs: Obj[] = map.nickelVendors || [], results: Obj[] = [], units: Obj[] = [];
     // each item is one payout: one property to one payee, or a split — several properties' payouts pooled and
     // shared between several payees (Susan, Stephen and their joint account), with the shares adding up exactly
+    const pol = await poPolicy(), apprCache: Obj = {};
+    const batchName = S(body.batchName).replace(/[\u0000-\u001f]/g, "").slice(0, 80), batchId = batchName ? (/^pb_[a-z0-9]{4,20}$/.test(S(body.batchId)) ? S(body.batchId) : "pb_" + Date.now().toString(36)) : "";
     for (const it of ((body.items || []) as Obj[]).slice(0, 100)) {
       const month = S(it.month), pids: string[] = (it.pids ? (it.pids as unknown[]).map(S) : [S(it.pid)]).filter(Boolean);
       const amounts: Record<string, number> = {}; pids.forEach((pid) => { amounts[pid] = Math.round(Number(it.pids ? (it.amounts || {})[pid] : it.amountC) || 0); });
@@ -501,7 +566,12 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       }
       if (!bad && recips.some((x) => units.some((u) => u.recips.some((y: Obj) => y.ref === x.ref)) || recips.filter((y) => y.ref === x.ref).length > 1)) bad = "Two payouts would share one Nickel bill number — send them separately";
       if (bad) { say(bad); continue; }
-      units.push({ month, pids, amounts, ps, totC, recips });
+      // approval: checked here on the server, so it can't be skipped by calling this function directly
+      const akey = poApprKey(it); if (!(month in apprCache)) apprCache[month] = await poApprovals(month);
+      const arec = apprCache[month][akey] || null;
+      if (pol.require) { const why = poApprOk(arec, totC, recips.map((x) => S(x.nv.id)), by, pol); if (why) { say(`Needs approval: ${why}`); continue; } }
+      const approved = arec && arec.status === "approved" && !poApprOk(arec, totC, recips.map((x) => S(x.nv.id)), by, { twoPerson: false }) ? { by: S(arec.by), at: S(arec.at) } : null;
+      units.push({ month, pids, amounts, ps, totC, recips, approved });
     }
     // 1) the bills (reusing an unpaid one with the same number)
     for (const u of units) for (const x of u.recips) {
@@ -546,7 +616,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       for (const pid of u.pids) {
         await updateDoc("pm_row", `${u.month}|${pid}`, (r) => {
           if (r.paidOut) return false;
-          r.paidOut = { date: arrival || today(), method: "Nickel", by: "Nickel", amount: u.amounts[pid] / 100, nickelBillId: u.recips[0].billId, ref: u.recips[0].ref, pending: true, ...(group ? { group } : {}), ...(arrival ? { scheduled: true, arrives: arrival } : {}), sentBy: by, sentAt: new Date().toISOString() };
+          r.paidOut = { date: arrival || today(), method: "Nickel", by: "Nickel", amount: u.amounts[pid] / 100, nickelBillId: u.recips[0].billId, ref: u.recips[0].ref, pending: true, ...(group ? { group } : {}), ...(arrival ? { scheduled: true, arrives: arrival } : {}), sentBy: by, sentAt: new Date().toISOString(), ...(u.approved ? { approved: u.approved } : {}), ...(batchId ? { batch: { id: batchId, name: batchName } } : {}) };
           r.updatedAt = new Date().toISOString(); r.updatedBy = by;
         });
         results.push({ month: u.month, pid, ok: true, scheduled: !!arrival });
@@ -1604,6 +1674,7 @@ async function handle(req: Request): Promise<Response> {
       case "nickel.refresh": return done(await refresh());
       case "nk.ledger": return json({ items: await ledgerSync() });
       case "nk.ownerBills": return json(await ownerBillsList());
+      case "po.approvals": case "po.approve": case "po.unapprove": case "po.policy": return json(await poApprovalOp(mode, body, who.email));
       case "nk.sync": return done(await refresh({ kind: S(body.kind), id: S(body.id), key: S(body.key) || undefined }));
       case "nk.linkProject": return done(await linkProject(body));
       case "nk.activity": return json(await activity(body));
