@@ -357,7 +357,10 @@ const PMCore = (function(){
     const late = st.left > 0 && st.prevDist > 0 && unfeed > 100 ? Math.min(cents(st.left), unfeed) : 0;
     // management fees: a fee above the PM fee the rate gives is a leasing fee; the rest (it can come in pieces) is the PM fee
     const feeFor = r => rule.type === "flat" ? cents(rule.amount) : Math.round(r * rate / 100);
-    const wantBase = feeFor(base), isLease0 = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
+    // rent paid in parts (half on the 1st, half on the 15th): MagicDoor takes the whole month's PM fee on the first part
+    // (2428 Midland Park, Nov 2026: $200 fee on the first $1,000 of $2,000 rent) — so the PM fee to expect is the full month's
+    const split = prop && Array.isArray(prop.rentParts) && prop.rentParts.length > 1 && Number(prop.rent) > 0;
+    const wantBase = feeFor(split && base > 0 ? Math.max(base, cents(prop.rent)) : base), isLease0 = c => wantBase > 0 ? c > wantBase * 1.2 + 100 : fees.length > 1 && c === Math.max(...fees);
     // a tenant credit counts as rent paid: MagicDoor takes the PM fee on rent received plus the credit (6 Murray Hill,
     // Nov 2026: $960.37 paid + $339.63 credit → $130 PM fee), so a fee that matches that is the PM fee, not a leasing fee
     const credFee = creditsC > 0 ? feeFor(base + creditsC) : 0, isLease = c => isLease0(c) && !(credFee && Math.abs(c - credFee) <= 100);
