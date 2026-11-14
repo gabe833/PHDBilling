@@ -170,6 +170,19 @@ Both sides of the console use the same menu shape, with no folded sections:
 
 Alert rules are on the Action center page; Settings & connections stay at the bottom.
 
+## Operations features (Rentals side)
+
+Each lives in its own file and is wired in through `PAGE_EXT`, the nav and the cloud-doc wrappers, so `app.js` only gets menu entries and small hooks.
+
+- **Bank reconciliation** (`bankrec.js`, Money → Bank reconciliation) — import a bank CSV (Nickel's "Balance transactions" export or any Date/Description/Amount/Balance file). Lines are stored once by the bank's ID, matched to owner payouts (OWN- references), MagicDoor funding debits, bills and transfers; the rest are exceptions to explain. Opening + lines must equal closing. Finalize/reopen a month with history; CSV report. Shared doc `bank`.
+- **Distribution control** (`distrib.js`, on Owner payouts) — approval as its own step, kept by the payments function in `private_settings` (`po_policy`, `approvers`, `po_appr:<month>`) so the browser can't fake it. With "approval required" on, `payout.send` refuses anything not approved at its current amount and payee; "two people" stops the approver sending. A check list before sending (already paid, already in Nickel, holds, month warnings, more than the month took in, money in the account), named batches recorded on each payout, and bank settlement from Bank reconciliation. Sending is still the Send button plus Nickel's confirmation.
+- **Team tasks** (`tasks.js`, Team tasks) — one record per task (`shared/task:<id>`), My tasks / All / Board / Calendar, @mentions and "For you" notices inside the console (no email), recurring tasks made once per series and date, New task from rentals, owners, bills and bank lines.
+- **Owner relationship hub** (`ownerhub.js`, on a Rentals owner page) — health with reasons, a timeline read from payouts, statements, invoices, holds, recoveries, tasks and the contact log, a contact log, and documents kept as Drive links with end dates (`shared/oh:<owner id>`).
+- **Inspections** (`insp.js`, Owners → Inspections) — room-by-room on a phone, condition / note / photos, move-out compared with the latest move-in, findings to tasks, PDF report (`shared/insp:<id>`). Full photos go to Drive under *Inspections / rental / date kind* through the receipt-inbox script — **redeploy `apps-script/Code.gs` (version 18)** for that; until then a photo keeps only its preview and is marked "not in Drive". CompanyCam is not connected.
+- **Portfolio analytics** (`analytics.js`, This month → Portfolio analytics) — owner money, PHD revenue and PHD expenses side by side but never added together, with click-through and CSV.
+
+Checks: `python3 -m http.server 8765 & node tests/features.test.js` (made-up data only).
+
 ## Reconcile (menu → Rent → Reconcile)
 
 One month, every rental, checked four ways in a row, so you can tell after owner payouts that the amounts match:
