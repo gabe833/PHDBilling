@@ -13572,6 +13572,7 @@ function renderNavPM(){
   { const rm = rcMonth(), nIs = rcIssueCount(rm); mk("pmRecon", "Reconcile", "recon", nIs ? navBadge(nIs, "alert", `${nIs} don't match · ${monthLabel(rm)}`) : null); }
   mk("pmHome", "Rent overview", "home");
   mk("pmPays", "Rent payments", "receipt");
+  if(typeof pgAnalytics === "function") mk("analytics", "Portfolio analytics", "chart");
   mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
   mk("pmDeposits", "Security deposits", "receipt");
   if(typeof pgInspections === "function"){ let n = 0; try{ n = Object.values(S.insp || {}).filter(x => x && x.status === "draft").length; }catch(e){} mk("inspections", "Inspections", "check", n ? navBadge(n, null, "In progress") : null, () => { S.ui.inspId = null; go("inspections"); }); }
@@ -19542,6 +19543,7 @@ renderNavPM = function(){
   { let inc = null; try{ inc = pmMonthRoll(m).netC; }catch(e){} mk("pmIncome", "PHD income", "chart", inc ? `<i class="badge" title="Net PHD income so far in ${esc(monthLabel(m))}">${usd0(inc)}</i>` : null); }
   mk("pmHome", "Rent overview", "home");
   mk("pmPays", "Rent payments", "receipt");
+  if(typeof pgAnalytics === "function") mk("analytics", "Portfolio analytics", "chart");
 
   head("Owners");
   let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
