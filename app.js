@@ -13574,6 +13574,7 @@ function renderNavPM(){
   mk("pmPays", "Rent payments", "receipt");
   mk("pmProps", "Properties", "building", navBadge(pmLiveProps().length));
   mk("pmDeposits", "Security deposits", "receipt");
+  if(typeof pgInspections === "function"){ let n = 0; try{ n = Object.values(S.insp || {}).filter(x => x && x.status === "draft").length; }catch(e){} mk("inspections", "Inspections", "check", n ? navBadge(n, null, "In progress") : null, () => { S.ui.inspId = null; go("inspections"); }); }
   if(mdReady() || (typeof Cloud !== "undefined" && Cloud.ready)){
     const xm = mdx(), nUn = xm ? xm.unmatchedProps.length : 0;
     mk("pmMd", "MagicDoor", "sync", mdReady() ? (nUn ? navBadge(nUn, null, "Not linked") : `<i class="badge">${mdAgo(S.md.syncedAt).replace(" ago", "")}</i>`) : null);
@@ -19550,6 +19551,7 @@ renderNavPM = function(){
   mk("owners", "Owners", "user", navBadge((S.owners || []).filter(ownerLabel).length), () => { S.ui.ownerId = null; go("owners"); });
   try{ const R = S.recov; if(R && R.items && R.items.length){ const left = R.items.filter(x => rvLeftC(x) > 0).length; mk("recover", "Duplicate payouts", "receipt", left ? navBadge(left, "goldfill", "Owners still to recover from") : null); } }catch(e){}
   mk("pmDeposits", "Security deposits", "receipt");
+  if(typeof pgInspections === "function"){ let n = 0; try{ n = Object.values(S.insp || {}).filter(x => x && x.status === "draft").length; }catch(e){} mk("inspections", "Inspections", "check", n ? navBadge(n, null, "In progress") : null, () => { S.ui.inspId = null; go("inspections"); }); }
 
   head("Bills & vendors");
   mk("pmBills", "Bills", "receipt", navBadge(billList().filter(b => b.status === "open").length));

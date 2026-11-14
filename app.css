@@ -2835,3 +2835,26 @@ td>.tag+.st-rev{display:flex}
 .oh-docs{display:flex;flex-direction:column} .oh-doc{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:9px 16px;border-top:1px solid var(--line);font-size:13.5px}
 .oh-doc .sub{font-size:12.5px;color:var(--muted)} .oh-soon{color:var(--gold,#8a6512);font-weight:600}
 .oh-health{margin-bottom:16px!important} .oh-grid>.card{margin:0}
+
+/* Inspections (insp.js) */
+.in-hf{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px 16px 0}
+@media (max-width:700px){.in-hf{grid-template-columns:1fr}}
+.in-prog{height:5px;background:var(--line);margin:4px 16px 12px;border-radius:3px;overflow:hidden} .in-prog div{height:100%;background:var(--accent,#2d6a5a)}
+.in-rh{cursor:pointer;user-select:none}
+.in-items{padding:0 16px 10px}
+.in-it{border-top:1px solid var(--line);padding:10px 0;display:flex;flex-direction:column;gap:7px}
+.in-itn{display:flex;gap:8px;align-items:baseline;justify-content:space-between;font-size:14px}
+.in-cond{display:flex;gap:6px;flex-wrap:wrap}
+.in-cond button{border:1px solid var(--line);background:var(--card,#fff);border-radius:999px;padding:7px 13px;font-size:13px;min-width:62px;cursor:pointer}
+.in-cond button.on.green{background:#e3f1e8;border-color:#9fcdb0;color:#1f5a3a} .in-cond button.on.gold{background:#fbf1d9;border-color:#e2c47a;color:#6e5010}
+.in-cond button.on.red{background:#fbe5e1;border-color:#e3a397;color:#8c2a1b} .in-cond button.on.grey{background:#eef0ee;border-color:#c9cec9}
+.in-note{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;width:100%}
+.in-ph{display:flex;gap:6px;flex-wrap:wrap;align-items:center} .in-ph img{height:64px;border-radius:6px;display:block}
+.in-ph a.nd img{outline:2px dashed var(--gold,#b8892a);outline-offset:1px}
+.in-add{width:64px;height:64px;border:1.5px dashed var(--line);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer} .in-add input{display:none}
+.in-addit input,.in-addroom input{width:100%;padding:8px 10px;border:1px dashed var(--line);border-radius:8px;font-size:13.5px}
+.in-addit{padding-top:8px;display:flex;flex-direction:column;gap:6px}
+.in-cmp{padding:0 16px 10px} .in-cr{display:flex;gap:12px;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding:8px 0;font-size:13.5px}
+.in-cr .sub{font-size:12.5px;color:var(--muted)} .in-pair{display:flex;gap:4px;align-items:center} .in-pair img{height:52px;border-radius:5px}
+.in-stale{display:flex;flex-wrap:wrap;gap:6px 14px;padding:0 16px 14px;font-size:13.5px}
+.in-task{font-size:12.5px}

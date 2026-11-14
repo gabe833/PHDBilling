@@ -58,7 +58,7 @@ const CFG = {
 };
 
 // bumped whenever this file changes in a way the console relies on; the console asks you to redeploy when it's behind
-const SCRIPT_VERSION = 17;   // 17: vendor documents (W-9, insurance, licenses) kept in Drive · 16: "to be paid" reads as unpaid; "Responsibility: Tenant" / "from the tenant's payout" → tenant pays · 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
+const SCRIPT_VERSION = 18;   // 18: inspection photos kept in Drive under "Inspections / <rental> / <date> <kind>" · 17: vendor documents (W-9, insurance, licenses) kept in Drive · 16: "to be paid" reads as unpaid; "Responsibility: Tenant" / "from the tenant's payout" → tenant pays · 15: reads timesheet screenshots for Office · 14: Drive-only jobs no longer wait on the inbox lock; deeper folder read; pmFix · 13: PM bills filed in each rental's Invoices & Repairs folder · 12: in-progress invoice copies replaced as they change · 11: unpaid project invoices filed too, replaced by the paid copy · 10: paid project invoices filed in an Invoices subfolder · 9: invoices split across properties · 8: vendors can email in, Check Gmail, "In console" label · 7: workbook read, pay-from account, address on the document, attach receipts
 
 const HEADERS = ['id','status','received_at','source','from','subject','file_id','file_url','file_name','file_hash',
   'vendor','date','total','is_credit','description','property_id','property_name','unit_id','unit_name',
@@ -596,6 +596,21 @@ function doPostBody_(b, lock){
       const folder = folderByName_(folderByName_(rootFolder_(), 'Vendor documents'), vname);
       const f = folder.createFile(blob);
       f.setDescription(String(b.kind || '') + ' · uploaded by ' + String(b.by || '').slice(0, 80) + ' from the billing console');
+      return json_({ok:true, file:{id:f.getId(), name:f.getName(), url:f.getUrl(), folderUrl:folder.getUrl()}});
+    }
+    if(b.action === 'inspPhoto'){
+      // an inspection photo, kept in Drive under "Inspections / <rental> / <date> <kind>". Only the file is stored.
+      const pname = safeName_(String(b.property || 'Rental').slice(0, 80));
+      const sub = safeName_(String(b.folder || 'Inspection').slice(0, 80));
+      const name = fileNm_(String(b.name || 'Photo'));
+      const mime = String(b.mime || '').toLowerCase();
+      if(!/^image\/(jpeg|png|webp)$/.test(mime)) return json_({ok:false, error:'Upload a JPG or PNG photo'});
+      const blob = Utilities.newBlob(Utilities.base64Decode(String(b.data || '')), mime, name);
+      if(!blob.getBytes().length) return json_({ok:false, error:'The photo was empty'});
+      if(blob.getBytes().length > 8 * 1024 * 1024) return json_({ok:false, error:'That photo is over 8 MB'});
+      const folder = folderByName_(folderByName_(folderByName_(rootFolder_(), 'Inspections'), pname), sub);
+      const f = folder.createFile(blob);
+      f.setDescription(String(b.caption || '').slice(0, 300) + ' · taken by ' + String(b.by || '').slice(0, 80) + ' in the billing console');
       return json_({ok:true, file:{id:f.getId(), name:f.getName(), url:f.getUrl(), folderUrl:folder.getUrl()}});
     }
     if(b.action === 'vendorDocTrash'){
