@@ -4288,7 +4288,11 @@ const PMCore = (function(){
     const recordedC = has(row.ownerPayout) ? cents(row.ownerPayout) : null;
     const payoutC = recordedC != null ? recordedC : calcC;
     const extrasC = EXTRA.reduce((a, k) => a + nz(row[k]), 0);
-    const phdC = pmFeeC + adminC + leasingC + extrasC;
+    // a management fee taken as an adjustment (rent that missed last month's statement, with its 10% fee as a separate
+    // line: 6 Murray Hill and 4446 Kindlewood, Nov 2026, −$130 each) is PHD's income: the adjustment already comes off the
+    // owner's payout, so this only adds it to what PHD earned
+    const feeAdjC = (row.adjustments || []).reduce((a, x) => a + ((x.pmFee === true || /^management fee/i.test(String(x.note || ""))) && cents(x.amount) < 0 ? -cents(x.amount) : 0), 0);
+    const phdC = pmFeeC + feeAdjC + adminC + leasingC + extrasC;
     // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
     const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
     const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
@@ -4349,7 +4353,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, feeAdjC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */
@@ -4872,6 +4876,7 @@ function pmMonthRoll(m){
     // the workbook adds unrounded amounts (a 10% fee of $202.86 is $20.286) and rounds the total: so do we
     [["repairsC","repairs"],["adminC","adminFee"]].forEach(([k, f]) => { const w = row.wbRaw && row.wbRaw[f]; if(w != null && cents(w) === c[k]){ raw[k] += Number(w) * 100; rawHit[k] = true; } else raw[k] += c[k]; });
     ["dueC","recv","repairsC","adminC","pmFeeC","leasingC","otherC","payoutC","extrasC","phdC"].forEach(k => t[k] += c[k]);
+    t.pmFeeC += c.feeAdjC || 0;   // a PM fee taken as an adjustment counts with the PM fees (it's already in phdC)
     PM_EXTRA.forEach(([k]) => extras[k] += nz(row[k]));
     if(c.flags.some(f => f.level === "warn")) t.flags++;
     if(c.dueNowC > 0 && c.recv < c.dueNowC) t.short += c.dueNowC - c.recv;
@@ -6017,7 +6022,7 @@ function pmExportCsv(m){
   const head = ["Property","Owner","Rent due","Rent received","Repairs","Admin fee","Repairs this month","Admin fee this month","Carried to next month","Carried from last month","PM fee","Leasing fee","Other owner income","Adjustments","Owner payout","Applications","Late fees","Reimbursements","Filters","Notes"];
   const out = [head];
   pmMonthRows(m).forEach(({row, prop}) => { if(row.detailOnly) return; const c = pmCalc(row, prop), a = pmRowApplied(row, prop);
-    out.push([prop.address || prop.name, ownerLabel(ownerById(prop.ownerId)), c.dueC, c.recv, c.repairsC, c.adminC, a.repairsC, a.adminC, a.outRepC + a.outAdmC, a.inRepC + a.inAdmC, c.pmFeeC, c.leasingC, c.otherC, c.adjC, c.payoutC, ...PM_EXTRA.map(([k]) => nz(row[k])), row.notes || ""]
+    out.push([prop.address || prop.name, ownerLabel(ownerById(prop.ownerId)), c.dueC, c.recv, c.repairsC, c.adminC, a.repairsC, a.adminC, a.outRepC + a.outAdmC, a.inRepC + a.inAdmC, c.pmFeeC + (c.feeAdjC || 0), c.leasingC, c.otherC, c.adjC + (c.feeAdjC || 0), c.payoutC, ...PM_EXTRA.map(([k]) => nz(row[k])), row.notes || ""]
       .map((x, i) => i >= 2 && i <= 18 ? (x / 100).toFixed(2) : x)); });
   download(`PHD PM ${monthLabel(m)}.csv`, out.map(r => r.map(c => /[",\n]/.test(String(c)) ? `"${String(c).replace(/"/g, '""')}"` : c).join(",")).join("\n"));
 }

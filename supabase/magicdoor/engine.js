@@ -58,7 +58,11 @@ const PMCore = (function(){
     const recordedC = has(row.ownerPayout) ? cents(row.ownerPayout) : null;
     const payoutC = recordedC != null ? recordedC : calcC;
     const extrasC = EXTRA.reduce((a, k) => a + nz(row[k]), 0);
-    const phdC = pmFeeC + adminC + leasingC + extrasC;
+    // a management fee taken as an adjustment (rent that missed last month's statement, with its 10% fee as a separate
+    // line: 6 Murray Hill and 4446 Kindlewood, Nov 2026, −$130 each) is PHD's income: the adjustment already comes off the
+    // owner's payout, so this only adds it to what PHD earned
+    const feeAdjC = (row.adjustments || []).reduce((a, x) => a + ((x.pmFee === true || /^management fee/i.test(String(x.note || ""))) && cents(x.amount) < 0 ? -cents(x.amount) : 0), 0);
+    const phdC = pmFeeC + feeAdjC + adminC + leasingC + extrasC;
     // credits given to the tenant (work they did, a concession the owner approved) lower what's owed: rent due less credits
     const creditC = (row.credits || []).reduce((a, x) => a + cents(x.amount), 0);
     const rentDueC = nz(row.rentDue), dueC = Math.max(0, rentDueC - creditC);
@@ -119,7 +123,7 @@ const PMCore = (function(){
     const [y, mo] = String(row.month).split("-").map(Number);
     items.forEach(it => { if(it.date){ const months = (y - +it.date.slice(0, 4)) * 12 + (mo - +it.date.slice(5, 7));
       if(months > 14 || months < -2) flags.push({level:"info", text:`Repair date ${it.date} (${it.vendor || it.memo || "item"}) looks like a typo`}); } });
-    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, itemsC, itemsFeeC, flags};
+    return {dueC, dueNowC, nextPart, rentDueC, creditC, recv, repairsC, adminC, pmFeeC, ruleFeeC, leasingC, otherC, adjC, calcC, recordedC, payoutC, extrasC, phdC, feeAdjC, itemsC, itemsFeeC, flags};
   }
 
   /* where a property stands for one month: used for colours and filters everywhere */
