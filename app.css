@@ -2875,3 +2875,32 @@ td>.tag+.st-rev{display:flex}
 .an-t th.an-o{color:#5d6863} .an-t th.an-p{color:#2d6a5a} .an-t th.an-x{color:#8a6512}
 .an-s{cursor:pointer;user-select:none} .an-s.on{text-decoration:underline}
 .an-top{margin-bottom:16px!important}
+
+/* Security deposits (deposits.js) */
+.dp-hero{display:grid;grid-template-columns:1.3fr repeat(3,1fr);gap:10px;padding:14px;margin-bottom:16px!important}
+@media (max-width:1000px){.dp-hero{grid-template-columns:1fr 1fr}}
+.dp-k{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.dp-k span{font-size:12px;color:var(--muted)} .dp-k b{font-size:19px;font-variant-numeric:tabular-nums} .dp-k em{font-style:normal;font-size:12px;color:var(--muted)}
+.dp-k.main{background:#f4f9f6;border-color:#cfe0d6} .dp-k.main b{font-size:24px}
+.dp-k.warn{border-color:#ecdcae;background:#fdf8ea} .dp-k.bad{border-color:#efc9c4;background:#fdf1ef} .dp-k.ok{border-color:#cfe5d4}
+.dp-note{padding:10px 14px;font-size:13.5px;background:#fdf8ea;border-color:#ecdcae;margin-bottom:16px!important}
+.dp-bar{display:flex!important;flex-direction:row!important;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;margin-bottom:16px!important}
+.dp-bar input[type=search]{margin-left:auto;min-width:220px;width:auto!important;padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+.dp-tbl td{vertical-align:top} .dp-i{font-size:12.5px;color:var(--gold,#8a6512)} .dp-off{color:var(--red,#b4372a)!important}
+.dp-sheet .dp-sec{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px} .dp-sec.bad{border-color:#efc9c4}
+.dp-sh{display:flex;align-items:center;gap:8px;margin-bottom:8px} .dp-sh h4{margin:0;font-size:14px;margin-right:auto}
+.dp-sub{font-size:12px;color:var(--muted);margin:10px 0 6px;font-weight:600}
+.dp-warn{background:#fdf8ea;border:1px solid #ecdcae;border-radius:8px;padding:7px 10px;font-size:13px;margin:0 0 10px}
+.dp-ded{display:flex;flex-direction:column;gap:6px}
+.dp-dr{display:grid;grid-template-columns:150px minmax(0,1fr) 100px 18px;gap:6px;align-items:center} .dp-dr select,.dp-dr input{padding:6px 8px;font-size:13px;border:1px solid var(--line);border-radius:7px;width:100%}
+.dp-src{grid-column:1/-1;font-size:11.5px;color:var(--muted);margin-top:-3px}
+.dp-add{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.dp-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 4px} .dp-sum>div{background:var(--soft,#f5f6f4);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column}
+.dp-sum span{font-size:12px;color:var(--muted)} .dp-sum b{font-size:16px} .dp-sum .bad b{color:var(--red,#b4372a)}
+.dp-act{display:flex;gap:8px;justify-content:flex-end;margin-top:6px}
+.dp-past{font-size:13px;padding:5px 0;border-top:1px dashed var(--line)}
+
+.dp-fb{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%} .dp-fb input[type=search]{margin-left:auto;min-width:220px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+.dp-pr{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer;font-size:13.5px} .dp-pr .r{text-align:right}
+.dp-esc .dp-escg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:18px;padding:0 16px 8px} @media (max-width:900px){.dp-esc .dp-escg{grid-template-columns:1fr}}
+.dp-esct tr.tot td{border-top:1.5px solid var(--ink,#1d2420)}

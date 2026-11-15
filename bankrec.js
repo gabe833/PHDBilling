@@ -447,5 +447,7 @@ window.brFindRef = refs => { try{
     return {date:last.date, amtC, desc:`${a.name}: ${last.desc || last.ref}`, reversed:false};
   }
   return null; }catch(e){ return null; } };
-window.brMonth = brMonth; window.brAlloc = brAlloc; window.brParse = brParse; window.brImport = brImport; window.brMatchAll = brMatchAll;
+window.brMonth = brMonth;
+window.brTx = brTx;
+window.brCsv = brCsv; window.brAlloc = brAlloc; window.brParse = brParse; window.brImport = brImport; window.brMatchAll = brMatchAll;
 })();
