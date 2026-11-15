@@ -180,7 +180,7 @@ function pgDeposits(){
   const sum = k => list.reduce((a, x) => a + k(x), 0);
   c.innerHTML = list.length ? `<div class="tbl-wrap"><table class="tbl dp-tbl"><thead><tr><th>Rental</th><th>Tenants</th><th>Received</th><th class="r">Deposit</th><th>Account</th><th class="r">Returned</th><th class="r">Kept</th><th class="r">Still held</th><th>Status</th><th></th></tr></thead>
     <tbody>${list.map((x, i) => { const r = x.r, md = x.p ? mdDep(x.p.id) : null; return `<tr data-dpi="${i}" class="tk-r">
-      <td><div class="item-t">${esc(x.place)}</div>${!x.p ? `<div class="item-s muted">${r.kind === "reserve" ? "Owner reserve" : r.kind === "unidentified" ? "Not identified yet" : "Not a console rental"}</div>` : ""}</td>
+      <td><div class="item-t">${esc(x.place)}</div>${x.r.unitNote ? `<div class="item-s muted">${esc(x.r.unitNote)}</div>` : ""}${!x.p ? `<div class="item-s muted">${r.kind === "reserve" ? "Owner reserve" : r.kind === "unidentified" ? "Not identified yet" : "Not a console rental"}</div>` : ""}</td>
       <td>${esc(r.names || "—")}${petC(r) ? `<div class="item-s">incl. ${usd(petC(r))} pet fee${r.petPaid ? " (paid to owner)" : ""}</div>` : ""}</td>
       <td>${r.received ? esc(fY(r.received)) : `<span class="muted">—</span>`}</td>
       <td class="r num">${C(r.amount) ? usd(C(r.amount)) : `<span class="muted">—</span>`}</td>
@@ -425,7 +425,9 @@ function dParseLedger(text){
       stage:settled ? "settled" : "held", settledOn:settled ? dret : "", moveOut:settled ? dret : "", deductions:kept ? [{id:uid(), kind:"other", label:"Kept at move-out (from the tracker)", amount:kept}] : [],
       refund:ret != null ? {amount:ret, date:dret, how:"", ref:""} : {}, keptMoved:/^\d/.test(moved) || /\//.test(moved) ? isoD(moved) : "", keptNa:/^n\/?a$/i.test(moved),
       check:/match/.test(stT) && !/mis/.test(stT) ? "matches" : /mismatch/.test(stT) ? "mismatch" : /missing/.test(stT) ? "missing" : "", notes, src:"Imported from the tracker", heldInFile:num(r[ci.held])};
-    out.push({place, rec, prop:kind === "tenant" ? matchProp(place) : null}); });
+    const prop = kind === "tenant" ? matchProp(place) : null;
+    if(prop && normA(place) !== normA(prop.name)) rec.unitNote = place;     // "120 Smith St, Unit A" on the one "120 Smith St" rental
+    out.push({place, rec, prop}); });
   return out;
 }
 function brCsvSafe(text){ // the same CSV reader Bank reconciliation uses, or a plain one
