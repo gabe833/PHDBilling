@@ -2904,3 +2904,15 @@ td>.tag+.st-rev{display:flex}
 .dp-pr{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer;font-size:13.5px} .dp-pr .r{text-align:right}
 .dp-esc .dp-escg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:18px;padding:0 16px 8px} @media (max-width:900px){.dp-esc .dp-escg{grid-template-columns:1fr}}
 .dp-esct tr.tot td{border-top:1.5px solid var(--ink,#1d2420)}
+
+/* Vendor sheet: every bill from the vendor */
+.vb-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.vb-sum>div{background:var(--soft,#f5f6f4);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column}
+.vb-sum span{font-size:12px;color:var(--muted)} .vb-sum b{font-size:16px;font-variant-numeric:tabular-nums} .vb-sum em{font-style:normal;font-size:11.5px;color:var(--muted)}
+.vb-seg{margin-bottom:4px}
+.vb-list{display:flex;flex-direction:column;margin-bottom:6px}
+.vb-r{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;padding:9px 2px;border-top:1px solid var(--line);cursor:pointer;font-size:13.5px}
+.vb-r:hover{background:var(--hover,rgba(0,0,0,.025))} .vb-r .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.vb-a{display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap}
+.up-act .btn+.btn{margin-left:4px}
+.bl-tbl td.act{width:auto;white-space:nowrap} .bl-tbl td.act .btn{opacity:1;height:28px;padding:0 10px;font-size:12.5px;margin-right:6px}

@@ -4187,12 +4187,13 @@ function billSplitSheet(gid){
       </tbody><tfoot><tr><td colspan="2"><b>Total</b></td><td class="r num"><b>${usd(C.sumC)}</b></td><td colspan="2"></td></tr></tfoot></table>
       ${C.parts[0].receipt && C.parts[0].receipt.url ? `<p style="margin-top:10px"><a class="btn sm" href="${esc(C.parts[0].receipt.url)}" target="_blank" rel="noopener">${icon("file")} Open the invoice</a></p>` : ""}
     </div>
-    <div class="sheet-f"><span style="flex:1"></span>${C.open.length ? (nickelOn() ? `<button class="btn" id="bgMark">Mark ${C.open.length} paid</button><button class="btn primary" id="bgPay">Pay ${usd(C.open.reduce((a, b) => a + cents(b.amount), 0))} with Nickel</button>` : `<button class="btn primary" id="bgMark">Mark ${C.open.length} paid</button>`) : `<button class="btn" id="shCancel">Close</button>`}</div>`;
+    <div class="sheet-f"><span style="flex:1"></span>${C.open.length ? (nickelOn() ? `${C.open.some(billNkAddable) ? `<button class="btn" id="bgAdd">Add ${C.open.filter(billNkAddable).length} to Nickel</button>` : ""}<button class="btn" id="bgMark">Mark ${C.open.length} paid</button><button class="btn primary" id="bgPay">Pay ${usd(C.open.reduce((a, b) => a + cents(b.amount), 0))} with Nickel</button>` : `<button class="btn primary" id="bgMark">Mark ${C.open.length} paid</button>`) : `<button class="btn" id="shCancel">Close</button>`}</div>`;
   $("#shClose").onclick = closeSheet; const cc = $("#shCancel"); if(cc) cc.onclick = closeSheet;
   sh.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("a,button")) return; billSheet(tr.dataset.b); });
   sh.querySelectorAll("[data-mdaddb]").forEach(bt => bt.onclick = e => { e.stopPropagation(); const f = mdFindBillItem(bt.dataset.mdaddb); if(f) mdAddBill(f.row, f.it); });
   const mk = $("#bgMark"); if(mk) mk.onclick = () => billManualSheet(C.open.map(b => b.id));
   const py = $("#bgPay"); if(py) py.onclick = () => billPaySheet(C.open.map(b => b.id));
+  const ad = $("#bgAdd"); if(ad) ad.onclick = () => billAddToNickel(C.open.map(b => b.id));
   openPanel();
 }
 document.addEventListener("click", e => { const a = e.target.closest && e.target.closest("[data-grp]"); if(!a) return; e.preventDefault(); e.stopPropagation(); billSplitSheet(a.dataset.grp); }, true);
@@ -9041,6 +9042,8 @@ function pgPmBills(){
   const sel = S.ui.billSel = S.ui.billSel || {};
   const selIds = Object.keys(sel).filter(id => sel[id] && billById(id) && billById(id).status === "open");
   const acts = [];
+  const selAdd = selIds.filter(id => billNkAddable(billById(id)));
+  if(selAdd.length && nickelOn()) acts.push([`Add ${selAdd.length} to Nickel`, () => billAddToNickel(selAdd)]);
   if(selIds.length) acts.push(nickelOn() ? [`Pay ${selIds.length} selected`, () => billPaySheet(selIds), "primary"] : [`Mark ${selIds.length} paid`, () => billManualSheet(selIds), "primary"]);
   actions(acts);
   payStatusThenRedraw("pmBills");
@@ -9101,7 +9104,7 @@ function pgPmBills(){
   /* ---- list ---- */
   const f = S.ui.billF || "open", q = (S.ui.billQ || "").toLowerCase();
   const FILT = [["open","To pay", b => b.status === "open"], ["due","Due soon", b => b.status === "open" && billDays(b.due) != null && billDays(b.due) <= 7],
-    ["paying","Processing", b => b.status === "paying"], ["paid","Paid", b => b.status === "paid"], ["invoice","To invoice", b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId],
+    ["nonk","Not in Nickel", b => billNkAddable(b)], ["paying","Processing", b => b.status === "paying"], ["paid","Paid", b => b.status === "paid"], ["invoice","To invoice", b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId],
     ["all","All", b => b.status !== "void"]];
   const bar = elm("div","sc-bar"); bar.style.marginTop = "16px";
   bar.innerHTML = `<div class="sc-seg">${FILT.map(([k, l, fn]) => { const n = all.filter(fn).length; return k === "open" || k === "all" || n ? `<button data-f="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>` : ""; }).join("")}</div>
@@ -9116,19 +9119,20 @@ function pgPmBills(){
   const card = elm("div","card");
   if(!list.length){ card.innerHTML = `<div class="empty"><b>${f === "open" ? "No bills waiting" : "Nothing here"}</b><p>${f === "open" ? "Add one above, or drop the vendor's invoice anywhere on this page." : "Try another filter."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl bl-tbl");
-  const canSel = f === "open" || f === "due";
+  const canSel = f === "open" || f === "due" || f === "nonk";
   t.innerHTML = `<thead><tr>${canSel ? `<th style="width:28px"><input type="checkbox" id="blAll"></th>` : ""}<th>Bill</th><th>Property</th><th class="r">Amount</th><th>${f === "paid" ? "Paid" : "Due"}</th><th>Status</th><th>MagicDoor</th><th>Owner</th><th></th></tr></thead>
     <tbody>${list.map(b => { const p = pmProp(b.propertyId), st = billStatus(b);
       return `<tr data-b="${b.id}">${canSel ? `<td class="nw" data-nos><input type="checkbox" data-sel="${b.id}" ${sel[b.id] ? "checked" : ""}></td>` : ""}
         <td><div class="item-t">${esc(b.vendor || "—")}${b.receipt && b.receipt.url ? ` <a class="att" data-nos data-br="1" href="${esc(b.receipt.url)}" target="_blank" rel="noopener" title="Open the vendor's invoice">${typeof brandIc === "function" && /google\.com/.test(b.receipt.url) ? brandIc("drive") : icon("clip")}</a>` : ""}</div><div class="item-s">${esc(b.memo || b.category || "")}${b.split ? billSplitTag(b) : b.billNo ? ` · #${esc(b.billNo)}` : ""}${b.payNote && b.status !== "paid" ? ` · <i>${esc(b.payNote)}</i>` : ""}</div></td>
         <td class="bl-p">${esc(p ? p.name : "—")}</td><td class="r num">${usd(cents(b.amount))}</td>
         <td class="nw muted">${f === "paid" ? esc(b.pay && b.pay.date ? fdateS(b.pay.date) : "") : b.due ? esc(fdateS(b.due)) : "—"}</td>
-        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span>${billDupOf(b) ? ` <span class="tag gold" title="Same vendor, rental, amount and date as another bill — check it wasn't entered twice">possible duplicate</span>` : ""}${b.movedTo ? ` <span class="mark grey" title="Billed on a project invoice instead of rent">moved to project</span>` : typeof billTooBig === "function" && billTooBig(b) ? ` <span class="tag gold" title="More than a month's rent — move it to a project and bill the owner">over a month's rent</span>` : ""}${b.nickel && b.nickel.billId ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}${b.pay && b.pay.receipt && b.pay.receipt.url ? ` <a class="mark grey" data-nos href="${esc(b.pay.receipt.url)}" target="_blank" rel="noopener" title="Nickel's payment receipt${b.pay.receipt.delivery === "DEPOSITED" ? " · deposited" : ""}">receipt</a>` : ""}</td>
         <td class="bl-md">${mdBillCell(b)}</td>
-        <td class="bl-o">${billOwnerTag(b)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
+        <td class="bl-o">${billOwnerTag(b)}</td><td class="act" data-nos>${billNkAddable(b) && nickelOn() ? `<button class="btn sm" data-bnk="${b.id}" title="Create it in Nickel as an unpaid bill">Add to Nickel</button>` : ""}<span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-b]").forEach(tr => tr.onclick = e => { if(e.target.closest("[data-nos]")) return; billSheet(tr.dataset.b); });
   t.querySelectorAll("[data-mdaddb]").forEach(bt => bt.onclick = e => { e.stopPropagation(); const f = mdFindBillItem(bt.dataset.mdaddb); if(f) mdAddBill(f.row, f.it); });
   t.querySelectorAll("[data-sel]").forEach(c => c.onchange = () => { sel[c.dataset.sel] = c.checked; render(); });
+  t.querySelectorAll("[data-bnk]").forEach(bt => bt.onclick = async e => { e.stopPropagation(); bt.disabled = true; await billAddToNickel([bt.dataset.bnk]); });
   const all2 = t.querySelector("#blAll"); if(all2){ all2.checked = list.every(b => sel[b.id]); all2.onchange = () => { list.forEach(b => sel[b.id] = all2.checked); render(); }; }
   const w = elm("div","tbl-wrap"); w.appendChild(t); card.appendChild(w); v.appendChild(card);
 }
@@ -9222,12 +9226,13 @@ function billPayBlock(b){
       ${nickelOn() ? `<div class="bl-pay"><button class="btn sm ghost danger" id="bpCancel">Cancel this payment</button><span class="help">Only works before the money leaves. You'll confirm it.</span></div>` : ""}${inNk}`;
   if(b.status === "void") return "";
   return `<div class="sectl">Payment</div>${p.failed ? `<div class="pm-banner">The last Nickel payment didn't go through${p.failReason ? ": " + esc(p.failReason) : ""}. Try again or record how it was paid.</div>` : ""}${p.canceled ? `<p class="help" style="margin-top:0">The last payment was cancelled${typeof p.canceled === "string" ? " " + esc(fdateS(p.canceled.slice(0, 10))) : ""}.</p>` : ""}
-    ${nickelOn() ? `<div class="bl-pay"><button class="btn primary" id="bpNickel">Pay with Nickel</button><button class="btn" id="bpManual">Paid another way</button></div>`
+    ${nickelOn() ? `<div class="bl-pay">${nb.billId ? "" : `<button class="btn" id="bpCreate" title="Creates the bill in Nickel without paying it">Add to Nickel</button>`}<button class="btn primary" id="bpNickel">Pay with Nickel</button><button class="btn" id="bpManual">Paid another way</button></div>${nb.billId ? `<p class="help" style="margin-top:6px">Already in Nickel as an unpaid bill.</p>` : ""}`
       : `<div class="bl-pay"><a class="btn" href="${NICKEL_APP}" target="_blank" rel="noopener">Open Nickel to pay</a><button class="btn primary" id="bpManual">Mark paid</button></div>`}
     ${billNkDrift(b) && nickelOn() ? `<div class="pm-banner" style="margin-top:10px">Changed since it went to Nickel (Nickel has ${usd(nb.sent.amountC)}${nb.sent.due ? ", due " + esc(fdateS(nb.sent.due)) : ""}). <button class="btn sm" id="bpUpd" style="margin-left:6px">Update in Nickel</button></div>` : ""}${inNk}`;
 }
 function billWirePay(sh, b, redraw){
   const n = sh.querySelector("#bpNickel"); if(n) n.onclick = () => billPaySheet([b.id]);
+  const cr = sh.querySelector("#bpCreate"); if(cr) cr.onclick = async () => { cr.disabled = true; await billAddToNickel([b.id]); billSheet(b.id); };
   const m = sh.querySelector("#bpManual"); if(m) m.onclick = () => billManualSheet(b.id);
   const u = sh.querySelector("#bpUndo"); if(u) u.onclick = () => { if(!confirm("Mark this bill unpaid again?")) return; const x = billById(b.id); x.status = "open"; x.pay = null; billSave(x, false); billSheet(b.id); render(); };
   const rc = sh.querySelector("#bpRecord"); if(rc) rc.onclick = async () => {
@@ -9324,6 +9329,46 @@ async function billPaySheet(ids){
       toast(`${r.paying ? `${r.paying} payment${r.paying === 1 ? "" : "s"} on the way` : ""}${r.approval ? `${r.paying ? " · " : ""}${r.approval} waiting for approval in Nickel` : ""}${r.failed ? ` · ${r.failed} didn't go through (${r.errors[0]})` : ""}` || "Done");
     }catch(e){ toast(e.message); again(); }
   };
+}
+
+/* ---------- creating bills in Nickel without paying them ----------
+   Anywhere an unpaid bill shows, it can go to Nickel as an unpaid bill (so it's there to pay later, or for someone with
+   payment rights to pay). The vendor is added to Nickel first when it isn't there yet. Each add is confirmed in Nickel. */
+const billInNk = b => !!(b && b.nickel && b.nickel.billId);
+const billNkAddable = b => !!(b && b.status === "open" && !billInNk(b) && cents(b.amount) > 0);
+async function billAddToNickel(ids){
+  if(typeof nickelOn !== "function" || !nickelOn()) return toast("Nickel isn't connected — see Payments setup");
+  const list = ids.map(billById).filter(billNkAddable);
+  if(!list.length) return toast("Those bills are already in Nickel");
+  let added = 0, stop = "";
+  for(const b of list){
+    let v = pmVendors().find(x => x.id === b.vendorId) || vendorFind(b.vendor);
+    if(!v){ snapshot(); v = vendorEnsure(b.vendor); const x = billById(b.id); if(x && v){ x.vendorId = v.id; } commit(); }
+    if(v && !nkVendor(v.id).id){
+      const r = await nkRun("vendor.create", {vendorId:v.id}, `Add ${v.name} to Nickel`);
+      if(!r.ok && !r.already){ stop = r.error || `${v.name} wasn't added to Nickel`; break; }
+      try{ await payCall("nk.match", {}, {noSave:true}); }catch(e){}
+    }
+    const r = await nkRun("bill.create", {billId:b.id}, `Add the ${b.vendor} bill (${usd(cents(b.amount))}${pmProp(b.propertyId) ? " · " + pmProp(b.propertyId).name : ""}) to Nickel`);
+    if(r.ok || r.already) added++; else { stop = r.declined ? "" : (r.error || ""); break; }
+  }
+  if(added) actLog("bills", `${added} bill${added === 1 ? "" : "s"} added to Nickel (not paid)`, {side:"pm"});
+  toast(added ? `${added} of ${list.length} added to Nickel${stop ? " — stopped: " + stop : ""}` : stop || "Nothing added", !!added);
+  render();
+  return added;
+}
+// a project expense still owed to a vendor: straight to Nickel when the vendor is known there, else its sheet to pick one
+async function txnAddToNickel(pid, txnId){
+  const p = S.properties.find(x => x.id === pid), t = p && (p.transactions || []).find(x => x.id === txnId); if(!t) return;
+  const v = typeof nkExactVendor === "function" ? nkExactVendor(t.vendor) : null;
+  if(!v){ go("txns", pid); setTimeout(() => openSheet(txnId), 40); return toast("Pick the vendor from Nickel's list, then Add to Nickel"); }
+  const r = await nkRun("txn.bill", {propertyId:pid, txnId, nickelVendorId:v.id, dueDate:(t.vendorDue && t.vendorDue.due) || todayISO()}, `Add the ${v.name} bill (${usd(cents(t.amount))}) to Nickel`);
+  if(r.ok){ nkRememberVendor(t.vendor, v); toast("Added to Nickel", true); render(); }
+}
+// the same vendor, rental, amount and date twice: probably entered twice
+function billDupOf(b){
+  if(!b || b.status === "void") return null;
+  return billList().find(x => x.id !== b.id && x.status !== "void" && x.propertyId === b.propertyId && vendorKey(x.vendor) === vendorKey(b.vendor) && cents(x.amount) === cents(b.amount) && String(x.date || "") === String(b.date || "")) || null;
 }
 
 /* ====================================================================
@@ -9572,7 +9617,7 @@ function pgPmVendors(){
   if(nkImportVendors()){ nkMatchAt = 0; setTimeout(render, 0); return; }   // new ones are drawn (and linked) on the next pass
   const allV = pmVendors().slice().sort((a, b) => a.name.localeCompare(b.name));
   const used = new Set(billList().map(b => b.vendorId)), vq = (S.ui.vnQ || "").toLowerCase(), vf = S.ui.vnF || (used.size ? "used" : "all");   // opens on the vendors you actually bill, not all 750 in Nickel
-  const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id], ["w9","No W-9", x => used.has(x.id) && !vdW9(x)], ["coi","Insurance to check", x => vdCoiState(x).warn]];
+  const VF = [["all","All", () => true], ["used","Billed here", x => used.has(x.id) || vendorBills(x).length > 0], ["owed","Unpaid bills", x => vendorBills(x).some(y => y.open || y.paying)], ["ready","Ready to pay", x => (nkVendor(x.id).payout || []).length], ["missing","Needs bank details", x => nkVendor(x.id).id && !(nkVendor(x.id).payout || []).length], ["out","Not in Nickel", x => !nkVendor(x.id).id], ["w9","No W-9", x => used.has(x.id) && !vdW9(x)], ["coi","Insurance to check", x => vdCoiState(x).warn]];
   const vs = allV.filter((VF.find(f => f[0] === vf) || VF[0])[2]).filter(x => !vq || `${x.name} ${x.email} ${x.phone}`.toLowerCase().includes(vq));
   $("#pgSub").textContent = `${allV.length} vendor${allV.length === 1 ? "" : "s"} · bank details stay in Nickel, never here`;
   actions([["Check Nickel", async () => { try{ await payCall("nk.match"); const n = nkImportVendors(); const r = n ? await payCall("nk.match") : (S.nk || {}).counts || {};
@@ -9592,10 +9637,10 @@ function pgPmVendors(){
   if(allV.length && !vs.length){ card.innerHTML = `<div class="empty"><b>No vendors match</b><p>Try another filter or search.</p></div>`; v.appendChild(card); return; }
   if(!vs.length){ card.innerHTML = `<div class="empty"><b>No vendors yet</b><p>${nickelOn() ? "Bringing in your vendors from Nickel…" : "They're added automatically the first time you enter a bill from them, or from Nickel once it's connected."}</p></div>`; v.appendChild(card); return; }
   const t = elm("table","tbl pm-plist");
-  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Paid ${yr}</th><th>Paperwork</th><th>Nickel</th><th></th></tr></thead><tbody>
-    ${vs.slice(0, 300).map(x => { const bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
-      return `<tr data-v="${x.id}"><td><div class="item-t">${esc(x.name)}</div><div class="item-s">${bs.length} bill${bs.length === 1 ? "" : "s"}</div></td><td class="muted" style="font-size:12.5px">${esc([x.email, x.phone].filter(Boolean).join(" · ") || "—")}</td>
-        <td class="r num">${paid ? usd(paid) : "—"}</td><td>${vdTags(x)}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
+  t.innerHTML = `<thead><tr><th>Vendor</th><th>Contact</th><th class="r">Unpaid</th><th class="r">Paid ${yr}</th><th>Paperwork</th><th>Nickel</th><th></th></tr></thead><tbody>
+    ${vs.slice(0, 300).map(x => { const vb = vendorBills(x), unC = vb.filter(y => y.open || y.paying).reduce((a, y) => a + y.amountC, 0), bs = billList().filter(b => b.vendorId === x.id || vendorKey(b.vendor) === vendorKey(x.name)), paid = bs.filter(b => b.status === "paid" && String((b.pay || {}).date || "").startsWith(yr)).reduce((a, b) => a + cents(b.amount), 0);
+      return `<tr data-v="${x.id}"><td><div class="item-t">${esc(x.name)}</div><div class="item-s">${vb.length} bill${vb.length === 1 ? "" : "s"}</div></td><td class="muted" style="font-size:12.5px">${esc([x.email, x.phone].filter(Boolean).join(" · ") || "—")}</td>
+        <td class="r num">${unC ? `<b class="up-late">${usd(unC)}</b>` : "—"}</td><td class="r num">${paid ? usd(paid) : "—"}</td><td>${vdTags(x)}</td><td>${nkVendorTag(x.id)}</td><td class="act"><span class="sc-go">›</span></td></tr>`; }).join("")}</tbody>`;
   t.querySelectorAll("[data-v]").forEach(tr => tr.onclick = () => vendorSheet(tr.dataset.v));
   const w = elm("div","tbl-wrap vn-ok"); w.appendChild(t); card.appendChild(w);
   if(vs.length > 300) card.appendChild(elm("div","muted", `<div style="padding:10px 16px;font-size:12.5px">Showing 300 of ${vs.length}. Search to find the rest.</div>`));
@@ -9634,6 +9679,49 @@ async function vdUpload(v, file, kind, expires){
   if(!r || !r.ok || !r.file) throw new Error((r && r.error) || "Drive didn't take the file — is the receipt inbox script on version 17?");
   return {id:"vd_" + uid(), kind, name:r.file.name, fileId:r.file.id, url:r.file.url, folderUrl:r.file.folderUrl, expires:expires || "", at:new Date().toISOString(), by:billWho()};
 }
+/* every bill from one vendor: rental bills (paid, unpaid, on the way) and project expenses, with what's owed */
+function vendorBills(v){
+  // the Vendors list asks for every vendor's bills several times in one draw: keep them for a moment
+  const C0 = vendorBills._c = vendorBills._c && Date.now() - vendorBills._c.at < 1500 ? vendorBills._c : {at:Date.now(), m:new Map()};
+  const ck = v.id + "|" + v.name; if(C0.m.has(ck)) return C0.m.get(ck);
+  const res = vendorBills0(v); C0.m.set(ck, res); return res;
+}
+function vendorBills0(v){
+  const k = vendorKey(v.name), out = [];
+  billList().filter(b => b.status !== "void" && (b.vendorId === v.id || vendorKey(b.vendor) === k)).forEach(b => { const st = billStatus(b), p = pmProp(b.propertyId);
+    out.push({kind:"bill", id:b.id, b, date:b.date || "", where:p ? p.name : "—", what:b.memo || b.category || "", amountC:cents(b.amount), open:b.status === "open", paying:b.status === "paying", paid:b.status === "paid",
+      paidOn:b.status === "paid" ? (b.pay && b.pay.date) || "" : "", label:st.label, cls:st.cls, inNk:billInNk(b), file:b.receipt && b.receipt.url}); });
+  if(k) S.properties.forEach(p => (p.transactions || []).forEach(t => { if(vendorKey(t.vendor) !== k || !(Number(t.amount) > 0)) return;
+    const open = pjVendorOpen(t), np = t.nickelPay && !t.nickelPay.dismissed ? t.nickelPay : null;
+    out.push({kind:"txn", id:t.id, pid:p.id, t, date:t.date || "", where:p.name + " (project)", what:t.desc || "", amountC:cents(t.amount), open, paying:false, paid:!open,
+      paidOn:open ? "" : (np && np.date) || (t.vendorPaid && t.vendorPaid.date) || t.date || "", label:open ? ((t.vendorDue && t.vendorDue.due && t.vendorDue.due < todayISO()) ? "Overdue" : "To pay") : np ? "Paid in Nickel" : t.vendorPaid ? "Paid" : "Project expense",
+      cls:open ? ((t.vendorDue && t.vendorDue.due && t.vendorDue.due < todayISO()) ? "red" : "grey") : "green", inNk:!!(t.nickelBill && t.nickelBill.billId), file:t.link}); }));
+  return out.sort((a, b) => String(b.date).localeCompare(a.date));
+}
+function vendorBillsHTML(v, F){
+  const all = vendorBills(v), yr = todayISO().slice(0, 4), un = all.filter(x => x.open || x.paying);
+  const list = all.filter(x => F === "unpaid" ? x.open || x.paying : F === "paid" ? x.paid : true);
+  const nkOn = typeof nickelOn === "function" && nickelOn(), addN = all.filter(x => x.kind === "bill" && billNkAddable(x.b)).length, payN = all.filter(x => x.kind === "bill" && x.open).length;
+  return `<div class="sectl">Bills</div>
+    <div class="vb-sum"><div><span>Unpaid</span><b class="${un.length ? "up-late" : ""}">${usd(un.reduce((a, x) => a + x.amountC, 0))}</b><em>${un.length} bill${un.length === 1 ? "" : "s"}</em></div>
+      <div><span>Paid ${yr}</span><b>${usd(all.filter(x => x.paid && String(x.paidOn).startsWith(yr)).reduce((a, x) => a + x.amountC, 0))}</b><em>${all.filter(x => x.paid && String(x.paidOn).startsWith(yr)).length} bills</em></div>
+      <div><span>All time</span><b>${usd(all.reduce((a, x) => a + x.amountC, 0))}</b><em>${all.length} bills</em></div></div>
+    ${all.length ? `<div class="sc-seg vb-seg">${[["unpaid", "Unpaid"], ["paid", "Paid"], ["all", "All"]].map(([k2, l]) => `<button type="button" data-vbf="${k2}" class="${F === k2 ? "on" : ""}">${l}</button>`).join("")}</div>
+    ${nkOn && (addN || payN) ? `<div class="bl-pay" style="margin:8px 0">${addN ? `<button class="btn sm" type="button" id="vbAdd">Add ${addN} unpaid to Nickel</button>` : ""}${payN ? `<button class="btn sm primary" type="button" id="vbPay">Pay ${payN} in Nickel</button>` : ""}</div>` : ""}
+    <div class="vb-list">${list.length ? list.slice(0, 150).map(x => `<div class="vb-r" data-vb="${esc(x.kind + ":" + x.id)}"><div class="vb-m"><b>${esc(x.where)}</b><div class="sub">${esc(x.what || "—")} · ${esc(x.date ? fdateS(x.date) : "no date")}${x.paidOn && x.paid ? " · paid " + esc(fdateS(x.paidOn)) : ""}${x.file ? ` · <a href="${esc(x.file)}" target="_blank" rel="noopener" data-nos>invoice</a>` : ""}</div></div>
+        <div class="vb-a"><b class="num">${usd(x.amountC)}</b><div><span class="tag ${x.cls}">${esc(x.label)}</span>${x.inNk && !x.paid ? ` <span class="mark grey" title="In Nickel">N</span>` : ""}</div>
+        ${nkOn && x.open && !x.inNk ? `<button class="btn sm" type="button" data-vbnk>Add to Nickel</button>` : ""}</div></div>`).join("") : `<p class="help">Nothing here.</p>`}${list.length > 150 ? `<p class="help">Showing the latest 150 of ${list.length}.</p>` : ""}</div>`
+    : `<p class="help" style="margin-top:0">No bills from ${esc(v.name)} yet.</p>`}`;
+}
+function vendorBillsWire(sh, v, redraw){
+  const all = vendorBills(v), by = new Map(all.map(x => [x.kind + ":" + x.id, x]));
+  sh.querySelectorAll("[data-vbf]").forEach(b => b.onclick = () => { S.ui.vbF = b.dataset.vbf; redraw(); });
+  sh.querySelectorAll("[data-vb]").forEach(r => r.onclick = async e => { if(e.target.closest("[data-nos]")) return; const x = by.get(r.dataset.vb); if(!x) return;
+    if(e.target.closest("[data-vbnk]")){ e.stopPropagation(); e.target.disabled = true; if(x.kind === "bill") await billAddToNickel([x.id]); else await txnAddToNickel(x.pid, x.id); redraw(); return; }
+    if(x.kind === "bill") billSheet(x.id); else { closeSheet(); go("txns", x.pid); setTimeout(() => openSheet(x.id), 40); } });
+  const a = sh.querySelector("#vbAdd"); if(a) a.onclick = async () => { const ids = all.filter(x => x.kind === "bill" && billNkAddable(x.b)).map(x => x.id); if(!confirm(`Add ${ids.length} unpaid ${v.name} bill${ids.length === 1 ? "" : "s"} to Nickel (not paid)? You'll confirm each one in Nickel.`)) return; a.disabled = true; await billAddToNickel(ids); redraw(); };
+  const pb = sh.querySelector("#vbPay"); if(pb) pb.onclick = () => billPaySheet(all.filter(x => x.kind === "bill" && x.open).map(x => x.id));
+}
 function vendorSheet(id){
   const isNew = !id, v = isNew ? {id:"vn_" + uid(), name:"", email:"", phone:"", address:"", city:"", state:"SC", zip:"", notes:""} : JSON.parse(JSON.stringify(pmVendors().find(x => x.id === id)));
   const sh = $("#sheet"), F = [["name","Name"],["contact","Contact person"],["trade","What they do (trade)"],["email","Billing email"],["phone","Phone"],["address","Street"],["city","City"],["state","State"],["zip","ZIP"]];
@@ -9660,7 +9748,7 @@ function vendorSheet(id){
         <p class="help">Saved to Drive in “Vendor documents / ${esc(v.name || "this vendor")}”. Only people with access to that folder can open them.</p>`}`;
   const nk = nkVendor(v.id);
   sh.innerHTML = `<div class="sheet-h"><h3>${isNew ? "New vendor" : esc(v.name)}</h3><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
-    <div class="sheet-b">${F.map(([k, l]) => `<label class="fld"><span>${l}</span><input type="text" data-k="${k}" value="${esc(v[k] || "")}"></label>`).join("")}
+    <div class="sheet-b">${isNew ? "" : `<div id="vbBox">${vendorBillsHTML(v, S.ui.vbF || "unpaid")}</div><div class="sectl">Details</div>`}${F.map(([k, l]) => `<label class="fld"><span>${l}</span><input type="text" data-k="${k}" value="${esc(v[k] || "")}"></label>`).join("")}
       <label class="fld"><span>Notes</span><textarea data-k="notes" rows="2">${esc(v.notes || "")}</textarea></label>
       ${docsH}
       ${isNew ? "" : `<div class="sectl">Nickel</div>
@@ -9673,6 +9761,7 @@ function vendorSheet(id){
     </div>
     <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="vnSave">Save</button></div>`;
   $("#shClose").onclick = $("#shCancel").onclick = closeSheet; openPanel();
+  if(!isNew){ const vb = $("#vbBox"), redrawVb = () => { if(!$("#vbBox")) return; vb.innerHTML = vendorBillsHTML(v, S.ui.vbF || "unpaid"); vendorBillsWire(vb, v, redrawVb); }; vendorBillsWire(vb, v, redrawVb); }
   const saveForm = () => {
     sh.querySelectorAll("[data-k]").forEach(i => v[i.dataset.k] = i.value.trim());
     sh.querySelectorAll("[data-t]").forEach(i => { if(i.value) v.tax[i.dataset.t] = i.value; else delete v.tax[i.dataset.t]; });
@@ -13477,7 +13566,8 @@ function todayPm(v){
   const billRows = open.slice().sort((a, b) => String(a.due || a.date).localeCompare(String(b.due || b.date))).map(b => {
     const st = billStatus(b), p = pmProp(b.propertyId);
     return {t:esc(b.vendor || "Vendor"), s:`${esc(p ? p.name : "")}${b.due ? ` · due ${fdateS(b.due)}` : ""}${b.memo ? ` · ${esc(b.memo)}` : ""}`, cls:st.k === "overdue" || st.k === "failed" ? "late" : "",
-      amt:usd(cents(b.amount)), btn:typeof nickelOn === "function" && nickelOn() ? "Pay" : "Open", primary:b.due && b.due <= soon, fn:() => typeof nickelOn === "function" && nickelOn() ? billPaySheet([b.id]) : billSheet(b.id)};
+      amt:usd(cents(b.amount)), btn:typeof nickelOn === "function" && nickelOn() ? (billNkAddable(b) ? "Add to Nickel" : "Pay") : "Open", primary:b.due && b.due <= soon,
+      fn:() => typeof nickelOn === "function" && nickelOn() ? (billNkAddable(b) ? billAddToNickel([b.id]) : billPaySheet([b.id])) : billSheet(b.id)};
   });
   tdSection(left, "Bills to pay", billRows, "No bills waiting. Drop a vendor's invoice here to add one.", ["Upload invoice", () => billUploadSheet()]);
   if(paying.length) tdSection(left, "Payments on the way", paying.map(b => { const p = pmProp(b.propertyId), rc = (b.pay || {}).receipt || {};
@@ -13568,10 +13658,10 @@ const navBadge = (t, kind, title) => t === "" || t == null || t === 0 ? null : `
 function navMoney(n, mk){
   n.appendChild(elm("div","nav-head","Money"));
   if(S.ui.mode === "pm"){ const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
-  { const u = unpaidAll(sideNow()), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
+  if(S.ui.mode !== "pm"){ const u = unpaidAll(sideNow()), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
   if(S.ui.mode === "pm"){
     const nOpen = billList().filter(b => b.status === "open").length, nInv = billList().filter(b => b.status !== "void" && b.recover === "invoice" && !b.invoiceId).length + invList().filter(x => x.status === "sent" && invTotals(x).dueC > 0).length;
-    mk("pmBills", "Bills", "receipt", navBadge(nOpen));
+    { const u = billList().filter(b => b.status === "open"), late = u.filter(b => b.due && b.due < todayISO()).length; mk("pmBills", "Bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due · ${u.length} to pay` : `${u.length} to pay`) : null, () => { S.ui.billF = "open"; go("pmBills"); }); } void nOpen;
     mk("pmInvoices", "Owner invoices", "file", navBadge(nInv));
     let nSt = 0; try{ const sm = stMonth(); nSt = stmtCandidates(sm).filter(x => !(x.done && x.done.state === "sent")).length; const mt = pmState().meta[sm] || {};
       if(!mt.closed || String(mt.closedBy || "").startsWith("Imported") || !mt.closedAt || Date.now() - Date.parse(mt.closedAt) > 40 * 864e5) nSt = 0; }catch(e){}
@@ -15542,7 +15632,7 @@ function finMemo(name, args, fn){
   if(FIN_MEMO.size > 60) FIN_MEMO.clear();
   const v = fn(); FIN_MEMO.set(k, v); return v;
 }
-if(typeof commit === "function"){ const finCommit0 = commit; commit = function(){ FIN_VER++; return finCommit0.apply(this, arguments); }; }
+if(typeof commit === "function"){ const finCommit0 = commit; commit = function(){ FIN_VER++; if(typeof vendorBills === "function") vendorBills._c = null; return finCommit0.apply(this, arguments); }; }
 if(typeof cloudApply === "function"){ const finCA0 = cloudApply; cloudApply = function(){ FIN_VER++; return finCA0.apply(this, arguments); }; }
 
 /* ---------- exceptions: critical, needs action, and notices (known, controlled situations) ---------- */
@@ -18617,13 +18707,17 @@ function unpaidMarkPaid(x){
   commit(); toast(`${x.vendor} marked paid`, true);
 }
 function pgUnpaid(){
+  // rentals: the Bills page is the unpaid list (To pay), so the old Unpaid bills link lands there
+  if(S.ui.mode === "pm"){ S.ui.view = "pmBills"; S.ui.billF = "open"; persistUi(); fixActive(); return pgPmBills(); }
   const pmSide = S.ui.mode === "pm", all = unpaidAll(sideNow()), G = S.ui.upG || "due", F = ["all", "late", "nickel"].includes(S.ui.upF) ? S.ui.upF : "all";
   const list = all.filter(x => F === "all" || (F === "late" && x.late) || (F === "nickel" && !x.nickel));
   const tot = list.reduce((a, x) => a + x.amountC, 0), late = all.filter(x => x.late), soon = all.filter(x => x.soon);
   $("#pgCrumb").textContent = sideName(sideNow()); $("#pgTitle").textContent = pmSide ? "Unpaid bills · rentals" : "Unpaid bills · projects";
   $("#pgSub").textContent = all.length ? `${all.length} to pay · ${usd(all.reduce((a, x) => a + x.amountC, 0))}` : "Every vendor is paid";
-  const pmSel = list.filter(x => x.kind === "bill" && !x.paying).map(x => x.id);
-  actions([...(pmSide && typeof nickelOn === "function" && nickelOn() && pmSel.length ? [[`Pay in Nickel (${pmSel.length})`, () => billPaySheet(pmSel), "primary"]] : [])]);
+  const pmSel = list.filter(x => x.kind === "bill" && !x.paying).map(x => x.id), nkOn = typeof nickelOn === "function" && nickelOn();
+  const toAdd = list.filter(x => x.kind === "bill" && billNkAddable(x.b)).map(x => x.id);
+  actions([...(nkOn && toAdd.length ? [[`Add ${toAdd.length} to Nickel`, () => { if(confirm(`Add ${toAdd.length} unpaid bill${toAdd.length === 1 ? "" : "s"} to Nickel (not paid)? You'll confirm each one in Nickel.`)) billAddToNickel(toAdd); }]] : []),
+    ...(pmSide && nkOn && pmSel.length ? [[`Pay in Nickel (${pmSel.length})`, () => billPaySheet(pmSel), "primary"]] : [])]);
   const v = $("#view");
   const hero = elm("div", "card pf-hero");
   hero.innerHTML = [["all", "Still to pay", usd(all.reduce((a, x) => a + x.amountC, 0)), `${all.length} bill${all.length === 1 ? "" : "s"}`, ""],
@@ -18645,12 +18739,12 @@ function pgUnpaid(){
   card.innerHTML = groups.map(([g, xs]) => `${g ? `<div class="up-g"><b>${esc(g)}</b><span>${xs.length} · ${usd(xs.reduce((a, x) => a + x.amountC, 0))}</span></div>` : ""}
     <div class="tbl-wrap"><table class="tbl up-tbl"><thead><tr><th>Vendor</th><th>For</th><th>Property</th><th>Due</th><th class="r">Amount</th><th></th></tr></thead><tbody>
     ${xs.map((x, i) => `<tr data-ui="${esc(x.kind + ":" + x.id)}">
-      <td><div class="item-t">${esc(x.vendor)}${x.file ? ` <a class="att" href="${esc(x.file)}" target="_blank" rel="noopener" data-nos title="Open the invoice">${icon("clip")}</a>` : ""}</div>${x.note ? `<div class="up-note">${icon("card")} ${esc(x.note)}</div>` : ""}</td>
+      <td><div class="item-t">${esc(x.vendor)}${x.kind === "bill" && billDupOf(x.b) ? ` <span class="tag gold" title="Same vendor, rental, amount and date as another bill">possible duplicate</span>` : ""}${x.file ? ` <a class="att" href="${esc(x.file)}" target="_blank" rel="noopener" data-nos title="Open the invoice">${icon("clip")}</a>` : ""}</div>${x.note ? `<div class="up-note">${icon("card")} ${esc(x.note)}</div>` : ""}</td>
       <td><div class="item-s" style="margin:0">${esc(x.what || "—")}</div><div class="item-s">${x.date ? "Billed " + esc(fdateS(x.date)) : ""}</div></td>
       <td><span class="item-s" style="display:inline">${esc(x.where)}</span></td>
       <td>${x.due ? `<span class="${x.late ? "up-late" : x.soon ? "up-soon" : ""}">${esc(fdateS(x.due))}${x.late ? " · late" : ""}</span>` : `<span class="muted">—</span>`}${x.nickel ? `<div class="item-s">${esc(x.nickel)}</div>` : ""}</td>
       <td class="r num"><b>${usd(x.amountC)}</b></td>
-      <td class="act up-act"><button class="btn sm" data-uo>Open</button>${x.paying ? "" : `<button class="btn sm ghost" data-up>Mark paid</button>`}</td></tr>`).join("")}
+      <td class="act up-act">${!x.nickel && !x.paying && typeof nickelOn === "function" && nickelOn() ? `<button class="btn sm" data-unk>Add to Nickel</button>` : ""}<button class="btn sm" data-uo>Open</button>${x.paying ? "" : `<button class="btn sm ghost" data-up>Mark paid</button>`}</td></tr>`).join("")}
     </tbody></table></div>`).join("");
   v.appendChild(card);
   const byKey = new Map(list.map(x => [x.kind + ":" + x.id, x]));
@@ -18658,6 +18752,7 @@ function pgUnpaid(){
     const x = byKey.get(tr.dataset.ui); if(!x) return;
     const o = tr.querySelector("[data-uo]"); if(o) o.onclick = e => { e.stopPropagation(); if(x.kind === "bill"){ billSheet(x.id); } else { go("txns", x.pid); setTimeout(() => openSheet(x.id), 40); } };
     const pd = tr.querySelector("[data-up]"); if(pd) pd.onclick = e => { e.stopPropagation(); if(confirm(`Mark ${x.vendor} ${usd(x.amountC)} as paid?`)) unpaidMarkPaid(x); };
+    const nk = tr.querySelector("[data-unk]"); if(nk) nk.onclick = async e => { e.stopPropagation(); nk.disabled = true; if(x.kind === "bill") await billAddToNickel([x.id]); else await txnAddToNickel(x.pid, x.id); };
   });
 }
 
@@ -19588,8 +19683,8 @@ renderNavPM = function(){
   if(typeof pgInspections === "function"){ let n = 0; try{ n = Object.values(S.insp || {}).filter(x => x && x.status === "draft").length; }catch(e){} mk("inspections", "Inspections", "check", n ? navBadge(n, null, "In progress") : null, () => { S.ui.inspId = null; go("inspections"); }); }
 
   head("Bills & vendors");
-  mk("pmBills", "Bills", "receipt", navBadge(billList().filter(b => b.status === "open").length));
-  { const u = unpaidAll("pm"), late = u.filter(x => x.late).length; mk("unpaid", "Unpaid bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due` : "Vendors still to pay") : null); }
+  // Bills is the one page for rental bills: unpaid, on the way and paid ("Unpaid bills" was the same list twice)
+  { const u = billList().filter(b => b.status === "open"), late = u.filter(b => b.due && b.due < todayISO()).length; mk("pmBills", "Bills", "receipt", u.length ? navBadge(u.length, late ? "alert" : null, late ? `${late} past due · ${u.length} to pay` : `${u.length} to pay`) : null, () => { S.ui.billF = "open"; go("pmBills"); }); }
   { const nIn = inboxCount("pm"); mk("inbox", "Receipt inbox", "receipt", nIn ? `<i class="badge alert" style="background:var(--accent);color:#fff">${nIn}</i>` : (typeof inboxConn === "function" && !inboxConn() ? navBadge("set up", "gold") : null), () => { go("inbox"); inboxRefresh(); }); }
   mk("pmVendors", "Vendors", "user");
 
