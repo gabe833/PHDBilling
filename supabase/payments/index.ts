@@ -113,6 +113,10 @@ async function payers(): Promise<string[]> { return S(await getSetting("payers")
    approvers:  comma-separated emails (falls back to the payments list).
    po_appr:<month>: {<key>: {status, amountC, payees[], pids[], by, at, note, history[]}}  key = property id, or
                "split:<group key>" for a split payout. */
+// project invoice messages ({cap} = the property's invoice cap, {amount} = this invoice's total)
+const PJ_MEMO_CONTACT = "If you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!";
+const PJ_MEMO_FULL = "Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\n" + PJ_MEMO_CONTACT;
+const PJ_MEMO_SHORT = "This invoice covers the project balance to date, {amount}, including the project management fee. It is being issued before the balance reaches the usual {cap} so the account can be brought current.\n\n" + PJ_MEMO_CONTACT;
 async function approvers(): Promise<string[]> { const a = S(await getSetting("approvers")).split(/[,;\s]+/).map((x) => x.trim().toLowerCase()).filter((x) => x.includes("@")); return a.length ? a : await payers(); }
 async function poPolicy(): Promise<Obj> { try { return JSON.parse(S(await getSetting("po_policy")) || "{}") || {}; } catch { return {}; } }
 async function poApprovals(month: string): Promise<Obj> { try { return JSON.parse(S(await getSetting("po_appr:" + month)) || "{}") || {}; } catch { return {}; } }
@@ -803,7 +807,11 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const lineText = (l: Obj) => said[l.txnId] || (() => { const t = txn(l.txnId); return `${t.desc || "Project expense"}${t.vendor ? ` (${t.vendor})` : ""}${l.feeApplies === false ? " — billed at cost" : ""}`; })();
     const feeText = `${S(p.feeLabel) || "Project Management Fee"} (${p.feePct}%)${where} — Invoice ${Number(body.no)}`;
     const capTxt = money(Math.round((Number(p.invoiceTarget) || 10000) * 100));
-    const memo = S(acct.nkProjMemo || `Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\nIf you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!`).replace(/\{cap\}/g, capTxt).slice(0, 1000);
+    // the message: what the console sent (shown and editable before Create), else picked by amount — the usual one for an
+    // invoice that reached the cap, a close-out one for an invoice sent below it (balances that are slow to build up)
+    const capC = Math.round((Number(p.invoiceTarget) || 10000) * 100), below = totalC < capC - 100;
+    const memoSent = S(body.memo).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim();
+    const memo = (memoSent || S(below ? (acct.nkProjMemoShort || PJ_MEMO_SHORT) : (acct.nkProjMemo || PJ_MEMO_FULL))).replace(/\{cap\}/g, capTxt).replace(/\{amount\}/g, money(totalC)).slice(0, 1000);
     const args: Obj = { customerId: c.id, invoiceNumber: number, amountInCents: totalC, memo, invoiceDate: S(fz.at || today()).slice(0, 10) };
     if (/^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate))) args.dueDate = S(body.dueDate);
     const qb = await qbStatus(); let qbWhy = "";

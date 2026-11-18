@@ -9723,7 +9723,15 @@ async function vendorAskDetails(vendorId){
    PAYMENTS SETUP — Nickel connection, who can pay, QuickBooks coding (through Nickel)
    ==================================================================== */
 let NKL = null;   // QuickBooks accounts and products, read through Nickel
-const PJ_MEMO_DEFAULT = "Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\nIf you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!";
+const PJ_MEMO_CONTACT = "If you have any questions or concerns, please feel free to reach out via email at billing@phdproperties.realestate or call us at 843-212-6383. Thank you for your business!";
+const PJ_MEMO_DEFAULT = "Invoices will be issued once the accumulated project balance, including the project management fee, reaches {cap}. Any remaining balance will carry forward to the next invoice.\n\n" + PJ_MEMO_CONTACT;
+// an invoice sent before the balance reached the cap (to close out a balance that's slow to build up)
+const PJ_MEMO_SHORT = "This invoice covers the project balance to date, {amount}, including the project management fee. It is being issued before the balance reaches the usual {cap} so the account can be brought current.\n\n" + PJ_MEMO_CONTACT;
+// the message for this invoice: the usual one at the cap, the close-out one below it (the payments function picks the same way)
+function pjMemoFor(p, totalC){
+  const a = S.acct || {}, capC = Math.round((Number(p.invoiceTarget) || 10000) * 100), below = totalC < capC - 100;
+  return {below, text:String(below ? (a.nkProjMemoShort || PJ_MEMO_SHORT) : (a.nkProjMemo || PJ_MEMO_DEFAULT)).replace(/\{cap\}/g, usd(capC)).replace(/\{amount\}/g, usd(totalC))};
+}
 // old address for the setup: it now lives on the shared Payments page
 function pgPmPaySetup(){ S.ui.view = "payments"; S.ui.payTab = "setup"; persistUi(); pgPayments(); }
 function paySetupInto(v){
@@ -9773,6 +9781,8 @@ function paySetupInto(v){
           <span class="help">A product named like “10% Project Management Fee” or “15% Project Management Fee” is picked automatically for properties with that fee.</span></label>
         <label class="fld"><span>Message on project invoices</span><textarea data-a="nkProjMemo" rows="5" placeholder="${esc(PJ_MEMO_DEFAULT)}">${esc(a.nkProjMemo || "")}</textarea>
           <span class="help">Blank uses the standard message. {cap} becomes the property's invoice cap.</span></label>
+        <label class="fld"><span>Message on project invoices sent below the cap</span><textarea data-a="nkProjMemoShort" rows="5" placeholder="${esc(PJ_MEMO_SHORT)}">${esc(a.nkProjMemoShort || "")}</textarea>
+          <span class="help">Used when an invoice goes out before the balance reaches the cap, to close out a balance. Blank uses the standard close-out message. {amount} becomes the invoice total, {cap} the cap.</span></label>
         <p class="help">Left blank, the bill or invoice is still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
   grid.appendChild(qc);
   qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value.trim()}); commit(); toast("Saved"); });
@@ -9951,6 +9961,7 @@ async function pjCreateSheet(p, unit, inv){
       <div class="ps-kv"><span>Amount</span><b>${usd(inv.totalC)} <span class="muted">(${usd(inv.expC)} expenses + ${usd(inv.feeC)} fee)</span></b></div>
       <div class="f2" style="margin-top:12px"><label class="fld"><span>Invoice number in QuickBooks</span><input type="text" id="pjNo" maxlength="21" value="${esc(pjInvNumber(p, unit, inv))}"></label>
         <label class="fld"><span>Due</span><input type="date" id="pjDue" value="${due}"></label></div>
+      ${(() => { const mm = pjMemoFor(p, inv.totalC); return `<label class="fld" style="margin-top:12px"><span>Message on the invoice${mm.below ? ` <span class="tag gold">below the ${esc(usd(Math.round((Number(p.invoiceTarget) || 10000) * 100)))} cap — close-out message</span>` : ""}</span><textarea id="pjMemo" rows="5" maxlength="1000">${esc(mm.text)}</textarea><span class="help">Filled in for this invoice; change it here if this one needs different wording.</span></label>`; })()}
       ${why ? `<div class="pm-banner">Can't add it to QuickBooks yet: ${esc(why)}.</div><label class="ps-chk"><input type="checkbox" id="pjNkOnly"> Create it in Nickel only (pay link, no QuickBooks)</label>` : ""}
       <div class="nk-how"><b>What happens when you press Create</b><ol>${linked ? "" : `<li>Nickel asks you to confirm adding ${esc(o ? ownerLabel(o) : "the owner")} as a customer (first time only).</li>`}
         <li>Nickel shows the invoice: ${usd(inv.totalC)}, ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"} + the fee. Confirm once and it's created${why ? "" : " in Nickel and QuickBooks"}.</li>
@@ -9978,7 +9989,7 @@ async function pjCreateSheet(p, unit, inv){
       await payCall("nk.match", {}, {raw:true}).catch(() => {});
       if(!(cust && cust.id) && !nkOwner(p.ownerId).id){ const r = await nkRun("owner.create", {ownerId:p.ownerId}, `Add ${ownerLabel(o)} to Nickel`); if(!r.ok && !r.already){ go2.disabled = false; return; } }
       const dueSet = /^\d{4}-\d{2}-\d{2}$/.test($("#pjDue").value) ? $("#pjDue").value : "";
-      const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p)}, `${p.name}${pjUnitLabel(p, unit)} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
+      const r = await nkRun("project.invoice", {propertyId:p.id, unitId:unit.id, no:inv.no, invoiceNumber:$("#pjNo").value, dueDate:$("#pjDue").value, requireQb:!nkOnly, lines:pjLineWords(p, unit, inv), feeItem:pjFeeItem(p), memo:($("#pjMemo") || {}).value || ""}, `${p.name}${pjUnitLabel(p, unit)} · Invoice ${inv.no} · ${usd(inv.totalC)}`);
       if(!r.ok && !r.already){ go2.disabled = false; if(r.error && !r.declined && !r.approvalUrl) toast(r.error); return; }
       { const pp = S.properties.find(x => x.id === p.id); if(pp && dueSet){ snapshot(); pp.register = pp.register || {}; const g = pp.register[pjKey(unit, inv)] = pp.register[pjKey(unit, inv)] || {}; g.due = dueSet; commit(); } }
       closeSheet(); render();
