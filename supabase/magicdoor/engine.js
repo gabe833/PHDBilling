@@ -706,8 +706,10 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
     }
     // a unit's rent paid early, at the end of last month (1639 Memminger #B paid November on Oct 31): what last month's
     // payments came to above last month's own charges, and last month's row didn't count, is this month's rent.
-    // (Single-unit rentals get this from MagicDoor's owner statement; units sharing one MagicDoor property don't.)
-    else if(!mpId && g && g0){
+    // MagicDoor's owner statement misses it too when last month's statement was already closed in the console
+    // (1511 Larry and 2018 Riverview paid November on Oct 28/29: MagicDoor put it on October, which was already paid out).
+    // If this month's statement already counts it, nothing is short and nothing is added.
+    else if(g && g0){
       const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100, rr0 = pmRow(pm0, p.id);
       const over = r2(n(g0.paid) - (n(g0.filters) + n(g0.lateFee) + n(g0.applications) + n(g0.rent) - n(g0.credits) + n(g0.other) + n(g0.phd)));
       const counted = rr0 && !rr0.deleted ? r2(n(rr0.rentReceived) + n(rr0.otherIncome) - (n(g0.rent) - n(g0.credits) + n(g0.other))) : 0;
