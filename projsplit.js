@@ -59,10 +59,13 @@ function projectFees(p){
 function splitCalc(sp){
   const p = proj(sp.projectId); if(!p) return null;
   const cnt = Object.assign({phd:true, labor:true, materials:true}, sp.count || {}), F = projectFees(p);
-  const fee = r => (cnt.phd ? r.phdC : 0) + (cnt.labor ? r.laborC : 0) + (cnt.materials ? r.matC : 0) - r.creditC;
+  // unticked "take discounts off PHD's fees": PHD covers the discounts and credits, the agent's share is on the full fees
+  // (24 Bee, Nov 2026: PHD absorbed the $386.70 cabinet delay discount on K-002 — Justin's half is of $15,602.21)
+  const absorb = sp.deductShort === false;
+  const fee = r => (cnt.phd ? r.phdC : 0) + (cnt.labor ? r.laborC : 0) + (cnt.materials ? r.matC : 0) - (absorb ? 0 : r.creditC);
   const got = F.invs.filter(r => r.state === "collected"), wait = F.invs.filter(r => r.state !== "collected" && r.state !== "draft");
   const t = {phdC:0, laborC:0, matC:0, creditC:0, shortC:0};
-  got.forEach(r => { t.phdC += cnt.phd ? r.phdC : 0; t.laborC += cnt.labor ? r.laborC : 0; t.matC += cnt.materials ? r.matC : 0; t.creditC += r.creditC; t.shortC += r.shortC; });
+  got.forEach(r => { t.phdC += cnt.phd ? r.phdC : 0; t.laborC += cnt.labor ? r.laborC : 0; t.matC += cnt.materials ? r.matC : 0; t.creditC += absorb ? 0 : r.creditC; t.absorbedC = (t.absorbedC || 0) + (absorb ? r.creditC : 0); t.shortC += r.shortC; });
   const poolC = got.reduce((a, r) => a + fee(r), 0) - (sp.deductShort !== false ? t.shortC : 0);
   const pendC = wait.reduce((a, r) => a + fee(r), 0);
   const pct = +sp.pct || 0, shareC = Math.round(poolC * pct / 100), pendShareC = Math.round(pendC * pct / 100);
@@ -108,7 +111,7 @@ function splitDetail(id){
   const T = x.t, refs = x.got.map(r => r.ref).join(", ");
   const text = `${x.p.name} — PHD project fees on collected invoices (${refs}):\n`
     + (x.cnt.phd ? `  PHD charges (consultation fee etc.): ${C2(T.phdC)}\n` : "") + (x.cnt.labor ? `  PM fee on labor the owner paid directly: ${C2(T.laborC)}\n` : "") + (x.cnt.materials ? `  PM fee on billed expenses / materials: ${C2(T.matC)}\n` : "")
-    + (T.creditC ? `  Less PHD credits on the invoices: −${C2(T.creditC)}\n` : "") + (T.shortC && sp.deductShort !== false ? `  Less collected short (discounts/credits taken at payment): −${C2(T.shortC)}\n` : "")
+    + (T.creditC ? `  Less PHD credits on the invoices: −${C2(T.creditC)}\n` : "") + (T.absorbedC ? `  PHD covers the discounts/credits on the invoices (${C2(T.absorbedC)}) — not taken off the split\n` : "") + (T.shortC && sp.deductShort !== false ? `  Less collected short (discounts/credits taken at payment): −${C2(T.shortC)}\n` : "")
     + `  PHD fees collected: ${C2(x.poolC)}\n  ${who.name}'s share at ${x.pct}%: ${C2(x.shareC)}\n` + (x.creditedC ? `  Already added to pay: ${C2(x.creditedC)}\n  Due now: ${C2(Math.max(0, x.dueC))}\n` : "")
     + (x.pendShareC ? `  Still to come when open invoices are paid: ${C2(x.pendShareC)}\n` : "");
   sh.innerHTML = `<div class="sheet-h"><div><h3>${esc(x.p.name)} · ${esc(who.name)}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${x.pct}% of PHD's fees on collected invoices${sp.note ? " · " + esc(sp.note) : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
@@ -159,10 +162,10 @@ function splitSheet(id){
       <label class="fld"><span>Agent</span><select id="spA" ${cur ? "disabled" : ""}>${agents.map(a => `<option value="${esc(a.id)}" ${a.id === sp.person ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label></div>
     <label class="fld"><span>Agent's share of PHD's fees (%)</span><input type="number" id="spPct" step="0.5" min="0" max="100" value="${esc(sp.pct)}"></label>
     <div class="sectl">Which PHD fees are split</div>
-    <label class="check"><input type="checkbox" id="spC1" ${cnt.phd ? "checked" : ""}> PHD charges billed at cost (consultation fee …)</label>
-    <label class="check"><input type="checkbox" id="spC2" ${cnt.labor ? "checked" : ""}> PM fee on labor the owner paid directly</label>
-    <label class="check"><input type="checkbox" id="spC3" ${cnt.materials ? "checked" : ""}> PM fee on billed expenses / materials</label>
-    <label class="check" style="margin-top:8px"><input type="checkbox" id="spSh" ${sp.deductShort !== false ? "checked" : ""}> When an invoice is collected short (a discount or credit), take it off PHD's fees before splitting</label>
+    <label class="check" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="spC1" ${cnt.phd ? "checked" : ""}> PHD charges billed at cost (consultation fee …)</label>
+    <label class="check" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="spC2" ${cnt.labor ? "checked" : ""}> PM fee on labor the owner paid directly</label>
+    <label class="check" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="spC3" ${cnt.materials ? "checked" : ""}> PM fee on billed expenses / materials</label>
+    <label class="check" style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="spSh" ${sp.deductShort !== false ? "checked" : ""}> Take discounts and credits the owner got (or an invoice collected short) off PHD's fees before splitting — untick when PHD covers them</label>
     <label class="fld" style="margin-top:8px"><span>Note</span><input type="text" id="spN" value="${esc(sp.note || "")}" placeholder="e.g. 50/50 agreed with Peter"></label>
     ${!agents.some(a => a.role === "agent") ? `<p class="help">Add the agent under People first.</p>` : ""}
     <p class="help" id="spPrev"></p>
