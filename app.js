@@ -17686,7 +17686,9 @@ function pgOfRuns(){
 function ofRunLine(p, run, keep){
   const es = ofEntries().filter(e => e.person === p.id), end = run.periodEnd || todayISO(), start = run.periodStart || "";
   const taken = new Set(ofRuns().filter(r => r._id !== run._id && r.status !== "rejected").flatMap(r => (r.lines || []).flatMap(l => l.entries || [])));
-  const items = es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed") && !taken.has(e._id) && (!e.date || e.date <= end));
+  // hours and work belong to the period they were done in; a commission is owed once it's earned, so it goes on the
+  // next run whatever day it was added (Justin's 24 Bee share, added Nov 19, was left off the Nov 1–15 run)
+  const items = es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed") && !taken.has(e._id) && (!e.date || e.date <= end || e.kind === "commission"));
   const off = es.filter(e => e.kind === "timeoff" && e.status !== "rejected" && e.date && e.date >= start && e.date <= end);
   const pay = p.pay || {}, baseC = pay.basis === "salary" ? cents(pay.amount || 0) : 0;
   const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
