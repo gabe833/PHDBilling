@@ -1176,6 +1176,17 @@ function pgInvoices(){
   v.appendChild(card);
 }
 
+/* Credits on a unit that no invoice has taken — e.g. a discount the owner deducted when paying a
+   locked invoice. They can be applied to that issued invoice as "taken at payment". */
+function payCredits(inv, unit, p){
+  if(!inv.locked) return [];
+  return (p.transactions || []).filter(t => t.status === "billable" && Number(t.amount) < 0 && !t.deleted).map(t => {
+    const i = COMP.txn[t.id]; if(!i || (i.parts || []).length) return null;
+    const shareC = (unitShares(t, p.units) || {})[unit.id] || 0; if(!(shareC < 0)) return null;
+    return {t, shareC};
+  }).filter(Boolean);
+}
+function invPaidC(inv){ const nk = inv.reg && inv.reg.nickel; return nk && typeof nk.paidC === "number" && nk.paidC > 0 ? nk.paidC : null; }
 function invoiceBlock(inv, unit, p){
   const key = unit.id + "|" + inv.no;
   const open = !!S.ui.open[key];
@@ -1204,6 +1215,7 @@ function invoiceBlock(inv, unit, p){
     const pi = parts.findIndex(x => x.no === inv.no);
     const bits = [];
     if(l.credit) bits.push(`<span class="mark green">Credit</span>`);
+    if(l.atPayment) bits.push(`<span class="mark acc" title="Taken by the owner when they paid${l.atPayment.at ? " · added " + esc(l.atPayment.at) : ""}">Taken at payment</span>`);
     else if(l.partial) bits.push(`<span class="mark acc">Part ${pi+1} of ${parts.length}</span>`);
     if(!l.feeApplies) bits.push(`<span class="mark gold">No fee</span>`);
     if(l.txn && l.txn.scope.type === "split") bits.push(`<span class="mark grey">Split ${p.units.filter(u=>Number(l.txn.scope.splits[u.id])>0).map(u=>l.txn.scope.splits[u.id]+"%").join("/")}</span>`);
@@ -1231,7 +1243,11 @@ function invoiceBlock(inv, unit, p){
         ? `Frozen as issued${inv.reg.frozen && inv.reg.frozen.at?` on ${esc(inv.reg.frozen.at)}`:""}.`
         : `Locked${inv.reg.frozen && inv.reg.frozen.at?` on ${esc(inv.reg.frozen.at)}`:""} before sending.`}
       These ${inv.lines.length} line${inv.lines.length===1?"":"s"} stay put no matter how transactions are reordered. Correct anything wrong with a credit.
-      ${inv.reg.paid||inv.reg.dateSent?`<button class="btn sm" data-x="unlock" style="margin-left:8px">Unlock</button>`:""}</div>`:""}
+      ${inv.reg.paid||inv.reg.dateSent?`<button class="btn sm" data-x="unlock" style="margin-left:8px">Unlock</button>`:""}
+      ${(() => { const c = payCredits(inv, unit, p), paidC = invPaidC(inv), gap = paidC != null && inv.reg.paid ? inv.totalC - paidC : 0;
+        return (gap > 0 ? `<div style="margin-top:8px;color:var(--text)">The owner paid ${usd(paidC)} — ${usd(gap)} less than this invoice.${c.length ? " If they took a credit when they paid, apply it here:" : " Add the credit as a transaction on this unit, then apply it here."}</div>` : c.length ? `<div style="margin-top:8px">Credits on this unit that no invoice has taken yet:</div>` : "")
+          + c.map(x => `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="color:var(--text)">${esc(x.t.desc)} <b style="color:var(--green)">${usd(x.shareC)}</b> <span class="muted">${esc(fdateS(x.t.date))}</span></span><button class="btn sm" data-paycr="${esc(x.t.id)}">Apply to invoice ${inv.no} as taken at payment</button></div>`).join("")
+          + inv.lines.filter(l => l.atPayment).map(l => `<div style="margin-top:6px">${esc(l.txn ? l.txn.desc : "Credit")} ${usd(l.expC)} was taken at payment <button class="btn sm ghost" data-uncr="${esc(l.txnId)}">Remove</button></div>`).join(""); })()}</div>`:""}
     <div class="inv-acts">
       <label class="switchbox" title="${inv.reg.paid||inv.reg.dateSent
         ? "Sent and paid invoices are always locked"
@@ -1266,6 +1282,26 @@ function invoiceBlock(inv, unit, p){
       toast("Unlocked and repacked");
     }
   };
+  body.querySelectorAll("[data-paycr]").forEach(btn => btn.onclick = () => {
+    const x = payCredits(inv, unit, p).find(c => c.t.id === btn.dataset.paycr); if(!x) return;
+    const g = P().register[key]; if(!g || !g.frozen) return;
+    const after = inv.totalC + x.shareC;
+    if(!confirm(`Apply "${x.t.desc}" (${usd(x.shareC)}) to invoice ${inv.no}?\n\nThe invoice total goes from ${usd(inv.totalC)} to ${usd(after)}${invPaidC(inv) != null ? ` (paid: ${usd(invPaidC(inv))})` : ""}. The project fee stays as invoiced. The credit shows on the invoice as taken at payment.`)) return;
+    snapshot();
+    const f = g.frozen;
+    if(f.issuedTotalC == null){ f.issuedTotalC = f.totalC; f.issuedExpC = f.expC; }
+    f.lines.push({txnId:x.t.id, expC:x.shareC, feeApplies:false, fullC:x.shareC, credit:true, pin:x.t.pin || null,
+      atPayment:{at:todayISO(), by:(typeof Cloud !== "undefined" && Cloud.email) || ""}});
+    f.expC += x.shareC; f.totalC += x.shareC;
+    commit(); toast(`Applied — invoice ${inv.no} is now ${usd(after)}`);
+  });
+  body.querySelectorAll("[data-uncr]").forEach(btn => btn.onclick = () => {
+    const g = P().register[key]; if(!g || !g.frozen) return;
+    const l = g.frozen.lines.find(z => z.txnId === btn.dataset.uncr && z.atPayment); if(!l) return;
+    if(!confirm(`Take this credit (${usd(l.expC)}) back off invoice ${inv.no}?`)) return;
+    snapshot(); g.frozen.lines = g.frozen.lines.filter(z => z !== l); g.frozen.expC -= l.expC; g.frozen.totalC -= l.expC;
+    commit(); toast("Removed");
+  });
   const unlockBtn = body.querySelector('[data-x="unlock"]');
   if(unlockBtn) unlockBtn.onclick = () => {
     if(!confirm(`Unlock invoice ${inv.no}?\n\nIts contents will repack from the current billing order, which can change what this invoice contains. Only do this if it was marked issued by mistake.`)) return;
