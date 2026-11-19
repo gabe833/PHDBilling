@@ -717,6 +717,18 @@ function mdExactMonths(p, L, curM, out, mpId, mdPid){
       const add = r2(Math.min(over - Math.max(0, counted), short));
       if(add > 0.5) want = Object.assign({}, want, {rentReceived:r2(n(want.rentReceived) + add)});
     }
+    // rent the tenant paid before this month started that MagicDoor applied to this month's rent (3145 Gallberry pays
+    // every month ahead: November's $2,700 came Oct 29, and MagicDoor's November statement shows nothing received).
+    // Taken from MagicDoor's own allocation of each payment; anything last month's row already counted stays there.
+    if(L && Array.isArray(L.alloc) && L.alloc.length){
+      const n = v => Number(v) || 0, r2 = v => Math.round(v * 100) / 100, rr0 = pmRow(pm0, p.id), start = mm + "-01";
+      let pre = 0, for0 = 0;
+      L.alloc.forEach(a => (a[2] || []).forEach(x => { if(x[1] !== "rent") return; if(x[0] === mm && String(a[0]) < start) pre += n(x[2]) / 100; if(x[0] === pm0) for0 += n(x[2]) / 100; }));
+      const counted0 = rr0 && !rr0.deleted ? Math.max(0, n(rr0.rentReceived) - for0) : 0;
+      const short2 = r2(Math.max(0, n(g ? g.rent : rr.rentDue) - n(g ? g.credits : 0) - n(want.rentReceived)));
+      const add2 = r2(Math.min(Math.max(0, pre - counted0), short2));
+      if(add2 > 0.5) want = Object.assign({}, want, {rentReceived:r2(n(want.rentReceived) + add2)});
+    }
     const was = rr.md || {};
     Object.keys(mdExactLabels()).forEach(k => {
       const v = want[k];
