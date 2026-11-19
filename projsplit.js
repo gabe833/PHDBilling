@@ -42,10 +42,12 @@ function projectFees(p){
     const f = g && g.frozen; if(!f || !(f.totalC > 0)) return;
     const [uid, n] = k.split("|");
     const row = {key:k, unit:unitName(p, uid), n:+n, ref:/^\d|^[A-Z0-9]+-/.test(String(g.ref || "")) && !/nickel|ach/i.test(g.ref) ? g.ref : (g.nickel && g.nickel.number) || `${unitName(p, uid)} #${n}`,
-      totalC:f.totalC, phdC:0, laborC:0, matC:f.feeC || 0, creditC:0, lines:[], paid:!!g.paid, datePaid:g.datePaid || "", sent:g.dateSent || ""};
+      totalC:f.totalC, phdC:0, laborC:0, laborBaseC:0, matC:f.feeC || 0, matBaseC:f.feeBaseC || 0, creditC:0, lines:[], paid:!!g.paid,
+      // the day the money arrived, from Nickel's own payment record when there is one (24BEE-K-001: Aug 13, not the Sep 7 it was marked paid)
+      datePaid:((g.nickel && g.nickel.payments) || []).filter(x => !/fail|cancel|refund|void/i.test(x.status || "")).map(x => x.date).filter(Boolean).sort().pop() || g.datePaid || "", sent:g.dateSent || ""};
     (f.lines || []).forEach(l => { const t = tx[l.txnId]; onInv.add(l.txnId); if(!t || !PHD.test(t.vendor || "")) return;
       if(l.expC < 0){ row.creditC += -l.expC; row.lines.push(["credit", t.desc, l.expC]); }
-      else if(t.feeFor){ row.laborC += l.expC; row.lines.push(["labor", t.desc, l.expC]); }
+      else if(t.feeFor){ row.laborC += l.expC; const w = tx[t.feeFor]; row.laborBaseC += w ? Math.round(Math.abs(+w.amount || 0) * 100) : 0; row.lines.push(["labor", t.desc, l.expC]); }
       else { row.phdC += l.expC; row.lines.push(["phd", t.desc, l.expC]); } });
     const nk = g.nickel || {};
     row.paidC = typeof nk.paidC === "number" ? nk.paidC : row.paid ? row.totalC : 0;
@@ -191,6 +193,31 @@ function splitSheet(id){
     closeSheet(); render(); splitDetail(key);
   };
 }
+
+/* ---- the breakdown Peter sees when he approves the commission (pay run email and the run itself) ----
+   Built from the same invoices the split uses, so the numbers are the console's own. Inline styles: it goes in email. */
+function splitBreakdown(entry){
+  if(!entry || !entry.splitId) return null;
+  const id = K(entry.splitId), sp = Object.assign({id}, ofAll()[id] || {}), x = splitCalc(sp); if(!x) return null;
+  const T = x.t, c = n => usd(Math.round(n)), who = (ofPerson(sp.person) || {}).name || entry.name || "";
+  const absorbed = x.got.reduce((a, r) => a + (sp.deductShort === false ? r.creditC : 0), 0);
+  const cols = [["Invoice"], ["Paid", 1], ["Collected", 1]].concat(x.cnt.phd ? [["PHD charges", 1]] : [], x.cnt.labor ? [["Fee on owner-paid labor", 1]] : [], x.cnt.materials ? [["Fee on materials", 1]] : [], [["PHD fees", 1]]);
+  const cell = (v, r, b) => `<td style="padding:6px 8px;border-top:1px solid #e5e7eb;font-size:12.5px;${r ? "text-align:right;white-space:nowrap;" : ""}${b ? "font-weight:600;" : ""}color:#1d2433">${v}</td>`;
+  const rows = x.got.map(r => `<tr>${cell(esc(r.ref) + `<div style="font-size:11.5px;color:#6b7280">${esc(r.unit)}</div>`)}${cell(esc(fdateS(r.datePaid || "")), 1)}${cell(c(r.paidC), 1)}${x.cnt.phd ? cell(r.phdC ? c(r.phdC) : "—", 1) : ""}${x.cnt.labor ? cell(r.laborC ? c(r.laborC) + (r.laborBaseC ? `<div style="font-size:11.5px;color:#6b7280">on ${c(r.laborBaseC)}</div>` : "") : "—", 1) : ""}${x.cnt.materials ? cell(r.matC ? c(r.matC) + `<div style="font-size:11.5px;color:#6b7280">on ${c(r.matBaseC)}</div>` : "—", 1) : ""}${cell(c(x.fee(r)), 1, 1)}</tr>`).join("");
+  const tot = `<tr>${cell("Total", 0, 1)}${cell("", 1)}${cell(c(x.got.reduce((a, r) => a + r.paidC, 0)), 1, 1)}${x.cnt.phd ? cell(c(T.phdC), 1, 1) : ""}${x.cnt.labor ? cell(c(T.laborC), 1, 1) : ""}${x.cnt.materials ? cell(c(T.matC), 1, 1) : ""}${cell(c(x.poolC), 1, 1)}</tr>`;
+  const notes = [];
+  if(absorbed) notes.push(`PHD covers the ${c(absorbed)} discount the owner got (${x.got.filter(r => r.creditC).map(r => esc(r.ref)).join(", ")}) — it isn't taken off the split.`);
+  if(T.creditC) notes.push(`Less ${c(T.creditC)} of discounts/credits on the invoices.`);
+  if(T.shortC && sp.deductShort !== false) notes.push(`Less ${c(T.shortC)} collected short.`);
+  if(x.creditedC && x.creditedC !== (+entry.amountC || 0)) notes.push(`Share ${c(x.shareC)}; ${c(x.creditedC)} added to pay so far.`);
+  const html = `<div style="margin-top:10px;font-size:12.5px;color:#1d2433"><b>${esc(x.p.name)}</b> — ${esc(who)} gets ${x.pct}% of PHD's fees on the collected invoices</div>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin-top:6px"><tr>${cols.map(([h, r]) => `<td style="padding:6px 8px;font-size:11.5px;color:#6b7280;${r ? "text-align:right;" : ""}">${h}</td>`).join("")}</tr>${rows}${tot}</table>
+    <div style="font-size:12.5px;color:#1d2433;margin-top:6px">${notes.map(n => `<div>${n}</div>`).join("")}<div style="margin-top:4px"><b>${esc(who)}'s ${x.pct}%: ${c(x.shareC)}</b></div></div>`;
+  const text = `${x.p.name} — ${who}, ${x.pct}% of PHD's fees on collected invoices\n` + x.got.map(r => `  ${r.ref} (${r.unit}), paid ${fdateS(r.datePaid || "")}, collected ${c(r.paidC)}: PHD fees ${c(x.fee(r))}`).join("\n")
+    + `\n  PHD fees total ${c(x.poolC)}` + (notes.length ? "\n  " + notes.join("\n  ") : "") + `\n  ${who}'s ${x.pct}%: ${c(x.shareC)}`;
+  return {html, text, shareC:x.shareC};
+}
+window.splitBreakdown = splitBreakdown;
 
 /* ---- wiring into the Office side ---- */
 const nav0 = renderNav;

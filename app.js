@@ -17729,7 +17729,7 @@ function ofRunSheet(id){
             <table class="pm-sum">
               ${l.baseC ? `<tr><td>Base pay</td><td class="r num">${editable ? `<input class="of-in num" type="number" step="0.01" data-base="${i}" value="${(l.baseC / 100).toFixed(2)}">` : usd(l.baseC)}</td></tr>` : ""}
               ${items.length ? `<tr><td colspan="2" style="padding:0"><details class="of-items"${editable && items.some(e => e.status === "submitted") ? "" : ""}><summary><span>${esc(ofItemsSummary(items))}</span><span class="num">${usd(items.reduce((a, e) => a + ofEntryC(e), 0))}</span></summary><table class="pm-sum">` : ""}
-              ${items.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).map(e => `<tr><td>${esc(fdateS(e.date || ""))} · ${esc(OF_KIND[e.kind])}${e.desc ? " · " + esc(e.desc) : ""}${e.address ? " · " + esc(e.address) : ""} ${e.status === "submitted" ? `<span class="st st-gold" style="height:18px"><i></i>not reviewed</span>` : ""}</td><td class="r num">${usd(ofEntryC(e))}${editable ? ` <button class="linkish" data-drop="${i}|${esc(e._id)}" title="Leave it for a later run">×</button>` : ""}</td></tr>`).join("")}
+              ${items.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).map(e => `<tr><td>${esc(fdateS(e.date || ""))} · ${esc(OF_KIND[e.kind])}${e.desc ? " · " + esc(e.desc) : ""}${e.address ? " · " + esc(e.address) : ""} ${e.status === "submitted" ? `<span class="st st-gold" style="height:18px"><i></i>not reviewed</span>` : ""}${e.splitId && typeof window.splitBreakdown === "function" ? ((b => b ? `<details class="of-items" style="margin-top:4px"><summary><span>How the ${esc(usd(ofEntryC(e)))} was worked out</span></summary>${b.html}</details>` : "")(window.splitBreakdown(e))) : ""}</td><td class="r num">${usd(ofEntryC(e))}${editable ? ` <button class="linkish" data-drop="${i}|${esc(e._id)}" title="Leave it for a later run">×</button>` : ""}</td></tr>`).join("")}
               ${items.length ? `</table></details></td></tr>` : ""}
               ${l.owedC || l.deductC || l.baseC ? `<tr class="rule"><td>What ${esc(l.name.split(" ")[0])} earned</td><td class="r num">${usd(l.grossC)}</td></tr>` : ""}
               ${l.owedC || l.deductC ? `<tr><td>${l.workOff ? "Work applied to what's owed to PHD" : "Taken out toward what's owed to PHD"} <span class="muted">(${usd(l.owedC)} owed${l.owedPendingC ? `, ${usd(l.owedPendingC)} of it not confirmed yet` : ""})</span></td><td class="r num" style="color:var(--red)">${editable ? `−<input class="of-in num" type="number" step="0.01" data-ded="${i}" value="${(l.deductC / 100).toFixed(2)}">` : "−" + usd(l.deductC)}</td></tr>` : ""}
@@ -21262,6 +21262,12 @@ async function ofRunNickel(r, box){
   draw();
 }
 
+// project-split commissions on a pay-run line, each with its invoice-by-invoice breakdown (projsplit.js) — so the
+// approver sees how an agent's share was worked out, the same way hours show their days
+function ofSplitBreakdowns(l){
+  if(typeof window.splitBreakdown !== "function") return [];
+  return (l.entries || []).map(k => ofAll()[k]).filter(x => x && x.kind === "commission" && x.splitId).map(x => window.splitBreakdown(x)).filter(Boolean);
+}
 /* a pay run sent for approval: email the approvers (not the sender, not anyone paid in it) from billing@, with a link
    that opens the run in the console. The run waits in Office → Pay runs either way. */
 async function ofNotifyApprovers(run){
@@ -21271,7 +21277,7 @@ async function ofNotifyApprovers(run){
   if(!to.length){ toast("Waiting for approval in Office → Pay runs (no other approver to email)"); return; }
   if(typeof bmConn !== "function" || !bmConn()){ toast(`Waiting for ${who} to approve in Office → Pay runs — connect billing@ email to send them a note`); return; }
   const net = (run.lines || []).reduce((a, l) => a + (+l.netC || 0), 0), link = `${location.origin}/?view=ofRuns&r=${encodeURIComponent(run._id)}`;
-  const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}`);
+  const rows = (run.lines || []).map(l => `${l.name}: ${usd(l.netC)}${l.deductC ? ` (${usd(l.deductC)} toward what's owed to PHD)` : ""}` + ofSplitBreakdowns(l).map(x => "\n" + x.text).join(""));
   const names = (run.lines || []).filter(l => +l.netC > 0).map(l => String(l.name || "").split(" ")[0]);
   const by = ofSendBy(run.payDate || todayISO()), daysLeft = PMCore.dayNum(by) - PMCore.dayNum(todayISO());
   const when = daysLeft < 0 ? "late — send today" : daysLeft === 0 ? "approve today" : daysLeft === 1 ? "approve by tomorrow" : `approve by ${fdateS(by)}`;
@@ -21302,7 +21308,8 @@ function ofRunEmailHTML(run, link){
       <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(l.name)}</div>
       <div style="font-size:12.5px;color:${C.muted};margin-top:3px">${detail(l)}</div>
       ${(l.payFromId || run.payFromId) && +l.netC > 0 ? `<div style="font-size:12.5px;color:${C.muted};margin-top:3px">From ${e(ofPfShort(l.payFromId || run.payFromId))}</div>` : ""}
-      ${+l.deductC ? `<div style="font-size:12.5px;color:${C.red};margin-top:3px">− ${e(usd(l.deductC))} applied to what's owed to PHD${l.owedC > l.deductC ? ` · ${e(usd(l.owedC - l.deductC))} still owed` : " · paid off"}</div>` : ""}</td>
+      ${+l.deductC ? `<div style="font-size:12.5px;color:${C.red};margin-top:3px">− ${e(usd(l.deductC))} applied to what's owed to PHD${l.owedC > l.deductC ? ` · ${e(usd(l.owedC - l.deductC))} still owed` : " · paid off"}</div>` : ""}
+      ${ofSplitBreakdowns(l).map(x => x.html).join("")}</td>
     <td style="padding:14px 0;border-top:1px solid ${C.line};vertical-align:top;text-align:right;white-space:nowrap">
       <div style="font-size:15px;font-weight:600;color:${C.ink}">${e(usd(l.netC))}</div>
       ${+l.deductC ? `<div style="font-size:12px;color:${C.muted};margin-top:3px">of ${e(usd(l.grossC))}</div>` : ""}</td></tr>`;
