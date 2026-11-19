@@ -2916,3 +2916,12 @@ td>.tag+.st-rev{display:flex}
 .vb-a{display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap}
 .up-act .btn+.btn{margin-left:4px}
 .bl-tbl td.act{width:auto;white-space:nowrap} .bl-tbl td.act .btn{opacity:1;height:28px;padding:0 10px;font-size:12.5px;margin-right:6px}
+
+/* 1099s (tax1099.js) */
+.t9-hero{padding:14px;margin-bottom:16px!important}
+.t9-yr{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;margin-bottom:12px} .t9-yr label{display:flex;gap:6px;align-items:center} .t9-yr select,.t9-yr input{width:auto!important;padding:5px 8px;border:1px solid var(--line);border-radius:7px;font-size:13px}
+.t9-ks{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px} @media (max-width:900px){.t9-ks{grid-template-columns:1fr 1fr}}
+.t9-k{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px} .t9-k span{font-size:12px;color:var(--muted)} .t9-k b{font-size:20px} .t9-k em{font-style:normal;font-size:12px;color:var(--muted)}
+.t9-k.warn{border-color:#ecdcae;background:#fdf8ea} .t9-k.ok{border-color:#cfe5d4}
+.t9-tbl td{vertical-align:top} .t9-guide ol{padding-left:20px} .t9-guide li{margin-bottom:8px}
+.t9-yr input[type=number]{max-width:110px!important}

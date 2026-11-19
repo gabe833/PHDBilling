@@ -9732,7 +9732,9 @@ function vendorSheet(id){
       <div class="f2"><label class="fld"><span>Business type (from the W-9)</span><select data-t="entity">${VD_ENTITY.map(([k, l]) => `<option value="${k}" ${(v.tax.entity || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <label class="fld"><span>Gets a 1099</span><select data-t="f1099"><option value="" ${!v.tax.f1099 ? "selected" : ""}>Work it out (${vd1099(Object.assign({}, v, {tax:Object.assign({}, v.tax, {f1099:""})})) ? "yes" : "no"})</option><option value="yes" ${v.tax.f1099 === "yes" ? "selected" : ""}>Yes</option><option value="no" ${v.tax.f1099 === "no" ? "selected" : ""}>No</option></select></label></div>
       <div class="ps-kv"><span>W-9</span><b>${w9 ? `On file · received ${esc(fdateS(String(w9.at).slice(0, 10)))}` : v.tax.w9Asked ? `Asked for ${esc(fdateS(v.tax.w9Asked))}` : "Missing"}</b></div>
-      <div class="ps-kv"><span>Paid in ${yr}</span><b>${usd(paidYr)}${vd1099(v) && paidYr >= 60000 ? " · needs a 1099" : vd1099(v) ? " · 1099 once it reaches $600" : ""}</b></div>
+      ${(() => { const thr = Math.round((typeof t9YearCfg === "function" ? t9YearCfg(yr).threshold : 600) * 100), r9 = typeof vendorRows === "function" ? vendorRows(yr).find(r => r.v && r.v.id === v.id) : null, rep = r9 ? r9.repC : paidYr;
+        return `<div class="ps-kv"><span>Paid in ${yr}</span><b>${usd(rep)}${r9 ? ` · ${esc(r9.st.t)}` : vd1099(v) && rep >= thr ? " · needs a 1099" : vd1099(v) ? ` · 1099 once it reaches ${usd(thr)}` : ""}</b></div>`; })()}
+      <label class="check" style="margin:6px 0"><input type="checkbox" data-t="attorney" ${v.tax.attorney ? "checked" : ""}> Attorney or law firm (gets a 1099 even as a corporation)</label>
       ${!w9 ? `<label class="fld"><span>W-9 asked for on</span><input type="date" data-t="w9Asked" value="${esc(v.tax.w9Asked || "")}"></label>` : ""}
       <p class="help">The tax ID stays in the W-9 file — it's never typed in or stored here.</p>
       <div class="sectl">Documents</div>
@@ -9764,7 +9766,7 @@ function vendorSheet(id){
   if(!isNew){ const vb = $("#vbBox"), redrawVb = () => { if(!$("#vbBox")) return; vb.innerHTML = vendorBillsHTML(v, S.ui.vbF || "unpaid"); vendorBillsWire(vb, v, redrawVb); }; vendorBillsWire(vb, v, redrawVb); }
   const saveForm = () => {
     sh.querySelectorAll("[data-k]").forEach(i => v[i.dataset.k] = i.value.trim());
-    sh.querySelectorAll("[data-t]").forEach(i => { if(i.value) v.tax[i.dataset.t] = i.value; else delete v.tax[i.dataset.t]; });
+    sh.querySelectorAll("[data-t]").forEach(i => { if(i.type === "checkbox"){ if(i.checked) v.tax[i.dataset.t] = true; else delete v.tax[i.dataset.t]; return; } if(i.value) v.tax[i.dataset.t] = i.value; else delete v.tax[i.dataset.t]; });
     if(!v.name){ toast("Enter the vendor's name"); return false; }
     const dup = vendorFind(v.name); if(dup && dup.id !== v.id){ toast("There's already a vendor with that name"); return false; }
     snapshot(); const L = pmVendors(), i = L.findIndex(x => x.id === v.id);
@@ -19692,6 +19694,7 @@ renderNavPM = function(){
   { let n = 0; try{ n = poRows(pmCurrentMonth()).filter(x => x.k === "owed" && x.via === "nickel").length; }catch(e){} mk("payouts", "Owner payouts", "card", n ? navBadge(n, "goldfill", "Ready to send") : null); }
   { const fb = typeof finNavBadge === "function" ? finNavBadge() : null; mk("money", "Cash &amp; payouts", "card", fb, null, b => b.dataset.fin = "1"); }
   if(typeof pgBankRec === "function") mk("bankrec", "Bank reconciliation", "recon", typeof brNavBadge === "function" ? brNavBadge() : null);
+  if(typeof pg1099 === "function") mk("tax1099", "1099s", "file", typeof t9NavBadge === "function" ? t9NavBadge() : null);
   mk("payments", "Nickel", "sync", typeof payNavBadge === "function" ? payNavBadge() : null);
 
   head("Setup");
