@@ -29,6 +29,8 @@ const C2 = c => usd(Math.round(c));
 const splits = () => ofList("split:").sort((a, b) => String(a.projectId).localeCompare(String(b.projectId)));
 const projects = () => (S.properties || []).filter(p => p && !p.deleted);
 const proj = id => projects().find(p => p.id === id) || null;
+// a split's full key ("split:<project>:<person>") — the list hands out ids without the "split:" part
+const K = id => /^split:/.test(String(id)) ? String(id) : "split:" + id;
 const rid = () => Math.random().toString(36).slice(2, 10);
 const unitName = (p, uid) => ((p.units || []).find(u => u.id === uid) || {}).name || uid;
 
@@ -69,7 +71,7 @@ function splitCalc(sp){
   const poolC = got.reduce((a, r) => a + fee(r), 0) - (sp.deductShort !== false ? t.shortC : 0);
   const pendC = wait.reduce((a, r) => a + fee(r), 0);
   const pct = +sp.pct || 0, shareC = Math.round(poolC * pct / 100), pendShareC = Math.round(pendC * pct / 100);
-  const added = ofEntries().filter(e => e.splitId === sp.id && e.status !== "rejected");
+  const added = ofEntries().filter(e => K(e.splitId) === K(sp.id) && e.status !== "rejected");
   const creditedC = added.reduce((a, e) => a + ofEntryC(e), 0), paidC = added.filter(e => e.status === "paid").reduce((a, e) => a + ofEntryC(e), 0);
   return {p, F, cnt, got, wait, t, poolC, pendC, pct, shareC, pendShareC, added, creditedC, paidC, dueC:shareC - creditedC, fee};
 }
@@ -100,7 +102,7 @@ function pgOfSplits(){
 
 /* ---- one split, invoice by invoice ---- */
 function splitDetail(id){
-  const sp = ofAll()[id] ? Object.assign({id}, ofAll()[id]) : null; if(!sp) return;
+  id = K(id); const sp = ofAll()[id] ? Object.assign({id}, ofAll()[id]) : null; if(!sp) return;
   const x = splitCalc(sp); if(!x){ toast("That project isn't in the console any more"); return; }
   const who = ofPerson(sp.person) || {name:"—"}, sh = $("#sheet");
   const st = r => ({collected:`<span class="st st-green"><i></i>Collected${r.datePaid ? " " + esc(fdateS(r.datePaid)) : ""}</span>`, partial:`<span class="st st-gold"><i></i>Part paid</span>`, billed:`<span class="st st-gold"><i></i>Waiting on owner</span>`, draft:`<span class="st st-grey"><i></i>Not sent</span>`})[r.state];
@@ -138,7 +140,7 @@ function splitDetail(id){
 
 /* ---- put the agent's share on their next pay run ---- */
 function addToRun(id){
-  const sp = Object.assign({id}, ofAll()[id] || {}), x = splitCalc(sp); if(!x || x.dueC <= 0) return toast("Nothing due on this split");
+  id = K(id); const sp = Object.assign({id}, ofAll()[id] || {}), x = splitCalc(sp); if(!x || x.dueC <= 0) return toast("Nothing due on this split");
   const who = ofPerson(sp.person); if(!who) return toast("That agent isn't in People any more");
   const refs = x.got.map(r => r.ref).join(", ");
   if(!confirm(`Add ${C2(x.dueC)} for ${who.name} — ${x.pct}% of PHD's fees on ${x.p.name} (${refs})?\n\nIt goes on their next pay run as a confirmed commission. Nothing is paid until the pay run is approved and sent.`)) return;
@@ -152,7 +154,7 @@ function addToRun(id){
 /* ---- set up or change a split ---- */
 function splitSheet(id){
   $("#sheet").classList.remove("t9-wide");
-  const cur = id ? Object.assign({id}, ofAll()[id]) : null, sh = $("#sheet");
+  if(id) id = K(id); const cur = id ? Object.assign({id}, ofAll()[id]) : null, sh = $("#sheet");
   const agents = ofPeople().filter(p => p.active !== false), ps = projects().filter(p => !p.archived || (cur && cur.projectId === p.id));
   const sp = cur || {projectId:"", person:(agents.find(a => a.role === "agent") || {}).id || "", pct:50, count:{phd:true, labor:true, materials:true}, deductShort:true, note:""};
   const cnt = Object.assign({phd:true, labor:true, materials:true}, sp.count || {});
