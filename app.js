@@ -4990,6 +4990,7 @@ function pgPmMonth(){
                 ["›", () => { S.ui.pmMonth = monthAdd(m, 1); persistUi(); render(); }, "ghost"]];
   if(rows.length){
     acts.push(["Export CSV", () => pmExportCsv(m)]);
+    acts.push(["Repairs list", () => pmRepairsSheet(m)]);
     acts.push(["Owner statements", () => { S.ui.stMonth = m; go("pmStatements"); }]);
     { const nd = stmtCandidates(m).filter(x => !x.why && !x.done).length; acts.push([nd ? `Email statements (${nd})` : "Email statements", () => pmStatementMailSheet(m)]); }
     if(!closed && m === todayISO().slice(0, 7) && mdReady()){ const pl = mdPlan(), nF = pl.rows.length + pl.filters.length; if(nF) acts.push([`Fill from MagicDoor (${nF})`, () => { mdApply({rowsOnly:true}); render(); }, "primary"]); }
@@ -5022,6 +5023,7 @@ function pgPmMonth(){
     <div class="pf-cell"><div class="label">PHD income</div><div class="pf-v a">${usd(R.netC)}</div><div class="pf-note">${usd(R.pmFeeC)} PM fees${R.deductC ? ` · ${usd(-R.deductC)} deductions` : ""}</div></div>
     <div class="pf-cell"><div class="label">Needs a look</div><div class="pf-v"${R.flags ? ' style="color:var(--gold)"' : ""}>${R.flags}</div><div class="pf-note">${R.flags ? "rows with a warning" : "Everything adds up"}</div></div>`;
   v.appendChild(tiles);
+  { const rc = tiles.children[1]; if(rc){ rc.style.cursor = "pointer"; rc.title = "See every repair this month"; rc.onclick = () => pmRepairsSheet(m); } }
 
   /* ---- filters ---- */
   const f = S.ui.pmFilter || "all", q = (S.ui.pmQ || "").toLowerCase();
@@ -6053,6 +6055,71 @@ function pmImportSheet(m){
 /* ====================================================================
    EXPORTS — month CSV and owner statements
    ==================================================================== */
+/* ---------- every repair on the month, line by line ----------
+   One line per repair item on each rental's row (bills, MagicDoor bills, Lowe's runs…), with its admin fee, where it came
+   from and whether the bill is paid. A rental whose repairs ran past the rent shows how much carries to next month; the
+   totals at the bottom are the same as Month close's ("applied this month" = what comes off owner payouts and moves to
+   Operating as repairs). Tenant-paid charges are listed but never taken from the owner. */
+function pmRepairsLines(m){
+  const lines = [];
+  pmMonthRows(m).forEach(({row, prop}) => {
+    if(row.detailOnly) return;
+    const c = pmCalc(row, prop), a = pmRowApplied(row, prop), items = (row.repairItems || []).filter(it => cents(it.amount));
+    const owner = ownerLabel(ownerById(prop.ownerId));
+    const bills = typeof billList === "function" ? billList() : [];
+    items.forEach(it => {
+      const b = it.billId ? bills.find(x => x.id === it.billId) : null, tenant = it.payer === "tenant";
+      lines.push({prop, row, owner, date:it.date || "", vendor:it.vendor || "", memo:it.memo || it.desc || "", amtC:cents(it.amount), feeC:tenant ? 0 : itemFeeC(it, prop), tenant,
+        src:it.mdBill || it.mdLine ? "MagicDoor" : b ? "Bill" : it.source || "Entered", bill:b ? (b.status === "paid" ? "Paid" : b.status === "void" ? "Void" : "Unpaid") : "", billId:b ? b.id : "", link:it.link || ""});
+    });
+    // a row with a repairs total typed in (the old workbook) and no lines behind it
+    if(!items.length && c.repairsC) lines.push({prop, row, owner, date:"", vendor:"", memo:"Repairs (entered as a total)", amtC:c.repairsC, feeC:c.adminC, tenant:false, src:"Entered", bill:"", billId:"", link:""});
+    if(a.outRepC || a.inRepC) lines.push({prop, row, owner, carry:true, outRepC:a.outRepC, outAdmC:a.outAdmC, inRepC:a.inRepC, inAdmC:a.inAdmC});
+  });
+  return lines;
+}
+function pmRepairsSheet(m){
+  const L = pmRepairsLines(m), R = pmMonthRoll(m), nx = monthLabel(monthAdd(m, 1)), pv = monthLabel(monthAdd(m, -1));
+  const items = L.filter(x => !x.carry), owned = items.filter(x => !x.tenant);
+  const sumC = (arr, k) => arr.reduce((t, x) => t + (x[k] || 0), 0);
+  const outRep = sumC(L, "outRepC"), outAdm = sumC(L, "outAdmC"), inRep = sumC(L, "inRepC"), inAdm = sumC(L, "inAdmC");
+  const unpaid = owned.filter(x => x.bill === "Unpaid");
+  const byProp = [];
+  L.forEach(x => { let g = byProp.find(y => y.prop.id === x.prop.id); if(!g){ g = {prop:x.prop, owner:x.owner, lines:[], carry:null}; byProp.push(g); } if(x.carry) g.carry = x; else g.lines.push(x); });
+  byProp.sort((a, b) => a.prop.name.localeCompare(b.prop.name));
+  const rowH = x => `<tr${x.tenant ? ' style="opacity:.6"' : ""}><td class="nw">${esc(x.date ? fdateS(x.date) : "")}</td><td>${esc(x.vendor)}${x.memo ? `<div class="item-s">${esc(x.memo)}</div>` : ""}</td>
+      <td class="r num">${usd(x.amtC)}</td><td class="r num">${x.tenant ? "—" : usd(x.feeC)}</td>
+      <td>${x.tenant ? `<span class="st st-grey"><i></i>Tenant pays</span>` : x.bill ? `<span class="st ${x.bill === "Paid" ? "st-green" : x.bill === "Void" ? "st-grey" : "st-gold"}"><i></i>${x.bill}</span>` : ""}<div class="item-s">${esc(x.src)}${x.link ? ` · <a href="${esc(x.link)}" target="_blank" rel="noopener">receipt</a>` : ""}</div></td></tr>`;
+  const groupH = g => `<tr><td colspan="5" style="background:var(--bg2,#f4f5f7);padding-top:10px"><b>${esc(g.prop.name)}</b> <span class="muted">${esc(g.owner || "")}</span></td></tr>${g.lines.map(rowH).join("")}
+      ${g.carry && g.carry.outRepC ? `<tr><td></td><td class="muted">Ran past the rent — carries to ${esc(nx)}</td><td class="r num" style="color:var(--gold)">−${usd(g.carry.outRepC)}</td><td class="r num" style="color:var(--gold)">−${usd(g.carry.outAdmC)}</td><td></td></tr>` : ""}
+      ${g.carry && g.carry.inRepC ? `<tr><td></td><td class="muted">Carried in from ${esc(pv)}</td><td class="r num">${usd(g.carry.inRepC)}</td><td class="r num">${usd(g.carry.inAdmC)}</td><td></td></tr>` : ""}`;
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="sheet-h"><div><h3>Repairs · ${esc(monthLabel(m))}</h3><div class="muted" style="font-size:12.5px;margin-top:3px">${owned.length} repair${owned.length === 1 ? "" : "s"} on ${byProp.filter(g => g.lines.some(x => !x.tenant)).length} rentals${items.length > owned.length ? ` · ${items.length - owned.length} tenant-paid` : ""}</div></div><button class="btn ghost sm" id="shClose" style="margin-left:auto">✕</button></div>
+  <div class="sheet-b">
+    <div class="pf-hero card" style="margin-bottom:14px">
+      <div class="pf-cell"><div class="label">On the statements</div><div class="pf-v">${usd(sumC(owned, "amtC"))}</div><div class="pf-note">${usd(sumC(owned, "feeC"))} admin fee</div></div>
+      <div class="pf-cell"><div class="label">Carries to ${esc(nx)}</div><div class="pf-v">${usd(outRep)}</div><div class="pf-note">${usd(outAdm)} admin fee${inRep ? ` · ${usd(inRep)} carried in from ${esc(pv)}` : ""}</div></div>
+      <div class="pf-cell"><div class="label">Applied this month</div><div class="pf-v g">${usd(R.repairsC)}</div><div class="pf-note">${usd(R.adminC)} admin fee · moves to Operating as repairs</div></div>
+      <div class="pf-cell"><div class="label">Bills still unpaid</div><div class="pf-v"${unpaid.length ? ' style="color:var(--gold)"' : ""}>${usd(sumC(unpaid, "amtC"))}</div><div class="pf-note">${unpaid.length} bill${unpaid.length === 1 ? "" : "s"}</div></div>
+    </div>
+    ${Math.abs(sumC(owned, "amtC") - outRep + inRep - R.repairsC) > 1 ? `<p class="pm-banner">The lines add up to ${usd(sumC(owned, "amtC") - outRep + inRep)} applied, but Month close shows ${usd(R.repairsC)} — a row has a repairs total typed over its lines.</p>` : ""}
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Vendor · what for</th><th class="r">Amount</th><th class="r">Admin fee</th><th>Bill</th></tr></thead>
+      <tbody>${byProp.map(groupH).join("") || `<tr><td colspan="5" class="muted">No repairs this month.</td></tr>`}</tbody>
+      <tfoot><tr><td colspan="2"><b>Applied this month</b></td><td class="r num"><b>${usd(R.repairsC)}</b></td><td class="r num"><b>${usd(R.adminC)}</b></td><td></td></tr></tfoot></table></div>
+  </div>
+  <div class="sheet-f"><span style="flex:1"></span><button class="btn" id="rpCsv">Download CSV</button><button class="btn primary" id="rpDone">Done</button></div>`;
+  openPanel();
+  $("#shClose").onclick = $("#rpDone").onclick = () => closeSheet();
+  $("#rpCsv").onclick = () => {
+    const out = [["Property","Owner","Date","Vendor","What for","Amount","Admin fee","Counts this month","Bill","Source"]];
+    byProp.forEach(g => { g.lines.forEach(x => out.push([g.prop.name, g.owner || "", x.date, x.vendor, x.memo, (x.amtC / 100).toFixed(2), (x.feeC / 100).toFixed(2), x.tenant ? "No — tenant pays" : "Yes", x.bill, x.src]));
+      if(g.carry && g.carry.outRepC) out.push([g.prop.name, g.owner || "", "", "", `Carries to ${nx}`, (-g.carry.outRepC / 100).toFixed(2), (-g.carry.outAdmC / 100).toFixed(2), "", "", ""]);
+      if(g.carry && g.carry.inRepC) out.push([g.prop.name, g.owner || "", "", "", `Carried in from ${pv}`, (g.carry.inRepC / 100).toFixed(2), (g.carry.inAdmC / 100).toFixed(2), "", "", ""]); });
+    out.push(["Applied this month","","","","",(R.repairsC / 100).toFixed(2),(R.adminC / 100).toFixed(2),"","",""]);
+    download(`PHD repairs ${monthLabel(m)}.csv`, out.map(r => r.map(c => /[",\n]/.test(String(c)) ? `"${String(c).replace(/"/g, '""')}"` : c).join(",")).join("\n"));
+  };
+  sh.querySelectorAll("a[target]").forEach(a => a.onclick = e => e.stopPropagation());
+}
 function pmExportCsv(m){
   // "Repairs" and "Admin fee" are everything charged on the row; the "this month" columns are what actually came off this
   // month (repairs carried to next month taken out, repairs carried in from last month added) — the same split as the totals
