@@ -5423,7 +5423,19 @@ function pmCarrySync(){
     const wantC = ready && c.payoutC < 0 ? -c.payoutC : 0;
     const out = (r.adjustments || []).find(a => a.carryOut), haveC = out ? cents(out.amount) : 0;
     const nr0 = P2.rows[pmKey(next, p.id)], inn = nr0 && (nr0.adjustments || []).find(a => a.carryIn && a.from === r.month);
-    // the next month gets its line once it has been started (a row made early would make it look like the current month)
+    // a carry set by hand (charges on a vacant rental moved to next month even though this month's payout covers them:
+    // 1372 Orange Grove #B, Nov 2026, the $60 lawn bill + $6 fee) stays as set; it only gets its line in the next month
+    const man = (r.adjustments || []).find(a => a.carryOut && a.manual);
+    if(man){
+      const mC = cents(man.amount);
+      if(nr0 && open(next) && !nr0.paidOut && !nr0.locked && !(inn && cents(inn.amount) === -mC)){
+        if(!snap){ snapshot(); snap = true; }
+        nr0.adjustments = (nr0.adjustments || []).filter(a => !(a.carryIn && a.from === r.month));
+        nr0.adjustments.push({id:uid(), carryIn:true, from:r.month, date:next + "-01", amount:-mC / 100, note:`Carried from ${monthLabel(r.month)} — ${man.why || "moved to this month"}`});
+        pmTouch(nr0); lines.push(`${p.name}: ${usd(mC)} carried from ${monthLabel(r.month)} added to ${monthLabel(next)}`);
+      }
+      continue;
+    }
     if(wantC === haveC && (!wantC || !nr0 || (inn && cents(inn.amount) === -wantC))) continue;
     if(wantC && (!open(next) || (nr0 && (nr0.paidOut || nr0.locked)))) continue;     // nowhere to carry it to
     if(!snap){ snapshot(); snap = true; }
