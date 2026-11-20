@@ -17859,7 +17859,7 @@ function ofRunSheet(id){
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
     const rm = $("#orRemind"); if(rm) rm.onclick = () => { rm.disabled = true; ofNotifyApprovers(Object.assign({}, ofAll()[r._id], {_id:r._id})); };
     // Nickel's connection is checked on the bills pages; a run opened straight from Office checks it here first
-    if(r.status === "approved" && $("#orNk")) (nickelOn() ? Promise.resolve() : payStatus()).then(() => {
+    if(r.status === "approved" && $("#orNk")) (async () => { if(!nickelOn()) await payStatus(); for(let i = 0; PAY.loading && i < 60; i++) await new Promise(ok => setTimeout(ok, 250)); })().then(() => {
       const box = $("#orNk"); if(!box) return;
       if(nickelOn()) ofRunNickel(r, box);
       else box.outerHTML = `<p class="help">Approved. Nickel isn't connected${PAY.err ? ` (${esc(PAY.err)})` : ""} — send the payments yourself, then press Record as paid.</p>`; });
