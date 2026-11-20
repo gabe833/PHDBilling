@@ -6657,7 +6657,10 @@ function pgPmAlerts(){
       c.querySelectorAll(".al-r[data-ak]").forEach(r => { const k = r.dataset.ak;
         r.insertAdjacentHTML("afterbegin", `<label class="al-ck"><input type="checkbox" data-alk="${esc(k)}" ${AL_SEL.has(k) ? "checked" : ""}></label>`);
         r.classList.toggle("al-picked", AL_SEL.has(k)); r.classList.add("al-selmode");
-        r.addEventListener("click", e => { if(e.target.closest("button, a, .al-menu")) return; const cb = r.querySelector("[data-alk]"); if(e.target !== cb) cb.checked = !cb.checked; AL_SEL[cb.checked ? "add" : "delete"](k); r.classList.toggle("al-picked", cb.checked); alSelBar(); }); });
+        const cb = r.querySelector("[data-alk]");
+        cb.addEventListener("change", () => { AL_SEL[cb.checked ? "add" : "delete"](k); r.classList.toggle("al-picked", cb.checked); alSelBar(); });
+        // anywhere else on the row ticks it too (caught first, so the row's own text actions don't also run)
+        r.addEventListener("click", e => { if(e.target.closest("button, a, .al-menu, .al-ck")) return; e.stopPropagation(); e.preventDefault(); cb.click(); }, true); });
       const allCb = c.querySelector("[data-alall]"); allCb.onchange = () => { L.forEach(a => AL_SEL[allCb.checked ? "add" : "delete"](a.key)); render(); };
     }
   });
