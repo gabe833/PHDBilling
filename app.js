@@ -17821,7 +17821,7 @@ function ofRunSheet(id){
           </div>`; }).join("") || `<p class="muted">Nobody has pay in this period. Change the dates, or add people and their hours first.</p>`}
         ${editable ? `<div style="margin-top:8px"><select id="orAdd"><option value="">Add someone…</option>${ofPeople().filter(p => !r.lines.some(l => l.person === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></div>` : ""}
         <div class="mn-sum" style="margin-top:12px;border:1px solid var(--line-2);border-radius:10px"><span>Gross <b class="num">${usd(sum("grossC"))}</b></span><span>Taken out <b class="num">${usd(sum("deductC"))}</b></span><span>Net to send <b class="num">${usd(sum("netC"))}</b></span></div>
-        ${r.status === "approved" ? (typeof nickelOn === "function" && nickelOn() ? `<div id="orNk" class="of-nk"><p class="muted" style="margin:0">Loading Nickel…</p></div>` : `<p class="help">Approved. Send the payments (Nickel or the bank), then record it here.</p>`) : ""}
+        ${r.status === "approved" ? (typeof nickelOn === "function" && (nickelOn() || (!PAY.status && !PAY.err && payOnline())) ? `<div id="orNk" class="of-nk"><p class="muted" style="margin:0">Loading Nickel…</p></div>` : `<p class="help">Approved. Send the payments (Nickel or the bank), then record it here.${PAY.err ? ` Nickel didn't answer: ${esc(PAY.err)}` : ""}</p>`) : ""}
         ${(r.lines || []).some(l => l.nickel) && r.status !== "approved" ? `<p class="help">${r.lines.filter(l => l.nickel).map(l => `${esc(l.name)}: Nickel ${esc(l.nickel.ref)} ${l.nickel.sent ? `sent ${esc(l.nickel.delivery || "")}${l.nickel.arrives ? " for " + esc(fdateS(l.nickel.arrives)) : ""}` : "— " + esc(l.nickel.err || "not sent")}`).join("<br>")}</p>` : ""}
         ${r.status === "submitted" && !canApprove ? `<p class="help">Waiting for ${esc((ofSettings().approvers || []).join(", ") || "an approver")}.${mineIn ? " You're paid in this run, so someone else approves it." : ""}</p>` : ""}
         ${r.paidAt ? `<p class="help">Recorded as paid ${esc(fdateS(String(r.paidOn || r.paidAt).slice(0, 10)))} by ${esc(r.paidBy || "")}${r.method ? " · " + esc(r.method) : ""}.</p>` : ""}
@@ -17858,7 +17858,11 @@ function ofRunSheet(id){
     const dl = $("#orDel"); if(dl) dl.onclick = () => { if(!confirm("Delete this pay run? Nothing on it is lost — the items go back to waiting.")) return; ofPut(r._id, Object.assign({}, ofAll()[r._id], {deleted:true})); commit(); closeSheet(); render(); };
     const pd = $("#orPaid"); if(pd) pd.onclick = () => ofRunPaid(r);
     const rm = $("#orRemind"); if(rm) rm.onclick = () => { rm.disabled = true; ofNotifyApprovers(Object.assign({}, ofAll()[r._id], {_id:r._id})); };
-    if(r.status === "approved" && $("#orNk")) ofRunNickel(r, $("#orNk"));
+    // Nickel's connection is checked on the bills pages; a run opened straight from Office checks it here first
+    if(r.status === "approved" && $("#orNk")) (nickelOn() ? Promise.resolve() : payStatus()).then(() => {
+      const box = $("#orNk"); if(!box) return;
+      if(nickelOn()) ofRunNickel(r, box);
+      else box.outerHTML = `<p class="help">Approved. Nickel isn't connected${PAY.err ? ` (${esc(PAY.err)})` : ""} — send the payments yourself, then press Record as paid.</p>`; });
     const ro = $("#orReopen"); if(ro) ro.onclick = () => { if(!confirm("Reopen this pay run as a draft? It will need approving again.")) return; const d = store("draft"); delete d.approvedBy; delete d.approvedAt; ofPut(r._id, d); closeSheet(); ofRunSheet(r._id); };
   };
   draw(); openPanel();
