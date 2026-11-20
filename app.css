@@ -2954,3 +2954,12 @@ td>.tag+.st-rev{display:flex}
 @media (max-width:900px){.t9-ks8{grid-template-columns:1fr 1fr} .t9-dlr{grid-template-columns:110px 1fr}}
 .t9-amt{color:inherit;text-decoration:none;border-bottom:1px dotted var(--muted)} .t9-amt:hover{border-bottom-style:solid} #t9Amt{color:inherit}
 .sheet.t9-wide{width:min(1080px,calc(100% - 20px))}
+
+/* Action center: bulk select */
+.al-ck{display:flex;align-items:center;flex:none;cursor:pointer}
+.al-ck input{width:16px;height:16px;margin:0;accent-color:var(--accent);cursor:pointer}
+.al-r.al-selmode{cursor:pointer}
+.al-r.al-selmode .al-dot{display:none}
+.al-r.al-picked{background:var(--accent-soft, #EEF5F3)}
+.al-selbar{position:sticky;bottom:12px;z-index:50;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh-lift)}
+.al-selbar b{font-size:13px;font-weight:600}

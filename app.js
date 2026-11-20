@@ -6454,6 +6454,15 @@ function pmAlertSet(key, st){
   if(st) A[key] = Object.assign({at:new Date().toISOString(), by:(typeof Cloud !== "undefined" && Cloud.email) || ""}, st); else delete A[key];
   commit();
 }
+// several at once (bulk snooze / dismiss from the Action center): one undo step, one save
+function pmAlertSetMany(keys, st){
+  if(!keys.length) return;
+  snapshot();
+  const A = pmAlertState(), at = new Date().toISOString(), by = (typeof Cloud !== "undefined" && Cloud.email) || "";
+  keys.forEach(k => { if(st) A[k] = Object.assign({at, by}, st); else delete A[k]; });
+  commit();
+}
+const AL_SEL = new Set();
 function pmAlertRowHTML(a){
   const lv = PM_LEVEL[a.level];
   return `<div class="al-r al-${a.level}" data-ak="${esc(a.key)}">
@@ -6630,25 +6639,51 @@ function pgPmAlerts(){
   $("#pgSub").textContent = all.length ? `${all.filter(a => a.level === "urgent").length} urgent · ${all.filter(a => a.level === "warn").length} need action · ${all.filter(a => a.level === "info").length} heads-up — also emailed to the team each morning` : "Nothing needs attention right now";
   const v = $("#view");
   const bar = elm("div","sc-bar");
-  bar.innerHTML = `<div class="sc-seg">${types.map(([k, l]) => { const n = k === "all" ? all.length : all.filter(a => typeOf(a) === k).length; return k === "all" || n ? `<button data-af="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>` : ""; }).join("")}</div>`;
+  const selOn = !!S.ui.alSel;
+  bar.innerHTML = `<div class="sc-seg">${types.map(([k, l]) => { const n = k === "all" ? all.length : all.filter(a => typeOf(a) === k).length; return k === "all" || n ? `<button data-af="${k}" class="${f === k ? "on" : ""}">${l} <span>${n}</span></button>` : ""; }).join("")}</div>
+    ${all.length ? `<button class="btn sm ${selOn ? "primary" : "ghost"}" id="alSelT" style="margin-left:auto">${selOn ? "Done selecting" : "Select"}</button>` : ""}`;
   v.appendChild(bar);
   bar.querySelectorAll("[data-af]").forEach(b => b.onclick = () => { S.ui.pmAlF = b.dataset.af; render(); });
   const list = all.filter(a => f === "all" || typeOf(a) === f);
+  // selection only keeps what's still on screen
+  const shown = new Set(list.map(a => a.key)); [...AL_SEL].forEach(k => { if(!shown.has(k)) AL_SEL.delete(k); });
+  const selT = $("#alSelT"); if(selT) selT.onclick = () => { S.ui.alSel = !selOn; AL_SEL.clear(); render(); };
   ["urgent","warn","info"].forEach(lv => {
     const L = list.filter(a => a.level === lv); if(!L.length) return;
     const c = elm("div","card"); c.style.marginBottom = "14px";
-    c.innerHTML = `<div class="card-h"><span class="al-dot al-${lv}" style="position:static"></span><h3>${PM_LEVEL[lv].label}</h3><span class="muted" style="margin-left:auto;font-size:12px">${L.length}</span></div><div class="al-list">${L.map(pmAlertRowHTML).join("")}</div>`;
+    c.innerHTML = `<div class="card-h">${selOn ? `<label class="al-ck" title="Select all ${esc(PM_LEVEL[lv].label.toLowerCase())}"><input type="checkbox" data-alall="${lv}" ${L.every(a => AL_SEL.has(a.key)) ? "checked" : ""}></label>` : `<span class="al-dot al-${lv}" style="position:static"></span>`}<h3>${PM_LEVEL[lv].label}</h3><span class="muted" style="margin-left:auto;font-size:12px">${L.length}</span></div><div class="al-list">${L.map(pmAlertRowHTML).join("")}</div>`;
     pmWireAlerts(c, L); v.appendChild(c);
+    if(selOn){
+      c.querySelectorAll(".al-r[data-ak]").forEach(r => { const k = r.dataset.ak;
+        r.insertAdjacentHTML("afterbegin", `<label class="al-ck"><input type="checkbox" data-alk="${esc(k)}" ${AL_SEL.has(k) ? "checked" : ""}></label>`);
+        r.classList.toggle("al-picked", AL_SEL.has(k)); r.classList.add("al-selmode");
+        r.addEventListener("click", e => { if(e.target.closest("button, a, .al-menu")) return; const cb = r.querySelector("[data-alk]"); if(e.target !== cb) cb.checked = !cb.checked; AL_SEL[cb.checked ? "add" : "delete"](k); r.classList.toggle("al-picked", cb.checked); alSelBar(); }); });
+      const allCb = c.querySelector("[data-alall]"); allCb.onchange = () => { L.forEach(a => AL_SEL[allCb.checked ? "add" : "delete"](a.key)); render(); };
+    }
   });
+  if(selOn){
+    const sb = elm("div", "al-selbar"); sb.id = "alSelBar"; v.appendChild(sb);
+    const alSelBar = window.alSelBar = () => { const n = AL_SEL.size, box = $("#alSelBar"); if(!box) return;
+      box.innerHTML = `<b>${n ? `${n} selected` : "Tick the items to snooze or dismiss"}</b>${list.length && n < list.length ? `<button class="btn sm ghost" data-alb="all">Select all ${list.length}</button>` : ""}${n ? `<button class="btn sm ghost" data-alb="none">Clear</button>` : ""}<span style="flex:1"></span>
+        <button class="btn sm" data-alb="1" ${n ? "" : "disabled"}>Snooze 1 day</button><button class="btn sm" data-alb="3" ${n ? "" : "disabled"}>3 days</button><button class="btn sm" data-alb="7" ${n ? "" : "disabled"}>A week</button><button class="btn sm primary" data-alb="dis" ${n ? "" : "disabled"}>Dismiss ${n || ""}</button>`;
+      box.querySelectorAll("[data-alb]").forEach(b => b.onclick = () => { const w = b.dataset.alb, keys = [...AL_SEL];
+        if(w === "all"){ list.forEach(a => AL_SEL.add(a.key)); return render(); }
+        if(w === "none"){ AL_SEL.clear(); return render(); }
+        if(w === "dis"){ const note = prompt(`Dismiss ${keys.length} item${keys.length === 1 ? "" : "s"} — add a short reason (optional)`); if(note === null) return;
+          pmAlertSetMany(keys, {state:"dismissed", note:note.trim()}); AL_SEL.clear(); toast(`Dismissed ${keys.length}`, true); return; }
+        const until = PMCore.isoOf(PMCore.dayNum(todayISO()) + Number(w)); pmAlertSetMany(keys, {state:"snoozed", until}); AL_SEL.clear(); toast(`Snoozed ${keys.length} until ${fdateS(until)}`, true); }); };
+    alSelBar();
+  }
   if(!list.length) v.appendChild(elm("div","card",`<div class="empty"><b>All caught up</b><p>Rent, payouts, leases, deposits and month-end are all on track.</p></div>`));
   // snoozed & dismissed
   const A = pmAlertState(), held = Object.entries(A).filter(([, s]) => s.state === "dismissed" || (s.state === "snoozed" && s.until > todayISO()));
   if(held.length){
     const c = elm("details","card pm-held");
-    c.innerHTML = `<summary class="card-h"><h3>Snoozed &amp; dismissed</h3><span class="muted" style="margin-left:auto;font-size:12px">${held.length}</span></summary>
+    c.innerHTML = `<summary class="card-h"><h3>Snoozed &amp; dismissed</h3><span class="muted" style="margin-left:auto;font-size:12px">${held.length}</span>${held.length > 1 ? `<button class="btn sm ghost" id="alUnAll">Restore all</button>` : ""}</summary>
       <div class="al-list">${held.map(([k, s]) => `<div class="al-r"><div class="al-txt"><b>${esc(pmAlertLabel(k))}</b><span>${s.state === "snoozed" ? "Snoozed until " + esc(fdateS(s.until)) : "Dismissed"}${s.by ? " by " + esc(cloudWhoSafe(s.by)) : ""}${s.note ? " — " + esc(s.note) : ""}</span></div>
         <div class="al-btns"><button class="btn sm ghost" data-unhold="${esc(k)}">Restore</button></div></div>`).join("")}</div>`;
     c.querySelectorAll("[data-unhold]").forEach(b => b.onclick = () => pmAlertSet(b.dataset.unhold, null));
+    const ua = c.querySelector("#alUnAll"); if(ua) ua.onclick = e => { e.preventDefault(); if(confirm(`Bring back all ${held.length} snoozed and dismissed items?`)) pmAlertSetMany(held.map(([k]) => k), null); };
     v.appendChild(c);
   }
 }
