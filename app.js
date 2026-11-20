@@ -6469,19 +6469,24 @@ function pmWireAlerts(root, list){
   const find = k => list.find(a => a.key === k);
   root.querySelectorAll("[data-aact]").forEach(b => b.onclick = e => { e.stopPropagation(); const a = find(b.dataset.aact); if(!a) return;
     try{ pmAlertAct(a); }catch(er){ console.error(er); toast("That didn't open: " + er.message); } });
-  root.querySelectorAll("[data-amenu]").forEach(b => b.onclick = e => { e.stopPropagation(); const m = b.nextElementSibling;
-    document.querySelectorAll(".al-menu.on").forEach(x => { if(x !== m) x.classList.remove("on"); });
-    if(!m.classList.toggle("on")) return;
+  root.querySelectorAll("[data-amenu]").forEach(b => { const m = b.nextElementSibling; if(m) b._menu = m; });
+  root.querySelectorAll("[data-amenu]").forEach(b => b.onclick = e => { e.stopPropagation(); const m = b._menu; if(!m) return;
+    const was = m.classList.contains("on"); alMenusClose(); if(was) return;
+    // a card (or a page that slides in) can clip or shift a fixed menu, so it opens on the page itself, against the window
+    m.dataset.ak = b.dataset.amenu; m._home = b.parentNode; document.body.appendChild(m); m.classList.add("on");
     // the card clips its contents, so the menu is placed against the window, flipping up near the bottom
     const r = b.getBoundingClientRect(); m.style.position = "fixed"; m.style.right = Math.max(8, innerWidth - r.right) + "px"; m.style.left = "auto";
     const h = m.offsetHeight; m.style.top = (r.bottom + 4 + h > innerHeight - 8 ? Math.max(8, r.top - 4 - h) : r.bottom + 4) + "px"; });
-  root.querySelectorAll(".al-menu [data-asnz]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
+  root.querySelectorAll(".al-menu [data-asnz]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-menu").dataset.ak; alMenusClose();
     const until = PMCore.isoOf(PMCore.dayNum(todayISO()) + Number(b.dataset.asnz)); pmAlertSet(key, {state:"snoozed", until}); toast(`Snoozed until ${fdateS(until)}`, true); });
-  root.querySelectorAll(".al-menu [data-adis]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-r").dataset.ak;
+  root.querySelectorAll(".al-menu [data-adis]").forEach(b => b.onclick = e => { e.stopPropagation(); const key = b.closest(".al-menu").dataset.ak; alMenusClose();
     const note = prompt("Dismiss this alert — add a short reason (optional)") ; if(note === null) return; pmAlertSet(key, {state:"dismissed", note:note.trim()}); toast("Dismissed", true); });
 }
-document.addEventListener("click", () => document.querySelectorAll(".al-menu.on").forEach(x => x.classList.remove("on")));
-window.addEventListener("scroll", () => document.querySelectorAll(".al-menu.on").forEach(x => x.classList.remove("on")), true);
+// close every open snooze menu and put it back in its row (or drop it, if the row was redrawn meanwhile)
+function alMenusClose(){ document.querySelectorAll(".al-menu.on").forEach(x => { x.classList.remove("on"); if(x._home && x._home.isConnected) x._home.appendChild(x); else if(x.parentNode === document.body) x.remove(); }); }
+document.addEventListener("click", alMenusClose);
+window.addEventListener("scroll", e => { if(!(e.target && e.target.closest && e.target.closest(".al-menu"))) alMenusClose(); }, true);
+window.addEventListener("resize", alMenusClose);
 
 /* ====================================================================
    OVERVIEW — every property at a glance, and what needs doing
@@ -17312,8 +17317,8 @@ if(typeof openSheet === "function"){
    ===================================================================== */
 ICON_PATHS.office = '<path d="M2.5 13.5V4.5l5.5-2 5.5 2v9"/><path d="M2.5 13.5h11M5.5 13.5v-3h5v3M5.5 6.5h1M9.5 6.5h1M5.5 8.5h1M9.5 8.5h1"/>';
 ICON_PATHS.clock = '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/>';
-const OF_VIEWS = new Set(["ofMe", "ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed"]);
-const OF_ADMIN_VIEWS = new Set(["ofRuns", "ofWork", "ofPeople", "ofOwed"]);
+const OF_VIEWS = new Set(["ofMe", "ofRuns", "ofWork", "ofPeople", "ofComm", "ofMls", "ofOwed", "ofTax"]);
+const OF_ADMIN_VIEWS = new Set(["ofRuns", "ofWork", "ofPeople", "ofOwed", "ofTax"]);
 const OF_AGENT_VIEWS = new Set(["ofComm", "ofMls"]);          // admins, and agents for their own
 const OF_EARN = new Set(["hours", "work", "commission", "expense"]), OF_OWE = new Set(["owed", "mls"]);
 const OF_KIND = {hours:"Hours", work:"Work invoice", commission:"Commission", expense:"Reimbursement", timeoff:"Time off", owed:"Owed to PHD", mls:"MLS dues", deduction:"Taken out of pay", payment:"Paid"};
@@ -17447,6 +17452,7 @@ if(typeof renderNav === "function"){
       n.appendChild(elm("div", "nav-gap"));
       n.appendChild(elm("div", "nav-head", "Office"));
       mk("ofPeople", "People & permissions", "user", badge(ofPeople().filter(p => p.active !== false).length));
+      if(typeof t9Build === "function") mk("ofTax", "1099s", "file", (() => { try{ const n = ofTaxRows(ofTaxYear()).filter(x => x.r && x.r.k === "potential" && (!["received", "verified"].includes(x.r.w9s) || x.r.blocking.length)).length; return badge(n, true); }catch(e){ return ""; } })());
     } else if(ofIsAgent()){
       const mine = ofMyPerson(), es = ofEntries().filter(e => e.person === mine.id);
       n.appendChild(elm("div", "nav-gap"));
@@ -17469,13 +17475,14 @@ if(typeof render === "function"){
       ofOwed:["Office · Pay", "Owed to PHD", "Money someone owes the firm — taken out of their pay once confirmed"],
       ofComm:["Office · Agents", "Commissions", "Agent commissions on leases and sales"],
       ofMls:["Office · Agents", "MLS dues", "Dues, renewals and fines per agent"],
-      ofPeople:["Office", "People", "Who PHD pays, how, and who approves"]}[S.ui.view];
+      ofPeople:["Office", "People", "Who PHD pays, how, and who approves"],
+      ofTax:["Office", "1099s", "What each person was paid through pay runs this year, and their 1099-NEC"]}[S.ui.view];
     $("#pgCrumb").textContent = T[0]; $("#pgTitle").textContent = T[1]; $("#pgSub").textContent = T[2];
     $("#pgActions").innerHTML = "";
     const v = $("#view"); v.innerHTML = "";
     if(typeof Cloud !== "undefined" && Cloud.ready && OF.admin == null) v.appendChild(elm("div", "card", `<div class="empty"><p class="muted">Loading…</p></div>`));
     else if(OF.noDb) v.appendChild(elm("div", "card", `<div class="empty"><b>Office needs a one-time database update</b><p>Pay records are private (each person sees only their own; Gabe and Peter see everyone's), so the database needs its rules added first: run <code>office-setup.sql</code> in Supabase → SQL editor. Nothing is saved here until then.</p></div>`));
-    else ({ofMe:pgOfMe, ofRuns:pgOfRuns, ofWork:pgOfWork, ofOwed:pgOfOwed, ofComm:pgOfComm, ofMls:pgOfMls, ofPeople:pgOfPeople})[S.ui.view]();
+    else ({ofMe:pgOfMe, ofRuns:pgOfRuns, ofWork:pgOfWork, ofOwed:pgOfOwed, ofComm:pgOfComm, ofMls:pgOfMls, ofPeople:pgOfPeople, ofTax:pgOfTax})[S.ui.view]();
     if(typeof chip === "function") chip();
     const mn = $("#mName"); if(mn){ mn.textContent = T[1]; const ms = $("#mSub"); if(ms) ms.textContent = "Office"; }
   };
@@ -17694,6 +17701,7 @@ function ofPersonSheet(id, seed){
         <label class="fld" id="opAmtF"><span id="opAmtL"></span><input type="number" step="0.01" min="0" id="opAmt"></label></div>
       <label class="fld" id="opPerF"><span>Pay period</span><select id="opPer">${["weekly", "bi-weekly", "twice a month", "monthly"].map(x => `<option ${p.pay.period === x ? "selected" : ""}>${x}</option>`).join("")}</select></label>
       <label class="fld"><span>Pay them from</span><select id="opPf"><option value="">The pay run's account</option>${ofPfOptions(p.payFromId, "", true)}</select>${OF.pf ? "" : `<span class="help">Loading the accounts…</span>`}</label>
+      <label class="fld"><span>Year-end tax form</span><select id="opTx"><option value="">1099-NEC — contractor or agent, nothing withheld</option><option value="w2" ${p.taxForm === "w2" ? "selected" : ""}>W-2 — employee on payroll with withholding (no 1099)</option></select></label>
       <label class="fld"><span>When they owe PHD money</span><select id="opOw"><option value="">Take it out of their pay</option><option value="extras" ${p.owedFrom === "extras" ? "selected" : ""}>Work it off — take it only from extra work (lock changes, cleanings…); regular pay is paid in full</option></select></label>
       <label class="fld"><span>Notes</span><textarea id="opNo" rows="2">${esc(p.notes || "")}</textarea></label>
       <label class="switchbox"><input type="checkbox" id="opA" ${p.active !== false ? "checked" : ""}> Active</label>
@@ -17714,7 +17722,7 @@ function ofPersonSheet(id, seed){
     const email = $("#opE").value.trim().toLowerCase(); if(email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("That email doesn't look right");
     const b = $("#opB").value, amt = +$("#opAmt").value || 0;
     const next = Object.assign({}, cur || {}, {type:"person", name, email, role:$("#opR").value, commissionPct:+$("#opC").value || 0, notes:$("#opNo").value.trim(), active:$("#opA").checked,
-      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}, owedFrom:$("#opOw").value || "", payFromId:$("#opPf") ? $("#opPf").value || "" : (cur || {}).payFromId || ""});
+      pay:{basis:b, period:$("#opPer").value, amount:b === "salary" ? amt : 0, rate:b === "hourly" ? amt : 0}, owedFrom:$("#opOw").value || "", taxForm:$("#opTx").value || "", payFromId:$("#opPf") ? $("#opPf").value || "" : (cur || {}).payFromId || ""});
     delete next._id; delete next.id;
     const pid = id || (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "p") + "-" + uid().slice(0, 4);
     ofPut("person:" + pid, next);
@@ -21518,4 +21526,78 @@ function stmtRentDetail(p, m, row){
   const ret = row.md && row.md.mdAdj && row.md.mdAdj.returned;
   (ret || []).forEach(x => out.push(`a ${usd(cents(x.a))} payment was returned (bounced)${x.d ? " on " + docShort(String(x.d).slice(0, 10)).replace(/, \d{4}$/, "") : ""} and isn't counted`));
   return out.join(" · ");
+}
+
+
+/* =====================================================================
+   OFFICE → 1099s
+   What each person was paid through Office pay runs in a tax year, and
+   where their 1099-NEC stands. The amounts and the filing work live in the
+   1099 Tax Center (tax1099.js) — paid pay runs are one of its payment
+   sources — so a person also paid as a vendor (a project invoice, a bill)
+   adds up on one form. This page is the Office view of it:
+     · counts the pay run lines recorded as paid, by the day they were paid
+     · leaves out reimbursements (an expense paid back isn't income)
+     · people set to W-2 in Office → People get no 1099
+     · the 2026 threshold is $2,000 ($600 through 2025), set per year in the
+       Tax Center
+   Tax ID numbers are never typed in or stored — they stay on the W-9.
+   ===================================================================== */
+function ofTaxYear(){ const now = todayISO(); return S.ui.ofTaxY || String(Number(now.slice(0, 4)) - (now.slice(5, 7) <= "02" ? 1 : 0)); }
+function ofTaxRows(y){
+  const B = t9Build(y), byPk = new Map();
+  B.list.forEach(r => (r.pays || []).forEach(x => { if(x.src === "Office pay run") byPk.set(x.pk, r); }));
+  const runs = ofRuns(), rows = new Map();
+  // everyone with Office pay: paid in the year, plus what's approved or waiting and not paid yet
+  ofPeople().forEach(p => rows.set(p.id, {p, paidC:0, reimbC:0, runs:0, openC:0, r:null}));
+  runs.forEach(run => (run.lines || []).forEach(l => {
+    const row = rows.get(l.person) || (rows.set(l.person, {p:{id:l.person, name:l.name}, paidC:0, reimbC:0, runs:0, openC:0, r:null}), rows.get(l.person));
+    const d = String(run.paidOn || run.payDate || "");
+    if(run.status === "paid" && d.startsWith(y)){
+      const r = byPk.get("of:" + run._id + ":" + l.person), x = r && r.pays.find(z => z.pk === "of:" + run._id + ":" + l.person);
+      if(x){ row.paidC += x.amountC; row.reimbC += x.reimbC || 0; row.runs++; row.r = r; }
+    } else if(["approved", "submitted", "draft"].includes(run.status) && String(run.payDate || "").startsWith(y)) row.openC += +l.grossC || 0;
+  }));
+  // a person paid only as a vendor (no pay run yet) still shows their recipient, matched by name
+  rows.forEach(row => { if(!row.r){ const k = String(row.p.name || "").toLowerCase().replace(/[^a-z0-9]/g, ""); row.r = B.list.find(r => r.type === "vendor" && String(r.display || "").toLowerCase().replace(/[^a-z0-9]/g, "") === k) || null; } });
+  // two Office records for the same person (same name) add up on one form
+  const out = [], seen = new Map();
+  rows.forEach(row => { const k = row.r ? "r:" + row.r.id : "n:" + String(row.p.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const cur = seen.get(k); if(cur){ cur.paidC += row.paidC; cur.reimbC += row.reimbC; cur.runs += row.runs; cur.openC += row.openC; cur.people.push(row.p); return; }
+    const o = Object.assign({}, row, {people:[row.p]}); seen.set(k, o); out.push(o); });
+  return out.filter(o => o.paidC || o.openC || (o.r && o.r.repC)).sort((a, b) => (b.r ? b.r.repC : 0) - (a.r ? a.r.repC : 0) || b.paidC - a.paidC);
+}
+function pgOfTax(){
+  const v = $("#view");
+  if(typeof t9Build !== "function"){ v.appendChild(elm("div", "card", `<div class="empty"><b>The 1099 Tax Center didn't load</b><p>Reload the page.</p></div>`)); return; }
+  const y = ofTaxYear(), cfg = t9YearCfg(y), thrC = Math.round(cfg.threshold * 100), rows = ofTaxRows(y), now = todayISO();
+  const need = rows.filter(o => o.r && o.r.k === "potential"), noW9 = need.filter(o => !["received", "verified"].includes(o.r.w9s));
+  const w2 = rows.filter(o => o.people.some(p => (ofPerson(p.id) || {}).taxForm === "w2"));
+  const yrs = [...new Set([String(Number(now.slice(0, 4)) - 1), now.slice(0, 4)].concat(ofRuns().map(r => String(r.paidOn || r.payDate || "").slice(0, 4)).filter(Boolean)))].sort().reverse();
+  $("#pgActions").innerHTML = `<select id="otY" class="btn" style="padding-right:28px">${yrs.map(x => `<option ${x === y ? "selected" : ""}>${x}</option>`).join("")}</select>`;
+  $("#otY").onchange = e => { S.ui.ofTaxY = e.target.value; render(); };
+  const dl = typeof t9Deadlines === "function" ? t9Deadlines(y) : null;
+  v.appendChild(elm("div", "pm-tiles", `
+    <div class="pf-cell"><div class="label">1099-NECs for ${esc(y)}</div><div class="pf-v">${need.length}</div><div class="pf-note">${usd(thrC)} or more paid${dl ? ` · due to them and the IRS ${esc(fdateS(dl.nec))}` : ""}</div></div>
+    <div class="pf-cell"><div class="label">Missing a W-9</div><div class="pf-v" ${noW9.length ? 'style="color:var(--red)"' : ""}>${noW9.length}</div><div class="pf-note">${noW9.length ? noW9.map(o => esc(o.r.display)).join(", ") : "Every 1099 has one"}</div></div>
+    <div class="pf-cell"><div class="label">Paid through pay runs in ${esc(y)}</div><div class="pf-v">${usd(rows.reduce((a, o) => a + o.paidC, 0))}</div><div class="pf-note">Reimbursements left out${rows.some(o => o.openC) ? ` · ${usd(rows.reduce((a, o) => a + o.openC, 0))} more in runs not paid yet` : ""}</div></div>`));
+  const tag = o => { const r = o.r;
+    if(o.people.some(p => (ofPerson(p.id) || {}).taxForm === "w2")) return `<span class="tag grey">W-2 — no 1099</span>`;
+    if(!r) return `<span class="tag grey">Nothing paid yet</span>`;
+    if(r.k === "no") return `<span class="tag grey">${esc(r.exempt)}</span>`;
+    if(r.k === "under") return `<span class="tag grey">Under ${esc(usd(r.thrC))}</span>${o.openC && r.repC + o.openC >= r.thrC ? ` <span class="tag gold">over once the open run is paid</span>` : ""}`;
+    return `<span class="tag ${r.blocking.length ? "gold" : "green"}">1099-NEC · ${esc(r.fs ? (({not_reviewed:"Not reviewed", needs_info:"Needs information", ready:"Ready for review", approved:"Approved", exported:"Exported", submitted:"Submitted", accepted:"IRS accepted", rejected:"IRS rejected", delivered:"Copy delivered", correction:"Correction required", complete:"Complete"})[r.fs] || r.fs) : "")}</span>`; };
+  const w9 = o => !o.r || o.r.k !== "potential" ? "" : ["received", "verified"].includes(o.r.w9s) ? `<span class="tag green">W-9${o.r.w9date ? " " + esc(fdateS(o.r.w9date)) : ""}</span>` : `<span class="tag red">No W-9</span>`;
+  const c = elm("div", "card");
+  c.innerHTML = rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Person</th><th class="r">Pay runs ${esc(y)}</th><th class="r">Paid as a vendor</th><th class="r">On the 1099</th><th>Status</th><th>W-9</th></tr></thead><tbody>
+    ${rows.map(o => { const r = o.r, other = r ? r.repC - o.paidC : 0;
+      return `<tr ${r ? `data-rid="${esc(r.id)}" tabindex="0" style="cursor:pointer"` : ""}><td><div class="item-t">${esc(r ? r.display : o.p.name)}</div><div class="item-s">${esc(o.people.map(p => ({agent:"Agent", contractor:"1099 contractor", staff:"Staff"})[(ofPerson(p.id) || {}).role] || "").filter((x, i, a) => x && a.indexOf(x) === i).join(", "))}${o.runs ? ` · ${o.runs} paid run${o.runs === 1 ? "" : "s"}` : ""}${o.reimbC ? ` · ${usd(o.reimbC)} reimbursed (not income)` : ""}${o.openC ? ` · ${usd(o.openC)} in runs not paid yet` : ""}</div></td>
+        <td class="r num">${usd(o.paidC)}</td><td class="r num">${other > 0 ? usd(other) : "—"}</td><td class="r num"><b>${r && r.k !== "no" ? usd(r.repC) : "—"}</b></td><td>${tag(o)}</td><td>${w9(o)}</td></tr>`; }).join("")}</tbody></table></div>
+    <p class="help" style="margin:8px 16px 12px">Pay runs count on the day they were recorded as paid. Commissions, bonuses, hours, work invoices and base pay are income; reimbursements aren't. "Paid as a vendor" is anything else PHD paid the same person (bills, project invoices), so it's one form. Click a person for their payments, W-9, address and filing steps. The ${esc(y)} threshold is ${usd(thrC)}.</p>`
+    : `<div class="empty"><b>No Office pay in ${esc(y)}</b><p>Pay runs show here once they're recorded as paid.</p></div>`;
+  v.appendChild(c);
+  c.querySelectorAll("[data-rid]").forEach(tr => tr.onclick = () => t9RecipientSheet(y, tr.dataset.rid));
+  if(w2.length) v.appendChild(elm("p", "help", `Set to W-2 in People: ${w2.map(o => esc(o.p.name)).join(", ")} — their pay goes on a W-2 from payroll, not here.`));
+  v.appendChild(elm("p", "help", `Filing (export for the filing service or IRIS, recipient copies, IRS status) is done for everyone in one place: <a href="#" id="otTc">Rentals → Money → 1099 Tax Center</a>. Tax ID numbers are never stored in the console — they stay on the W-9.`));
+  $("#otTc").onclick = e => { e.preventDefault(); S.ui.mode = "pm"; S.ui.view = "tax1099"; S.ui.t9Y = y; render(); };
 }

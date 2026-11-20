@@ -123,6 +123,18 @@ function allVendorPays(){
     const twin = out.find(o => !o.pk.startsWith("mn:") && !o.dupOf && key(o.name) === key(x.name) && o.amountC === x.amountC && Math.abs(dn(o.date) - dn(x.date)) <= 7);
     if(twin){ x.dupOf = twin.pk; x.dupBy = "match"; x.dupWhy = "same vendor and amount, dates within 7 days"; }
     out.push(x); });
+  // 5. Office pay runs recorded as paid — base pay, hours, work invoices, commissions and bonuses; reimbursements are left out
+  //    (paying back someone's own expense isn't income). One payment per person per run, dated the day the run was paid.
+  if(typeof ofRuns === "function" && typeof ofAll === "function") ofRuns().filter(r => r.status === "paid").forEach(r => (r.lines || []).forEach(l => {
+    const d = String(r.paidOn || r.payDate || "").slice(0, 10); if(!d) return;
+    const p = typeof ofPerson === "function" ? ofPerson(l.person) : null, name = (p && p.name) || l.name || "Someone";
+    const items = (l.entries || []).map(k => ofAll()[k]).filter(Boolean), reimbC = items.filter(e => e.kind === "expense").reduce((a, e) => a + ofEntryC(e), 0);
+    const amt = (+l.baseC || 0) + items.filter(e => e.kind !== "expense").reduce((a, e) => a + ofEntryC(e), 0); if(!amt) return;
+    const kinds = [...new Set(items.filter(e => e.kind !== "expense").map(e => (typeof OF_KIND !== "undefined" && OF_KIND[e.kind]) || e.kind))].concat(+l.baseC ? ["Base pay"] : []);
+    out.push({pk:"of:" + r._id + ":" + l.person, src:"Office pay run", sys:"PHD Console (Office)", id:r._id, ref:(l.nickel && l.nickel.ref) || "", date:d, dateKind:"paid", billDate:"", name, v:who(name),
+      amountC:amt, card:false, how:r.method || "Pay run", where:`Office pay ${fY(r.periodStart)} – ${fY(r.periodEnd)}`, memo:kinds.join(", ") + (reimbC ? ` · leaves out ${usd(reimbC)} of reimbursements` : ""),
+      person:l.person, w2:!!(p && p.taxForm === "w2"), defCat:"service", reimbC});
+  }));
   out.forEach(x => { x.gk = x.v ? "v:" + x.v.id : "n:" + key(x.name); const o = T().pay[x.pk] || {};
     x.o = o; x.effDate = o.paidDate || x.date; x.dateOk = x.dateKind === "paid" || !!o.paidDate || !!o.dateOk; });
   return out;
@@ -133,7 +145,8 @@ function payCalc(x, y){
   if(x.dupOf && !o.notDup) return {inc:false, rep:0, ex:"dup", why:`Counted once — same payment as ${x.dupOf.split(":")[0] === "bill" ? "a console bill" : x.dupOf.split(":")[0] === "md" ? "a MagicDoor bill" : "another record"} (${x.dupWhy})`};
   if(x.card) return {inc:false, rep:0, ex:"card", why:"Paid by card or a payment app — the processor reports it on a 1099-K"};
   if(o.exclude) return {inc:false, rep:0, ex:"manual", why:o.why || "Left out"};
-  const cat = o.cat || T().vcat[x.gk] || (ov.kind === "goods" ? "goods" : ov.kind === "include" || tax.f1099 === "yes" ? "service" : "");
+  if(x.w2 && !o.cat) return {inc:false, rep:0, ex:"cat", cat:"nr", why:"Employee pay (W-2 payroll) — reported on a W-2, not a 1099. Change it on the person in Office → People."};
+  const cat = o.cat || T().vcat[x.gk] || x.defCat || (ov.kind === "goods" ? "goods" : ov.kind === "include" || tax.f1099 === "yes" ? "service" : "");
   if(cat === "goods" || cat === "utility" || cat === "nr") return {inc:false, rep:0, ex:"cat", cat, why:catLabel(cat) + (o.why ? " — " + o.why : "")};
   return {inc:true, rep:x.amountC, cat, why:cat ? "" : "Not categorized yet — counted until someone decides"};
 }
