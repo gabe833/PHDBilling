@@ -2963,3 +2963,13 @@ td>.tag+.st-rev{display:flex}
 .al-r.al-picked{background:var(--accent-soft, #EEF5F3)}
 .al-selbar{position:sticky;bottom:12px;z-index:50;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh-lift)}
 .al-selbar b{font-size:13px;font-weight:600}
+
+/* sidebar sections that fold */
+.nav-head.nav-fold{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;border-radius:6px}
+.nav-head.nav-fold:hover{color:var(--ink, inherit)}
+.nav-head.nav-fold:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.nav-head.nav-fold .nav-chev{margin-left:auto;flex:none;opacity:.55;transition:transform .15s ease}
+.nav-head.nav-fold:hover .nav-chev{opacity:.9}
+.nav-head.nav-fold.shut .nav-chev{transform:rotate(-90deg)}
+#nav > .nav-hid{display:none !important}
+@media (prefers-reduced-motion: reduce){ .nav-head.nav-fold .nav-chev{transition:none} }

@@ -21639,3 +21639,41 @@ function pgOfTax(){
   v.appendChild(elm("p", "help", `Filing (export for the filing service or IRIS, recipient copies, IRS status) is done for everyone in one place: <a href="#" id="otTc">Rentals → Money → 1099 Tax Center</a>. Tax ID numbers are never stored in the console — they stay on the W-9.`));
   $("#otTc").onclick = e => { e.preventDefault(); S.ui.mode = "pm"; S.ui.view = "tax1099"; S.ui.t9Y = y; render(); };
 }
+
+/* =====================================================================
+   Sidebar sections fold. Every nav heading ("Money", "Pay", "Agents" …)
+   opens and closes the items under it. The nav stays one flat list (other
+   code finds its buttons as direct children), so folding just hides those
+   items. A section holding the page you're on always stays open. What's
+   folded is remembered per side (Projects / Rentals / Office) on this device.
+   ===================================================================== */
+const NAV_FOLD_KEY = "phd.navFold";
+function navFoldGet(){ try{ return JSON.parse(localStorage.getItem(NAV_FOLD_KEY) || "{}") || {}; }catch(e){ return {}; } }
+function navFoldSet(o){ try{ localStorage.setItem(NAV_FOLD_KEY, JSON.stringify(o)); }catch(e){} }
+function navFoldApply(){
+  const n = document.getElementById("nav"); if(!n) return;
+  const fold = navFoldGet(), side = (S && S.ui && S.ui.mode) || "x", kids = [...n.children];
+  kids.forEach((h, i) => {
+    if(!h.classList.contains("nav-head")) return;
+    const items = [];
+    for(let j = i + 1; j < kids.length; j++){ const c = kids[j]; if(c.classList.contains("nav-head")) break; if(c.classList.contains("nav-gap") && kids[j + 1] && kids[j + 1].classList.contains("nav-head")) break; items.push(c); }
+    if(!items.length) return;
+    const name = h.textContent.trim(), k = side + ":" + name, here = items.some(c => c.getAttribute("aria-current") === "true" || c.classList.contains("on"));
+    const shut = !!fold[k] && !here;
+    if(!h.dataset.fold){
+      h.dataset.fold = "1"; h.classList.add("nav-fold"); h.setAttribute("role", "button"); h.tabIndex = 0;
+      h.innerHTML = `<span>${esc(name)}</span><svg class="nav-chev" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      const flip = e => { if(e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return; e.preventDefault(); const f = navFoldGet(); f[k] = !h.classList.contains("shut"); if(!f[k]) delete f[k]; navFoldSet(f); navFoldApply(); };
+      h.addEventListener("click", flip); h.addEventListener("keydown", flip);
+    }
+    h.classList.toggle("shut", shut); h.setAttribute("aria-expanded", String(!shut));
+    h.title = here && fold[k] ? "Stays open while you're on a page in it" : (shut ? `Show ${name}` : `Hide ${name}`);
+    items.forEach(c => c.classList.toggle("nav-hid", shut));
+  });
+}
+(function navFoldWatch(){
+  const start = () => { const n = document.getElementById("nav"); if(!n) return setTimeout(start, 300);
+    let q = false; new MutationObserver(() => { if(q) return; q = true; queueMicrotask(() => { q = false; navFoldApply(); }); }).observe(n, {childList:true});
+    navFoldApply(); };
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+})();
