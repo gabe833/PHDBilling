@@ -17815,6 +17815,8 @@ function ofRunLine(p, run, keep){
   // next run whatever day it was added (Justin's 24 Bee share, added Nov 19, was left off the Nov 1–15 run)
   const items = es.filter(e => OF_EARN.has(e.kind) && (e.status === "submitted" || e.status === "confirmed") && !taken.has(e._id) && (!e.date || e.date <= end || e.kind === "commission"));
   const off = es.filter(e => e.kind === "timeoff" && e.status !== "rejected" && e.date && e.date >= start && e.date <= end);
+  // hours or work dated after the period end aren't on this run — say so, since a period total is easy to date the day it's entered
+  const later = es.filter(e => OF_EARN.has(e.kind) && e.kind !== "commission" && (e.status === "submitted" || e.status === "confirmed") && !taken.has(e._id) && e.date && e.date > end);
   const pay = p.pay || {}, baseC = pay.basis === "salary" ? cents(pay.amount || 0) : 0;
   const L = Object.assign({person:p.id, email:p.email ? String(p.email).toLowerCase() : "", name:p.name, baseC, entries:items.map(e => e._id), timeoff:off.map(e => e._id), note:""}, keep || {});
   if(keep){ L.entries = keep.entries || []; L.timeoff = off.map(e => e._id); }
@@ -17829,6 +17831,7 @@ function ofRunLine(p, run, keep){
   L.deductC = Math.max(0, Math.min(+L.deductC || 0, capC));
   L.netC = L.grossC - L.deductC;
   L.owedC = owed;
+  L.laterN = later.length; L.laterC = later.reduce((a, e) => a + ofEntryC(e), 0); L.laterD = later.map(e => e.date).sort()[0] || "";
   return L;
 }
 function ofRunSheet(id){
@@ -17852,6 +17855,7 @@ function ofRunSheet(id){
         ${r.lines.map((l, i) => { const items = (l.entries || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean), off = (l.timeoff || []).map(k => ofAll()[k] && Object.assign({_id:k}, ofAll()[k])).filter(Boolean);
           return `<div class="of-line">
             <div class="of-line-h"><b>${esc(l.name)}</b><span class="num">${usd(l.netC)}</span>${editable ? `<button class="linkish" data-rm="${i}">remove</button>` : ""}</div>
+            ${editable && l.laterN ? `<p class="help" style="color:var(--gold);margin:2px 0 6px">${usd(l.laterC)} of ${esc(String(l.name).split(" ")[0])}'s hours or work is dated after ${esc(fdateS(r.periodEnd))} (from ${esc(fdateS(l.laterD))}), so it isn't in this run. If it's for this period, change its date in Hours &amp; work invoices.</p>` : ""}
             ${+l.netC > 0 ? `<div class="of-line-pf ${l.payFromId ? "" : "need"}"><span>Paid from</span> ${OF.pf ? `<select data-lpf="${i}" ${editable || r.status === "approved" ? "" : "disabled"}><option value="">Pick the account…</option>${ofPfOptions(l.payFromId, "", true)}</select>` : `<span class="muted">Loading accounts…</span>`}</div>` : ""}
             <table class="pm-sum">
               ${l.baseC ? `<tr><td>Base pay</td><td class="r num">${editable ? `<input class="of-in num" type="number" step="0.01" data-base="${i}" value="${(l.baseC / 100).toFixed(2)}">` : usd(l.baseC)}</td></tr>` : ""}
