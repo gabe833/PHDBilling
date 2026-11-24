@@ -10026,7 +10026,7 @@ function paySetupInto(v){
   const r1 = nc.querySelector("#psNkRefresh"); if(r1) r1.onclick = async () => { r1.disabled = true; try{ const r = await payCall("nickel.refresh"); await payStatus(true); toast(r.changed ? `${r.changed} update${r.changed === 1 ? "" : "s"} from Nickel` : "Everything is up to date"); render(); }catch(e){ toast(e.message); r1.disabled = false; } };
 
   const qc = elm("div","card");
-  const opt = (list, cur) => `<option value="">Don't code it (Nickel only)</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) ? "selected" : ""}>${esc(x.name)}${x.type ? " · " + esc(x.type) : ""}</option>`).join("");
+  const opt = (list, cur) => `<option value="">Choose the account…</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) ? "selected" : ""}>${esc(x.name)}${x.type ? " · " + esc(x.type) : ""}</option>`).join("");
   const optI = (list, cur, guess) => { const g = !cur && (list || []).find(x => x.name.toLowerCase() === String(guess).toLowerCase());
     return `<option value="">Choose…</option>` + (list || []).map(x => `<option value="${esc(x.id)}" ${String(cur) === String(x.id) || (g && g.id === x.id) ? "selected" : ""}>${esc(x.name)}</option>`).join(""); };
   qc.innerHTML = `<div class="card-h"><h3>QuickBooks</h3>${!nk.ok ? `<span class="tag grey">—</span>` : qb.connected ? `<span class="tag green">Synced through Nickel</span>` : `<span class="tag grey">Not connected in Nickel</span>`}</div>
@@ -10034,7 +10034,11 @@ function paySetupInto(v){
       : !qb.connected ? `<p style="margin-top:0">Nickel isn't connected to QuickBooks. Connect it in Nickel (Settings → Integrations) and bills and invoices made here will flow into QuickBooks.</p>`
       : !NKL ? `<p class="muted" style="margin-top:0">Loading your QuickBooks accounts…</p>`
       : `<p class="help" style="margin-top:0">Which QuickBooks account each kind of entry is coded to when Nickel adds it. Your bookkeeper should confirm these.</p>
-        <label class="fld"><span>Vendor bills</span><select data-a="nkExpense">${opt(NKL.expense, a.nkExpense)}</select></label>
+        ${["nkExpense", "nkOwnerDist", "nkPayHours", "nkPayCommission", "nkProjBillExp"].some(k => !a[k]) ? `<p class="pm-banner late" style="margin:0 0 10px">Nickel only puts a bill in QuickBooks when it's made with an account. Until each kind below has one, the console won't create that kind of bill in Nickel (it tells you which account to pick).</p>` : ""}
+        <label class="fld"><span>Rental vendor bills</span><select data-a="nkExpense">${opt(NKL.expense, a.nkExpense)}</select></label>
+        <label class="fld"><span>Owner payouts</span><select data-a="nkOwnerDist">${opt(NKL.expense, a.nkOwnerDist)}</select></label>
+        <label class="fld"><span>Staff pay (hours, work, base pay)</span><select data-a="nkPayHours">${opt(NKL.expense, a.nkPayHours)}</select></label>
+        <label class="fld"><span>Commissions &amp; bonuses</span><select data-a="nkPayCommission">${opt(NKL.expense, a.nkPayCommission)}</select></label>
         <label class="fld"><span>Owner invoices: reimbursed bills</span><select data-a="nkReimb">${opt(NKL.revenue, a.nkReimb)}</select></label>
         <label class="fld"><span>Owner invoices: admin fee</span><select data-a="nkFee">${opt(NKL.revenue, a.nkFee)}</select></label>
         <div class="sectl">Projects</div>
@@ -10046,7 +10050,7 @@ function paySetupInto(v){
           <span class="help">Blank uses the standard message. {cap} becomes the property's invoice cap.</span></label>
         <label class="fld"><span>Message on project invoices sent below the cap</span><textarea data-a="nkProjMemoShort" rows="5" placeholder="${esc(PJ_MEMO_SHORT)}">${esc(a.nkProjMemoShort || "")}</textarea>
           <span class="help">Used when an invoice goes out before the balance reaches the cap, to close out a balance. Blank uses the standard close-out message. {amount} becomes the invoice total, {cap} the cap.</span></label>
-        <p class="help">Left blank, the bill or invoice is still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
+        <p class="help">Bills need their account: without one Nickel keeps a bill out of QuickBooks for good. Invoices left blank are still created in Nickel, just without QuickBooks coding.</p>`}</div>`;
   grid.appendChild(qc);
   qc.querySelectorAll("[data-a]").forEach(s2 => s2.onchange = () => { snapshot(); S.acct = Object.assign({}, S.acct || {}, {[s2.dataset.a]:s2.value.trim()}); commit(); toast("Saved"); });
   // a guessed product (exact name match) counts as chosen

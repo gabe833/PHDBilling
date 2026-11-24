@@ -410,6 +410,20 @@ const autoYes: Ask = async (params: Obj) => {
 async function act(op: string, body: Obj, by: string, runId: string, auto = false): Promise<Obj> {
   const ask = (title: string) => auto && AUTO_OPS[op] ? autoYes : confirmer(runId, by, title);
   const map = await nkMap(), acct = await accounting();
+  // QuickBooks coding for every bill this console creates in Nickel. Nickel only puts a bill in QuickBooks when it's
+  // created with "lines" (a QuickBooks account per line); a bill made without them stays in Nickel only and can never be
+  // linked afterwards (Nickel support, Nov 20). So while Nickel is connected to QuickBooks, a bill is coded or not made.
+  let qbOn: boolean | null = null;
+  const QB_LABEL: Obj = { nkExpense: "rental vendor bills", nkProjBillExp: "project vendor bills", nkOwnerDist: "owner payouts", nkPayHours: "staff pay (hours, work, base pay)", nkPayCommission: "commissions and bonuses" };
+  const qbLines = async (parts: { key: string; amountCents: number; description: string }[]): Promise<Obj | null> => {
+    if (qbOn === null) qbOn = (await qbStatus()).connected;
+    if (!qbOn) return null;
+    const cats = parts.filter((x) => x.amountCents > 0).map((x) => {
+      const id = S(acct[x.key]); if (!id) throw new Error(`Pick the QuickBooks account for ${QB_LABEL[x.key] || x.key} first (Payments setup → QuickBooks). Without it Nickel keeps the bill out of QuickBooks.`);
+      return { id, amountCents: x.amountCents, description: S(x.description).slice(0, 200) };
+    });
+    return cats.length ? { categories: cats } : null;
+  };
 
   if (op === "vendor.create") {
     const v = (await vendorsList()).find((x) => x.id === S(body.vendorId)); if (!v) throw new Error("Vendor not found");
@@ -443,8 +457,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     const desc = `${pname ? pname + " — " : ""}${b.memo || b.category || "Bill"}`.slice(0, 200);
     const ref = S(b.billNo || "PHD-" + id.replace(/^bl_/, "").slice(-10)).slice(0, 40);
     const args: Obj = { vendorId: nv.id, amountInCents: amt, dueDate: S(b.due || b.date || today()).slice(0, 10), description: desc, invoiceNumber: ref };
-    const qb = await qbStatus();
-    if (qb.connected && nv.synced && acct.nkExpense) args.lines = { categories: [{ id: acct.nkExpense, amountCents: amt, description: desc }] };
+    const lines = await qbLines([{ key: "nkExpense", amountCents: amt, description: desc }]); if (lines) args.lines = lines;
     const r = await tool("create_bill", args, ask(`Add the ${b.vendor} bill to Nickel`));
     if (!r.ok) return refused(r, "Adding the bill");
     let nbid = newId(r.data, "billId");
@@ -588,7 +601,9 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
         if (!up.ok) { u.skip = `Nickel has ${x.ref} for ${money(cAmt(found))} and wouldn't take the new amount — ${S(up.error && up.error.message).slice(0, 120)}`; break; }
       }
       if (found) { x.billId = S(found.id); continue; }
-      const r = await tool("create_bill", { vendorId: x.nv.id, amountInCents: x.amt, dueDate: arrival || today(), invoiceNumber: x.ref, description: `Owner distribution · ${u.ps.map((p: Obj) => S(p.name)).join(", ")} · ${u.month}`.slice(0, 200) }, autoYes);
+      const odesc = `Owner distribution · ${u.ps.map((p: Obj) => S(p.name)).join(", ")} · ${u.month}`.slice(0, 200);
+      let olines: Obj | null = null; try { olines = await qbLines([{ key: "nkOwnerDist", amountCents: x.amt, description: odesc }]); } catch (e) { u.skip = S((e as Error).message); break; }
+      const r = await tool("create_bill", { vendorId: x.nv.id, amountInCents: x.amt, dueDate: arrival || today(), invoiceNumber: x.ref, description: odesc, ...(olines ? { lines: olines } : {}) }, autoYes);
       if (!r.ok) { u.skip = r.error.message; break; }
       x.billId = newId(r.data, "billId");
       if (!x.billId) { try { const f = items(await read("search_bills", { invoiceNumbers: [x.ref] })).find((b) => b.vendorId === x.nv.id); x.billId = f ? S(f.id) : ""; } catch { /* below */ } }
@@ -686,7 +701,13 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       if (found && cAmt(found) !== amt) { say(`Nickel has ${ref} for a different amount — fix it there first`); continue; }
       let billId = found ? S(found.id) : "";
       if (!billId) {
-        const r = await tool("create_bill", { vendorId: nv.id, amountInCents: amt, dueDate: arrival || today(), invoiceNumber: ref, description: `Pay ${S(run.periodStart)} – ${S(run.periodEnd)} · ${S(l.name)}`.slice(0, 200) }, autoYes);
+        // coded by what the pay is: commissions and bonuses to one account, hours / work / base pay to another
+        const pdesc = `Pay ${S(run.periodStart)} – ${S(run.periodEnd)} · ${S(l.name)}`.slice(0, 200);
+        let commC = 0; for (const k of ((l.entries || []) as string[])) { const e = await docData("hr", S(k)); if (e && S(e.kind) === "commission") commC += Math.round(Number(e.amountC) || 0); }
+        commC = Math.max(0, Math.min(amt, commC));
+        let plines: Obj | null = null;
+        try { plines = await qbLines([{ key: "nkPayCommission", amountCents: commC, description: `${pdesc} · commission` }, { key: "nkPayHours", amountCents: amt - commC, description: pdesc }]); } catch (e) { say(S((e as Error).message)); continue; }
+        const r = await tool("create_bill", { vendorId: nv.id, amountInCents: amt, dueDate: arrival || today(), invoiceNumber: ref, description: pdesc, ...(plines ? { lines: plines } : {}) }, autoYes);
         if (!r.ok) { say(S(r.error && r.error.message) || "Nickel didn't add the bill"); continue; }
         billId = newId(r.data, "billId");
         if (!billId) { try { const f = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id); billId = f ? S(f.id) : ""; } catch { /* below */ } }
@@ -1096,8 +1117,7 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
       const desc = `${S(p.name)} — ${S(t.desc || "Project expense")}`.slice(0, 200);
       const due = /^\d{4}-\d{2}-\d{2}$/.test(S(body.dueDate)) ? S(body.dueDate) : today();
       const args: Obj = { vendorId: nv.id, amountInCents: amt, dueDate: due, description: desc, invoiceNumber: ref };
-      const qb = await qbStatus();
-      if (qb.connected && nv.synced && acct.nkProjBillExp) args.lines = { categories: [{ id: acct.nkProjBillExp, amountCents: amt, description: desc }] };
+      const lines = await qbLines([{ key: "nkProjBillExp", amountCents: amt, description: desc }]); if (lines) args.lines = lines;
       const r = await tool("create_bill", args, ask(`Add the ${nv.name} bill (${money(amt)}) to Nickel`));
       if (!r.ok) return refused(r, "Adding the bill");
       let nbid = newId(r.data, "billId");
