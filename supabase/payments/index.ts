@@ -662,18 +662,26 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     if (run.status !== "approved") throw new Error("Only an approved pay run can be paid");
     const arrival = /^\d{4}-\d{2}-\d{2}$/.test(S(body.arrivalDate)) && S(body.arrivalDate) > today() ? S(body.arrivalDate) : "";
     const nvs: Obj[] = map.nickelVendors || [], pick: Obj = {}; ((body.lines || []) as Obj[]).forEach((x) => { pick[S(x.person)] = x; });
-    const day = alnum(S(run.payDate || today())).slice(0, 8), results: Obj[] = [], go: Obj[] = [];
+    const day = alnum(S(run.payDate || today())).slice(0, 8), results: Obj[] = [], go: Obj[] = [], fails: Obj = {};
     for (const l of ((run.lines || []) as Obj[])) {
-      const amt = Math.round(Number(l.netC) || 0), say = (why: string) => results.push({ person: S(l.person), ok: false, why });
+      const amt = Math.round(Number(l.netC) || 0), say = (why: string) => { results.push({ person: S(l.person), ok: false, why }); fails[S(l.person)] = why; };
       if (!(amt > 0)) continue;
       if (l.nickel && l.nickel.sent) { results.push({ person: S(l.person), ok: true, already: true }); continue; }
       const want = pick[S(l.person)]; if (!want) continue;              // not chosen this time
       const nv = nvs.find((y) => y.id === S(want.vendorId)); if (!nv) { say(`${S(l.name)} isn't a payee in Nickel`); continue; }
       const pm = ((nv.payout || []) as Obj[]).find((m) => m.id === S(want.payoutMethodId)) || (nv.payout || [])[0]; if (!pm) { say(`${S(nv.name)} has no bank account or check address in Nickel`); continue; }
       let fromId = ""; try { fromId = fromOf(want); } catch (e) { say(S((e as Error).message)); continue; }
-      const ref = `PAY-${day}-${alnum(l.name).slice(0, 10)}`;
-      let found: Obj | null = null;
-      try { found = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id) || null; } catch { /* make one */ }
+      // one bill per person per run: PAY-<pay date>-<name>. Two runs can share a pay date (an extra run for a commission,
+      // then the regular one), so a number another run already used gets -2, -3 … instead of blocking this run.
+      // A retry of this same run reuses the bill it made last time.
+      const base = `PAY-${day}-${alnum(l.name).slice(0, 10)}`, mine = S(l.nickel && l.nickel.ref);
+      let ref = mine || base, found: Obj | null = null;
+      for (let n = mine ? 0 : 1; n <= 6; n++) {
+        if (!mine) ref = n === 1 ? base : `${base}-${n}`;
+        found = null;
+        try { found = items(await read("search_bills", { invoiceNumbers: [ref] })).find((b) => b.vendorId === nv.id) || null; } catch { /* make one */ }
+        if (mine || !found || (S(found.paidStatus).toUpperCase() === "UNPAID" && cAmt(found) === amt)) break;
+      }
       if (found && S(found.paidStatus).toUpperCase() !== "UNPAID") { say(`Nickel already shows ${ref} as paid or on its way`); continue; }
       if (found && cAmt(found) !== amt) { say(`Nickel has ${ref} for a different amount — fix it there first`); continue; }
       let billId = found ? S(found.id) : "";
@@ -706,6 +714,8 @@ async function act(op: string, body: Obj, by: string, runId: string, auto = fals
     }
     const now = new Date().toISOString();
     await updateDoc("hr", key, (d) => {
+      // a line stopped before it reached Nickel keeps the reason, so the pay run shows it ("Last try: …")
+      (d.lines || []).forEach((l: Obj) => { const why = fails[S(l.person)]; if (why && !(l.nickel && l.nickel.sent)) l.nickel = { ...(l.nickel || {}), sent: false, err: why, at: now, by }; });
       (d.lines || []).forEach((l: Obj) => { const x = go.find((y) => S(y.l.person) === S(l.person)); if (!x) return;
         l.nickel = { billId: x.billId, ref: x.ref, from: S((pf.find((m) => m.id === x.from) || {}).label), sent: !!x.moving, err: x.moving ? "" : (x.err || "Nickel didn't start this payment"), vendor: S(x.nv.name), delivery: S(x.pm.type) === "CHECK" ? "Check" : "ACH", amountC: x.amt, at: now, by, ...(arrival ? { arrives: arrival } : {}) }; });
       const owed = (d.lines || []).filter((l: Obj) => Math.round(Number(l.netC) || 0) > 0);

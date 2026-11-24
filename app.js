@@ -21391,7 +21391,7 @@ async function ofRunNickel(r, box){
       const fresh = Object.assign({}, ofAll()[r._id], {_id:r._id});
       const all = (fresh.lines || []).filter(l => (+l.netC || 0) > 0).every(l => l.nickel && l.nickel.sent);
       if(all){ ofRunMarkPaid(fresh, when || todayISO(), "Nickel"); toast(`Sent ${res.sent} payment${res.sent === 1 ? "" : "s"} in Nickel — pay run recorded as paid`); }
-      else { toast(`${res.sent} sent, ${res.failed} not — see the pay run`); closeSheet(); ofRunSheet(r._id); }
+      else { const why = [...new Set((res.results || []).filter(x => !x.ok && x.why).map(x => x.why))].slice(0, 2).join(" · "); toast(`${res.sent} sent, ${res.failed} not${why ? ` — ${why}` : " — see the pay run"}`); closeSheet(); ofRunSheet(r._id); }
     };
   };
   draw();
